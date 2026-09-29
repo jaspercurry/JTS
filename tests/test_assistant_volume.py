@@ -15,14 +15,14 @@ from tests.volume_coordinator_fixtures import (
     pushes as pushes,
 )
 
-from jasper.assistant_volume import (
+from jasper.audio_control.assistant_volume import (
     EffectiveVolumeContext,
     volume_context_publisher_for_runtime,
 )
-from jasper.music_sources import Source
-from jasper.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
-from jasper.volume_persistence import VolumePersistence
+from jasper.playback_state.music_sources import Source
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
+from jasper.audio_routes.volume_curve import percent_to_db
+from jasper.service_state.volume_persistence import VolumePersistence
 
 
 @pytest.mark.parametrize(
@@ -53,7 +53,7 @@ def test_runtime_publisher_is_scoped_to_context_consuming_routes(
     def fake_send(path, context, *, timeout=0.5):
         calls.append((path, context, timeout))
 
-    monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
+    monkeypatch.setattr("jasper.audio_control.assistant_volume._send_volume_context", fake_send)
     context = EffectiveVolumeContext(
         canonical_db=-30.0,
         downstream_db=-30.0,
@@ -83,8 +83,8 @@ def test_runtime_publisher_rereads_the_grouping_file_every_publish(
     def fake_send(path, context, *, timeout=0.5):
         sent.append((path, context, timeout))
 
-    monkeypatch.setattr("jasper.assistant_volume._send_volume_context", fake_send)
-    from jasper import tts_routing
+    monkeypatch.setattr("jasper.audio_control.assistant_volume._send_volume_context", fake_send)
+    from jasper.service_state import tts_routing
 
     real_parse = tts_routing.parse_env_file
 
@@ -130,7 +130,7 @@ def test_runtime_publisher_rereads_the_grouping_file_every_publish(
 
 
 def test_snapshot_stamp_survives_delayed_out_of_order_serialization():
-    from jasper.assistant_volume import serialize_volume_context
+    from jasper.audio_control.assistant_volume import serialize_volume_context
 
     older = EffectiveVolumeContext(-30.0, 0.0, -41.0, False, 100)
     newer = EffectiveVolumeContext(-24.0, 0.0, -39.4, False, 200)
@@ -422,7 +422,7 @@ async def test_context_snapshot_stamp_is_bound_before_slow_probe(
         return None
 
     monkeypatch.setattr(
-        "jasper.assistant_volume.volume_context_stamp_boot_ns", bind_stamp,
+        "jasper.audio_control.assistant_volume.volume_context_stamp_boot_ns", bind_stamp,
     )
     cam.read_hook = verify_stamp_precedes_probe
 

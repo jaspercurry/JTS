@@ -44,7 +44,7 @@ def prepare_plan_captures(
     # CHECK plays every driver; a stop naming its driver plays that one alone and needs none (ADR-0366).
     if any(stop.regime == REGIME_PER_DRIVER and not stop.driver for stop in request.stops):
         captures.append(PlanCapture(
-            AngleStop(0, REGIME_PER_DRIVER),
+            AngleStop(0, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
     base_stop = next((stop for stop in request.stops if candidate_identity(stop.candidate_id) == BASE_CANDIDATE and stop.purpose == PURPOSE_SPEAKER), None)

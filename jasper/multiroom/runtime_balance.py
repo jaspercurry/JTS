@@ -18,7 +18,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
+from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
 from jasper.log_event import log_event
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.platform.uds import daemon_command
@@ -97,11 +97,11 @@ def camilla_patch_for_trim(trim_db: float) -> dict[str, Any]:
 
 def _active_endpoint_camilla(cfg: GroupingConfig):
     if cfg.role == "leader":
-        from jasper.camilla import crossover_controller
+        from jasper.audio_control.camilla import crossover_controller
 
         return crossover_controller()
 
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 

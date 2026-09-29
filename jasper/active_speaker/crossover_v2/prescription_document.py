@@ -17,20 +17,18 @@ from typing import Any
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
-from jasper.active_speaker.camilla_yaml import _branch_context
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from ..measured_crossover_candidate import (
-    MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError, room_peqs_from_correction, driver_corrections,
+    MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
 )
 from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper import output_topology_store as output_topology
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.audio_routes import output_topology_store as output_topology
 from ._prescription_common import PRESCRIPTION_MALFORMED
-from .topology_prescription import apply_topology_pin
 
 from . import alignment_prescription as alignment
 from . import bass_prescription as bass
@@ -44,7 +42,6 @@ from .evidence_packet.readers import packet_feature_classifications
 from .prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section
-from .round_captures import RoundCapturesRefused
 from .round_inputs import prescription_sources, read_run_manifest, round_inputs
 
 DOCUMENT_KIND = "jts_prescription"
@@ -173,20 +170,15 @@ def vary_document(
 
 def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
                    contracts: Mapping[str, Any], evidence: PrescriptionEvidence,
-                   fc_hz: float | None, selected: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
+                   fc_hz: float | None) -> tuple[Any, Mapping[str, Any]]:
     packet = dict(evidence.packet)
     speaker = contracts.get("speaker", {})
     if name == "driver":
-        preset, _ = apply_topology_pin(selected.get("topology"), preset=base.candidate.source_preset, fc_hz=None)
         driver.check_driver_document_size(json.dumps(raw).encode())
         prescription = driver.read_driver_prescription(
             raw, packet_fingerprint=packet.get("packet_fingerprint"),
             passbands_hz=speaker["driver"]["bounds"]["passbands_hz"],
-            # A role with no crossover region (a one-way speaker's) still has a
-            # branch; ((), 0.0) is what the emitter's headroom charge assumes.
-            branch_context={**dict.fromkeys(required_driver_roles(preset.way_count), ((), 0.0)),
-                            **_branch_context(preset, driver_corrections(base.candidate))},
-            room_peqs=room_peqs_from_correction(selected.get("room", base.candidate.room_correction) or {}, preset),
+            speaker_roles=required_driver_roles(base.candidate.source_preset.way_count),
             classifications=packet_feature_classifications(packet),
             incumbent_filters=linearization_filters_by_role(base.candidate.linearization),
         )
@@ -259,8 +251,6 @@ def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
                                   candidate=composed, basis_candidate=base.candidate)
     except ForwardModelError as exc:
         raise PrescriptionDocumentRefused(exc.refusal_reason, section, str(exc), evidence=exc.detail) from exc
-    except RoundCapturesRefused as exc:
-        raise PrescriptionDocumentRefused(exc.reason, section, str(exc), evidence=exc.detail) from exc
 
 
 _PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for row in PROGRAM_DOCUMENT_ORDER if row.preview)}
@@ -333,8 +323,6 @@ def preview_prescription_document(
         raise PrescriptionDocumentRefused(exc.reason, kind, exc.detail, evidence=exc.evidence) from exc
     except rear_calibration.RearCalibrationError as exc:
         raise PrescriptionDocumentRefused("rear_calibration_invalid", kind, str(exc)) from exc
-    except RoundCapturesRefused as exc:
-        raise PrescriptionDocumentRefused(exc.reason, kind, str(exc), evidence=exc.detail) from exc
     except PrescriptionDocumentRefused:
         raise
     except (KeyError, TypeError, ValueError) as exc:
@@ -370,14 +358,6 @@ def reset_prescription_document(
         sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
     return {"kind": "jts_prescription", "schema": 1, "base": "saved",
             "sections": sections, "rationale": "Reset the applied tuning layers."}
-
-
-def rear_cleared_candidate() -> MeasuredCrossoverCandidate:
-    """The applied tune without its rear stage, for raw pair capture (issue #5330).
-
-    Composed, not banked: the caller publishes it.
-    """
-    return bank_section("rear_calibration", None, rationale="Measure both woofers with no rear stage.")
 
 
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
@@ -416,7 +396,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         section = _section_payload(name, section, document["rationale"], contracts)
         try:
             selected[name], judged[name] = _judge_section(
-                name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz, selected=selected,
+                name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz,
             )
             if name == "topology":
                 fc_hz = selected[name].fc_hz
@@ -447,6 +427,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                       **({"commissioning": {"alignment": read}} if read is not None else {})},
         )
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail) from exc
+        raise PrescriptionDocumentRefused(exc.code, _refused_section(exc.code), exc.detail,
+                                          evidence=getattr(exc, "evidence", None)) from exc
     except (ValueError, TypeError, KeyError) as exc:
-        raise PrescriptionDocumentRefused("composition_invalid", None, str(exc)) from exc
+        raise PrescriptionDocumentRefused(COMPOSITION_INVALID, None, str(exc)) from exc

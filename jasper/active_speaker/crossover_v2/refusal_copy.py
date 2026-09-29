@@ -10,8 +10,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
+from jasper.audio_measurement import evidence_reasons
 from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
 from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
 
@@ -340,6 +342,84 @@ ARM_STOP_COPY = {
 }
 ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR}
 
+#: The analysis-side evidence codes' household copy, under the next action that gets their evidence.
+_EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
+    ("measure_again", "Measure this round again"): {
+        evidence_reasons.CAPTURE_PROGRAM_UNIDENTIFIED: "This recording banked no stimulus hash, so the program it played cannot be named.",
+        evidence_reasons.CAPTURE_UNSTAMPED_NAME: "This recording's file name lacks the timestamp that timing analysis needs.",
+        evidence_reasons.REASON_FIT_NOT_FINITE: "A fitted filter term is not a finite number, so the fit is published without numbers.",
+        evidence_reasons.REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
+        evidence_reasons.REASON_GRAPH_MISMATCH: "The summed take played an output the driver-take prediction does not model, "
+                                                "so the two sums are not comparable.",
+        evidence_reasons.REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
+        evidence_reasons.REASON_NO_IMPULSE: "No usable impulse segments are available to measure the arrival gap.",
+        evidence_reasons.REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
+        evidence_reasons.REASON_SNR_SHORT: "A driver take is below the alignment signal-to-noise floor, so its predicted sum "
+                                           "is not comparable with the measured sum.",
+        evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank the analysed curves this view reads.",
+    },
+    ("measure_repeats", "Measure repeat takes at the mark"): {
+        evidence_reasons.REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
+        evidence_reasons.REASON_MARK_FIT_BAND_UNAVAILABLE: "A mark take does not cover the fit band above its trusted floor.",
+        evidence_reasons.REASON_NO_MARK_PAIRS: "The round has fewer than two takes of this driver at one placement, so no "
+                                               "mark pair exists for a repeat spread.",
+        evidence_reasons.REASON_NO_REPEATS: "Fewer than two usable repeats are available to measure repeat spread.",
+        evidence_reasons.REASON_NO_SHARED_MARK_TAKES: "No driver has mark takes in two of the compared rounds, so nothing "
+                                                      "compares between rounds.",
+    },
+    ("measure_positions", "Measure more positions"): {
+        evidence_reasons.REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
+        evidence_reasons.REASON_NO_ROW: "This position has no measured row.",
+        evidence_reasons.REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
+        evidence_reasons.REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
+    },
+    ("measure_candidates", "Measure the incumbent and another candidate"): {
+        evidence_reasons.REASON_NO_COMPARISON: "One candidate was played, so there is no candidate comparison or repeat "
+                                               "spread for it.",
+        evidence_reasons.REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
+    },
+    ("measure_rear_pair", "Measure a rear pair round"): {
+        evidence_reasons.REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",
+        evidence_reasons.REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
+    },
+    ("measure_nearfield", "Measure a near-field round"): {
+        evidence_reasons.REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",
+    },
+    ("measure_classification_round", "Measure a verify or lateral round"): {
+        evidence_reasons.CAPTURE_PHASE_NOT_ADMISSIBLE: "This recording's phase cannot be used for feature classification.",
+        evidence_reasons.ROUND_SHAPE_INADMISSIBLE: "The round banked no recording shape that feature classification can use.",
+    },
+    ("bank_round", "Bank this round again from its session"): {
+        evidence_reasons.CAPTURES_UNREADABLE: "The round's recording shape is right, but its stamped audio cannot be read.",
+        evidence_reasons.CAPTURE_PROGRAM_MISSING: "No banked program matches this recording's stimulus hash.",
+        evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
+        evidence_reasons.CAPTURE_WAV_MISSING: "This recording's audio is missing from the ring.",
+        evidence_reasons.PROGRAM_MISSING: "No banked program matches the stimulus the round's recordings played.",
+    },
+    ("select_round", "Select the round these takes belong to"): {
+        evidence_reasons.CAPTURE_OTHER_SESSION: "This recording belongs to a different session.",
+        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "No readable recording in the ring belongs to this round.",
+    },
+    ("name_round", "Name a banked round or a live session bundle"): {
+        evidence_reasons.REASON_UNREADABLE: "The round view could not read its input round.",
+    },
+    ("classify_features", "Classify this round's features"): {
+        evidence_reasons.CAPTURE_ADMISSIBLE: "This recording can be used for feature classification.",
+    },
+    ("name_frequencies", "Name the frequencies to classify"): {
+        evidence_reasons.NO_FEATURES_DETECTED: "No feature in the pooled response rises above the scatter between recordings.",
+    },
+    ("choose_band", "Choose a band the takes cover"): {
+        evidence_reasons.REASON_COVERAGE_SHORT: "The captured band does not cover the requested figure.",
+    },
+    ("review_evidence", "Review the evidence the view read"): {
+        evidence_reasons.REASON_REFUSED: "The round view declined the evidence it read.",
+    },
+    ("choose_output", "Choose a writable output path"): {
+        evidence_reasons.REASON_UNWRITABLE: "The round view could not write its output artifact.",
+    },
+}
+
 
 # The §5.10 table, as data. The envelope and the session both read it, so
 # copy and budget never drift between the verdict and its screen.
@@ -408,10 +488,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "room_not_banked", TEMPLATE_HARD_STOP, 0, "", "This round banked no room measurement.",
         next_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
     ),
+    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
+                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
+       for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
            ("compose_refused", "review_candidate", "Review the candidate graph and driver declaration."),
+           ("program_headroom_exhausted", "reduce_boosts", "Reduce the room, driver or rear boosts, or lower the Extra headroom setting."),
            ("crossover_below_declared_protection_floor", "raise_crossover", "Raise the crossover to the declared driver protection floor."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
@@ -444,6 +528,11 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "seat_anchor_unusable": ReasonSpec(
         "seat_anchor_unusable", TEMPLATE_HARD_STOP, 0, "", "Run jasper-seat-level with the current microphone, then measure.",
         next_action={"id": "measure_seat_level", "label": "Run jasper-seat-level with the current microphone, then measure", "href": "/sound/speaker/crossover/"},
+    ),
+    DECLARED_GEOMETRY_UNREADABLE: ReasonSpec(
+        DECLARED_GEOMETRY_UNREADABLE, TEMPLATE_HARD_STOP, 0, "",
+        "Declare the rig again with jasper-declare-geometry set; jasper-declare-geometry show prints the command.",
+        next_action={"id": "declare_geometry", "label": "Declare the rig again with jasper-declare-geometry set", "href": "/sound/speaker/crossover/"},
     ),
     "not_found": ReasonSpec(
         "not_found", TEMPLATE_HARD_STOP, 0, "", "Select a candidate from the bank.",

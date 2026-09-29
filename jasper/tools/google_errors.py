@@ -10,7 +10,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..google_creds import GoogleClients
+    from jasper.service_state.google_creds import GoogleClients
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ from jasper.active_speaker.measurement import (
     active_summed_targets,
     empty_driver_check_summary,
 )
-from jasper.output_topology import OutputTopology, canonical_fingerprint
+from jasper.audio_routes.output_topology import OutputTopology, canonical_fingerprint
 from tests.active_speaker_fixtures import mono_output_topology
 
 

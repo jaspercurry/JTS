@@ -16,11 +16,11 @@ import re
 from pathlib import Path
 
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
-from ...camilla_config_contract import devices_playback_is_pipe
-from ...fanin_coupling import RING_WIRE_FORMAT_WIDE
+from jasper.dsp_control.camilla_config_contract import devices_playback_is_pipe
+from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 from ...json_fields import finite_float
 from ...measurement_window import MEASUREMENT_FANIN_LABEL
-from ...music_sources import SOURCE_SPECS, Source
+from jasper.playback_state.music_sources import SOURCE_SPECS, Source
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR
 from ...platform.status_socket import FANIN_STALE_MS, FANIN_STATUS_SOCKET
 from ._evidence import evidence
@@ -338,6 +338,8 @@ def check_fanin_service() -> CheckResult:
         them — and the reported reason is the FIRST fault found, not the
         "worst" one.
     """
+    from ...env_load import FANIN_ENV_PATH
+
     service_failure = service_state_failure(
         "jasper-fanin service",
         FANIN_SERVICE,
@@ -490,7 +492,7 @@ def check_fanin_service() -> CheckResult:
         faults.append((
             REASON_FANIN_INPUTS_DRIFTED,
             f"input roster drifted: {roster_detail} — check "
-            "/var/lib/jasper/fanin.env",
+            f"{FANIN_ENV_PATH}",
         ))
     if input_buffer_frames < 4096:
         faults.append((
@@ -842,7 +844,7 @@ def requires_roleful_graph() -> bool:
     Every caller that ACTS on rolefulness reads the fail-CLOSED loaders instead.
     """
     from jasper.active_speaker.output_contract import classify_output_contract
-    from jasper.output_topology import OutputTopologyError
+    from jasper.audio_routes.output_topology import OutputTopologyError
 
     try:
         # The STRICT loader, not `evidence.output_topology()`: this one raises
@@ -866,7 +868,7 @@ def check_fanin_coupling() -> CheckResult:
 
     Outputd consumption belongs to :func:`check_content_transport_coherence`.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
         RING_PLAYBACK_DEVICE,

@@ -4,7 +4,7 @@
 
 """Lifecycle resources for local music sources.
 
-``jasper.music_sources`` owns cross-cutting source metadata such as fan-in
+``jasper.playback_state.music_sources`` owns cross-cutting source metadata such as fan-in
 labels, wizard keys, and volume mode. This module owns the operational
 resources that make those sources run or advertise, plus shared local-source
 infrastructure such as the source arbiter.
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ..service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 
 

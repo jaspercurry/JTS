@@ -17,10 +17,8 @@ banks ONE stage, and:
 
 * :func:`bank_measure_round` — stage 1. CHECK, the design-axis MEASURE take
   carrying both per-driver solos, the lateral walk pose(s), and the ENTRY BASELINE.
-  Its flow state carries no VERIFY curve because stage 1 measures no VERIFY.
-* :func:`bank_verify_round` — stage 2. The VERIFY take, and a flow state
-  carrying ``verify_priors.verify_measured``. No per-driver solos: a verify
-  stage walks none.
+* :func:`bank_verify_round` — stage 2. The VERIFY take. No per-driver solos: a
+  verify stage walks none.
 * :func:`bank_seat_round` — the ``seat/cube`` walk (ADR-0260): one
   ungated summed take per pose of the shipped program's own resolved walk, so
   a reader of categorized poses gets seven takes that differ only in where the
@@ -84,7 +82,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REFERENCE_MARK_DESIGN_AXIS,
     ROUND_RECEIPT_KIND,
 )
-from jasper.active_speaker.crossover_v2.durable_state import MAX_PERSISTED_SUM_POINTS
 from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
@@ -109,7 +106,6 @@ from tests.active_speaker_fixtures import mono_output_topology
 #: fixture's own group modes so a round's bundle and its solos cannot disagree
 #: about how many branches the speaker has.
 __all__ = [
-    "ENTRY_GRID_HZ",
     "MODE_TWO_WAY",
     "MODE_WAY1",
     "SEAT_BAND_HZ",
@@ -131,10 +127,6 @@ MODE_WAY1 = "full_range_passive"
 #: the compared span without re-deriving a union.
 SOLO_BAND_HZ = (200.0, 12000.0)
 SOLO_GRID_HZ = np.linspace(SOLO_BAND_HZ[0], SOLO_BAND_HZ[1], 256)
-
-#: The entry baseline's own reduced grid — log-spaced across all three
-#: ``flat_spec.SPEC_BANDS`` rows so a grade has bins in every band.
-ENTRY_GRID_HZ = np.geomspace(280.0, 16000.0, 90)
 
 #: The grid the VERIFY capture's own banked curve sits on. Deliberately NOT
 #: the solos' grid: the persisted VERIFY pair is on the capture's own
@@ -254,24 +246,13 @@ def _receipt(round_id: str) -> dict[str, Any]:
     }
 
 
-def _state(
-    *,
-    round_ordinal: int,
-    verify_measured: Any,
-) -> dict[str, Any]:
-    """The flow state ``bank-crossover-round.sh`` drops beside the bundle.
-
-    Narrowed to the keys the readers under test open — the round's place in
-    the series, and ``verify_priors.verify_measured``, whose value comes from
-    the persist-time writer rather than a hand-typed dict. ``verify_priors``
-    is rebuilt from the conductor on every persist, so a ``None`` here is what
-    a stage that measured no VERIFY actually banks.
-    """
+def _state(*, round_ordinal: int) -> dict[str, Any]:
+    """The flow state ``bank-crossover-round.sh`` drops beside the bundle,
+    narrowed to the round's place in the series."""
     return {
         "session_id": _CAPTURE_SESSION_ID,
         "round_receipt": {"round_ordinal": round_ordinal},
         "round_ordinal_epoch": 1,
-        "verify_priors": {"verify_measured": verify_measured},
     }
 
 
@@ -640,9 +621,6 @@ def entry_baseline_record(
     reference_mark: str,
     graph_fingerprint: str,
     captured_at: str,
-    freqs_hz: Sequence[float],
-    magnitude_db: Sequence[float],
-    excluded: Sequence[bool],
     validity_floor_hz: float | None,
     gate_window_ms: float | None,
     summed_ripple_db: float | None,
@@ -653,24 +631,10 @@ def entry_baseline_record(
     curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
-    """The entry baseline's retained record — a cloud position's shape, minus
-    the group, plus the curve.
-
-    Three fields a cloud position has no use for make THIS capture comparable to
-    the post-apply one, and are why it is a separate builder: WHAT was played
-    (``stimulus_id``), WHERE from (``reference_mark``), and WHICH graph it went
-    through (``graph_fingerprint``).
-
-    The reduced curve rides here, which is what makes this the DURABLE copy:
-    a retained take is write-once and keyed by ``take_id``, while the flow state
-    file holding the same arrays is rewritten on every persist. Bounded at
-    ``round_evidence.BENEFIT_CURVE_MAX_BINS`` upstream. Same three arrays and
-    names as ``round_evidence.EntryBaseline.to_dict``, so one reader covers both.
-
-    ``curves`` is a SECOND curve on a second basis, not a copy: the three arrays
-    are the GRADED side (decimated, magnitude only, carrying the ``excluded``
-    mask), ``curves`` is the MEASURED side on the shared log basis with phase.
-    Neither is derivable from the other.
+    """The timing take's retained record (ADR-0319): a cloud position's shape,
+    minus the group, plus WHAT was played (``stimulus_id``), WHERE from
+    (``reference_mark``), and WHICH graph it went through
+    (``graph_fingerprint``).
 
     The pose is
     :data:`~jasper.active_speaker.crossover_v2.contracts.DESIGN_AXIS_DEG` on
@@ -696,9 +660,6 @@ def entry_baseline_record(
         "vertical_deg": 0,
         "regime": regime,
         "captured_at": captured_at,
-        "freqs_hz": [float(hz) for hz in freqs_hz],
-        "magnitude_db": [float(db) for db in magnitude_db],
-        "excluded": [bool(flag) for flag in excluded],
         "validity_floor_hz": validity_floor_hz,
         "gate_window_ms": gate_window_ms,
         "summed_ripple_db": summed_ripple_db,
@@ -719,8 +680,6 @@ def bank_measure_round(
     root: Path,
     *,
     name: str = "r1-measure",
-    entry_baseline_db: np.ndarray | None = None,
-    entry_excluded: Sequence[bool] | None = None,
     round_ordinal: int = 1,
     mode: str = MODE_TWO_WAY,
     candidates: Sequence[str] = (),
@@ -728,14 +687,12 @@ def bank_measure_round(
     """One STAGE-1 round directory, as the flow banks it.
 
     CHECK, the design-axis MEASURE take carrying both per-driver solos, the
-    lateral walk pose(s), and the entry baseline — plus the round receipt and
-    the flow state. No cloud group and therefore no graded ``spec``: this is the
-    only round shape that produces an entry baseline, and it is the shape the
-    forward model's own worked example points at.
+    lateral walk pose(s), and the timing take — plus the round receipt and
+    the flow state. No cloud group and therefore no graded ``spec``: it is the
+    shape the forward model's own worked example points at.
 
-    ``entry_baseline_db`` defaults to a flat -20 dB curve on
-    :data:`ENTRY_GRID_HZ`. ``mode`` picks the SHAPE: :data:`MODE_TWO_WAY` walks
-    both solos, :data:`MODE_WAY1` the one a subless passive main has.
+    ``mode`` picks the SHAPE: :data:`MODE_TWO_WAY` walks both solos,
+    :data:`MODE_WAY1` the one a subless passive main has.
 
     ``candidates`` makes the walk a LADDER: one lateral pose per named
     candidate at the SAME bearing, each a rung further tilted, which is the
@@ -744,14 +701,6 @@ def bank_measure_round(
     banks.
     """
     round_dir, store, session_id = _open_round(root, name, mode)
-    magnitude_db = (
-        np.full(ENTRY_GRID_HZ.shape, -20.0)
-        if entry_baseline_db is None else np.asarray(entry_baseline_db, dtype=float)
-    )
-    excluded = (
-        [False] * int(ENTRY_GRID_HZ.size)
-        if entry_excluded is None else [bool(flag) for flag in entry_excluded]
-    )
     stamp = {
         "run_id": session_id,
         "graph_fingerprint": "fp-entry-graph",
@@ -790,11 +739,7 @@ def bank_measure_round(
         entry_baseline_record(
             index=3 + len(poses), attempt=1,
             stimulus_id="prog-entry", reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-            freqs_hz=ENTRY_GRID_HZ, magnitude_db=magnitude_db, excluded=excluded,
-            # Capture SCALARS the record carries and every reader in these
-            # suites drops (read_entry_baseline_take narrows to the identity
-            # and the three arrays). Plausible values so the record is whole,
-            # never a number any pin reads.
+            # Plausible values so the record is whole, never a number any pin reads.
             validity_floor_hz=200.0, gate_window_ms=7.0, summed_ripple_db=1.0,
             glitch_detected=False, **stamp,
         ),
@@ -803,7 +748,7 @@ def bank_measure_round(
     _bank(store, *({**take, "measurement_purpose": measurement_programs.PURPOSE_SPEAKER} for take in takes),
           _receipt("r1"))
     (round_dir / "state.json").write_text(
-        json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
+        json.dumps(_state(round_ordinal=round_ordinal))
     )
     write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
@@ -852,12 +797,7 @@ def bank_verify_round(
         ),
         _receipt("r2"),
     )
-    (round_dir / "state.json").write_text(json.dumps(_state(
-        round_ordinal=round_ordinal,
-        verify_measured=_decimate_verify_measured(
-            (VERIFY_GRID_HZ, measured, np.zeros_like(measured))
-        ),
-    )))
+    (round_dir / "state.json").write_text(json.dumps(_state(round_ordinal=round_ordinal)))
     write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
@@ -931,13 +871,13 @@ def bank_seat_round(
                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 gating_applied=False,
                 **stamp,
-            ), **_seat_capture(store, program, stop.index, magnitude)}
+            ), **_seat_capture(store, program, stop.index, magnitude), "measurement_purpose": stop.prompt.purpose}
             for stop, magnitude in zip(stops, magnitudes)
         ),
         _receipt("r3"),
     )
     (round_dir / "state.json").write_text(
-        json.dumps(_state(round_ordinal=round_ordinal, verify_measured=None))
+        json.dumps(_state(round_ordinal=round_ordinal))
     )
     write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
@@ -989,8 +929,8 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
-        stop = planned.stop if planned else angle_capture.AngleStop(0, angle_capture.REGIME_SUMMED,
-                                                                    candidate_id="speaker-candidate", **(pose or {}))
+        stop = planned.stop if planned else angle_capture.AngleStop(
+            0, angle_capture.REGIME_SUMMED, candidate_id="speaker-candidate", **{"purpose": "speaker", **(pose or {})})
         request = request or angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
         spec = planned.spec if planned else MeasureSpec(kind="candidate", graph_scope="candidate",
                                                         candidate_id=stop.candidate_id, program_phase=program.phase)
@@ -1052,50 +992,3 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
                           for run in runs for _, record_id in run.pending_records)
             return takes if ladder is not None else takes[0]
         return asyncio.run(bank())
-
-
-def _decimate_verify_measured(tracking_curve: Any) -> dict[str, Any] | None:
-    """Persist-time reduction of the VERIFY capture's graded curve pair — the
-    ``(freqs_hz, measured_db, predicted_db)`` the delta probe graded (#2522).
-
-    Averaged in dB, which here is what makes the record RE-GRADABLE: block
-    averaging in dB is linear, so the difference of the two decimated curves is
-    exactly the decimated difference, and ``measured − predicted`` is what
-    :func:`~jasper.active_speaker.delta_probe.classify_delta_probe` grades. A
-    power mean would bias each side differently.
-
-    ``None`` for an absent curve, one that is not a triple, an empty grid, or
-    arrays whose lengths disagree — all of which mean "not re-gradable offline".
-    """
-    if tracking_curve is None:
-        return None
-    import numpy as np
-
-    try:
-        freqs, measured, predicted = tracking_curve
-    except (TypeError, ValueError):
-        return None
-    grid = np.asarray(freqs, dtype=float)
-    measured_db = np.asarray(measured, dtype=float)
-    predicted_db = np.asarray(predicted, dtype=float)
-    n = int(grid.size)
-    if n == 0 or int(measured_db.size) != n or int(predicted_db.size) != n:
-        return None
-    if n > MAX_PERSISTED_SUM_POINTS:
-        block = -(-n // MAX_PERSISTED_SUM_POINTS)  # ceil division
-        blocks = n // block
-        kept = blocks * block
-
-        def _blocks(values):
-            return values[:kept].reshape(blocks, block).mean(axis=1)
-
-        grid, measured_db, predicted_db = (
-            _blocks(grid),
-            _blocks(measured_db),
-            _blocks(predicted_db),
-        )
-    return {
-        "freqs_hz": [float(f) for f in grid],
-        "measured_db": [float(v) for v in measured_db],
-        "predicted_db": [float(v) for v in predicted_db],
-    }

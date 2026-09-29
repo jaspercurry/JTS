@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from jasper import output_topology_store as output_topology_mod
+from jasper.audio_routes import output_topology_store as output_topology_mod
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.program_failure import classify_program_failure
 from jasper.web import correction_crossover_v2_evidence as v2evidence

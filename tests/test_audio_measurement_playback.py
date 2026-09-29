@@ -672,7 +672,7 @@ def test_shared_playback_holds_no_powerful_host_reference() -> None:
     # thing that drags the DSP controller into a measurement process.
     probe = (
         "import sys, jasper.audio_measurement.admission.playback;"
-        "print('jasper.camilla' in sys.modules)"
+        "print('jasper.audio_control.camilla' in sys.modules)"
     )
     out = subprocess.check_output(
         [sys.executable, "-c", probe], text=True, stderr=subprocess.STDOUT

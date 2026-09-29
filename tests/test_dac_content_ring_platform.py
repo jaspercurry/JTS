@@ -42,8 +42,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_conf
-from jasper.fanin_coupling import RING_SLOT_FRAMES
+from jasper.dsp_control import ring_conf
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from jasper.multiroom.dac_content_ring import (
     DAC_CONTENT_RING_CHANNELS,
     DAC_CONTENT_RING_CONF_D,
@@ -248,7 +248,7 @@ def _confd_field(key: str) -> str:
 
     Deliberately reads the SHIPPED file with the ring platform's own block
     parser rather than a private regex, so "how a jts_ring block is read" keeps
-    one owner (:mod:`jasper.ring_conf`, which the conf.d renderer and every
+    one owner (:mod:`jasper.dsp_control.ring_conf`, which the conf.d renderer and every
     doctor check already share).
     """
 
@@ -305,7 +305,7 @@ def test_the_dac_content_ring_slot_is_the_boxs_ring_slot():
     outputd consumes exactly one slot per DAC period, so a slot that is not the
     reader's period leaves it holding a partial slot every period. Every DAC
     profile that declares a latency floor runs outputd at
-    :data:`~jasper.fanin_coupling.RING_SLOT_FRAMES`, so this ring takes the same
+    :data:`~jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES`, so this ring takes the same
     slot every other ring on the box uses rather than a number of its own — a
     profile that runs any other period cannot arm the lane, which is what
     outputd's own config guard says.
@@ -362,7 +362,7 @@ def test_the_reader_side_period_is_read_from_the_shared_crate_not_respelled():
     writer half — so the slot is declared there once and read here, and there is
     no second Rust literal for a slot change to miss. What the shared crate
     declares is pinned against
-    :data:`jasper.fanin_coupling.RING_SLOT_FRAMES` (and against the C ioplug's
+    :data:`jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES` (and against the C ioplug's
     own `#define`, which cannot import a Rust const) by
     ``tests/test_ring_emitter_ioplug_negotiation.py``.
     """
@@ -470,7 +470,7 @@ def test_the_installer_ships_the_dac_content_confd():
     can read is a name the non-root renderer users cannot resolve. Asserting the
     install LINE rather than a doctor presence check is the sibling precedent —
     ``62-jts-ring-grouping.conf`` is covered exactly this way, and
-    :func:`jasper.ring_assets.ring_asset_presence`
+    :func:`jasper.audio_control.ring_assets.ring_asset_presence`
     deliberately stays scoped to the coupling's own conf.d because it is the
     shm_ring ACTIVATION gate: a missing conf.d here must not refuse the fan-in
     coupling's arm.

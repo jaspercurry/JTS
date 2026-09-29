@@ -40,7 +40,7 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
     check_row,
     summarize,
 )
-from ...install_profile import is_streambox_install_profile, read_install_profile
+from jasper.playback_state.install_profile import is_streambox_install_profile, read_install_profile
 from ...secret_redaction import redact_secrets
 from ...service_units import unit_not_running
 

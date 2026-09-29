@@ -54,7 +54,6 @@ _OPTIONAL = (
     ("cabinet back to wall", "cabinet_back_wall_m"),
     ("cabinet depth", "cabinet_depth_m"),
     ("side wall", "side_wall_m"),
-    ("legacy front baffle to wall", "front_wall_m"),
 )
 
 
@@ -71,8 +70,6 @@ def _print_optional(
     rows = []
     for label, field in _OPTIONAL:
         metres = getattr(geometry, field)
-        if field == "front_wall_m" and metres is None:
-            continue
         value = units(metres) if metres is not None else absent
         if value is not None:
             rows.append((f"{label}:", value))

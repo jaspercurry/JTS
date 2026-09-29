@@ -25,17 +25,16 @@ from typing import Any
 
 from jasper.chip_aec import health as chip_aec_health
 from jasper.chip_aec import shipped as shipped_alignment
-from jasper import output_hardware
+from jasper.audio_routes import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
 from jasper.config import env_bool
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_FILE_ENV,
-    DEFAULT_AEC_MODE_PATH,
     PROFILE_CUSTOM,
     normalize_audio_input_profile,
 )
-from jasper.env_load import parse_env_file
+from jasper.env_load import parse_env_file, DEFAULT_AEC_MODE_PATH
 from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_ENV
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output

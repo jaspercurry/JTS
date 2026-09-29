@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2.session_graph import (
     temporary_graph_anchor,
 )
 from jasper.active_speaker.crossover_v2.tuning_scope import COMPARABILITY_BOUNDARY
-from jasper.camilla import CamillaUnavailable
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.sound.profile import build_sound_filters
 from tests._log_events import event_fields, event_records, parse_event
 from tests.active_speaker_fixtures import standard_design_draft
@@ -450,7 +450,7 @@ async def test_scoped_startup_recovery_matches_real_graph_and_retained_anchor(
 ):
     from jasper.active_speaker.measurement_emit import compile_tuning_graph
     from jasper.web import correction_runtime, correction_setup
-    from jasper import dsp_apply
+    from jasper.dsp_control import dsp_apply
     from tests.test_crossover_v2_tuning_scope import _trial_candidate
 
     branches = tuning_profile.role_channels if scope == "candidate_branches" else None

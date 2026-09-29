@@ -22,17 +22,22 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_measurement_band_hz,
     resolve_driver_protection_slope_db_per_octave,
 )
-from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, _branch_context, boost_headroom_by_role
+from jasper.active_speaker.branch_chain import HEADROOM_MARGIN_DB, branch_chain_peak_db
+from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_BINDING, PROGRAM_HEADROOM_EXHAUSTED
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, program_charge_db
+from jasper.active_speaker.graph_types import PEAK_EPS_DB
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
-from jasper.active_speaker.measured_crossover_candidate import room_peqs_from_correction
+from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER, programs_for_topology
-from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError, ActiveSpeakerPreset, SIDES_BY_LAYOUT, SPL_RAISE_MARGIN_DB, required_driver_roles,
+)
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.json_fields import as_mapping, finite_float
-from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
+from jasper.audio_routes.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
 from jasper.speaker_layout import WAY_COUNT_BY_MAIN_MODE
 
 from . import alignment_prescription as alignment
@@ -45,7 +50,11 @@ from .feature_classification import UNCERTAINTY_RANDOM
 from .corner_admissibility import fc_rejection_scenarios
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
+#: A round that banked no candidate has no base its packet may charge (ADR-0371).
+BASE_NOT_BANKED = "base_not_banked"
 SECTIONS = tuple(row.purpose for row in PROGRAM_DOCUMENT_ORDER)
+#: The rear section's name and candidate field; unlike the other layers, no module owns a constant for it.
+_REAR_SECTION = "rear_calibration"
 
 
 def contract_json(value: Mapping[str, Any]) -> str:
@@ -136,6 +145,20 @@ def contract_programs(sources: Mapping[str, Any]) -> tuple[str, ...]:
     return programs_for_topology(OutputTopology("", "", unknown_output_hardware(), groups))
 
 
+def _base_charge(candidate: Mapping[str, Any]) -> tuple[float | None, str | None]:
+    """The program charge of the candidate the round banked, or the code that says why there
+    is none; a banked candidate that does not reopen refuses the contract by its own code.
+    Read from the round alone, so a packet is built from banked inputs (ADR-0371).
+    """
+    if not candidate:
+        return None, BASE_NOT_BANKED
+    base = MeasuredCrossoverCandidate.from_mapping(candidate)
+    try:
+        return program_charge_db(base), None
+    except (MeasuredCrossoverCandidateError, ActiveSpeakerConfigError) as exc:
+        return None, getattr(exc, "code", COMPOSITION_INVALID)
+
+
 def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
              preset: ActiveSpeakerPreset | None, candidate: Mapping[str, Any],
              manifest: Mapping[str, Any]) -> dict[str, Any]:
@@ -157,16 +180,18 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
             spl = finite_float(level.get("loudest_half_second_db_spl"))
             if spl is not None:
                 spl_margins.append(max(0.0, preset.safety.max_commissioning_level_db_spl - spl - SPL_RAISE_MARGIN_DB))
-    context = _branch_context(preset, {
-        role: {"gain_db": trim} for role, trim in as_mapping(candidate.get("role_attenuations_db")).items()
-    }) if preset is not None else {role: ((), 0.0) for role in passbands}
-    headroom = boost_headroom_by_role(
-        branch_context=context,
-        linearization=linearization_filters_by_role(as_mapping(candidate.get("linearization"))),
-        room_peqs=room_peqs_from_correction(as_mapping(candidate.get("room_correction")), preset) if preset else (),
-        session_volume_db=max(levels) if levels and len(levels) == len(takes) else None,
-        spl_headroom_db=min(spl_margins) if spl_margins else None,
-    )
+    spent, reason = _base_charge(candidate)
+    linearization = linearization_filters_by_role(as_mapping(candidate.get("linearization")))
+    headroom = {role: {
+        "composed_boost_db": max(0.0, branch_chain_peak_db(linearization.get(role, ()))),
+        "program_headroom_spent_db": spent,
+        "program_headroom_remaining_db": None if spent is None else max(0.0, MAX_PROGRAM_HEADROOM_DB - spent),
+        "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
+        "session_volume_db": max(levels) if levels and len(levels) == len(takes) else None,
+        "spl_headroom_db": min(spl_margins) if spl_margins else None,
+        "binding": PROGRAM_HEADROOM_BINDING if spent is not None and spent >= MAX_PROGRAM_HEADROOM_DB else None,
+        "reason": reason,
+    } for role in (required_driver_roles(preset.way_count) if preset else sorted(passbands))}
     band = as_mapping(as_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
     fc = topology.candidate_topology(SimpleNamespace(source_preset=preset))
     corner = fc["fc_hz"] if fc else None
@@ -232,7 +257,8 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
                 "q_range_cut": [driver.EVALUABLE_Q_MIN, driver.EVALUABLE_Q_MAX],
                 "q_max_boost": driver.DRIVER_MAX_BOOST_Q,
                 "boost_headroom": headroom,
-                "boost_headroom_rule": f"Program headroom spent must not exceed {MAX_PROGRAM_HEADROOM_DB:g} dB",
+                "boost_headroom_rule": (f"Program headroom spent must not exceed {MAX_PROGRAM_HEADROOM_DB:g} dB; "
+                                        f"composition refuses {PROGRAM_HEADROOM_EXHAUSTED} past it"),
                 "shelf_rule": driver_format["bounds"]["where_a_shelf_may_sit"],
                 "shelf_q": driver.SHELF_Q,
             },
@@ -374,13 +400,23 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),
         "shared_headroom": {
-            "adr": "ADR-0257",
-            "layers": ["driver_linearization", "room", "bass_extension"],
+            "adrs": ["ADR-0385", "ADR-0359", "ADR-0121"],
+            "charge_function": "jasper.active_speaker.program_headroom.charge_db",
+            "charged_layers": [driver.LINEARIZATION_CANDIDATE_FIELD, blend.BLEND_CANDIDATE_FIELD,
+                               room.ROOM_CANDIDATE_FIELD, _REAR_SECTION],
+            "uncharged_layers": ["bass_extension", "preference_filters"],
+            "margin_db": HEADROOM_MARGIN_DB,
+            "max_charge_db": MAX_PROGRAM_HEADROOM_DB,
             "cost": "maximum_output_level_db",
-            "detail": ("Room, driver and bass boosts share one headroom budget. Room and driver boosts cost "
-                       "maximum level; the bass boost plays at every volume and costs maximum bass level near "
-                       "the clip point, where its compressor gives way (ADR-0359)."),
             "bass_reserve_function": "jasper.bass_extension.dynamic.dynamic_bass_gain_reserve_db",
+            "detail": ("One program charge covers the charged layers: the emitted graph's program peak, where every "
+                       "series stage and mixer sum ahead of an output nets (crossovers, high-passes and trims too), "
+                       f"plus one {HEADROOM_MARGIN_DB:g} dB margin when that peak is over {PEAK_EPS_DB:g} dB, plus "
+                       f"the output trim. Composition refuses {PROGRAM_HEADROOM_EXHAUSTED} past "
+                       f"{MAX_PROGRAM_HEADROOM_DB:g} dB. The charge costs maximum output level. The bass boost and "
+                       "the preference filters are not charged: the bass boost plays at every volume, reserves its "
+                       "own lift (bass_reserve_function) and costs maximum bass level near the clip point, where "
+                       "its compressor gives way."),
         },
     }
 
@@ -483,7 +519,7 @@ def _rear_calibration_schema() -> dict[str, Any]:
 def _rear() -> dict[str, Any]:
     """Electrical branches only; see ADR-0318, ADR-0322, ADR-0324 and ADR-0327."""
     return {
-        "document_section": "rear_calibration",
+        "document_section": _REAR_SECTION,
         "case": "electrical_dsp",
         "mode": "branches",
         "schema": _rear_calibration_schema(),

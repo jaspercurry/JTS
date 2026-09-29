@@ -236,7 +236,7 @@ def test_quantized_delay_ms_is_the_single_fmt_quantizer():
     # One fmt pass over the raw µs value — no intermediate rounding. The
     # regression value is the S1 case where round(µs/1000, 6)-then-fmt
     # disagreed with a single fmt.
-    from jasper.camilla_emit import fmt
+    from jasper.audio_routes.camilla_emit import fmt
 
     delay_us = 11382.15006948647
     quantized = quantized_delay_ms(delay_us)

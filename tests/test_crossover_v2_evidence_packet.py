@@ -35,10 +35,6 @@ from jasper.active_speaker.crossover_v2.feature_classification import (
     UNCERTAINTY_SYSTEMATIC,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-from jasper.active_speaker.crossover_v2.round_evidence import (
-    ITERATION_PLATEAU_DB,
-    MEASURED_BENEFIT_MARGIN_DB,
-)
 from jasper.audio_measurement.mic_identity import MIC_TIERS
 from jasper.active_speaker.repeat_floor import (
     REPEAT_FLOOR_KIND,
@@ -53,8 +49,8 @@ def test_packet_json_bytes(tmp_path):
     session, _ = _bundle(tmp_path)
     packet = build_crossover_evidence_packet(session)
     assert sha256(json.dumps(packet, allow_nan=False).encode()).hexdigest() == (
-        "beaa590551555e31dd20d64410157d7053e5250ef191baaa0bf63e13598371ab")
-    assert packet["packet_fingerprint"] == "98a08a89d73ac9060bbcf1042b386396a6aa90bbda907a4ef6afe3ddfced3e87"
+        "4d17d9d0888dcd3ccddaf955a21ca8adc4188c8fc95ac02370444e5882926c77")
+    assert packet["packet_fingerprint"] == "91ddf2b40b3eaec7dd67058d4ea6cd5bb4f1aa5e979624deda4326c258d688a5"
 
 
 def test_every_accuracy_budget_component_labels_its_own_kind(tmp_path):
@@ -109,17 +105,11 @@ def test_repeat_floor_reads_declared_absent_never_defaulted(tmp_path):
     assert entry["available"] is False
     assert entry["absence"] == REPEAT_FLOOR_UNMEASURED
     assert "E2" in entry["reason"]
-    # Absent means the consumers fall back to the two constants that
-    # self-describe as assumptions, and the packet says which source it used.
-    assert entry["thresholds"]["source"] == "codified_assumption"
-    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
-    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
 
 
-def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_path):
+def test_repeat_floor_banked_but_unusable_is_its_own_absence(tmp_path):
     """A record that exists but carries no finite aggregate p95 is a floor that
-    cannot be read, not a floor nobody measured — unavailable either way, and
-    the thresholds fall back rather than deriving from a non-number."""
+    cannot be read, not a floor nobody measured."""
     session, _ = _bundle(tmp_path)
     floor_path = tmp_path / "repeat-floor.json"
     floor_path.write_text(json.dumps(
@@ -136,9 +126,6 @@ def test_repeat_floor_banked_but_unreadable_falls_back_to_the_assumptions(tmp_pa
     assert entry["kind"] == UNCERTAINTY_RANDOM
     assert entry["available"] is False
     assert entry["absence"] == REPEAT_FLOOR_UNUSABLE
-    assert entry["thresholds"]["source"] == "codified_assumption"
-    assert entry["thresholds"]["margin_db"] == MEASURED_BENEFIT_MARGIN_DB
-    assert entry["thresholds"]["plateau_db"] == ITERATION_PLATEAU_DB
 
 
 @pytest.mark.parametrize("on_disk", ["{not json", "{}"], ids=["not-json", "not-a-floor"])
@@ -154,7 +141,6 @@ def test_repeat_floor_file_that_is_not_a_record_is_unreadable_not_unmeasured(
     entry = packet["accuracy_budget"]["components"]["in_capture_repeat_floor"]
     assert entry["available"] is False
     assert entry["absence"] == REPEAT_FLOOR_UNREADABLE
-    assert entry["thresholds"]["source"] == "codified_assumption"
 
 
 def test_repeat_floor_reads_the_banked_record_when_present(tmp_path):
@@ -542,6 +528,18 @@ def test_the_session_block_reads_the_declaration_the_caller_resolved(
     assert block["status"] == "not_evaluated"
     assert block["field"] == "declared_geometry"
     assert (block["reason"] == "source_absent") is (stored is None)
+
+
+def test_a_declaration_the_packet_cannot_read_names_its_refused_field(tmp_path):
+    """A banked copy that carries ``front_wall_m`` stays unreadable, by name (ADR-0388)."""
+    session, _ = _bundle(tmp_path)
+    declared = tmp_path / "declared-geometry.json"
+    declared.write_text(json.dumps({"speaker_height_m": 0.9, "mic_height_m": 1.0, "distance_m": 1.05,
+                                    "front_wall_m": 0.85}), encoding="utf-8")
+
+    block = build_crossover_evidence_packet(session, declared_geometry_path=declared)["session"]["declared_geometry"]
+
+    assert (block["status"], block["refused_field"]) == ("not_evaluated", "front_wall_m")
 
 
 def test_an_unbanked_declaration_never_reads_the_machine_building_the_packet(

@@ -30,7 +30,7 @@ and the two records differ because their staleness differs:
   revoked verdict) and grants one the registry has since demoted. Agreeing
   with what the reconciler actually armed is the point.
 * The alignment record (``JASPER_AEC_CHIP_AEC_ALIGNMENT_*``, stamped with the
-  selection it was written under; read by ``jasper.audio_profile_state``)
+  selection it was written under; read by ``jasper.runtime_config.audio_profile_state``)
   serves ONLY the selection its stamp names. The reconciler writes it on
   managed-XVF paths alone and never clears it on a custom profile, so a
   record read under any other selection is a leftover, not a verdict.
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping
 
 from ..audio_hardware import dac as dac_profiles
-from ..output_hardware import published_dac_id
+from jasper.audio_routes.output_hardware import published_dac_id
 
 
 DacChipAecStatus = Literal["approved", "needs_calibration"]

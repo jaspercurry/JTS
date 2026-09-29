@@ -1599,7 +1599,6 @@ def test_the_default_vocabulary_is_cut_only():
     explicit = fit_driver_linearization(resp, envelope, vocabulary=CUT_ONLY_VOCABULARY)
     assert default.to_dict() == explicit.to_dict()
     assert all(f.gain <= 0.0 for f in default.filters)
-    assert default.headroom_cost_db == 0.0
 
 
 def test_a_cut_only_vocabulary_still_raises_on_a_boost():
@@ -1669,7 +1668,6 @@ def test_boost_cannot_fill_an_envelope_excluded_band():
         resp, blocked, vocabulary=FitVocabulary(allow_boost=True),
     )
     assert all(f.gain <= 0.0 for f in fit.filters)
-    assert fit.headroom_cost_db == 0.0
 
 
 def test_skirt_spill_into_an_excluded_band_is_kept_and_disclosed():
@@ -1759,7 +1757,6 @@ def test_when_every_boost_is_aimed_the_lift_is_empty_and_named():
         ),
     )
     assert all(f.gain <= 0.0 for f in refused.filters)
-    assert refused.headroom_cost_db == 0.0
     assert refused.lift_suppressed_reason == "boost_excluded_band"
     assert len(refused.lift_boost_excluded_drops) == 1
     # Nothing survives, so nothing is left inside the band either.
@@ -2143,7 +2140,6 @@ def test_the_bound_is_monotone_on_the_shapes_that_break_a_request_mask(
     ), label
 
     assert float(np.max(bounded_db - base_db)) <= 1e-9, label
-    assert bounded.headroom_cost_db <= base.headroom_cost_db + 1e-9
     # DROP-ONLY: the surviving boosts are a SUB-MULTISET of the unbounded
     # fit's, filter for filter. A boost that is present but different —
     # moved, re-Q'd, or enlarged — is the pathology, and it is what a request
@@ -2384,14 +2380,11 @@ def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
     speaker 8.3 dB below its household's listening level at full volume
     (#1808).
 
-    The fit core no longer computes the field at all — a correction's cost
-    depends on the crossover and trim it is emitted into, which the
-    topology-agnostic core does not know — so this asserts the contract at the
-    seam that DOES know: ``branch_chain``, which the composer stamps with and
-    the emitter charges with.
+    The fit core computes no charge — a correction's cost depends on the
+    crossover and trim it is emitted into, which the topology-agnostic core
+    does not know — so this asserts the contract at the seam that DOES know:
+    ``branch_chain``, which the fit's own per-branch budget reads.
     """
-    from jasper.active_speaker.camilla_yaml import linearization_headroom_db
-
     resp, envelope = _two_dip_response()
     fit = fit_driver_linearization(
         resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
@@ -2411,20 +2404,6 @@ def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
     charge_db = branch_headroom_db(emitted)
     assert charge_db == pytest.approx(cascade_peak_db + HEADROOM_MARGIN_DB, abs=0.05)
 
-    # It is literally the emitter's own charge for this fit — one function,
-    # two readers — and it survives the JSON round-trip a candidate takes.
-    # (A branch with no crossover and no trim: this fit was not composed into
-    # one, so the honest context for it is empty.)
-    assert charge_db == pytest.approx(
-        linearization_headroom_db({fit.role: emitted}, branch_context={})
-    )
-    assert fit.to_dict()["headroom_cost_db"] == fit.headroom_cost_db
-
-    # The fit core leaves the field alone: no branch, no charge. The composer
-    # stamps it (crossover_v2_flow._fit_linearization), which is what makes
-    # the crossover and trim terms below expressible at all.
-    assert fit.headroom_cost_db == 0.0
-
     # And the crossover the branch runs through is part of the charge: put
     # this fit behind a low-pass an octave under its boosts and the same
     # filters cost the speaker nothing at all.
@@ -2437,11 +2416,6 @@ def test_headroom_cost_is_the_realized_peak_the_emitter_charges_not_the_sum():
             ),
         ),
     ) == 0.0
-
-
-def test_headroom_cost_is_zero_for_every_cut_only_fit():
-    resp, envelope = _dip_response()
-    assert fit_driver_linearization(resp, envelope).headroom_cost_db == 0.0
 
 
 # --------------------------------------------------------------------------- #

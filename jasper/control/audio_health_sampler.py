@@ -21,14 +21,14 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
-from ..output_hardware import load_state as load_output_hardware_state
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.audio_routes.output_hardware import load_state as load_output_hardware_state
 from ..platform import wire
 from ..platform.status_socket import (
     OUTPUTD_STATUS_SOCKET, STATUS_MAX_BYTES, read_status_socket_or_none,
 )
 from ..platform.uds import mux_socket_command
-from ..source_intent import read_source_intents
+from jasper.audio_routes.source_intent import read_source_intents
 from .airplay_health import AirPlayHealthSampler, SAMPLE_INTERVAL_SEC
 from ._health_fields import MONITOR_ERRORS, mapping
 from .audio_attribution import input_attribution
@@ -53,7 +53,7 @@ from .audio_signal_path import (
 )
 from .audio_state_issues import state_issues
 from .audio_stream_card import fresh_dac_delay_ms
-from ..output_topology_store import load_output_topology_snapshot
+from jasper.audio_routes.output_topology_store import load_output_topology_snapshot
 
 logger = logging.getLogger(__name__)
 

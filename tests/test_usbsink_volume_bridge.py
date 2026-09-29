@@ -687,15 +687,6 @@ async def test_observe_skips_when_mixer_reports_no_values(monkeypatch):
     assert posted == []
 
 
-# ----------------------------------------------------------------------
-# Declined observations. jasper-control declines while USB is not the active
-# source (volume_coordinator's source gate) and while a measurement holds the
-# fader. A host slider MOVE is re-presented on a capped backoff; the startup
-# snapshot is not (measured on an idle jts3: 708 declined POSTs/hour that had
-# nothing to publish).
-# ----------------------------------------------------------------------
-
-
 def test_ceiling_stays_within_handoff_latency_budget():
     # Bounds the USB source-handoff volume-mismatch window (a declined move
     # pinned at the ceiling, then an unattributed jump once the host starts
@@ -750,7 +741,6 @@ async def test_declined_host_move_retry_backoff_is_bounded(monkeypatch):
     HTTP + mux IPC rate while it waits."""
     bridge = _ready_bridge(_FakeMixer())
     bridge._last_published_pct = 25  # a prior accepted value
-    bridge._initial_observed_pct = 25  # so 64% is a MOVE, not the snapshot
 
     attempts = 0
 
@@ -801,7 +791,6 @@ async def test_declined_host_move_retry_abandons_after_the_cap(monkeypatch):
 
     bridge = _ready_bridge(_FakeMixer())
     bridge._last_published_pct = 25  # a prior accepted value
-    bridge._initial_observed_pct = 25  # so 64% is a MOVE, not the snapshot
     attempts = 0
 
     async def _decline(pct: int, *, initial: bool = False) -> bool:
@@ -833,7 +822,6 @@ async def test_new_move_replaces_the_value_being_retried(monkeypatch):
     it is attempted immediately and the old retry is dropped."""
     bridge = _ready_bridge(_FakeMixer())
     bridge._last_published_pct = 25
-    bridge._initial_observed_pct = 25
     posted: list[int] = []
 
     async def _decline(pct: int, *, initial: bool = False) -> bool:
@@ -970,25 +958,28 @@ async def test_post_requires_application_acknowledgement(payload, expected):
     assert await bridge._post(64) is expected
 
 
-async def test_unanswered_startup_snapshot_is_retried(monkeypatch):
-    """A DECLINED snapshot is dropped, but an UNANSWERED one is not: after a
-    reboot the bridge's first POST can time out while jasper-control is still
-    starting (observed on jts3), and the snapshot is then the only thing that
-    will sync the host slider until the user next touches it."""
+@pytest.mark.parametrize("accepted", [False, True])
+async def test_unanswered_startup_snapshot_is_retried(monkeypatch, accepted):
+    clock = FakeClock()
+    monkeypatch.setattr(time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    monkeypatch.setattr("jasper.usbsink.volume_bridge.POST_RETRY_MAX_SEC", 10)
     mixer = _FakeMixer(raw=41)
     bridge = _ready_bridge(mixer)
     bridge._mixer = mixer
-    attempts: list[bool] = []
+    attempts: list[tuple[int, bool]] = []
 
-    async def _no_answer(pct: int, *, initial: bool = False) -> bool | None:
-        attempts.append(initial)
-        return None
+    async def _answer(pct: int, *, initial: bool = False) -> bool | None:
+        attempts.append((pct, initial))
+        return accepted if len(attempts) >= 3 else None
 
-    monkeypatch.setattr(bridge, "_post", _no_answer)
+    monkeypatch.setattr(bridge, "_post", _answer)
     await bridge._observe()
-    assert attempts == [True]
+    assert attempts == [(67, True)]
     assert bridge._retry_task is not None
-    await bridge._cancel_retry_and_wait()
+    await bridge._retry_task
+    assert attempts == [(67, True)] * 3
+    assert bridge._last_published_pct == (67 if accepted else None)
 
 
 def test_raw_step_index_matches_pyalsaaudio_normalized_percent():

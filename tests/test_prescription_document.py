@@ -29,6 +29,7 @@ from jasper.active_speaker.measured_crossover_candidate import compile_candidate
 from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.active_speaker import candidate_parts
+from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
 )
@@ -137,6 +138,7 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     assert crossover_prescriber.main(args) == 0
     single = json.loads(capsys.readouterr().out)
     assert single["sections"] == ["room"]
+    assert single["parameters"] == {"window_ms": None, "band_hz": single["preview"]["summary"]["band_hz"]}
     assert single["preview"] == room_prescription.preview_room_prescription(
         {"rationale": prescription["rationale"], **prescription["sections"]["room"]},
         room_median=room_prescription.read_room_median(evidence.sources["room_median"]),
@@ -149,7 +151,8 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     assert answer["section"] == "room" and len(answer["variants"]) == 2
     assert answer["variants"][0]["preview"] == single["preview"]
     assert all("positions" not in row for row in answer["variants"])
-    assert json.loads((out_dir / "variant-01.preview.json").read_text()) == single
+    assert json.loads((out_dir / "variant-01.preview.json").read_text()) == {
+        key: value for key, value in single.items() if key not in ("view", "subject", "parameters")}
 
 
 @pytest.fixture
@@ -325,6 +328,39 @@ def test_a_one_way_speaker_with_no_declared_band_judges_its_full_range_role(bank
     assert child.analysis["evidence"]["prescriptions"]["driver"]["cuts_outside_passband"] == outside
 
 
+@pytest.mark.parametrize("rear,gain,pin,refused", [
+    (False, 30.0, None, False), (False, 45.0, None, True), (False, 45.0, -20.0, False),
+    (True, 36.0, None, False), (True, 40.0, None, True),
+])
+def test_composition_judges_the_charge_the_emitted_graph_applies(bank, evidence, rear, gain, pin, refused):
+    """#5909: the door judges no headroom. Composition refuses what the emitter would, with the
+    charge it refused as data, and the charge it answers with is the emitted graph's own
+    attenuation, rear stage included."""
+    base = publish_authored_candidate(replace(_candidate(
+        preset=_rear_pair("mono")[0] if rear else None, rear_calibration=_rear_document() if rear else None,
+    ), analysis={"measurement_status": "unmeasured"}), root=bank)
+    boost = {"role": "woofer", "biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": gain}
+    section = driver_document([boost], dict(evidence.packet), **({"pinned_trim_db": {"woofer": pin}} if pin else {}))
+    raw = document(base.fingerprint, {"driver": section})
+    if refused:
+        with pytest.raises(PrescriptionDocumentRefused) as caught:
+            judge_prescription_document(raw, base=base, evidence=evidence)
+        assert (caught.value.code, caught.value.section) == ("program_headroom_exhausted", None)
+        assert caught.value.to_dict()["next_action"]["id"] == "reduce_boosts"
+        chain = [{key: value for key, value in boost.items() if key != "role"}]
+        with pytest.raises(ProgramHeadroomExhausted) as emitted:
+            compile_candidate_config(replace(base.candidate, linearization={"woofer": {"filters": chain}}),
+                                     playback_device="null")
+        assert caught.value.failure_detail()["evidence"] == {
+            "program_headroom_spent_db": pytest.approx(emitted.value.charge_db), "max_program_headroom_db": 40.0,
+            "binding": "program_headroom"}
+        return
+    child = judge_prescription_document(raw, base=base, evidence=evidence)
+    graph = yaml.safe_load(compile_candidate_config(child, playback_device="null"))
+    charge = -graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    assert candidate_parts.program_charge_db(child) == pytest.approx(charge)
+
+
 @pytest.fixture
 def bass_round(round_bank, bass_packet):
     directory, _ = round_bank
@@ -335,7 +371,6 @@ def bass_round(round_bank, bass_packet):
 
 @pytest.mark.parametrize("section, payload, code", [
     ("room", room_document(filters=[{"freq": NULL_HZ, "q": 1, "gain": 1}]), "boost_not_admitted"),
-    ("driver", driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 50}], {"packet_fingerprint": "p" * 64}), "driver_composed_boost_exceeded"),
     ("topology", {}, "composition_topology_required"),
     ("blend", {"kind": "unknown"}, "prescription_kind_unknown"),
 ])
@@ -440,6 +475,7 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
     })
     assert answer["candidate_fingerprint"] == direct.fingerprint
     assert answer["resolution"]["bass"] == "document"
+    assert answer["program_charge_db"] == candidate_parts.program_charge_db(direct)
     if verb == "judge":
         assert {p for p in tmp_path.rglob("*")} == before
         assert answer["sections"]["bass"] == receipt
@@ -564,7 +600,7 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     topology, applied = saved_tune
     original = deepcopy(applied)
-    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.audio_routes.output_topology_store.load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", lambda: applied)
     bass = tmp_path / "bass.json"
     base = "saved" if base_kind == "saved" else publish_authored_candidate(
@@ -642,7 +678,6 @@ def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, del
     assert child.alignment == MeasuredCrossoverAlignment(abs(delay), "woofer" if delay < 0 else "tweeter", "keep")
     assert candidate_topology(child)["fc_hz"] == 2000
     assert child.room_correction and child.bass_extension
-    assert child.linearization["woofer"]["headroom_cost_db"] > 0
     emitted = compile_candidate_config(child, playback_device="null")
     prove_candidate_config(child, emitted)
     assert yaml.safe_load(emitted)["devices"]["volume_limit"] == 0.0
@@ -732,7 +767,7 @@ def test_driver_numeric_refusals_keep_the_judges_code(base, evidence, value):
 @pytest.mark.parametrize("base_choice", ["saved", "banked"])
 def test_saved_base_preview_migrates_once_and_invalid_composition_banks_no_child(bank, saved_tune, tmp_path, monkeypatch, capsys, base_choice):
     topology, applied = saved_tune
-    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.audio_routes.output_topology_store.load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state", lambda: applied)
     base_name = "saved" if base_choice == "saved" else publish_authored_candidate(candidate_from_applied_profile(topology, applied), root=bank).fingerprint
     path = tmp_path / "prescription.json"
@@ -750,7 +785,7 @@ def test_a_saved_base_judge_reads_the_applied_profile_state_once(saved_tune, mon
     serves both, so a judge cannot see two different files."""
     topology, applied = saved_tune
     reads = []
-    monkeypatch.setattr("jasper.output_topology_store.load_output_topology_strict", lambda: topology)
+    monkeypatch.setattr("jasper.audio_routes.output_topology_store.load_output_topology_strict", lambda: topology)
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
                         lambda: (reads.append(1), applied)[1])
 

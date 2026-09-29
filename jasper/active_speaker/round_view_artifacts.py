@@ -64,11 +64,10 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "dsp-replay": ViewArtifact("dsp_replay.json", ("<graph.yml>", "<stimulus.wav>", "--main-db", "<db>", "--out", "<render-dir>"), schema=DSP_REPLAY_SCHEMA),
     "dsp-levels": ViewArtifact("dsp_levels.json", ("<dsp_replay.json>", "--raw", "<output.f64le>", "--window-s", "<start>", "<stop>"), schema=DSP_LEVELS_SCHEMA),
     "bass-fit-table": ViewArtifact("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"), purposes=(PURPOSE_BASS,), packet="bass", schema="jts_bass_run_table/2"),
-    "entry": ViewArtifact("entry_state_grade.json", purposes=(PURPOSE_SPEAKER,), schema="jts_entry_state_grade/2"),
     "repeat": ViewArtifact("repeatability.json", TAKES_BEFORE_ANOTHER, schema="jts_repeatability/1"),
     "candidates": ViewArtifact("candidates.json", schema="jts_candidates/2"),
     "directivity": ViewArtifact("directivity.json", TAKES_SET, purposes=(PURPOSE_SPEAKER,), schema="jts_directivity/1"),
-    "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET, schema="jts_gate_sweep/1"),
+    "sweep --scope round": ViewArtifact("gate_sweep.json", TAKES_SET, schema="jts_gate_sweep/2"),
     "sweep --scope take": ViewArtifact("window_view.json", (*TAKES_SET, "--take", "<take-id>"), schema=FREQUENCY_VIEW_SCHEMA),
     "impulse": ViewArtifact("impulse.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_impulse/1", per_take=True),
     "group-delay": ViewArtifact("group_delay.json", (*TAKES_SET, "--take", "<take-id>"), schema="jts_group_delay/1",
@@ -93,7 +92,7 @@ ARTIFACT_BY_VIEW: dict[str, ViewArtifact] = {
     "room": ViewArtifact(ROOM_ARTIFACT, TAKES_SET, purposes=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,), builder="round_bookkeeping.room", packet="room", schema="jts_room/2"),
     # The packet owns these two names, so the rows take those constants rather
     # than a second spelling of them.
-    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/3"),
+    "distortion": ViewArtifact(HARMONICS_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_harmonic_distortion/4"),
     "classify-features": ViewArtifact(
         CLASSIFICATION_ARTIFACT, purposes=(PURPOSE_SPEAKER,), schema="jts_feature_classification/1",
     ),
@@ -113,13 +112,6 @@ PACKET_FAMILIES = tuple(dict.fromkeys(row.packet for row in map(ARTIFACT_BY_VIEW
 VIEW_PURPOSES = {
     **{name.split()[0]: spec.purposes for name, spec in ARTIFACT_BY_VIEW.items()},
     "speaker-fit": (PURPOSE_SPEAKER,),
-}
-
-#: The answers whose shape no row above names: they write no artifact, or
-#: one no inventory lists.
-ANSWER_SCHEMAS = {
-    "speaker-fit": "jts_speaker_fit/1",
-    "repeat --set": "jts_repeat/1",
 }
 
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
@@ -150,10 +142,10 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
 PROG = "jasper-round-views"
 
 
-def bookkeeping_views(purpose: str, *, has_room: bool = False,
-                      co_purposes: tuple[str, ...] = ()) -> tuple[tuple[str, bool, bool], ...]:
-    """View name, per-set scope, and whether it grades against the base."""
-    wanted = {purpose, *co_purposes} | ({PURPOSE_ROOM} if purpose == PURPOSE_SPEAKER and has_room else set())
+def bookkeeping_views(purposes: tuple[str, ...], *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
+    """View name, per-set scope, and whether it grades against the base, for a round of these purposes."""
+    purpose = purposes[0]
+    wanted = set(purposes) | ({PURPOSE_ROOM} if purpose == PURPOSE_SPEAKER and has_room else set())
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
     # A speaker round takes its frequency view from the packet writer, not here.
     return tuple((name, row.per_set, row.grades_against_base) for name, row in rows

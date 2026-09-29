@@ -7,7 +7,7 @@
 This module is deliberately IO-free. It describes known output hardware
 capabilities and quirks; it does not probe ALSA, read env files, render
 system config, or restart services. Runtime ownership stays with
-``jasper.output_topology``, ``jasper.output_hardware`` once landed,
+``jasper.audio_routes.output_topology``, ``jasper.audio_routes.output_hardware`` once landed,
 ``jasper-audio-hardware-reconcile``, and ``jasper-outputd``.
 """
 from __future__ import annotations
@@ -106,7 +106,7 @@ class LatencyFloor:
     captured as DATA on the profile so a fresh box reproduces it with no
     per-user config. CamillaDSP's own buffering is not here: it crosses the
     ring, whose geometry is a transport constant
-    (:data:`~jasper.fanin_coupling.RING_CAMILLA_GEOMETRY`), not the DAC's.
+    (:data:`~jasper.dsp_control.fanin_coupling.RING_CAMILLA_GEOMETRY`), not the DAC's.
     """
 
     outputd_period_frames: int
@@ -702,7 +702,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # wire (``jasper/cli/audio_config.py``), so the
     # ACTIVE block would keep the ioplug's default 2 channels no matter what the
     # topology resolved. An undeclared floor ALSO makes the planner
-    # ``jasper.audio_runtime_plan.outputd_latency_floor_actions`` emit ``unset``
+    # ``jasper.audio_control.audio_runtime_plan.outputd_latency_floor_actions`` emit ``unset``
     # for ``JASPER_OUTPUTD_PERIOD_FRAMES`` (its "no floor, or no recognized
     # profile, REMOVES stale generated values so the packaged defaults apply"
     # arm) — outputd then falls to ``DEFAULT_PERIOD_FRAMES`` (1024), a conf.d
@@ -720,7 +720,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     #
     # THIS CHANGES A LIVE ALOOP COMPOSITE TOO, AND THAT IS NOT COSMETIC. While
     # this profile was floor-LESS the planner
-    # (``jasper.audio_runtime_plan.outputd_latency_floor_actions``) emitted
+    # (``jasper.audio_control.audio_runtime_plan.outputd_latency_floor_actions``) emitted
     # ``unset`` for the period/buffer keys, so a composite ran the PACKAGED
     # defaults: period 1024 / dac_buffer 3072.
     # Declaring the floor moves it to 128 / 256 — on the aloop lane, before any

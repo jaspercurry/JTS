@@ -45,8 +45,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from jasper import wake_legs
-from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
+from jasper.playback_state import wake_legs
+from jasper.audio_routes.aec_sweep import AEC3_SWEEP_VARIANTS
 
 try:
     from _wake_audio_metrics import rms_amplitude

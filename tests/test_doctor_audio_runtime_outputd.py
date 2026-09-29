@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_runtime_plan
+from jasper.audio_control import audio_runtime_plan
 from jasper.audio_hardware.dac import DUAL_APPLE_USB_C_DAC_4CH_ID
 from jasper.cli.doctor import audio_runtime_fanin, audio_runtime_outputd
 from jasper.control import audio_signal_path
@@ -26,8 +26,8 @@ from .active_speaker_fixtures import (
     register_passive_only_dac,
 )
 from .test_doctor_audio_runtime_fanin import _patch_unreachable_status
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 def _patch_ring_coupled_box(
     monkeypatch,
@@ -51,7 +51,7 @@ def _patch_ring_coupled_box(
     Call this LAST, after ``_patch_status_reader``: that one points the
     endpoint evidence at the stereo ring, so an earlier call is silently undone.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
@@ -96,7 +96,7 @@ def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
     layer reported such a box on an env it is not running — which is what made
     the transport checks contradict the grouping doctor.
     """
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 
     base = tmp_path / "outputd.env"
     base.write_text(f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n", encoding="utf-8")
@@ -153,7 +153,7 @@ def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
         _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
             devices={
                 "playback_device": "outputd_active_content_playback",
@@ -406,7 +406,7 @@ def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
 
 
 def _buffer_health(data, *, period=128, content_hop=None):
-    from jasper.fanin_coupling import COUPLING_SHM_RING as TRANSPORT_SHM_RING
+    from jasper.dsp_control.fanin_coupling import COUPLING_SHM_RING as TRANSPORT_SHM_RING
 
     return audio_runtime_outputd._outputd_buffer_health(
         data,
@@ -447,15 +447,7 @@ def test_the_alsa_jitter_floor_applies_to_exactly_the_alsa_class(shape, expect_f
 
 
 def test_buffer_health_passes_when_the_attached_wire_matches():
-    """POSITIVE CONTROL. On the box's default (undeclared) wire the comparison
-    is silent, so the two failure pins below are proving a branch rather than a
-    broken happy path.
-
-    ``fmt="S32_LE"`` because the resolver's default went WIDE
-    (``jasper.fanin_coupling.resolve_ring_wire_format``): an undeclared box —
-    this test stubs neither the wire nor the env chain — now resolves S32_LE,
-    not the C ioplug's compiled-in S16_LE.
-    """
+    """An attached wide ring with matching geometry passes."""
     result = _buffer_health(_outputd_ring_status(fmt="S32_LE"))
     assert isinstance(result, str), result
     assert "shm_ring_wire=S32_LE/2ch" in result
@@ -511,7 +503,7 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
     doctor contradicting the reconciler that armed it.
     """
     import jasper.fanin.ring_readiness as rh
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     sentinel = object()
     monkeypatch.setattr(rh, "load_topology_for_wire", lambda: sentinel)
@@ -873,7 +865,7 @@ def _case_transport_evidence_unavailable(monkeypatch, tmp_path):
     _seed_units()
     _patch_status_reader(monkeypatch, _outputd_status_payload())
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
             devices=None,
             errors=("statefile unavailable",),
@@ -987,7 +979,7 @@ def _case_marker_armed_member_ok(monkeypatch, tmp_path):
             period_frames=1024,
         ),
     )
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
     monkeypatch.setattr(
         audio_runtime_plan,

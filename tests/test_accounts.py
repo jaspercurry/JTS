@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.accounts import (
+from jasper.service_state.accounts import (
     Account,
     Registry,
     SPOTIFY_CACHE_FILE_MODE,
@@ -32,7 +32,7 @@ def _tmp_registry(tmp_path: Path) -> str:
 
 
 def _install_fake_spotipy_cache_handler(monkeypatch):
-    from jasper import accounts as accounts_mod
+    from jasper.service_state import accounts as accounts_mod
 
     class FakeCacheFileHandler:
         def __init__(self, cache_path=None, *args, **kwargs):
@@ -149,7 +149,7 @@ def test_legacy_migration_wraps_existing_cache(tmp_path):
     reg_path = _tmp_registry(tmp_path)
     new_cache_dir = tempfile.mkdtemp()
     try:
-        from jasper import accounts as accounts_mod
+        from jasper.service_state import accounts as accounts_mod
         original_dir = accounts_mod.DEFAULT_CACHE_DIR
         accounts_mod.DEFAULT_CACHE_DIR = new_cache_dir
         try:

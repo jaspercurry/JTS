@@ -21,7 +21,6 @@ from __future__ import annotations
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.web import correction_crossover_v2_evidence as v2evidence
-from jasper.web import correction_crossover_v2_grade as v2grade
 from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
 
@@ -68,7 +67,6 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
     V2_FIRST_BEGIN_TIMEOUT_S,
-    build_v2_cloud_index_phase_map,
     build_inline_session_spec,
     LATERAL_MARK_PROMPT,
     v2_first_begin_timeout_s,
@@ -77,8 +75,8 @@ from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSe
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
 from jasper.active_speaker import baseline_profile, seat_level_reference
 
-import jasper.capture_protocol as capture_protocol
-from jasper.capture_protocol import MAX_TTL_S
+import jasper.playback_state.capture_protocol as capture_protocol
+from jasper.playback_state.capture_protocol import MAX_TTL_S
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_capture, correction_crossover_backend, correction_runtime, correction_setup
 from jasper.web import correction_crossover_v2_apply as v2apply
@@ -87,7 +85,7 @@ from jasper.web import correction_crossover_v2_status as v2status
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests._lock_holder import spawn_lock_holder
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_fields, event_records, leaked_lines
 from tests.conftest import seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -96,7 +94,7 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _roles,
 )
-from jasper.output_topology_store import save_output_topology, load_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology, load_output_topology
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
 
@@ -179,7 +177,7 @@ def _live_measurement_session(
         SessionVolumeOpenResult,
         SessionVolumePlan,
     )
-    from jasper.volume_owner import volume_owner
+    from jasper.audio_resources.volume_owner import volume_owner
 
     clock = [1000.0]
     plan = SessionVolumePlan(
@@ -573,7 +571,6 @@ def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch)
     next persist does not carry them. The applied candidate still survives a
     re-arm's new session id (#2079)."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-    from jasper.cli.doctor import correction
 
     passing_group = {
         "geometry": {"locked": True, "reason": "geometry_locked", "thin_evidence": False},
@@ -605,9 +602,6 @@ def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch)
 
     block = v2status.crossover_v2_status_block()
     assert not {"cloud", "cloud_chart", "findings"} & set(block)
-    grade = block["post_apply_grade"]
-    assert grade["state"] == v2grade.GRADE_UNVERIFIED
-    assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
     envelope = build_crossover_envelope_v2({
         "active": True,
         "capture": {"status": "awaiting_capture"},
@@ -615,9 +609,6 @@ def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch)
         "crossover_v2": block,
     })
     assert not {"cloud", "cloud_chart", "expert_details"} & set(envelope)
-    doctor = correction.check_crossover_v2_cloud_pipeline()
-    assert doctor.status == "ok"
-    assert doctor.reason == correction.REASON_APPLIED_GRADE_NEVER_GRADED
 
     v2state.persist_conductor_state(
         _rearm_conductor_for_persist("cap_rearm_session", {1: PHASE_VERIFY}),
@@ -696,109 +687,6 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
         failure_code=None,
     )
     assert "fc_selection" not in (v2state.load_v2_state() or {})
-
-
-_RIPPLE_RESERVATION = {"predicted_ripple_db": 15.244, "threshold_db": 15.0}
-
-
-def _seeded_session_with_a_reservation(measure: dict) -> None:
-    """A completed measuring session whose accepted MEASURE banked one."""
-    v2state.save_v2_state({
-        "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
-        "measure": dict(measure),
-        "evidence": {"bundle_session_id": "bundle-stage-1"},
-    })
-
-
-_ABSENT = object()
-
-
-def _dig(payload, path, *, missing=None):
-    """Read ``path`` out of a projection, absence included.
-
-    A step that is missing or out of range reads as ``missing``; a step whose
-    stored value really is ``None`` reads as ``None``. The two collapse together
-    by default, which is what most callers want — but "the key was REMOVED" and
-    "the key was written as None" are different clearings, and a caller that
-    must tell them apart passes ``missing=_ABSENT``.
-    """
-    for step in path:
-        if payload is None:
-            return missing
-        try:
-            payload = payload[step]
-        except (KeyError, IndexError):
-            return missing
-    return payload
-
-
-@pytest.mark.parametrize(
-    ("seed", "state_path", "status_path", "expected"),
-    (
-        pytest.param(
-            lambda: _seeded_session_with_a_reservation(
-                {"ripple_reservation": _RIPPLE_RESERVATION}),
-            ("measure", "ripple_reservation"),
-            ("measure", "ripple_reservation"),
-            _RIPPLE_RESERVATION,
-            id="ripple-reservation",
-        ),
-        pytest.param(
-            lambda: _seeded_session_with_a_reservation(
-                {"calibration_reservation": True}),
-            ("measure", "calibration_reservation"),
-            ("measure", "calibration_reservation"),
-            True,
-            id="mic-calibration-reservation",
-        ),
-    ),
-)
-def test_stage_2_keeps_what_the_measuring_session_disclosed(
-    seed, state_path, status_path, expected,
-):
-    """Walks the real seam: seeded durable state -> the REAL re-arm conductor
-    -> the REAL ``persist_conductor_state`` -> the two surfaces the
-    disclosure has to reach (durable state and ``/state``).
-    """
-    seed()
-    v2state.persist_conductor_state(
-        _rearm_conductor("cap_rearm_session", index_phase_map={1: PHASE_VERIFY}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-stage-2"},
-    )
-
-    # Surface 1: the durable state — carried across the bundle hop.
-    state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["evidence"]["bundle_session_id"] == "bundle-stage-2"
-    assert _dig(state, state_path) == expected
-
-    # Surface 2: /state's projection.
-    status = v2status.crossover_v2_status_block()
-    assert _dig(status, status_path) == expected
-
-
-def test_a_fresh_measurement_clears_what_the_previous_session_disclosed():
-    """The converse, and the reason the predicate is MEASURE rather than an
-    unconditional carry: a new measuring session owns the answer to "what did
-    this measurement learn", so a clean retake must not replay a caveat about a
-    capture the household already replaced.
-    """
-    _seeded_session_with_a_reservation({"ripple_reservation": _RIPPLE_RESERVATION})
-
-    # A fresh full session: its own session_phases include MEASURE.
-    v2state.persist_conductor_state(
-        _rearm_conductor("cap_fresh_session", index_phase_map={1: PHASE_MEASURE}),
-        failure_code=None,
-        evidence={"bundle_session_id": "bundle-fresh"},
-    )
-
-    # Still there, holding None: the key is the whole measure block.
-    assert _dig(v2state.load_v2_state(), ("measure",), missing=_ABSENT) is None
-    assert v2status.crossover_v2_status_block()["measure"] is None
 
 
 def test_a_corrupt_session_phases_list_never_reads_as_done():
@@ -947,8 +835,9 @@ def test_prepare_refuses_when_volume_needs_recovery():
     assert correction_runtime.refusal_envelope(excinfo.value)["next_action"]["id"] == "recover_volume"
 
 
-@pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}}])
-def test_session_requires_an_inline_v3_plan(body):
+@pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}},
+                                  {"request": {"layouts": "seat_cloud"}}, {"request": {}, "plan": {}}])
+def test_session_requires_a_request_or_an_inline_plan(body):
     from jasper.web.correction_runtime import refusal_envelope
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
@@ -964,7 +853,7 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
     from tests.test_preflight import ready_facts
 
     name = "unbanked"
-    request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name),), candidates=(name,))
+    request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="speaker"),), candidates=(name,))
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
         safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=object(),
@@ -1160,481 +1049,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
 
     v2state.reset_v2_journey_state()
     assert v2state.load_v2_state()["attempts_loop"] == loop
-
-
-def test_status_block_reports_an_applied_but_ungraded_result():
-    """PR-L4 item 4: applied implies graded, and when it does not, `/state`
-    says so in its own field rather than leaving an empty `verify` block for
-    every surface to read as "nothing to report" — which is how a 10 dB-dark
-    profile sat on JTS3 under a green tick."""
-    v2state.save_v2_state({
-        "session_id": "cap_ungraded",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": True,
-    })
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2grade.GRADE_UNVERIFIED
-    assert grade["graded"] is False
-    assert grade["verify_outcome"] is None
-
-
-def _applied_state(*, tier=None, verify_outcome="pass", claims=None):
-    """An applied session."""
-    state = {
-        "session_id": "cap_r19",
-        "session_phases": [PHASE_VERIFY, PHASE_CLOUD_VERIFY],
-        "applied": True,
-        "verify": {
-            "outcome": verify_outcome,
-            **({"claims": claims} if claims is not None else {}),
-        },
-    }
-    if tier is not None:
-        state["tier"] = tier
-    return state
-
-
-def _honest_result_state(
-    *, tracking="pass", absolute="fail", improvement=0.8, applied=True,
-    verify_outcome=None, absolute_evidence=True,
-):
-    absolute_claim = (
-        {
-            "status": absolute, "max_db": 4.3139 if absolute == "fail" else 0.8,
-            "worst_db": -4.3139 if absolute == "fail" else -0.8,
-            "worst_hz": 1590.4083, "tolerance_db": 2.0,
-        }
-        if absolute != "not_evaluated"
-        else {"status": "not_evaluated", "reason": "no_trusted_region"}
-    )
-    if not absolute_evidence:
-        absolute_claim = {"status": absolute}
-    stage1 = [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE]
-    return {
-        "session_id": "cap_p04", "tier": "express", "applied": applied,
-        "session_phases": stage1, "accepted_phases": stage1,
-        "candidate": {"fingerprint": "fp-p04"},
-        "verify": {
-            "outcome": verify_outcome or ("fail" if tracking == "fail" else "pass"),
-            "claims": {
-                "integration": {
-                    "status": tracking, "max_db": 1.398262557,
-                    "tolerance_db": 1.5,
-                },
-                "absolute": absolute_claim,
-            },
-        },
-        "verify_priors": {"predicted_spec": {
-            "overall_within_target": False, "bands": [],
-            "comparison": {
-                "reason": (
-                    "improved" if improvement >= 0.5
-                    else "not_an_improvement"
-                ),
-                "baseline_rms_db": 2.0, "selected_rms_db": 2.0 - improvement,
-                "improvement_db": improvement, "required_db": 0.5,
-            },
-        }},
-    }
-
-
-@pytest.mark.parametrize(
-    ("changes", "expected"),
-    (
-        ({"absolute": "pass"}, "verified_target"),
-        ({}, "verified_best_evaluated"),
-        ({"tracking": "fail"}, "keep_previous"),
-        ({"improvement": 0.1}, "keep_previous"),
-        ({"absolute": "not_evaluated"}, "inconclusive"),
-        ({"verify_outcome": "future"}, "inconclusive"),
-        ({"absolute_evidence": False}, "inconclusive"),
-        # Not applied: NO route to a verdict is left. A not-an-improvement
-        # refusal stopped refusing when accountability's item 2 became a grade
-        # (#2854), and the corner selector's ``recommend_alternative`` — the
-        # only other cause — is retired here (ticket 2.4). So an un-applied
-        # round publishes no outcome at all rather than inventing one.
-        ({"applied": False}, None),
-    ),
-)
-def test_honest_result_truth_table(changes, expected):
-    v2state.save_v2_state(_honest_result_state(**changes))
-    block = v2status.crossover_v2_status_block()
-    grade = block["post_apply_grade"]
-    assert grade.get("outcome") == expected
-    if changes.get("applied", True):
-        assert grade["candidate_fingerprint"] == "fp-p04"
-    else:
-        assert block["phase"] == "review"
-    if expected == "verified_best_evaluated":
-        assert grade["tracking_passed"] is True
-        assert grade["absolute_passed"] is False
-        assert grade["absolute_miss_db"] == 4.3139
-        assert grade["absolute_worst_hz"] == 1590.4083
-
-
-def _no_sweep_state(*, fc_selection=None):
-    """A finished commission whose stage 1 ran no candidate sweep.
-
-    The stage-1 phases are DERIVED from the stage-1 flags, so this IS the
-    shipped shape rather than a hand-written guess at it. What the tests below
-    turn on is the absent ``fc_selection``: no stage-1 plan builds a lateral
-    group any more, and both the sweep that used to fire off one and the
-    selector that scored it are retired, so no session — shipped or otherwise —
-    banks a fresh selection.
-
-    ``fc_selection`` is still a parameter because a speaker whose last round ran
-    under a build that HAD a selector still carries one in durable state, and
-    the tests below use it to pin that such a payload is inert rather than
-    refused.
-
-    Deliberately NOT asserting which phases came back. The tests below are about
-    behaviour that must hold whether or not ``fc_selection`` is present at all,
-    so pinning the shape in the shared fixture would make them fail for a reason
-    they are not about. The shipped shape has its own pin in
-    ``test_crossover_v2_lateral_evidence.py``.
-    """
-    from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
-    from jasper.active_speaker.crossover_v2.capture_plan import (  # lazy: avoid measurement-stack import cost on unused paths
-        STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-
-    stage1 = list(dict.fromkeys(build_v2_cloud_index_phase_map(
-
-
-        include_lateral=False,
-        include_entry_baseline=STAGE1_INCLUDES_ENTRY_BASELINE,
-    ).values()))
-    # …then stage 2's own session, which is what carries the household past the
-    # apply to the done screen. The whole journey, as a finished commission.
-    phases = [*stage1, PHASE_VERIFY]
-    state = {
-        "session_id": "cap_pause", "tier": "express", "applied": True,
-        "session_phases": phases, "accepted_phases": phases,
-        "candidate": {"fingerprint": "fp-pause"},
-        "verify": {
-            "outcome": "pass",
-            "claims": {
-                "integration": {
-                    "status": "pass", "max_db": 1.398262557, "tolerance_db": 1.5,
-                },
-                "absolute": {
-                    "status": "pass", "max_db": 0.8, "worst_db": -0.8,
-                    "worst_hz": 1590.4083, "tolerance_db": 2.0,
-                },
-            },
-        },
-        "verify_priors": {"predicted_spec": {
-            "overall_within_target": False, "bands": [],
-            "comparison": {
-                "reason": "improved", "baseline_rms_db": 2.0,
-                "selected_rms_db": 1.2, "improvement_db": 0.8, "required_db": 0.5,
-            },
-        }},
-    }
-    if fc_selection is not None:
-        state["fc_selection"] = fc_selection
-    return state
-
-
-def test_a_paused_walk_commission_still_grades_verified():
-    """The coupling the 2026-08-18 lateral pause exposed, pinned end to end.
-
-    ``_post_apply_grade`` gated its success verdicts on ``comparison_complete``
-    and ``authorized_winner``, both of which read an ``fc_selection`` the
-    shipped session no longer banks. Absence read as an unfinished comparison,
-    so ``verified_target`` became structurally unreachable and every successful
-    commission told the household "not enough complete evidence to grade… this
-    report changed nothing automatically" — false over an applied tune.
-
-    The post-apply grade answers "was the applied correction checked
-    afterwards". VERIFY answered it here; no selector was consulted, and none
-    had to be.
-    """
-    from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
-
-    # This test is specifically about the SHIPPED shape, so it says so here
-    # rather than in the shared fixture: stage 1 walks no poses, which is
-    # exactly why no sweep runs and no selection is banked.
-    state = _no_sweep_state()
-    assert state["session_phases"][:3] == [
-        PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE,
-    ]
-
-    v2state.save_v2_state(state)
-    block = v2status.crossover_v2_status_block()
-    grade = block["post_apply_grade"]
-
-    assert grade["outcome"] == "verified_target"
-    assert grade["graded"] is True
-    assert grade["complete"] is True
-    assert grade["candidate_fingerprint"] == "fp-pause"
-    # The absent sweep is reported as absent rather than as a failed comparison:
-    # no selector fact is published at all, in either direction.
-    assert "comparison_complete" not in grade
-    assert block.get("fc_selection") is None
-
-
-def test_a_legacy_fc_selection_is_inert_and_never_refuses():
-    """Read-back tolerance for the retired field, by NON-CONSUMPTION (2.4).
-
-    A speaker whose last round ran under a build that still had a corner
-    selector carries that round's ``fc_selection`` in durable state forever.
-    No PRODUCT read path parses it — the grade, the status block and the
-    household envelope all reach their answers without touching the field — so
-    no legacy shape, well-formed or not, can refuse or raise. (The offline
-    archaeology scripts still read it on purpose;
-    ``scripts/derive-crossover-incident-fixture.py`` mints the #2291 fixture
-    from exactly this payload, which is why it is preserved rather than
-    scrubbed — asserted at the end of this test.) That is what
-    "versioned-absent field, readers degrade gracefully" buys: the tolerance is
-    structural rather than a per-shape guard someone has to maintain.
-
-    Degrading means the round grades on its OWN verification evidence, which is
-    measured fact about the applied tune. It does NOT mean restating a retired
-    comparator's opinion of an alternative — this build cannot check that
-    opinion, and a badge it cannot check is a badge it must not print.
-    """
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-    )
-
-    legacy_shapes = (
-        # The three verdicts a real selector could reach…
-        {"verdict": "keep_configured", "configured_hz": 2000.0,
-         "recommended_hz": None, "comparison_complete": True,
-         "scores": [{"fc_hz": 2000.0, "score": 3.0},
-                    {"fc_hz": 1800.0, "score": 3.2}]},
-        {"verdict": "recommend_alternative", "configured_hz": 2000.0,
-         "recommended_hz": 1800.0, "margin_db": 1.4, "evaluated": 2,
-         "planned": 2, "attempted": [2000.0, 1800.0], "limits": {},
-         "comparison_complete": True, "scores": [{"fc_hz": 1800.0, "score": 1.6}]},
-        {"verdict": "no_alternative_evaluated", "configured_hz": 2000.0,
-         "recommended_hz": None, "comparison_complete": False, "scores": []},
-        # …the one that used to gate this badge to `inconclusive`, which is the
-        # behaviour change this test is the record of…
-        {"verdict": "keep_configured", "configured_hz": 2000.0,
-         "recommended_hz": None, "comparison_complete": False,
-         "scores": [{"fc_hz": 2000.0, "score": 3.0}]},
-        # …and three shapes no reader may assume anything about: half-written,
-        # wrong types throughout, and not a mapping at all.
-        {"verdict": "keep_configured"},
-        {"verdict": 17, "configured_hz": "two thousand", "scores": {"nope": True},
-         "comparison_complete": "yes", "limits": None},
-        "recommend_alternative",
-    )
-    for legacy in legacy_shapes:
-        v2state.save_v2_state(_no_sweep_state(fc_selection=legacy))
-        block = v2status.crossover_v2_status_block()
-
-        # Graded from VERIFY alone, identically to the same round without it.
-        assert block["post_apply_grade"]["outcome"] == "verified_target", legacy
-        assert "comparison_complete" not in block["post_apply_grade"]
-        # Never re-published, so no surface can render a corner the retired
-        # selector once named.
-        assert "fc_selection" not in block, legacy
-
-        text = build_crossover_envelope_v2({
-            "active": True,
-            "setup": {"active": True, "status": "ready"},
-            "crossover_v2": block,
-        })["verdict_text"]
-        assert "1800" not in text and "measured better than" not in text
-
-        # The durable payload is untouched by the read — inert, not scrubbed.
-        assert (v2state.load_v2_state() or {})["fc_selection"] == legacy
-
-
-def test_terminal_result_logs_once_with_target_failure_evidence(caplog, monkeypatch):
-    prior = _honest_result_state()
-    prior["session_phases"] = [PHASE_VERIFY]
-    v2state.save_v2_state(prior)
-
-    class TerminalConductor(_StubConductor):
-        verify_outcome = "pass"
-        verify_claims = prior["verify"]["claims"]
-        measure_predicted_spec_report = prior["verify_priors"]["predicted_spec"]
-
-        def snapshot(self):
-            return SimpleNamespace(
-                session_id="cap_p04", accepted_phases=(PHASE_VERIFY,),
-                session_phases=(PHASE_VERIFY,),  applied=True,
-                gain_plan_db=None, candidate_fingerprint=None,
-            )
-
-    conductor = TerminalConductor("cap_p04")
-    from jasper.active_speaker.crossover_v2.durable_state import ConductorState
-    monkeypatch.setattr(v2state, "build_conductor_state", lambda *a, **k: ConductorState(
-        {**prior, "accepted_phases": [PHASE_VERIFY]}, False))
-    with caplog.at_level(logging.INFO, logger=v2state.__name__):
-        v2state.persist_conductor_state(conductor, failure_code=None)
-        v2state.persist_conductor_state(conductor, failure_code=None)
-        v2status.crossover_v2_status_block()
-    fields = event_fields(caplog, "correction.crossover_v2_result_classified")
-    assert fields["outcome"] == "verified_best_evaluated"
-    assert fields["absolute_passed"] == "false"
-    assert fields["absolute_miss_db"] == "4.3139"
-    assert fields["absolute_worst_hz"] == "1590.4083"
-    assert fields["candidate_fingerprint"] == "fp-p04"
-
-
-def test_terminal_result_log_tolerates_a_malformed_projection(monkeypatch, caplog):
-    conductor = _StubConductor("cap_malformed")
-    conductor.snapshot = lambda: SimpleNamespace(
-        session_id="cap_malformed", accepted_phases=(PHASE_VERIFY,),
-        session_phases=(PHASE_VERIFY,), applied=True,
-        gain_plan_db=None, candidate_fingerprint=None,
-    )
-    monkeypatch.setattr(
-        v2status, "crossover_v2_status_block", lambda: {"post_apply_grade": None},
-    )
-    with caplog.at_level(logging.INFO, logger=v2state.__name__):
-        v2state.persist_conductor_state(conductor, failure_code=None)
-    fields = event_fields(caplog, "correction.crossover_v2_result_classified")
-    assert fields["outcome"] == "inconclusive"
-
-
-@pytest.mark.parametrize("storage", ["live", "banked", "recovery"])
-@pytest.mark.parametrize("poses,complete", [
-    ([{"kind": "bearing", "deg": 0, "elevation_deg": 0}], True),
-    ([{"kind": "bearing", "deg": 0}, {"kind": "bearing", "deg": 20}], False),
-    ([{"kind": "bearing", "deg": 0, "elevation_deg": 10}], False),
-    ([{"kind": "seat", "deg": 0, "seat_offset_m": [0.3, 0, 0]}], False),
-])
-def test_a_session_whose_plan_asked_beyond_the_mark_is_incomplete_at_the_mark(
-    tmp_path, monkeypatch, poses, complete, storage,
-):
-    import shutil
-    from jasper.active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
-    from tests.run_manifest_fixture import write_asked_poses
-
-    state = _applied_state()
-    root = write_asked_poses(tmp_path, state, poses)
-    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
-    if storage == "banked":
-        target = tmp_path / "campaigns" / state["session_id"] / "bundle"
-        target.mkdir(parents=True)
-        shutil.move(root / "asked-run", target)
-    elif storage == "recovery":
-        original = root / "asked-run/evidence/v1/artifacts/crossover_v2" / state["session_id"]
-        state["candidate"] = {"fingerprint": "applied-candidate"}
-        state["session_id"] = "recovery"
-        write_asked_poses(tmp_path, state, [{"deg": 0}])
-        monkeypatch.setattr("jasper.active_speaker.grade_coverage.load_applied_candidate",
-                            lambda fingerprint, **kw: SimpleNamespace(path=original / "candidate.json"))
-    v2state.save_v2_state(state)
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["scope"] == v2grade.GRADE_SCOPE_MARK
-    assert grade["complete"] is complete
-    assert grade.get("reason") == (None if complete else REASON_APPLIED_GRADE_MARK_ONLY)
-
-
-@pytest.mark.parametrize("initial_manifest", [False, True])
-def test_coverage_tracks_live_manifest_arrival_and_bank_moves(tmp_path, monkeypatch, initial_manifest):
-    import shutil
-    from jasper.active_speaker.grade_coverage import asked_beyond_mark
-    from tests.run_manifest_fixture import write_asked_poses
-
-    state = _applied_state()
-    root = write_asked_poses(tmp_path, state, [{"deg": 0}])
-    if not initial_manifest:
-        shutil.rmtree(root / "asked-run" / "evidence")
-    monkeypatch.setattr("jasper.active_speaker.grade_coverage.sessions_dir", lambda: root)
-    assert asked_beyond_mark(state, applied_profile=None) is False
-    write_asked_poses(tmp_path, state, [{"deg": 20}])
-    assert asked_beyond_mark(state, applied_profile=None) is True
-    target = tmp_path / "campaigns" / state["session_id"] / "bundle"
-    target.mkdir(parents=True)
-    shutil.move(root / "asked-run", target)
-    assert asked_beyond_mark(state, applied_profile=None) is True
-
-
-@pytest.mark.parametrize(
-    ("state", "expected"),
-    (
-        # A pre-tier state file, or one from a later build: this build cannot
-        # know what was promised, and manufacturing an incompleteness warning
-        # about a promise it never read is worse than saying what it said.
-        pytest.param(
-            {"tier": None},
-            {"scope": v2grade.GRADE_SCOPE_MARK, "complete": True},
-            id="an-unreadable-tier-is-judged-on-delivery",
-        ),
-        pytest.param(
-            {"tier": "tier-from-2027"}, {"complete": True},
-            id="a-tier-from-the-future-is-judged-on-delivery",
-        ),
-        pytest.param(
-            {"tier": "full", "verify_outcome": "inconclusive"},
-            {"state": v2grade.GRADE_INCONCLUSIVE,
-             "scope": v2grade.GRADE_SCOPE_NONE, "complete": False},
-            id="a-verify-that-did-not-pass-delivers-no-scope",
-        ),
-        # #2464: a failed mark-VERIFY caps the badge.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "fail",
-             "claims": {"integration": {"status": "fail", "max_db": 4.2}}},
-            {"state": v2grade.GRADE_FAILED, "graded": False},
-            id="a-failed-tracking-claim-caps-the-badge",
-        ),
-        # ``verify.outcome`` grades capture and tracking health ONLY, so a
-        # crossover-region claim that missed its tolerance rides a clean
-        # ``pass``: the CLAIMS record is the source, and both facts stand.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "pass",
-             "claims": {"integration": {"status": "pass", "max_db": 0.7},
-                        "absolute": {"status": "fail", "max_db": 4.31,
-                                     "worst_hz": 1590.4}}},
-            {"state": v2grade.GRADE_FAILED, "graded": False,
-             "verify_outcome": "pass"},
-            id="a-failed-absolute-claim-caps-the-badge-on-a-clean-capture",
-        ),
-        # The two instruments are a UNION, not a fallback: an ``outcome`` fail
-        # whose claims are ``not_evaluated`` still caps.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "fail",
-             "claims": {"integration": {"status": "not_evaluated"},
-                        "absolute": {"status": "not_evaluated",
-                                     "reason": "no_trusted_region"}}},
-            {"state": v2grade.GRADE_FAILED},
-            id="an-outcome-fail-whose-claims-could-not-grade-still-caps",
-        ),
-        # Absence of claims is a pre-R18 state file, never a fail and never a
-        # pass-of-claims: the outcome stands as the only record there is.
-        pytest.param(
-            {"tier": "full", "verify_outcome": "pass"},
-            {"state": v2grade.GRADE_MARK_VERIFIED, "graded": True},
-            id="no-claims-block-graded-on-a-passing-outcome-alone",
-        ),
-        pytest.param(
-            {"tier": "full", "verify_outcome": "fail"},
-            {"state": v2grade.GRADE_FAILED},
-            id="no-claims-block-graded-on-a-failing-outcome-alone",
-        ),
-    ),
-)
-def test_the_post_apply_grade_badge_table(state, expected):
-    """What ``post_apply_grade`` publishes for each shape of applied session.
-
-    ``state`` is the vocabulary every consuming surface keys on; ``scope`` and
-    ``complete`` say how wide the claim is and whether the tier delivered what
-    it promised. A row asserts only the fields its own shape decides — the
-    rest are pinned by the rows that turn on them.
-    """
-    v2state.save_v2_state(_applied_state(**state))
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    for key, value in expected.items():
-        assert grade[key] == value, key
-
-
-def test_status_block_never_asks_an_unapplied_session_for_a_grade():
-    v2state.save_v2_state({"session_id": "cap_none", "applied": False})
-    grade = v2status.crossover_v2_status_block()["post_apply_grade"]
-    assert grade["state"] == v2grade.GRADE_NOT_APPLIED
-    # Nothing promised, so nothing outstanding: `complete=False` here would
-    # warn every speaker that has never been commissioned.
-    assert grade["complete"] is True
-    assert grade["scope"] == v2grade.GRADE_SCOPE_NONE
-    assert grade["graded"] is True
 
 
 def _mono_wav_bytes(n: int = 4800) -> bytes:
@@ -1971,7 +1385,7 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
     assert fields["setup_mode"] == "stored"
     assert fields["setup_calibration_id"] == "cal-stale"
     # Redaction: the serial never reaches the journal.
-    assert "SECRET-810" not in caplog.text
+    assert leaked_lines(caplog, "SECRET-810") == []
 
 
 def test_setup_calibration_observation_is_redacted_safe():
@@ -3008,7 +2422,6 @@ def _boosting_candidate(preset, *, boost_db: float):
                         "gain": boost_db,
                     },
                 ],
-                "headroom_cost_db": boost_db,
             },
         },
         linearization_outcome="fitted",
@@ -3174,19 +2587,7 @@ def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_p
 class _StubConductor:
     """The minimum ``persist_conductor_state`` reads off a conductor."""
 
-    candidate = None
-    verify_outcome = None
-    verify_code = None
-    verify_gate = None
-    verify_evidence = None
-    verify_graded_band_hz = None
-    verify_frame = None
-    verify_claims = None
-    delta_probe = None
     measure_predicted_sum = None
-    measure_gate_window_ms = None
-    verify_pilot_transfer_reference = None
-    verify_level_reference_reset = None
 
     def __init__(
         self, session_id: str = "s1", *, applied: bool = True,
@@ -3207,22 +2608,15 @@ class _StubConductor:
 
 def test_only_a_rebind_without_measure_carries_the_measure_scoped_keys():
     """The carries follow the snapshot's phases; the stub has no ``session_phases`` of its own (#4806)."""
-    v2state.save_v2_state({
-        "session_id": "old", "accepted_sound_revision": 4,
-        "measure": {"calibration_reservation": True},
-    })
+    v2state.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
     v2state.persist_conductor_state(_StubConductor("verify"), failure_code=None)
-    state = v2state.load_v2_state() or {}
-    assert state["accepted_sound_revision"] == 4
-    assert state["measure"] == {"calibration_reservation": True}
+    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] == 4
 
     v2state.persist_conductor_state(
         _StubConductor("measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
         failure_code=None,
     )
-    state = v2state.load_v2_state() or {}
-    assert state["accepted_sound_revision"] is None
-    assert state["measure"] is None
+    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] is None
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
@@ -4025,7 +3419,7 @@ def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
     from jasper.active_speaker.measurement_programs import BRANCH_PAIR_FRONT_REAR, REGIME_BRANCHES
 
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_BRANCHES, branch_pair=BRANCH_PAIR_FRONT_REAR),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_BRANCHES, branch_pair=BRANCH_PAIR_FRONT_REAR, purpose="speaker"),))
     assert "woofer:rear" not in _inline_context().role_targets
     with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
         _inline_prepared(monkeypatch, tmp_path, {"plan": plan.to_dict()})
@@ -4441,14 +3835,14 @@ def test_apply_keeps_unsafe_config_refusals(monkeypatch, tmp_path, caplog, fault
             v2apply.handle_v2_apply(raw, _bg_run_async, lambda: cam)
         assert refused.value.code == code
         if fault == "graph":
-            from jasper.active_speaker import runtime_contract
+            from jasper.active_speaker import graph_types
             from jasper.web.correction_runtime import refusal_envelope
 
             # The refusal names WHICH door refused: a bare code sent the
             # operator to read the graph by hand.
             envelope = refusal_envelope(refused.value)
             assert envelope["code"] == code
-            assert envelope["error"] != runtime_contract.GRAPH_APPROVED_ACTIVE_RUNTIME
+            assert envelope["error"] != graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME
             assert [(issue["severity"], issue["code"]) for issue in envelope["issues"]] == [
                 ("blocker", "volume_limit_positive")]
     fields = event_fields(caplog, "correction.crossover_v2_apply")
@@ -4478,13 +3872,14 @@ def test_apply_proves_the_snapshot_it_persists(monkeypatch, tmp_path):
     against a plain role chain (ADR-0322); no graph the route emits differs
     between the two, so the proof's own input is what this pins.
     """
-    from jasper.active_speaker import baseline_profile, runtime_contract
+    from jasper.active_speaker import baseline_profile
+    from jasper.active_speaker.graph import bass_extension
     from jasper.active_speaker.candidate_bank import publish_authored_candidate
 
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = replace(_run6_measured_candidate(preset), analysis={"measurement_status": "unmeasured"})
     publish_authored_candidate(candidate)
-    classify, proved = runtime_contract.classify_bass_extension_graph, []
+    classify, proved = bass_extension.classify_bass_extension_graph, []
 
     def record(*args, **kwargs):
         snapshot = (kwargs.get("applied_baseline_state") or {}).get("recomposition_snapshot")
@@ -4492,7 +3887,7 @@ def test_apply_proves_the_snapshot_it_persists(monkeypatch, tmp_path):
             proved.append(dict(snapshot))
         return classify(*args, **kwargs)
 
-    monkeypatch.setattr(runtime_contract, "classify_bass_extension_graph", record)
+    monkeypatch.setattr(bass_extension, "classify_bass_extension_graph", record)
     assert v2apply.handle_v2_apply({"expected_candidate_fingerprint": candidate.fingerprint},
                                    _bg_run_async, lambda: _FakeApplyCam())["status"] == "applied"
     applied = baseline_profile.load_applied_baseline_profile_state()

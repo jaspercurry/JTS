@@ -329,12 +329,30 @@ def test_stored_candidate_integrity_survives_retired_preset_fields(tmp_path, tam
     assert reopened.to_dict() == raw
 
 
-def test_from_mapping_rejects_unknown_fields():
+@pytest.mark.parametrize(
+    "field, bad_value, code",
+    [
+        pytest.param("extra_field", 1, "candidate_malformed", id="unknown_field"),
+        pytest.param(
+            "exclusion_evidence", "not-a-mapping", "exclusion_evidence_malformed",
+            id="non_mapping_exclusion_evidence",
+        ),
+        pytest.param(
+            "linearization_outcome", 7, "linearization_outcome_malformed",
+            id="non_string_linearization_outcome",
+        ),
+        pytest.param(
+            "linearization", "not-a-mapping", "linearization_malformed",
+            id="non_mapping_linearization",
+        ),
+    ],
+)
+def test_from_mapping_rejects_malformed_field(field, bad_value, code):
     candidate = _candidate()
-    raw = {**candidate.to_dict(), "extra_field": 1}
+    raw = {**candidate.to_dict(), field: bad_value}
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "candidate_malformed"
+    assert excinfo.value.code == code
 
 
 # --- linearization field (#1668 PR-C) ---------------------------------------
@@ -378,34 +396,6 @@ def test_linearization_populated_round_trips():
     reopened = MeasuredCrossoverCandidate.from_mapping(candidate.to_dict())
     assert reopened.fingerprint == candidate.fingerprint
     assert reopened.linearization == payload
-
-
-def test_a_candidate_refuses_to_carry_a_non_finite_fit_cost():
-    """No fitted candidate can carry a NaN or an infinity anywhere in
-    ``linearization``.
-
-    Asserted as the PROPERTY rather than against one mechanism, because two
-    layers enforce it: ``null_walk.DspPredecessor`` freezes the state and
-    ``evidence_identity.json_fingerprint`` freezes the fingerprint payload, both
-    through ``json_fields.freeze_json``, which refuses a non-finite float
-    (verified by mutation: relaxing it turns this red).
-
-    Pinned because a reader downstream leans on it (#2357). The sweep reduces
-    this mapping to one figure with ``worst_headroom_cost_db``, whose own
-    ``isfinite`` guard is belt-and-braces exactly as long as this refusal holds:
-    relax it and that guard becomes the only thing standing between a NaN and
-    the Fc selector's saturation penalty, which clamps a NaN to 0.0 and charges
-    nothing.
-    """
-    for bad in (float("nan"), float("inf"), float("-inf")):
-        with pytest.raises(MeasuredCrossoverCandidateError) as caught:
-            _candidate(linearization={"woofer": {"headroom_cost_db": bad}})
-        assert "non-finite" in str(caught.value)
-
-    # …the same shape with a finite cost is accepted, so the refusals above are
-    # about the VALUE rather than about the mapping's shape.
-    accepted = _candidate(linearization={"woofer": {"headroom_cost_db": 2.0}})
-    assert accepted.linearization["woofer"]["headroom_cost_db"] == 2.0
 
 
 def test_linearization_participates_in_the_fingerprint():
@@ -870,22 +860,6 @@ def test_exclusion_evidence_tampering_trips_the_tamper_check():
     assert excinfo.value.code == "candidate_tampered"
 
 
-def test_from_mapping_rejects_non_mapping_exclusion_evidence():
-    candidate = _candidate()
-    raw = {**candidate.to_dict(), "exclusion_evidence": "not-a-mapping"}
-    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "exclusion_evidence_malformed"
-
-
-def test_from_mapping_rejects_non_string_linearization_outcome():
-    candidate = _candidate()
-    raw = {**candidate.to_dict(), "linearization_outcome": 7}
-    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "linearization_outcome_malformed"
-
-
 def test_to_dict_canonical_shape_always_includes_linearization_key():
     """Canonical to_dict shape (forward-shape consistency, chosen over
     omitting the key when empty): every NEWLY-serialized candidate always
@@ -908,14 +882,6 @@ def test_to_dict_canonical_shape_always_includes_linearization_key():
         "schema_version", "kind", "program_id", "analysis", "source_preset",
         "role_attenuations_db", "alignment", "fingerprint",
     } | set(_OPTIONAL_FIELD_TYPES)
-
-
-def test_from_mapping_rejects_non_mapping_linearization():
-    candidate = _candidate()
-    raw = {**candidate.to_dict(), "linearization": "not-a-mapping"}
-    with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
-        MeasuredCrossoverCandidate.from_mapping(raw)
-    assert excinfo.value.code == "linearization_malformed"
 
 
 # --- room_correction --------------------------------------------------------

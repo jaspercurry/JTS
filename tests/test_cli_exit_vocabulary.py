@@ -26,18 +26,23 @@ import importlib.util
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker import baseline_profile, bundles, candidate_bank, round_bank
 from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
-from jasper.active_speaker.crossover_v2 import prescription_document
+from jasper.active_speaker.crossover_v2 import prescription_document, room_selection
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
-from jasper.cli import _refusal, round_views
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.cli import _refusal, _run_request, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
     bank_measure_round,
     bank_seat_round,
@@ -48,11 +53,14 @@ from tests.crossover_v2_fixtures import bank_capture_round
 from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
-from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _resonant_ir as resonant_ir
+from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _flat_ir as flat_ir, _resonant_ir as resonant_ir
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
 from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
 from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
 from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
+from tests.test_crossover_v2_room_prescription import _document as room_document
+from tests.test_prescription_document import bank, base, bass_packet, document as prescription, evidence  # noqa: F401
+from tests.test_preflight import ready_facts
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
 
@@ -197,7 +205,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
     "jasper.cli.round": lambda tmp, mp: [
         "run", "--poses", "not-a-layout",
     ],
-    "jasper.cli.round_views": lambda tmp, mp: ["entry", str(tmp / "absent-round")],
+    "jasper.cli.round_views": lambda tmp, mp: ["inventory", str(tmp / "absent-round")],
     "jasper.cli.audition": _audition_argv,
 }
 
@@ -305,10 +313,10 @@ def _on_fixture_round(argv: Callable[[_FixtureRound], list[str]]) -> Callable[[p
     return lambda request, root: argv(_fixture_round(root))
 
 
-def _sweep_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+def _sweep_argv(request: pytest.FixtureRequest, root: Path, poses: int = 3) -> list[str]:
     impulse = np.zeros(1800)
     impulse[100] = 1.0
-    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * 3)), "--scope", "round"]
+    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * poses)), "--scope", "round"]
 
 
 def _kept_take_argv(view: str) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
@@ -342,18 +350,18 @@ def _dsp_levels_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     return ["dsp-levels", str(manifest), "--raw", str(raw), "--window-s", "0", "1"]
 
 
-def _nearfield_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+def _nearfield_argv(request: pytest.FixtureRequest, root: Path, kept: bool = True) -> list[str]:
     bundle = root / "sessions" / "nearfield"
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
-    takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)]
+    takes = [nearfield_take("w15", "woofer", 15, 90.0), nearfield_take("w30", "woofer", 30, 87.9, seed=1)] if kept else []
     write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
     return ["nearfield", str(bundle)]
 
 
-def _bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
-    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank("baseline"))
+def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candidate") -> list[str]:
+    bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank_take("baseline", scope=scope))
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())
     write_manifest(bundle, program="bass", groups=[manifest_set([(path, record)], set_id="bass")])
     return ["bass", str(bundle), "--set", "bass"]
@@ -398,10 +406,6 @@ _ROUND_SET_TAKES = frozenset({"round_id", "set_id", "take_ids"})
 #: How each view is run to an answer -- or, for a view no fixture here can
 #: feed, why not.
 _VIEW_RUN: dict[str, str | _ViewRun] = {
-    "entry": _ViewRun(
-        _on_fixture_round(lambda r: ["entry", str(r.measured)]),
-        frozenset({"smoothing_fraction", "band_hz", "reference_band_hz"}),
-        recorded=lambda p, a: p["smoothing_fraction"] == a["report"]["smoothing_fraction"]),
     "repeat": _ViewRun(_on_fixture_round(_repeat_argv)),
     "candidates": _ViewRun(_on_fixture_round(lambda r: ["candidates", str(r.measured)])),
     "directivity": _ViewRun(
@@ -565,3 +569,167 @@ def test_no_success_answer_or_artifact_carries_the_failure_status(view_answer: _
 
     assert "status" not in view_answer.answer
     assert "status" not in view_answer.artifact
+
+
+def _prescription_argv(verb: str, *extra: str, room: bool = False) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
+    def argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+        banked, read = request.getfixturevalue("base"), request.getfixturevalue("evidence")
+        request.getfixturevalue("monkeypatch").setattr(crossover_prescriber, "_document_evidence", lambda *args: read)
+        sections = {"room": room_document(filters=[{"freq": 277, "q": 1, "gain": -3}])} if room else None
+        path = root / "prescription.json"
+        path.write_text(json.dumps(prescription(banked.fingerprint, sections)))
+        return [*verb.split(), str(path), "--root", str(request.getfixturevalue("bank")), *extra]
+    return argv
+
+
+def _round_argv(argv: list[str], **wizard: Any) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
+    """A ``jasper-round`` verb whose preflight is ready, whose wizard answers each
+    named call with 200 and its payload, and whose wait, apply and reset succeed:
+    the answer is under test, not the run."""
+    def argv_(request: pytest.FixtureRequest, root: Path) -> list[str]:
+        monkeypatch = request.getfixturevalue("monkeypatch")
+        monkeypatch.setattr(_run_request, "read_preflight_facts", ready_facts)
+        for name, payload in wizard.items():
+            monkeypatch.setattr(WizardClient, name, lambda *args, payload=payload: (200, payload))
+        for module, name, value in (
+            (round_cli, "wait_for_round", lambda *args, **kwargs: {"status": "terminal", "result": "complete"}),
+            (round_cli, "_round_session_dir", lambda run: str(root)),
+            (round_bank, "finish_round", lambda path: (round_bank.BankedRound(root, {}), None)),
+            (round_cli, "apply_by_fingerprint", lambda client, fingerprint: {
+                "status": "applied", "candidate_fingerprint": fingerprint, "http": 200, "outcome": "applied"}),
+            (prescription_document, "saved_base", lambda: (None, {})),
+            (prescription_document, "reset_prescription_document", lambda **kwargs: {}),
+            (prescription_document, "judge_prescription_document", lambda document, **kwargs: None),
+            (candidate_bank, "publish_authored_candidate", lambda candidate: SimpleNamespace(fingerprint="f" * 64)),
+            (baseline_profile, "load_applied_baseline_profile_state", lambda *args: None),
+        ):
+            monkeypatch.setattr(module, name, value)
+        return argv
+    return argv_
+
+
+#: The tools whose answers are not views, and one success per answer each
+#: gives, by its ``ANSWER_SCHEMAS`` row. A room preview reads no take, so the
+#: ``--take`` its rows name must not reach their subjects.
+_OTHER_TOOLS = {"jasper-round": round_cli, "jasper-crossover-prescriber": crossover_prescriber}
+_OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = {
+    "jasper-round list": lambda request, root: ["list"],
+    "jasper-round show": lambda request, root: ["show", str(bank_measure_round(root))],
+    "jasper-round run": _round_argv(["run", "--program", "room", "--layout", "seat_express", "--level-db", "-25",
+                                     "--candidates", "base"], open_session={"capture": {"session_id": "run-1"}}),
+    "jasper-round run --dry-run": _round_argv(["run", "--dry-run"]),
+    "jasper-round placed": _round_argv(["placed", "--run", "run-1", "--pose", "2"],
+                                      placed={"ok": True, "released": {"index": 1}}),
+    "jasper-round stop": _round_argv(["stop", "--run", "run-1"], stop={"capture": {"session_id": "run-1"}}),
+    "jasper-round status": _round_argv(["status", "--run", "run-1"], run_status={"run_id": "run-1", "status": "running"}),
+    "jasper-round wait": _round_argv(["wait", "--run", "run-1", "--timeout", "0"]),
+    "jasper-round apply": _round_argv(["apply", "a" * 64]),
+    "jasper-round reset": _round_argv(["reset", "--program", "speaker", "--keep-timing"]),
+    "jasper-crossover-prescriber contract": lambda request, root: ["contract"],
+    "jasper-crossover-prescriber status": lambda request, root: ["status"],
+    "jasper-crossover-prescriber judge": _prescription_argv("judge"),
+    "jasper-crossover-prescriber compose": _prescription_argv("compose"),
+    "jasper-crossover-prescriber judge --preview": _prescription_argv(
+        "judge --preview", "--take", "no-such-take", room=True),
+    "jasper-crossover-prescriber judge --preview --vary": _prescription_argv(
+        "judge --preview", "--take", "no-such-take", "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", "grid",
+        room=True),
+}
+#: The subject and parameters a receipt states, by row, for the rows whose case fixes both (ADR-0389).
+_OTHER_ENVELOPES: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+    "jasper-round placed": ({}, {"pose": 2}),
+    "jasper-round stop": ({}, {}),
+    "jasper-round status": ({}, {}),
+    "jasper-round apply": ({"candidate_id": "a" * 64}, {}),
+    "jasper-round reset": ({"candidate_id": "f" * 64}, {"program": "speaker", "keep_timing": True}),
+}
+
+
+@pytest.mark.parametrize("row", sorted(row for row in ANSWER_SCHEMAS if row.split()[0] in _OTHER_TOOLS))
+def test_every_other_tuning_answer_carries_the_view_envelope(
+    row: str, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``jasper-round`` and the prescriber answer as a view does, naming only what they read (ADR-0387)."""
+
+    prog, verb = row.split()[:2]
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.chdir(tmp_path)
+    assert _OTHER_TOOLS[prog].main(_OTHER_ANSWERS[row](request, tmp_path)) == _refusal.EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["view"], answer["schema"]) == (verb, ANSWER_SCHEMAS[row])
+    assert isinstance(answer["subject"], dict) and isinstance(answer["parameters"], dict)
+    assert "take_ids" not in answer["subject"]
+    assert "status" not in answer
+    assert row not in _OTHER_ENVELOPES or (answer["subject"], answer["parameters"]) == _OTHER_ENVELOPES[row]
+
+
+def _unanalysed_room_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    request.getfixturevalue("monkeypatch").setattr(room_selection, "analyzed_measurements", Mock(
+        side_effect=EvidenceUnavailable("take_curves_not_banked", {})))
+    return ["room", str(bank_seat_round(root))]
+
+
+def _unbanked_frequency_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    (root / "bundle").mkdir()
+    (root / "bundle" / "info.json").write_text(json.dumps({"session_id": "unbanked"}))
+    return ["frequency", str(root / "bundle")]
+
+
+def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: str) -> list[str]:
+    bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
+    path = asyncio.run(bank_take("take", wav_hash="0" * 64 if fault == "wav_hash" else None))
+    if fault == "record":
+        record = bundle / EVIDENCE_ROOT / "artifacts" / path
+        record.write_text(f"{record.read_text()} ")
+    return ["frequency", str(bundle), "--analyze-wavs", *(["--reference-db=nan"] if fault == "reference" else [])]
+
+
+def _stateless_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    (root / "bundle" / "evidence/v1/artifacts/crossover_v2/cap-1").mkdir(parents=True)
+    (root / "bundle" / "info.json").write_text(json.dumps({"session_id": "s-1"}))
+    (root / "bundle" / "crossover-v2-state.json").write_text(json.dumps({"session_id": "cap-1"}))
+    return ["distortion", str(root / "bundle")]
+
+
+#: One case per view family whose evidence can fail to grade: a round the view
+#: reads, and the reason it names for not grading it.
+_CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str]] = {
+    "bass": (lambda request, root: _bass_argv(request, root, scope="drivers"), "measurement_analysis_program_unsupported"),
+    "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
+    "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],
+                          "classification_no_features_detected"),
+    "distortion": (_stateless_distortion_argv, "state_unreadable"),
+    "frequency": (_unbanked_frequency_argv, "take_curves_not_banked"),
+    "frequency --analyze-wavs": (lambda request, root: _analyzed_frequency_argv(request, root, "wav_hash"),
+                                 "measurement_capture_identity_mismatch"),
+    "impulse": (lambda request, root: [*_kept_take_argv("impulse")(request, root), "--role", "woofer"],
+                "round_role_not_recorded"),
+    "nearfield": (lambda request, root: _nearfield_argv(request, root, kept=False), "nearfield_no_kept_takes"),
+    "room": (_unanalysed_room_argv, "take_curves_not_banked"),
+    "sweep": (lambda request, root: _sweep_argv(request, root, poses=1), "gate_sweep_single_pose"),
+}
+
+
+@pytest.mark.parametrize("view", sorted(_CANNOT_GRADE))
+def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
+    view: str, request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    argv, reason = _CANNOT_GRADE[view]
+    monkeypatch.chdir(tmp_path)
+    assert round_views.main(argv(request, tmp_path)) == _refusal.EXIT_REFUSED
+    record = json.loads(capsys.readouterr().out)
+    assert (record["reason"], record.get("next_action")) == (reason, refusal_copy_for(reason)[1])
+
+
+@pytest.mark.parametrize("fault, code", [("record", "commissioning_evidence_integrity_mismatch"), ("reference", None)])
+def test_what_a_view_cannot_read_is_unreadable_not_refused(
+    fault: str, code: str | None, request: pytest.FixtureRequest, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A record the evidence store cannot read, or a reference level no analysis can use."""
+    monkeypatch.chdir(tmp_path)
+    assert round_views.main(_analyzed_frequency_argv(request, tmp_path, fault)) == _refusal.EXIT_UNREADABLE
+    record = json.loads(capsys.readouterr().out)
+    assert (record["reason"], record.get("code")) == (round_views.REASON_UNREADABLE, code)

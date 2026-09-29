@@ -39,12 +39,16 @@ import asyncio
 import logging
 from pathlib import Path
 
+from jasper.active_speaker.graph_types import (
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+    GRAPH_DRIVER_DOMAIN_BASELINE,
+)
 from ..active_speaker.state_paths import baseline_config_path
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ..log_event import log_event
 from .config import GroupingConfig
 from .role_stash import RoleStash
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -130,11 +134,8 @@ async def precheck_active_follower(
     """
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from .active_profile import build_grouped_profile  # lazy: optional tuning dependencies
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_DRIVER_DOMAIN_BASELINE,
-        classify_bass_extension_graph,
-    )
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
+    from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     program_channel = program_channel_for(cfg.channel)
 
@@ -210,10 +211,7 @@ async def apply_prebuilt_follower_config(*, camilla_factory=_camilla) -> str:
     :func:`precheck_active_follower` has built + re-proven it, and after
     snapclient is feeding the grouping ring (so CamillaDSP locks at once).
     """
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_DRIVER_DOMAIN_BASELINE,
-    )
-    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     from .grouping_ring import GROUPING_RING_PCM
 
@@ -307,12 +305,9 @@ async def restore_active_camilla_solo(
     the two arms stay distinguishable in the journal; ``apply_source`` labels the
     dsp-apply for the same reason.
     """
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
-        safe_graph_for_current_topology,
-    )
-    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
+    from jasper.active_speaker.graph_selector import safe_graph_for_current_topology
+    from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     cam = camilla_factory()
     async with dsp_writer_lock(
@@ -459,11 +454,11 @@ async def prove_live_bass_extension_graph(
     """Canonical live graph/profile proof shared by both active bond roles."""
 
     from jasper.active_speaker.state_paths import baseline_profile_state_path
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph.bass_extension import (
         classify_active_bass_extension_graph,
     )
     from jasper.active_speaker.staging import staged_metadata_path
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     deadline = asyncio.get_running_loop().time() + settle_timeout_s
     while True:

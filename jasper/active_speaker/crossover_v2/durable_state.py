@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Durable crossover state and advisory VERIFY records."""
+"""Durable crossover state."""
 
 from __future__ import annotations
 
@@ -225,30 +225,6 @@ def _attempt_optional_positive_int(value: Any) -> int | None:
     return value
 
 
-def _entry_baseline_prior(conductor: Any) -> dict[str, Any] | None:
-    baseline = getattr(conductor, "measure_entry_baseline", None)
-    to_dict = getattr(baseline, "to_dict", None)
-    if not callable(to_dict):
-        return None
-    record = to_dict()
-    return dict(record) if isinstance(record, Mapping) else None
-
-
-def _candidate_headroom_cost_db(linearization: Any) -> float:
-    """The applied correction's disclosed max-level cost, dB.
-
-    Thin adapter over the fit module's own reducer, so this payload and the
-    conductor's cannot disagree about a household-facing number.
-    """
-    from jasper.active_speaker.linearization_fit import (
-        worst_headroom_cost_db,
-    )  # lazy: fitting stack import cost
-
-    if not isinstance(linearization, Mapping):
-        return 0.0
-    return worst_headroom_cost_db(linearization)
-
-
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
     """Per-role OBSERVE-layer octave deficits
     (``LinearizationFit.observe_octave_summary``, achieved-minus-target dB at
@@ -370,14 +346,7 @@ def candidate_summary(
     candidate: Any,
     *,
     topology_pinned: bool = False,
-    headroom_cost_basis: str | None = None,
 ) -> dict[str, Any] | None:
-    from jasper.active_speaker.linearization_fit import (  # lazy: fitting stack import cost
-        HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN,
-    )
-
-    stamped_basis = headroom_cost_basis or HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN
-
     if candidate is None:
         return None
     analysis = candidate.analysis if isinstance(candidate.analysis, Mapping) else {}
@@ -413,8 +382,6 @@ def candidate_summary(
         "linearization_driver_class": _candidate_octave_driver_classes(
             candidate.linearization, octaves
         ),
-        "headroom_cost_db": _candidate_headroom_cost_db(candidate.linearization),
-        "headroom_cost_basis": stamped_basis,
     }
 
 
@@ -480,8 +447,6 @@ def build_conductor_state(
             if getattr(conductor, "sound_design_revision", None) is not None
             else prior.get("sound_design_revision")
         ),
-        "measure": None,
-        "verify": None,
         "failure": (
             {
                 "code": failure_code,
@@ -499,14 +464,6 @@ def build_conductor_state(
         ),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
-            "predicted_spec": None,
-            "commanded_delta": None,
-            "declared_transfer": None,
-            "verify_measured": None,
-            "alignment_objective": "",
-            "entry_baseline": _entry_baseline_prior(conductor),
-            "proposal_fingerprint": "",
-            "gate_window_ms": None,
             "pilot_transfer_reference": None,
         },
         "evidence": dict(evidence) if evidence else None,
@@ -527,8 +484,6 @@ def build_conductor_state(
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
         if prior.get("session_id") == snap.session_id:
             state["evidence"] = dict(prior["evidence"])
-    if not runs_measure and isinstance(prior.get("measure"), Mapping):
-        state["measure"] = dict(prior["measure"])
     for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
         if key in prior:
             state[key] = prior[key]

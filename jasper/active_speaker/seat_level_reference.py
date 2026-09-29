@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
 from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
-from jasper.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig, total_positive_boost_db
+from jasper.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig
 from jasper.atomic_io import atomic_write_json
 from jasper.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.log_event import log_event
@@ -61,10 +61,10 @@ def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any])
     return max(0.0, dynamic_bass_gain_reserve_db(candidate) - dynamic_bass_gain_reserve_db(applied))
 
 
-def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, float]) -> float:
+def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, float], *, charge_db: float) -> float:
     """The most a graph without ``room_peqs`` plays above one with them across
-    ``band_hz``: their positive-boost charge less their lowest response there
-    (ADR-0370). Never negative, since the charge bounds their peak."""
+    ``band_hz``: ``charge_db``, what they add to the program charge, less their
+    lowest response there (ADR-0385). Never negative."""
     if not room_peqs:
         return 0.0
     low, high = band_hz
@@ -75,7 +75,7 @@ def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, f
     response = [sum(values) for values in zip(*(
         filter_response_db(FilterSpec("room", "Peaking", peq.freq, peq.gain, peq.q), grid, trig)
         for peq in room_peqs))]
-    return total_positive_boost_db(room_peqs) - min(response)
+    return max(0.0, charge_db - min(response))
 
 
 def predicted_rung_admission(

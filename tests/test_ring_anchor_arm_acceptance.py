@@ -36,18 +36,17 @@ from jasper.fanin.coupling_reconcile import (
     CARRIER_TRANSIENT_ACTIVE_REFUSAL,
 )
 from jasper.fanin.ring_readiness import ring_endpoint_anchor_converged
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
-    RING_WIRE_FORMAT_ENV_VAR,
     RING_WIRE_FORMAT_WIDE,
 )
 
 # The ALSA active lane a roleful box plays into BEFORE it is armed — the
 # "incoherent endpoint" fixture below. Resolved from the contract rather than
 # spelled, so a rename moves this test with it.
-from jasper.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+from jasper.dsp_control.camilla_config_contract import ACTIVE_OUTPUTD_PLAYBACK_DEVICE
 from tests._log_events import event_field_maps
 
 # The canonical saved dual-Apple composite: 4 outputs, left woofer/tweeter on
@@ -138,23 +137,11 @@ def _stage_box(
     graph_name: str = "active_speaker_staged_startup.yml",
     publish_anchor: object = True,
     staged_status: str = "staged",
-    wire_format: str = RING_WIRE_FORMAT_WIDE,
 ) -> Path:
-    """Put a whole box on disk: a loaded graph, a statefile, a staged record.
-
-    Every input :func:`ring_endpoint_anchor_converged` reads is a real file read
-    through the real reader — the statefile via ``JASPER_CAMILLA_STATEFILE``,
-    the staged record via ``JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH``, and
-    the declared wire off an isolated two-file ``jasper.env`` -> ``fanin.env``
-    chain. The wire in particular is NOT stubbed at the reader: stubbing it
-    skips ``resolve_ring_wire_format``'s validation, which made an
-    illegal-token test pass through a format MISMATCH instead of through the
-    refusal it claimed to prove. Only the saved output topology is a seam — a
-    composite is what makes an ACTIVE ring resolve at all.
-    """
+    """Stage graph and anchor evidence; only the saved output topology is stubbed."""
     import json
 
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.graph_selector import write_camilla_statefile
     from jasper.fanin import ring_readiness as rh
 
     configs = tmp_path / "configs"
@@ -187,17 +174,6 @@ def _stage_box(
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH", str(metadata)
     )
-
-    jasper_env = tmp_path / "jasper.env"
-    jasper_env.write_text("", encoding="utf-8")
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        f"{RING_WIRE_FORMAT_ENV_VAR}={wire_format}\n", encoding="utf-8"
-    )
-    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr(rh, "BASE_ENV_PATH", str(jasper_env))
-    monkeypatch.setattr(rh, "FANIN_ENV_PATH", str(fanin_env))
 
     monkeypatch.setattr(rh, "load_topology_for_wire", _composite_active_2way)
     return graph
@@ -738,7 +714,6 @@ def test_an_anchor_at_the_wrong_wire_is_refused(tmp_path, monkeypatch):
             playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
             fmt="S16_LE",
         ),
-        wire_format=RING_WIRE_FORMAT_WIDE,
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
@@ -787,55 +762,20 @@ def test_an_unreadable_graph_is_refused(tmp_path, monkeypatch):
     assert "cannot read the loaded CamillaDSP graph" in detail
 
 
-def test_an_unusable_wire_declaration_is_refused(tmp_path, monkeypatch):
-    """A wire token neither language recognizes. ``jasper-fanin`` parks at exit
-    78 on the same value, so there is no wire to prove the graph against and the
-    acceptance must not fall back to a guess.
-
-    ASSERTS THE PARSER'S OWN REFUSAL SENTENCE, not the token. Asserting only
-    ``"S24_WHAT" in detail`` cannot tell this refusal from a LEGAL-mismatch one:
-    under a lenient parser the bad token resolves to the wire, the format
-    compare then fails, and the mismatch sentence quotes the same token — so the
-    assertion passes while the parser has stopped rejecting anything. The
-    correctness lens demonstrated exactly that mutation surviving. The control
-    below pins the other sentence.
-    """
+def test_a_stale_narrow_anchor_reports_a_wire_mismatch(tmp_path, monkeypatch):
+    """A stale narrow graph is refused against the fixed wide program wire."""
     _stage_box(
         tmp_path,
         monkeypatch,
-        wire_format="S24_WHAT",
         graph_yaml=_graph_yaml(
             capture_device=RING_CAPTURE_DEVICE,
             playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
-        ),
-    )
-    ok, detail = ring_endpoint_anchor_converged()
-    assert not ok
-    assert "S24_WHAT" in detail, detail
-    assert "refusing to arm on a wire this box cannot declare" in detail, detail
-    assert "does not state this box's ring wire" not in detail, detail
-
-
-def test_a_legal_wire_mismatch_produces_the_OTHER_sentence(tmp_path, monkeypatch):
-    """CONTROL for the test above. A legal-but-different wire is a MISMATCH, and
-    it must not borrow the parser's refusal sentence — otherwise the assertion
-    above would pass for a box whose token was never rejected at all.
-    """
-    _stage_box(
-        tmp_path,
-        monkeypatch,
-        wire_format="S16_LE",
-        graph_yaml=_graph_yaml(
-            capture_device=RING_CAPTURE_DEVICE,
-            playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-            fmt=RING_WIRE_FORMAT_WIDE,
+            fmt="S16_LE",
         ),
     )
     ok, detail = ring_endpoint_anchor_converged()
     assert not ok
     assert "does not state this box's ring wire" in detail, detail
-    assert "refusing to arm on a wire this box cannot declare" not in detail, detail
 
 
 def test_a_malformed_staged_record_is_refused_not_raised(tmp_path, monkeypatch):

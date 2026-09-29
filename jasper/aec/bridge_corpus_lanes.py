@@ -8,7 +8,7 @@
 WebRTC/DTLN lanes, the USB raw/WebRTC/DTLN lanes, the AEC3 delay-sweep variants
 and the DTLN observation leg all sit behind `JASPER_AEC_CORPUS_*` /
 `JASPER_AEC_DTLN_ENABLED` flags that only `jasper.wake_corpus` sets. Ports come
-from `jasper.wake_legs` via `BridgeConfig`; nothing here is on the production
+from `jasper.playback_state.wake_legs` via `BridgeConfig`; nothing here is on the production
 wake path.
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ import os
 from queue import Empty, Queue
 from typing import Any, Callable
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,

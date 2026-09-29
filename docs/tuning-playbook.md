@@ -56,14 +56,15 @@ not software ranks.
 
 ## Speaker
 
-The emitter absorbs the largest branch peak plus its margin before the
-branches split. Boost spends program headroom (maximum SPL); it cannot raise a
-branch above the fader. `bounds.boost_headroom` discloses that cost and the
-remaining budget. The door refuses total program absorption above 40 dB
-(ADR-0219). Measurement excitation caps do not bound playback; session volume
-and measurement SPL headroom are disclosures here. The measurement SPL stop
-stays in force. The fitter uses remaining program headroom and the owner's
-`fit_budget.max_gain_db`; the mic tier limits where it has evidence.
+The emitter absorbs its graph's program peak plus one margin before the
+branches split; a cut or a trim ahead of a boost nets it (ADR-0385). Boost
+spends program headroom (maximum SPL); it cannot raise a branch above the fader. `bounds.boost_headroom` discloses that cost and the
+remaining budget. Composition refuses total program absorption above 40 dB as
+`program_headroom_exhausted` (ADR-0219). Measurement excitation caps do not
+bound playback; session volume and measurement SPL headroom are disclosures
+here. The measurement SPL stop stays in force. The fitter uses remaining
+program headroom and the owner's `fit_budget.max_gain_db`; the mic tier limits
+where it has evidence.
 
 A fit is already proposed. Each `fits` entry identifies its role and pose.
 Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`
@@ -294,8 +295,9 @@ This is not a hearing threshold.
 Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
 The harmonic knee across levels is the measured headroom edge; a knee above the top rung is extrapolated and the headroom row says so.
 
-Driver, room and bass boosts spend one shared headroom budget
-(`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
+The bass boost spends no program headroom; it reserves its own lift
+(`contract.bass.shared_headroom`;
+`0385-the-program-charge-is-the-emitted-graphs-peak-with-one-margin.md`).
 
 The reach at each level is the corner; the drive evidence is prescribed minus
 realized; the headroom evidence is the harmonics; nothing is graded against a
@@ -476,7 +478,7 @@ the composed-document seats. Counts come from `measurement_plans.json`'s
 `layouts.speaker_mark` and `layouts.seat_express`, loaded by `measurement_programs._PROGRAMS`.
 Each candidate plays at each seat before the mic moves: candidates per seat,
 **candidates × seats** sweeps per trial; repeats add sweeps, not placements.
-The hand rear trial is `rear/seat`, with `co_purposes: ["room"]`; the banker
+The hand rear trial is `rear/seat`, with `purposes: ["rear", "room"]`; the banker
 runs rear and room views on the same takes. The arm uses `rear_express`.
 
 Read `packet["rear"][].candidates[]`, then each candidate's `positions` seat
@@ -552,7 +554,7 @@ The full ADR file names appear beside their claims above:
 - ADR-0203: structural changes retire the old tune.
 - ADR-0204: tool output and operator authority.
 - ADR-0256: room ceiling, median and taper.
-- ADR-0257: shared boost headroom.
+- ADR-0385: one program charge, which the bass boost does not spend.
 - ADR-0304: bass level evidence; ADR-0311 supersedes its scheduling.
 
 `tuning-methodology.md` gives the cancellation derivation. The room regime
@@ -588,7 +590,7 @@ Speaker
 | driver.trim_pin_scope | "{<role>: <dB, between -60.0 and 0>} -- pin that driver's LEVEL instead of letting this round re-solve it. Only for a role whose chain you replace or clear; filters: [] clears every role's chain and admits trim pins. Use it when the chain you are prescribing was shaped against a level this round will not re-derive: the trim is re-solved every round from a level-match datum, so a chain carried over from another round otherwise rides a level it was not shaped against. A trim you name is CARRIED, never re-solved, and it is never a measurement of this round" | rule | contract.speaker.driver.bounds.trim_pin_scope |
 | driver.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.driver.bounds.q_range_cut |
 | driver.boost_Q_max | 8.0 | Q | contract.speaker.driver.bounds.q_max_boost |
-| driver.boost_headroom_rule | "Program headroom spent must not exceed 40 dB" | dB | contract.speaker.driver.bounds.boost_headroom_rule |
+| driver.boost_headroom_rule | "Program headroom spent must not exceed 40 dB; composition refuses program_headroom_exhausted past it" | dB | contract.speaker.driver.bounds.boost_headroom_rule |
 | driver.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: it only removes level and cannot clip at any depth, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully. What a cut spends is one of max_filters_per_role's slots" | rule | driver.bounds.cuts_are_free |
 | driver.filters_per_role | 8 | count | contract.speaker.driver.bounds.max_filters_per_role |
 | driver.shelf_rule | "leading a role's chain, or -- a Highshelf only -- ending it after a Lowshelf lead. Anywhere else the emitter cannot name the filter and the document is refused. Peaking sits anywhere" | rule | contract.speaker.driver.bounds.shelf_rule |
@@ -644,7 +646,8 @@ Bass
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
 | linkwitz_transform | {"source_hz":{"type":"number","minimum":20.0,"maximum":200.0},"source_q":{"type":"number","minimum":0.3,"maximum":1.5},"target_hz":{"type":"number","minimum":10.0},"target_q":{"type":"number","minimum":0.3,"maximum":1.5}} | Hz, Q | contract.bass.schema.properties.linkwitz_transform.properties |
 | linkwitz_transform_rules | {"adr":"ADR-0359","target_hz_exclusive_upper_field":"source_hz"} | rule | contract.bass.bounds.linkwitz_transform |
-| shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
+| charged_layers | ["linearization","blend_correction","room_correction","rear_calibration"] | layers | contract.bass.shared_headroom.charged_layers |
+| uncharged_layers | ["bass_extension","preference_filters"] | layers | contract.bass.shared_headroom.uncharged_layers |
 
 Rear
 | Name | Value | Unit | Constant or function field |

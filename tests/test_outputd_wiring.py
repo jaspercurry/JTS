@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from jasper.audio_hardware import dac
-from jasper.tts_routing import (
+from jasper.service_state.tts_routing import (
     FANIN_TTS_SOCKET,
     OUTPUTD_TTS_SOCKET,
     VOICE_TTS_SOCKET_ENV,
@@ -807,7 +807,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     install_sh = installer_text()
     unit = (REPO / "deploy" / "systemd" / "jasper-audio-hardware-reconcile.service").read_text()
     rule = (REPO / "deploy" / "udev" / "99-jasper-audio-hardware-reconcile.rules").read_text()
-    outputd_active_lane = (REPO / "jasper" / "outputd_active_lane.py").read_text()
+    outputd_active_lane = (REPO / "jasper" / "dsp_control" / "outputd_active_lane.py").read_text()
     startup_load = (REPO / "jasper" / "active_speaker" / "startup_load.py").read_text()
     assert "deploy/systemd/jasper-audio-hardware-reconcile.service" in install_sh
     assert "deploy/bin/jasper-audio-hardware-reconcile" in install_sh
@@ -893,7 +893,7 @@ def test_voice_tts_socket_resolves_fanin_solo_and_outputd_when_bonded(monkeypatc
 
 def test_fanin_tts_socket_default_matches_the_python_constant():
     """fan-in bakes its assistant-TTS socket path as a Rust default; every
-    Python consumer resolves ``jasper.tts_routing.FANIN_TTS_SOCKET``. Rust owns
+    Python consumer resolves ``jasper.service_state.tts_routing.FANIN_TTS_SOCKET``. Rust owns
     the value and Python mirrors it, so the two owners are compared here once.
 
     outputd's twin has no baked default — it binds only when the grouping
@@ -904,7 +904,7 @@ def test_fanin_tts_socket_default_matches_the_python_constant():
     config_rs = (REPO / "rust" / "jasper-fanin" / "src" / "config.rs").read_text()
     assert f'"{FANIN_TTS_SOCKET}"' in config_rs, (
         f"jasper-fanin no longer defaults its TTS socket to {FANIN_TTS_SOCKET} "
-        "— jasper.tts_routing.FANIN_TTS_SOCKET must move with it"
+        "— jasper.service_state.tts_routing.FANIN_TTS_SOCKET must move with it"
     )
 
 
@@ -919,19 +919,7 @@ def test_camilla_outputd_config_declares_outputd_lane():
 
 
 def _emit_shipped_cutover_config(monkeypatch, tmp_path) -> str:
-    """The emitter call the shipped seed must match, made deterministic.
-
-    ``emit_flat_outputd_cutover_config()`` resolves the ring wire through
-    ``read_declared_ring_wire_format`` — a FILE-FRESH read of
-    ``/var/lib/jasper/fanin.env`` then ``/etc/jasper/jasper.env`` with no
-    parameter seam — and, with no ``topology`` passed, loads the saved
-    topology from ``JASPER_OUTPUT_TOPOLOGY_PATH``/the default path. Neither
-    is in conftest's ``_isolate_host_state_paths`` allowlist, so on a roleful
-    box (one with a real fanin.env or saved topology) this call would emit
-    THAT box's wire/topology rather than the plain flat-stereo identity graph
-    the shipped seed is. Point both at absent tmp paths so the result is the
-    hermetic default everywhere, laptop or roleful box alike.
-    """
+    """Render the shipped wide ring graph."""
     monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
     monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(tmp_path / "jasper.env"))
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
@@ -958,8 +946,8 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width(
     included (both were unpinned until `parse_camilla_devices_config` learned
     them).
     """
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
     cutover = REPO / "deploy" / "camilladsp" / "outputd-cutover.yml"
     emitted = parse_camilla_devices_config(

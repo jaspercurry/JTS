@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.source_state — the three async probes that report
+"""Tests for jasper.playback_state.source_state — the three async probes that report
 which renderer is currently producing audio.
 
 The probes wrap I/O (a librespot state file, busctl, the BlueZ system
-bus); mock at that boundary. Both jasper.renderer.RendererClient.active_renderers
+bus); mock at that boundary. Both jasper.audio_control.renderer.RendererClient.active_renderers
 and jasper.mux's tick loop depend on these returning False on transport
 error rather than raising — every test here exercises that contract too.
 """
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from jasper import source_state
+from jasper.playback_state import source_state
 
 from tests._librespot_state import write_librespot_state
 

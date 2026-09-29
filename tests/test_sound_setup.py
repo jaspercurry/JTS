@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker import baseline_record
-from jasper import output_topology_store as topology_mod
+from jasper.audio_routes import output_topology_store as topology_mod
 from jasper.active_speaker.candidate_bank import bank_candidate
 
 import asyncio
@@ -46,8 +46,8 @@ from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_d
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
-from jasper.active_speaker.runtime_contract import (
-    FLAT_PROGRAM_GRAPH_UNCONFIGURED,
+from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_UNCONFIGURED
+from jasper.active_speaker.graph_selector import (
     PARKED_MUTED_STATUS,
     apply_safe_graph_decision_to_statefile,
     parked_safe_graph_decision,
@@ -55,15 +55,17 @@ from jasper.active_speaker.runtime_contract import (
 )
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
 from jasper.biquad import PeqFilter
-from jasper.camilla import CamillaController, CamillaUnavailable
+from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
-from jasper.dsp_apply import (
+from jasper.dsp_control.dsp_apply import (
+    DspApplyError,
     DspApplyState,
     camilla_graph_mutation,
     dsp_write_epoch,
+    last_dsp_apply_state,
     record_dsp_apply_state,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputCardFact,
@@ -90,11 +92,12 @@ from jasper.sound.settings import (
     SoundSettings,
     load_sound_settings,
 )
-from jasper.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
-from jasper.volume_owner import VolumeOwner, install_volume_owner
+from jasper.audio_control.volume_carrier import CamillaCarrier
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
+from jasper.audio_routes.volume_curve import percent_to_db
+from jasper.audio_resources.volume_owner import install_volume_owner
 from jasper.platform.control_client import ControlError
-from jasper.volume_persistence import VolumePersistence, configured_path
+from jasper.service_state.volume_persistence import VolumePersistence, configured_path
 from jasper.web import (
     _common,
     nav,
@@ -118,14 +121,14 @@ from ._web_test_helpers import (
     make_csrf_session,
     request_with_csrf,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_store import new_topology_draft
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import new_topology_draft
+from jasper.audio_routes.output_topology_store import (
     OutputTopologyMutation,
     load_output_topology,
     output_topology_mutation,
@@ -134,10 +137,11 @@ from jasper.output_topology_store import (
 from .sound_camilla_fixtures import FakeCamilla
 from .volume_coordinator_fixtures import (
     _FakeBackend,
+    _FakeCamilla,
     _MinimalCamillaClient,
     _real_controller,
 )
-from .test_active_speaker_runtime_contract import _active_baseline_yaml
+from .test_active_speaker_runtime_contract import _active_baseline_yaml, _program_bake_yaml
 
 
 class _RuntimeStep:
@@ -336,6 +340,32 @@ def _record_dsp_epoch(path: Path, op_id: str) -> None:
     )
 
 
+_ROOM_PEQ = (PeqFilter(freq=80.0, q=4.0, gain=-3.0),)
+
+
+def _eq_box(
+    monkeypatch, tmp_path: Path, name: str = "sound_current.yml", *,
+    peqs: tuple[PeqFilter, ...] = _ROOM_PEQ, layout: bool = True,
+    epoch: str | None = None, fail_set: bool = False,
+) -> tuple[Path, FakeCamilla]:
+    """CamillaDSP running ``configs/<name>``, a room config carrying ``peqs``,
+    with DSP-apply and sound-settings state under ``tmp_path``.
+
+    ``layout`` saves the passive speaker EQ composes over; ``epoch`` records a
+    finished DSP apply under that op id.
+    """
+    if layout:
+        _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    if epoch is not None:
+        _record_dsp_epoch(tmp_path / "dsp.json", epoch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / name).write_text(_room_config(list(peqs)))
+    return config_dir, FakeCamilla(str(config_dir / name), fail_set=fail_set)
+
+
 class FakeCamillaWithoutLiveRaw:
     def __init__(self, current_path: str) -> None:
         self.current_path = current_path
@@ -351,79 +381,17 @@ class FakeCamillaWithoutLiveRaw:
         return True
 
 
-class FakeVolumeCamilla:
-    def __init__(self, db: float = -18.0, muted: bool = True) -> None:
-        self.db = db
-        self.muted = muted
-        self.events: list[tuple[str, float | bool, bool]] = []
-
-    async def get_volume_and_mute(
-        self, *, best_effort: bool = False,
-    ) -> tuple[float, bool]:
-        return self.db, self.muted
-
-    async def set_volume_db(
-        self, db: float, *, best_effort: bool = False,
-    ) -> bool:
-        self.events.append(("volume", db, best_effort))
-        self.db = db
-        return True
-
-    async def set_main_mute(
-        self, muted: bool, *, best_effort: bool = False,
-    ) -> bool:
-        self.events.append(("mute", muted, best_effort))
-        self.muted = muted
-        return True
-
-
-def _install_floor_tone_owner(fake: FakeVolumeCamilla) -> None:
-    """Bind the process fader owner to this fake, as `jasper.web` binds the real one.
+def _owned(camilla):
+    """``camilla`` under the process fader owner, bound as `jasper.web` binds
+    the real one (``volume_process``).
 
     The audition's level control is a COMMISSIONING claim, so a test with no
     owner registered exercises the degrade path instead of the subject. The
     autouse `_isolate_process_volume_owner` fixture clears this again after
     each test.
     """
-
-    async def _read() -> float:
-        return fake.db
-
-    async def _write(db: float) -> bool:
-        # best_effort=True is the owner's door contract in BOTH directions: an
-        # unconfirmable level refuses the claim outright rather than relying on
-        # the setter to raise. `jasper.web` binds the real door the same way.
-        return await fake.set_volume_db(db, best_effort=True)
-
-    install_volume_owner(
-        VolumeOwner(set_fader_db=_write, get_fader_db=_read)
-    )
-
-
-class BlockingVolumeCamilla(FakeVolumeCamilla):
-    def __init__(
-        self,
-        *,
-        db: float = -18.0,
-        muted: bool = True,
-        block_on_volume_call: int,
-    ) -> None:
-        super().__init__(db=db, muted=muted)
-        self.block_on_volume_call = block_on_volume_call
-        self.volume_calls = 0
-        self.volume_call_entered = asyncio.Event()
-        self.release_volume_call = asyncio.Event()
-
-    async def set_volume_db(
-        self, db: float, *, best_effort: bool = False,
-    ) -> bool:
-        self.volume_calls += 1
-        self.events.append(("volume", db, best_effort))
-        if self.volume_calls == self.block_on_volume_call:
-            self.volume_call_entered.set()
-            await self.release_volume_call.wait()
-        self.db = db
-        return True
+    install_volume_owner(CamillaCarrier(camilla=camilla).volume_owner)
+    return camilla
 
 
 class FakeVolumeFloorToneRunner:
@@ -448,12 +416,30 @@ class FakeVolumeFloorToneRunner:
         return self.started and not self.stopped and self.error is None
 
 
-def _floor_tone_session(tmp_path: Path) -> volume_floor_tone.VolumeFloorToneSession:
+@pytest.fixture
+def floor_tone(tmp_path: Path, monkeypatch) -> volume_floor_tone.VolumeFloorToneSession:
     """A session holding the lock `_real_controller(..., tmp_path)` probes:
     dsp_apply's writer lock resolves to one inside a temp dir under pytest."""
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
+    FakeVolumeFloorToneRunner.instances.clear()
     session = volume_floor_tone.VolumeFloorToneSession()
     session._writer_lock_dir = tmp_path
     return session
+
+
+async def _play(
+    session, camilla, floor_db: float = -24.0, *, runner=FakeVolumeFloorToneRunner,
+) -> dict:
+    return await session.start_or_update(
+        {"volume_floor_db": floor_db},
+        camilla_factory=lambda: camilla,
+        runner_factory=runner,
+    )
+
+
+async def _stop(session, camilla, reason: str = "stop") -> dict:
+    return await session.stop(camilla_factory=lambda: camilla, reason=reason)
 
 
 def _writer_lock_held(tmp_path: Path) -> Callable[[], bool | None]:
@@ -463,19 +449,20 @@ def _writer_lock_held(tmp_path: Path) -> Callable[[], bool | None]:
     ).graph_mutation_in_progress
 
 
-class _WitnessCamilla(FakeVolumeCamilla):
+class _WitnessCamilla(_FakeCamilla):
     """Notes, at every fader and mute write, whether the writer lock is held.
 
     ``breaks`` fails the audition's start the way an unreachable CamillaDSP
     does: ``"read"`` answers its best-effort read with nothing,
-    ``"unmute"`` raises from its one strict write, ``"unmute_hang"`` never
-    returns from it; ``""`` breaks nothing.
+    ``"unmute"`` refuses the unmute (``False`` best-effort, CamillaUnavailable
+    strict), ``"unmute_hang"`` never returns from it; ``""`` breaks nothing.
     """
 
     def __init__(
         self, held: Callable[[], bool | None], *, breaks: str = "",
     ) -> None:
-        super().__init__(db=-18.0, muted=True)
+        super().__init__(db=-18.0)
+        self.muted = True
         self._held = held
         self.breaks = breaks
         self.held_at_write: list[bool] = []
@@ -494,10 +481,12 @@ class _WitnessCamilla(FakeVolumeCamilla):
 
     async def set_main_mute(self, muted: bool, *, best_effort: bool = False) -> bool:
         self.held_at_write.append(self._held())
-        if not best_effort and self.breaks.startswith("unmute"):
+        if not muted and self.breaks.startswith("unmute"):
             self.unmute_entered.set()
             if self.breaks == "unmute_hang":
                 await asyncio.Event().wait()
+            if best_effort:
+                return False
             raise CamillaUnavailable("camilla restarting")
         return await super().set_main_mute(muted, best_effort=best_effort)
 
@@ -510,7 +499,7 @@ def _household_fader(
     where `read_measurement_hold` asks for it."""
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(tmp_path / "volume.json"))
     monkeypatch.setattr(
-        "jasper.renderer.RendererClient", lambda **_: _FakeBackend(selected="idle"),
+        "jasper.audio_control.renderer.RendererClient", lambda **_: _FakeBackend(selected="idle"),
     )
     hold = measurement_hold.MeasurementHold()
     monkeypatch.setattr(
@@ -564,24 +553,14 @@ class _ReadTrackingBytesIO(io.BytesIO):
         return super().read(size)
 
 
-class _BrokenPipeBytesIO(io.BytesIO):
-    def __init__(self) -> None:
-        super().__init__()
-        self.write_calls = 0
-
-    def write(self, data: bytes) -> int:
-        self.write_calls += 1
-        raise BrokenPipeError("synthetic client disconnect")
-
-
 def _drive_raw_sound_post(
     tmp_path: Path,
     *,
     path: str,
     content_length: int,
     body: bytes = b"must-not-be-read",
-    response_sink: io.BytesIO | None = None,
     idle_hold=sound_setup.no_hold,
+    camilla_factory=lambda: None,
 ) -> tuple[bytes, list[int]]:
     """Drive the real sound Handler with an otherwise-valid raw POST."""
 
@@ -589,7 +568,7 @@ def _drive_raw_sound_post(
         profile_path=tmp_path / "sound_profile.json",
         library_path=tmp_path / "sound_profiles.json",
         config_dir=tmp_path / "configs",
-        camilla_factory=lambda: None,
+        camilla_factory=camilla_factory,
         idle_hold=idle_hold,
     )
     raw = (
@@ -600,7 +579,7 @@ def _drive_raw_sound_post(
         + body
     )
     rfile = _ReadTrackingBytesIO(raw)
-    wfile = response_sink if response_sink is not None else io.BytesIO()
+    wfile = io.BytesIO()
     handler = handler_cls.__new__(handler_cls)
     handler.rfile = rfile
     handler.wfile = wfile
@@ -613,34 +592,40 @@ def _drive_raw_sound_post(
     return wfile.getvalue(), rfile.read_calls
 
 
+def _get_json(tmp_path: Path, path: str) -> dict:
+    """GET ``path`` from the real sound Handler; its 200 JSON answer."""
+    handler_cls = sound_setup._make_handler(
+        profile_path=tmp_path / "sound_profile.json",
+        library_path=tmp_path / "sound_profiles.json",
+        config_dir=tmp_path / "configs",
+        camilla_factory=lambda: None,
+    )
+    handler = handler_cls.__new__(handler_cls)
+    handler.rfile = io.BytesIO(f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode())
+    handler.wfile = io.BytesIO()
+    handler.client_address, handler.server = ("127.0.0.1", 0), None
+    handler.raw_requestline = handler.rfile.readline()
+    assert handler.parse_request()
+    handler.do_GET()
+    head, body = handler.wfile.getvalue().split(b"\r\n\r\n", 1)
+    assert b" 200 " in head.split(b"\r\n", 1)[0]
+    assert b"Content-Type: application/json" in head
+    return json.loads(body)
+
+
 @pytest.mark.parametrize(
-    ("method", "route", "builder", "event", "extra_fields"),
+    ("route", "builder", "event"),
     [
+        ("/output-topology", "_output_topology_payload", "sound.output_topology"),
         (
-            "GET",
-            "/output-topology",
-            "_output_topology_payload",
-            "sound.output_topology",
-            {},
-        ),
-        (
-            "GET",
             "/active-speaker/tuning-handoff",
             "_active_speaker_tuning_handoff_payload",
             "sound.active_speaker_tuning_handoff",
-            {},
         ),
     ],
 )
 def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
-    tmp_path,
-    monkeypatch,
-    caplog,
-    method,
-    route,
-    builder,
-    event,
-    extra_fields,
+    tmp_path, monkeypatch, caplog, route, builder, event,
 ):
     """A failed route answers 502 and records its exception exactly once."""
     error = OSError("payload builder failed")
@@ -651,22 +636,16 @@ def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
     monkeypatch.setattr(sound_setup, builder, fail)
     caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
     with sound_server(tmp_path) as base:
-        if method == "GET":
-            try:
-                urllib.request.urlopen(f"{base}{route}")
-            except urllib.error.HTTPError as e:
-                response = e
-            else:
-                raise AssertionError(f"{route} did not fail the request")
-            assert response.code == 502
-        else:
-            response = json_post_with_csrf(base, route, {}, expect_status=502)
+        with pytest.raises(urllib.error.HTTPError) as failed:
+            urllib.request.urlopen(f"{base}{route}")
+        response = failed.value
+        assert response.code == 502
         assert response.headers.get_content_type() == "application/json"
         payload = json.loads(response.read().decode("utf-8"))
 
     assert payload == {"error": str(error)}
     record, fields = _event_record(caplog, event)
-    assert fields == {"result": "error", **extra_fields}
+    assert fields == {"result": "error"}
     assert record.levelno == logging.ERROR
     assert record.exc_info is not None
     assert record.exc_info[1] is error
@@ -699,7 +678,25 @@ def test_sound_post_rejects_invalid_body_length_before_read(
     assert read_calls == []
 
 
-def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypatch):
+@pytest.mark.parametrize("path", [
+    "/not-a-sound-route",
+    # Retired active-speaker POST routes stay unregistered.
+    "/active-speaker/crossover-preview",
+    "/active-speaker/stop",
+    "/active-speaker/channel-protection",
+    "/active-speaker/stage-config",
+    "/active-speaker/check-path-safety",
+    "/active-speaker/load-startup-config",
+    "/active-speaker/commission-load",
+    "/active-speaker/commission-ramp-step",
+    "/active-speaker/commission-ramp-ack",
+    "/active-speaker/driver-measurement",
+    "/active-speaker/summed-test",
+    "/active-speaker/summed-test/level",
+    "/active-speaker/summed-test/stop",
+    "/active-speaker/summed-validation",
+])
+def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypatch, path):
     def fail_if_guarded(_handler):
         raise AssertionError("unknown route must return before the CSRF guard")
 
@@ -707,7 +704,7 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
 
     response, read_calls = _drive_raw_sound_post(
         tmp_path,
-        path="/not-a-sound-route",
+        path=path,
         content_length=-1,
     )
 
@@ -715,136 +712,56 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
     assert read_calls == []
 
 
-def test_dead_active_speaker_post_routes_are_unregistered(tmp_path):
-    handler = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=tmp_path / "configs",
-    )
-    dispatch = handler.do_POST
-    routes = dispatch.__closure__[
-        dispatch.__code__.co_freevars.index("_POST_ROUTES")
-    ].cell_contents
-    dead = {
-        "/active-speaker/crossover-preview",
-        "/active-speaker/stop",
-        "/active-speaker/channel-protection",
-        "/active-speaker/stage-config",
-        "/active-speaker/check-path-safety",
-        "/active-speaker/load-startup-config",
-        "/active-speaker/commission-load",
-        "/active-speaker/commission-ramp-step",
-        "/active-speaker/commission-ramp-ack",
-        "/active-speaker/driver-measurement",
-        "/active-speaker/summed-test",
-        "/active-speaker/summed-test/level",
-        "/active-speaker/summed-test/stop",
-        "/active-speaker/summed-validation",
-    }
-    assert dead.isdisjoint(routes)
-
-
-def test_seat_level_start_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
-    """#2761: POST /active-speaker/seat-level/start reaches
-    _seat_level_start_payload only after the CSRF chokepoint
-    (guard_mutating_request, wired via dispatch_post(..., guard="header"))."""
+@pytest.mark.parametrize(
+    ("path", "builder", "stub", "body", "expected"),
+    [
+        (
+            "/active-speaker/seat-level/start",
+            "_seat_level_start_payload",
+            lambda body: {"route": "seat-level-start", "body": body},
+            b'{"target_db_spl": 78.0}',
+            {"route": "seat-level-start", "body": {"target_db_spl": 78.0}},
+        ),
+        (
+            "/active-speaker/seat-level/stop",
+            "_seat_level_stop_payload",
+            lambda: {"route": "seat-level-stop"},
+            b"{}",
+            {"route": "seat-level-stop"},
+        ),
+    ],
+)
+def test_seat_level_routes_dispatch_and_are_csrf_protected(
+    tmp_path, monkeypatch, path, builder, stub, body, expected,
+):
+    """#2761: each seat-level POST reaches its payload builder only after the
+    CSRF chokepoint (guard_mutating_request, wired via dispatch_post(...,
+    guard="header"))."""
     monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
     response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/start",
-        content_length=-1,
+        tmp_path, path=path, content_length=-1,
     )
     assert b" 403 " in response.split(b"\r\n", 1)[0]
     assert read_calls == []
 
     monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_seat_level_start_payload",
-        lambda body: {"route": "seat-level-start", "body": body},
-    )
-    body = b'{"target_db_spl": 78.0}'
+    monkeypatch.setattr(sound_setup, builder, stub)
     response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/start",
-        content_length=len(body),
-        body=body,
+        tmp_path, path=path, content_length=len(body), body=body,
     )
     assert b" 200 " in response.split(b"\r\n", 1)[0]
-    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
-    assert payload == {
-        "route": "seat-level-start",
-        "body": {"target_db_spl": 78.0},
-    }
+    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == expected
     assert read_calls == [len(body)]
 
 
-@pytest.mark.parametrize("path,builder,expected", [
-    ("/active-speaker/seat-level/status", "_seat_level_status_payload", {
+def test_seat_level_status_route_serves_its_builder(tmp_path, monkeypatch):
+    expected = {
         "state": "idle", "target_db_spl": None,
         "mic": {"available": False}, "default_target_db_spl": 78.0,
-    }),
-])
-def test_seat_level_state_routes(tmp_path, monkeypatch, path, builder, expected):
-    monkeypatch.setattr(sound_setup, builder, lambda: expected)
-
-    handler_cls = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=tmp_path / "configs",
-        camilla_factory=lambda: None,
-    )
-    rfile = io.BytesIO(
-        f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode()
-    )
-    wfile = io.BytesIO()
-    handler = handler_cls.__new__(handler_cls)
-    handler.rfile = rfile
-    handler.wfile = wfile
-    handler.client_address = ("127.0.0.1", 0)
-    handler.server = None
-    handler.raw_requestline = rfile.readline()
-    assert handler.parse_request() is True
-    handler.protocol_version = "HTTP/1.1"
-    handler.do_GET()
-    response = wfile.getvalue()
-
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    headers, body = response.split(b"\r\n\r\n", 1)
-    assert b"Content-Type: application/json" in headers
-    payload = json.loads(body)
-    assert payload == expected
-
-
-def test_seat_level_stop_route_dispatches_and_is_csrf_protected(tmp_path, monkeypatch):
-    """#2761: POST /active-speaker/seat-level/stop reaches
-    _seat_level_stop_payload only after the same CSRF chokepoint."""
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/stop",
-        content_length=-1,
-    )
-    assert b" 403 " in response.split(b"\r\n", 1)[0]
-    assert read_calls == []
-
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(
-        sound_setup,
-        "_seat_level_stop_payload",
-        lambda: {"route": "seat-level-stop"},
-    )
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path,
-        path="/active-speaker/seat-level/stop",
-        content_length=2,
-        body=b"{}",
-    )
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == {
-        "route": "seat-level-stop",
     }
-    assert read_calls == [2]
+    monkeypatch.setattr(sound_setup, "_seat_level_status_payload", lambda: expected)
+
+    assert _get_json(tmp_path, "/active-speaker/seat-level/status") == expected
 
 
 def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):
@@ -894,8 +811,11 @@ def test_index_html_renders_the_page_shell_for_its_mode(page_mode, title):
     """All three modes share the design system and each loads its own static
     module; only the EQ mode renders the Off/Saved/Draft chrome, and none
     inlines logic."""
-    html = sound_setup._index_html(page_mode=page_mode).decode()
+    html = sound_setup._index_html("csrf-token", page_mode=page_mode).decode()
 
+    # The token rides in the meta tag; the static module reads it and sends
+    # X-CSRF-Token on every mutating POST.
+    assert 'meta name="jts-csrf" content="csrf-token"' in html
     assert "/assets/app.css" in html
     assert "/assets/sound-profile/sound.css?v=" in html  # linked, not inlined
     assert "<style>" not in html
@@ -987,97 +907,39 @@ def test_design_draft_save_carries_field_refusals(monkeypatch, tmp_path, manual,
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["code"] == code
 
 
-def test_eq_page_delegates_content_dsp_when_bonded_follower(monkeypatch):
+@pytest.mark.parametrize("page_mode", ["eq", "speaker", "output"])
+def test_a_bonded_follower_page_delegates_to_its_leader(monkeypatch, page_mode):
+    """Content EQ, room correction and volume shaping (the PROGRAM domain) are
+    the leader's while paired. Local crossover and driver-protection work stays
+    with the speaker that owns the DAC, so only /sound/speaker/ keeps its
+    module, and the other two pages link to it."""
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     leader_paths = []
     monkeypatch.setattr(
         sound_setup,
         "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/eq/",
+        lambda path="/": leader_paths.append(path) or f"http://jts3.local{path}",
     )
+    local = page_mode == "speaker"
 
-    html = sound_setup._index_html("csrf-token", page_mode="eq").decode()
+    html = sound_setup._index_html(page_mode=page_mode).decode()
 
-    # The delegation card stays: content EQ / room correction / volume shaping
-    # are the leader's job while paired.
-    assert "Sound is controlled by the pair leader" in html
-    assert leader_paths == ["/sound/eq/"]
-    assert "http://jts3.local/sound/eq/" in html
-    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
-    # EQ is entirely leader-owned on a follower; no local commissioning module.
-    assert "/assets/sound-profile/js/main.js" not in html
-    assert 'id="sound-page-data"' in html
-    assert '"follower"' in html
-    assert 'id="view-body"' not in html
-    # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented tablist,
-    # and the now-playing EQ plot) stays delegated to the leader — none of it is
-    # rendered on the follower page.
-    assert 'id="tab-off"' not in html
-    assert 'id="tab-saved"' not in html
-    assert 'id="tab-draft"' not in html
-    assert 'id="plot"' not in html
-    assert 'class="now-playing"' not in html
-    assert 'role="tablist"' not in html
-    assert 'meta name="jts-csrf" content="csrf-token"' in html
-
-
-def test_speaker_page_keeps_local_commissioning_when_bonded_follower(monkeypatch):
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    leader_paths = []
-    monkeypatch.setattr(
-        sound_setup,
-        "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path)
-        or "http://jts3.local/sound/speaker/",
+    assert leader_paths == [f"/sound/{page_mode}/"]
+    assert f"http://jts3.local/sound/{page_mode}/" in html
+    assert ('id="view-body"' in html) is local
+    assert ("/assets/sound-profile/js/speaker.js" in html) is local
+    assert not any(
+        f"/assets/sound-profile/js/{module}.js" in html for module in ("main", "output")
     )
-
-    html = sound_setup._index_html("csrf-token", page_mode="speaker").decode()
-
-    assert leader_paths == ["/sound/speaker/"]
-    assert "http://jts3.local/sound/speaker/" in html
-    assert 'id="view-body"' in html
-    assert "/assets/sound-profile/js/speaker.js" in html
-    assert '"mode": "speaker"' in html
-    assert '"follower": true' in html
-    assert 'id="tab-off"' not in html
-    assert 'id="plot"' not in html
-    # The local page owns the driver domain, so it offers no way back to it.
-    assert "Open local speaker setup" not in html
-
-
-def test_output_page_delegates_volume_shaping_when_bonded_follower(monkeypatch):
-    """Volume shaping is the leader's PROGRAM domain, so the follower's Output
-    page is delegation-only — with a path to the local page it does own."""
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    leader_paths = []
-    monkeypatch.setattr(
-        sound_setup,
-        "bonded_follower_leader_web_url",
-        lambda path="/": leader_paths.append(path) or "http://jts3.local/sound/output/",
+    assert ('href="/sound/speaker/">Open local speaker setup</a>' in html) is not local
+    # The content-EQ editor chrome (Off/Saved/Draft tabs, the segmented
+    # tablist, the now-playing plot) is the leader's on every page.
+    assert not any(
+        marker in html
+        for marker in (*_EQ_ONLY_CHROME, 'class="now-playing"', 'role="tablist"')
     )
-
-    html = sound_setup._index_html("csrf-token", page_mode="output").decode()
-
-    assert leader_paths == ["/sound/output/"]
-    assert "http://jts3.local/sound/output/" in html
-    assert 'href="/sound/speaker/">Open local speaker setup</a>' in html
-    assert "/assets/sound-profile/js/output.js" not in html
-    assert 'id="view-body"' not in html
-    # The crossover row hangs under Speaker setup, not this page.
+    # No delegation page renders the crossover row.
     assert _crossover_child_row()[1] + "</a>" not in html
-
-
-def test_bonded_follower_rejects_content_dsp_mutations(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
-    with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(
-            base,
-            "/settings",
-            {},
-            expect_status=409,
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-        assert "controlled on the pair leader" in payload["error"]
 
 
 def test_follower_block_set_is_content_dsp_only():
@@ -1117,13 +979,6 @@ def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: 
             base, "/active-speaker/rear-calibration/validate", session,
         )
         assert active_status not in (404, 409), active_status
-
-
-def test_index_html_embeds_csrf_meta_for_json_posts():
-    html = sound_setup._index_html("csrf-token").decode()
-    # The token rides in the meta tag; the static module reads it and sends
-    # X-CSRF-Token on every mutating POST.
-    assert 'meta name="jts-csrf" content="csrf-token"' in html
 
 
 def test_i2s_hat_payload_offers_only_the_undetectable_hats(monkeypatch, tmp_path):
@@ -1189,8 +1044,6 @@ def test_i2s_hat_payload_surfaces_a_boot_config_collision(monkeypatch, tmp_path)
 
 
 def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
-    from jasper.control import restart_broker
-
     calls = []
     monkeypatch.setattr(
         sound_active_speaker,
@@ -1208,7 +1061,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
         calls.append((unit, kwargs))
         return {"ok": True}
 
-    monkeypatch.setattr(restart_broker, "manage_units", manage)
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", manage)
 
     payload, result = sound_setup._save_i2s_hat_payload("innomaker_hifi_amp_pro")
 
@@ -1224,7 +1077,7 @@ def test_i2s_hat_save_reuses_start_only_reconcile_broker(monkeypatch):
     def fail_apply(*_args, **_kwargs):
         raise OSError("broker unavailable")
 
-    monkeypatch.setattr(restart_broker, "manage_units", fail_apply)
+    monkeypatch.setattr("jasper.control.restart_broker.manage_units", fail_apply)
     refreshed, failed = sound_setup._save_i2s_hat_payload(None)
     assert refreshed["restart_required"] is True
     assert refreshed["warnings"] == ["collision"]
@@ -1384,36 +1237,6 @@ def _passive_left_topology_payload() -> dict:
             }
         ],
         "routing": {"main_left_group_id": "left"},
-    }
-
-
-def _bench_active_topology_payload() -> dict:
-    """A mono active 2-way with neither lane confirmed and no tweeter guard."""
-
-    return {
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench_active",
-        "name": "Bench active",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-        },
-        "speaker_groups": [
-            {
-                "id": "main",
-                "label": "Main speaker",
-                "kind": "mono",
-                "mode": "active_2_way",
-                "channels": [
-                    {"role": "woofer", "physical_output_index": 0},
-                    {"role": "tweeter", "physical_output_index": 1},
-                ],
-            }
-        ],
-        "routing": {"mono_group_id": "main"},
     }
 
 
@@ -1676,9 +1499,8 @@ def _no_lane_topology_payload(*, active: bool, subwoofer: bool = False) -> dict:
 
 
 @pytest.mark.parametrize("output_index", [0, None])
-def test_duplicate_dac_outputs_are_refused_and_unassigned_ones_save(monkeypatch, tmp_path, output_index):
+def test_duplicate_dac_outputs_are_refused_and_unassigned_ones_save(tmp_path, output_index):
     topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     payload = _passive_left_topology_payload()
     payload["speaker_groups"].append({
         "id": "right",
@@ -1702,51 +1524,37 @@ def test_duplicate_dac_outputs_are_refused_and_unassigned_ones_save(monkeypatch,
 
 
 @pytest.mark.parametrize(
-    ("shape", "named_in_refusal"),
+    "shape",
     [
-        # Passive is not a free remedy: it sends full-range into every assigned
-        # output, which on an actively-wired cabinet reaches a bare tweeter. The
-        # household is being steered there, so the consequence travels with it.
-        (
-            {"active": True},
-            (
-                "full-range audio to every output",
-                "built-in passive crossover",
-                "attach an active-capable DAC",
-            ),
-        ),
+        pytest.param({"active": True}, id="active_2_way"),
         # The subwoofer branch is roleful too, and the wizard offers it as a
-        # one-tap add-on, so the copy has to name it.
-        ({"active": False, "subwoofer": True}, ("subwoofer layouts",)),
+        # one-tap add-on.
+        pytest.param({"active": False, "subwoofer": True}, id="local_sub"),
     ],
 )
 def test_a_roleful_layout_on_a_dac_without_an_active_lane_is_refused(
-    monkeypatch,
-    tmp_path: Path,
-    shape,
-    named_in_refusal,
+    monkeypatch, tmp_path: Path, caplog, shape,
 ):
     """Save-time capability guard: the wizard must not accept a layout this
     box can never drive. Before this guard the save landed with blockers=0 and
     the speaker went silent with every daemon reporting healthy."""
     register_passive_only_dac(monkeypatch)
-    topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(sound_active_speaker.OutputTopologyCapabilityBlocked) as refused:
         sound_setup._save_output_topology_payload(_no_lane_topology_payload(**shape))
 
-    message = str(excinfo.value)
-    assert PASSIVE_ONLY_DAC_LABEL in message
-    assert all(fragment in message for fragment in named_in_refusal)
+    assert refused.value.code == "dac_no_active_lane"
+    _, fields = _event_record(caplog, "sound.output_topology_save")
+    assert fields["result"] == "blocked"
+    assert fields["reason"] == "dac_no_active_lane"
+    assert fields["device_id"] == PASSIVE_ONLY_DAC_ID
     # Refused means refused: nothing was written.
-    assert not topo_path.exists()
+    assert not (tmp_path / "output_topology.json").exists()
 
 
 @pytest.mark.parametrize("subwoofer_supported, assigned", [(True, True), (True, False), (False, True)])
 def test_layout_save_refuses_active_route_over_capacity(monkeypatch, tmp_path, caplog, subwoofer_supported, assigned):
     path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     payload = _active_speaker_mono_topology_payload()
     payload["hardware"]["device_id"] = "hifiberry_dac8x"
     payload["hardware"]["physical_output_count"] = 8
@@ -1784,7 +1592,6 @@ def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path
     layout a lane-less board DOES support is untouched."""
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     saved = sound_setup._save_output_topology_payload(
         _no_lane_topology_payload(active=False)
@@ -1802,7 +1609,7 @@ def test_passive_layout_on_a_no_lane_dac_still_saves(monkeypatch, tmp_path: Path
     ],
 )
 def test_a_roleful_layout_on_the_innomaker_is_accepted_with_a_drivable_route(
-    monkeypatch, tmp_path: Path, shape,
+    tmp_path: Path, shape,
 ):
     """THE FLIP, at the surface the owner hit: /sound/speaker/ refused these
     layouts on the InnoMaker, and now accepts them.
@@ -1816,7 +1623,6 @@ def test_a_roleful_layout_on_the_innomaker_is_accepted_with_a_drivable_route(
     still has to come with a drivable route, which is the second half here.
     """
     topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
 
     saved = sound_setup._save_output_topology_payload(
         _innomaker_topology_payload(**shape)
@@ -1833,10 +1639,6 @@ def test_topology_save_kicks_hardware_and_grouping_reconcile(
     tmp_path: Path,
 ):
     """A save converges hardware and revokes any stale grouping DAC bypass."""
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
     calls: list[dict] = []
     sentinel = {"ok": True, "action": "start"}
     grouping_env = tmp_path / "grouping-outputd.env"
@@ -1903,26 +1705,40 @@ def _stub_reconcile(monkeypatch, result: dict) -> None:
         (RECONCILE_STILL_CONVERGING, "converging"),
     ],
 )
-def test_topology_save_reports_the_reconcile_verdict_without_leaking_it(
-    monkeypatch, tmp_path: Path, reconcile, status,
+@pytest.mark.parametrize("mutation", ["save", "reset", "repin"])
+def test_a_topology_mutation_reports_the_reconcile_verdict_without_leaking_it(
+    monkeypatch, tmp_path: Path, mutation, reconcile, status,
 ):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
     _stub_audio_stops(monkeypatch)
+    if mutation == "save":
+        def mutate():
+            return sound_setup._save_output_topology_payload(
+                _innomaker_topology_payload(active=False)
+            )
+    elif mutation == "reset":
+        save_output_topology(new_topology_draft(name="Old intent"))
+        monkeypatch.setattr(
+            "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+            lambda: {"status": "cleared"},
+        )
+        def mutate():
+            return sound_setup._reset_output_topology_payload({})
+    else:
+        _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+        def mutate():
+            return sound_setup._repin_output_topology_payload({})
     _stub_reconcile(monkeypatch, reconcile)
 
-    saved = sound_setup._save_output_topology_payload(
-        _innomaker_topology_payload(active=False)
-    )
+    verdict = mutate()[mutation]
 
-    assert saved["save"]["status"] == status
-    assert "private backend detail" not in saved["save"]["message"]
+    assert verdict["status"] == status
+    assert "private backend detail" not in verdict["message"]
 
 
 def test_topology_save_parks_before_replacing_saved_layout(
     monkeypatch, tmp_path: Path,
 ):
     path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     original = new_topology_draft(name="Old layout")
     save_output_topology(original, path=path)
     seen: list[OutputTopology] = []
@@ -1936,10 +1752,7 @@ def test_topology_save_parks_before_replacing_saved_layout(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit,
     )
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": True},
-    )
+    _stub_reconcile(monkeypatch, {"ok": True})
     _stub_audio_stops(monkeypatch)
 
     saved = sound_setup._save_output_topology_payload(
@@ -1963,7 +1776,7 @@ def test_topology_resave_converges_without_parking(monkeypatch, tmp_path, caplog
     controller.set_config_file_path.return_value = applied
     manage_units = Mock()
     monkeypatch.setattr("jasper.control.restart_broker.manage_units", manage_units)
-    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: controller)
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: controller)
     monkeypatch.setattr(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit_topology,
@@ -1997,7 +1810,6 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     save_output_topology(new_topology_draft(name="Old layout"), path)
     real_snapshot = topology_mod.load_output_topology_snapshot
     snapshot_reads = 0
@@ -2025,10 +1837,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit,
     )
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": True},
-    )
+    _stub_reconcile(monkeypatch, {"ok": True})
     monkeypatch.setattr(
         sound_active_speaker,
         "_output_topology_payload",
@@ -2046,10 +1855,7 @@ def test_topology_save_does_not_restore_old_graph_for_a_post_write_read_failure(
     assert load_output_topology(path).name != "Old layout"
 
 
-def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+def test_topology_save_refuses_invalid_input_before_stopping_or_parking(monkeypatch):
     monkeypatch.setattr(
         sound_active_speaker,
         "_active_speaker_stop_payload",
@@ -2064,10 +1870,7 @@ def test_topology_save_refuses_invalid_input_before_stopping_or_parking(
         sound_setup._save_output_topology_payload({"name": "not a topology"})
 
 
-def test_topology_save_stops_audio_sessions_before_parking(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+def test_topology_save_stops_audio_sessions_before_parking(monkeypatch):
     events = _stub_audio_stops(monkeypatch)
 
     monkeypatch.setattr(
@@ -2088,7 +1891,6 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
 ):
     register_passive_only_dac(monkeypatch)
     topo_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     with sound_server(tmp_path) as base:
         resp = json_post_with_csrf(
             base,
@@ -2100,8 +1902,8 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
         )
         payload = json.loads(resp.read().decode("utf-8"))
 
-        assert PASSIVE_ONLY_DAC_LABEL in payload["error"]
-        assert "output_topology" not in payload
+        assert payload["code"] == "dac_no_active_lane"
+        assert set(payload) == {"error", "code"}
         assert not topo_path.exists()
 
 
@@ -2116,12 +1918,7 @@ def test_refused_layout_reaches_the_page_as_a_rendered_error(
         (999, "subwoofer_crossover_out_of_range"),
     ],
 )
-def test_subwoofer_crossover_fc_round_trips_through_topology_save(
-    monkeypatch,
-    tmp_path: Path,
-    posted_fc_hz,
-    blocker,
-):
+def test_subwoofer_crossover_fc_round_trips_through_topology_save(posted_fc_hz, blocker):
     """A bass-management corner posted on the sub channel persists verbatim and
     echoes back through ``_save_output_topology_payload`` — the contract the
     ``/sound/`` subwoofer-card Fc control relies on. Left unset, no field is
@@ -2129,10 +1926,6 @@ def test_subwoofer_crossover_fc_round_trips_through_topology_save(
     ``DEFAULT_SUB_CROSSOVER_HZ``.
     """
 
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
     saved = sound_setup._save_output_topology_payload(
         _passive_stereo_with_sub_topology_payload(crossover_fc_hz=posted_fc_hz)
     )
@@ -2203,8 +1996,6 @@ def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> di
 
 
 def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatch) -> None:
-    from tests.active_speaker_fixtures import mono_output_topology
-
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     payload = sound_setup._active_speaker_driver_research_request_payload({
@@ -2219,8 +2010,6 @@ def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatc
 
 @pytest.mark.parametrize("model", [None, "", " \t "])
 def test_driver_research_prompt_refuses_a_target_without_a_model(monkeypatch, model) -> None:
-    from tests.active_speaker_fixtures import mono_output_topology
-
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     with pytest.raises(ValueError):
@@ -2270,14 +2059,7 @@ def _record_dac8x() -> None:
     )
 
 
-def test_output_topology_payload_does_not_take_mutation_lock(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
+def test_output_topology_payload_does_not_take_mutation_lock(monkeypatch):
     monkeypatch.setattr(
         sound_active_speaker,
         "output_topology_mutation",
@@ -2287,24 +2069,13 @@ def test_output_topology_payload_does_not_take_mutation_lock(
     assert sound_setup._output_topology_payload()["output_topology"]["status"] == "draft"
 
 
-def test_output_topology_payload_serializes_with_populated_hardware_state(
-    monkeypatch,
-    tmp_path: Path,
-):
+def test_output_topology_payload_serializes_with_populated_hardware_state():
     """A populated output-hardware state file must not 502 the route.
 
     ``load_state`` returns a frozen ``OutputHardwareState`` whenever a state
     file exists (every real Pi) and ``_send_json`` emits with plain
     ``json.dumps``, which cannot encode a dataclass.
     """
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path / "output_hardware.json"),
-    )
     card = OutputCardFact(
         card_id="A",
         pcm="hw:A,0",
@@ -2358,8 +2129,6 @@ def test_design_draft_save_payload_refuses_unknown_fields(field) -> None:
 
 
 def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_path: Path) -> None:
-    from tests.active_speaker_fixtures import mono_output_topology
-
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
@@ -2374,7 +2143,6 @@ def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
     tmp_path: Path,
 ) -> None:
     from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import (
         _manual_settings,
         _operator_inputs,
@@ -2428,7 +2196,6 @@ def _declared_candidate_box(
     ordinary wizard design-draft save must not fsync (#2292), so that half is
     checked at every call site rather than in one test.
     """
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _manual_settings
 
     topology = mono_output_topology(card_id=None)
@@ -2472,8 +2239,6 @@ def _geometry(fc_hz: float, slope_db_per_octave: int):
 def test_measured_fc_saves_the_declaration_and_leaves_the_loop_open(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    from jasper.active_speaker.design_draft import load_design_draft
-
     _declared_candidate_box(
         monkeypatch, tmp_path, operator_inputs={"notes": "keep this"}
     )
@@ -2579,11 +2344,9 @@ def _apple_cards(*serials: str) -> list[OutputCardFact]:
     ]
 
 
-def _observe_apple_cards(tmp_path: Path, *serials: str) -> None:
-    write_output_hardware_state(
-        classify_output_cards(_apple_cards(*serials)),
-        path=tmp_path / "output_hardware.json",
-    )
+def _observe_apple_cards(*serials: str) -> None:
+    """The reconciler's record of those cards, at the path conftest isolates."""
+    write_output_hardware_state(classify_output_cards(_apple_cards(*serials)))
 
 
 def _dual_apple_hardware() -> dict:
@@ -2649,19 +2412,8 @@ def _dual_apple_stereo_topology_raw(*, identity_verified: bool = True) -> dict:
     }
 
 
-def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path / "output_hardware.json"),
-    )
-    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
+def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state():
+    _observe_apple_cards(LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
 
     envelope = sound_setup._output_topology_payload()
     payload = envelope["output_topology"]
@@ -2695,12 +2447,7 @@ def test_sound_output_topology_payload_uses_observed_dual_apple_hardware_state(
     ],
 )
 def test_a_saved_dual_apple_pair_blocks_its_clock_on_the_hardware_it_observes(
-    monkeypatch,
-    tmp_path: Path,
-    observed,
-    observed_profile_id,
-    observed_output_count,
-    issue,
+    observed, observed_profile_id, observed_output_count, issue,
 ):
     """The saved 4-channel shape survives; the composite clock does not.
 
@@ -2709,17 +2456,9 @@ def test_a_saved_dual_apple_pair_blocks_its_clock_on_the_hardware_it_observes(
     swapped or half-attached pair blocks the composite clock by name instead of
     silently adopting whatever is plugged in.
     """
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path / "output_hardware.json"),
-    )
-    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
+    _observe_apple_cards(LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
     sound_setup._save_output_topology_payload(_dual_apple_stereo_topology_raw())
-    _observe_apple_cards(tmp_path, *observed)
+    _observe_apple_cards(*observed)
 
     envelope = sound_setup._output_topology_payload()
     payload = envelope["output_topology"]
@@ -2738,17 +2477,8 @@ def test_a_saved_dual_apple_pair_blocks_its_clock_on_the_hardware_it_observes(
     assert clock["coherent_physical_output_count"] == 0
 
 
-def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
-    monkeypatch,
-    tmp_path: Path,
-):
-    path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path / "output_hardware.json"),
-    )
-    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
+def test_sound_output_topology_save_accepts_measured_dual_apple_hardware():
+    _observe_apple_cards(LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
 
     sound_setup._save_output_topology_payload(
         _dual_apple_stereo_topology_raw(identity_verified=False)
@@ -2765,10 +2495,7 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
     assert topology["safety"]["sound_tests_allowed"] is False
 
 
-def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(
-    monkeypatch,
-    tmp_path: Path,
-):
+def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(tmp_path: Path):
     """The save door persists a layout its own evaluation warns about.
 
     One cabinet with its woofer on dongle A and its tweeter on dongle B puts an
@@ -2778,12 +2505,7 @@ def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(
     """
 
     path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_HARDWARE_STATE_PATH",
-        str(tmp_path / "output_hardware.json"),
-    )
-    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
+    _observe_apple_cards(LEFT_APPLE_SERIAL, RIGHT_APPLE_SERIAL)
 
     sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
@@ -2825,12 +2547,8 @@ def test_sound_output_topology_save_accepts_a_cross_child_speaker_group(
     assert topology["safety"]["blockers"] == []
 
 
-def test_sound_output_topology_save_validates_and_persists_complete_contract(
-    monkeypatch,
-    tmp_path: Path,
-):
+def test_sound_output_topology_save_validates_and_persists_complete_contract(tmp_path: Path):
     path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
     sound_setup._save_output_topology_payload(
         {"output_topology": _passive_left_topology_payload()}
     )
@@ -2848,14 +2566,7 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
     assert payload["clock_domain"]["status"] == "single_device_clock"
 
 
-def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
-    monkeypatch,
-    tmp_path: Path,
-):
-    monkeypatch.setenv(
-        "JASPER_OUTPUT_TOPOLOGY_PATH",
-        str(tmp_path / "output_topology.json"),
-    )
+def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(tmp_path: Path):
     _record_dac8x()
     with sound_server(tmp_path) as base:
         get_resp = urllib.request.urlopen(f"{base}/output-topology")
@@ -2874,22 +2585,28 @@ def test_sound_output_topology_http_route_is_csrf_protected_and_no_audio(
         assert post_payload["output_topology"]["safety"]["sound_tests_allowed"] is False
 
 
-def test_sound_output_topology_reset_http_route_is_csrf_protected(
-    monkeypatch,
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("route", "builder", "status"),
+    [
+        ("/output-topology/reset", "_reset_output_topology_payload", "draft"),
+        ("/output-topology/repin", "_repin_output_topology_payload", "valid"),
+    ],
+)
+def test_sound_output_topology_mutation_route_is_csrf_protected(
+    monkeypatch, tmp_path: Path, route, builder, status,
 ):
     calls = []
     monkeypatch.setattr(
         sound_setup,
-        "_reset_output_topology_payload",
-        lambda raw: calls.append(raw) or {"output_topology": {"status": "draft"}},
+        builder,
+        lambda raw: calls.append(raw) or {"output_topology": {"status": status}},
     )
     with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(base, "/output-topology/reset", {})
+        resp = json_post_with_csrf(base, route, {})
         payload = json.loads(resp.read().decode("utf-8"))
 
         assert calls == [{}]
-        assert payload["output_topology"]["status"] == "draft"
+        assert payload["output_topology"]["status"] == status
 
 
 def _apple_dongle_detected() -> None:
@@ -2966,8 +2683,6 @@ def test_reset_adopts_hardware_read_after_parking(monkeypatch):
 def test_reset_after_a_normal_save_clears_the_layout(
     monkeypatch, tmp_path: Path,
 ):
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH", str(tmp_path / "staged.yml")
     )
@@ -2989,9 +2704,6 @@ def test_reset_after_a_normal_save_clears_the_layout(
 def test_reset_http_reports_ambiguous_failure_with_current_topology(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
     def publish_then_fail(_topology, commit, **_kwargs):
         commit()
         raise OSError("simulated directory fsync failure")
@@ -3093,7 +2805,6 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     tmp_path: Path,
 ) -> None:
     topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
     save_output_topology(new_topology_draft(name="Old intent"), topology_path)
     events: list[str] = []
 
@@ -3116,10 +2827,7 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
         "jasper.active_speaker.reset.clear_active_speaker_setup_state",
         fail_cleanup,
     )
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": True},
-    )
+    _stub_reconcile(monkeypatch, {"ok": True})
     _stub_audio_stops(monkeypatch)
 
     payload = sound_setup._reset_output_topology_payload({})
@@ -3127,35 +2835,6 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     assert events == ["park", "cleanup", "converge-new-graph"]
     assert load_output_topology(topology_path).speaker_groups == ()
     assert payload["reset"]["status"] == "needs_attention"
-
-
-@pytest.mark.parametrize(
-    ("reconcile", "status"),
-    [
-        (RECONCILE_STILL_CONVERGING, "converging"),
-        (RECONCILE_FAILED, "needs_attention"),
-    ],
-)
-def test_reset_reports_the_reconcile_verdict(
-    monkeypatch, tmp_path: Path, reconcile, status,
-) -> None:
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    save_output_topology(new_topology_draft(name="Old intent"), topology_path)
-    monkeypatch.setattr(
-        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
-        lambda _topology, commit, **_kwargs: _RuntimeMutation(commit()),
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
-        lambda: {"status": "cleared"},
-    )
-    _stub_reconcile(monkeypatch, reconcile)
-    _stub_audio_stops(monkeypatch)
-
-    payload = sound_setup._reset_output_topology_payload({})
-
-    assert payload["reset"]["status"] == status
 
 
 def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
@@ -3184,10 +2863,7 @@ def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
     return prepared
 
 
-def test_rear_calibration_seed_route_returns_a_document_that_validates(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+def test_rear_calibration_seed_route_returns_a_document_that_validates(tmp_path: Path):
     with sound_server(tmp_path) as base:
         seed_resp = urllib.request.urlopen(f"{base}/active-speaker/rear-calibration/seed")
         seed_payload = json.loads(seed_resp.read().decode("utf-8"))
@@ -3206,10 +2882,7 @@ def test_rear_calibration_seed_route_returns_a_document_that_validates(
     }
 
 
-def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(
-    monkeypatch, tmp_path: Path,
-):
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
+def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(tmp_path: Path):
     with sound_server(tmp_path) as base:
         bad_document = {**sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"],
                         "sample_rate_hz": 44100}
@@ -3276,9 +2949,8 @@ def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
     """Mirrors jasper-crossover-prescriber's ``--base saved`` block: a corrupt
     on-disk file fails closed as a typed refusal, not an unhandled 502."""
 
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
     monkeypatch.setattr(
-        "jasper.output_topology_store.load_output_topology_strict",
+        "jasper.audio_routes.output_topology_store.load_output_topology_strict",
         lambda *a, **kw: (_ for _ in ()).throw(OutputTopologyError("output topology is not valid JSON")),
     )
     document = sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"]
@@ -3527,26 +3199,12 @@ def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
         card_id=None, identity_verified=True,
     ))
     _save_active_speaker_design_and_preview()
-    handler_cls = sound_setup._make_handler(
-        profile_path=tmp_path / "profile.json", library_path=tmp_path / "library.json",
-        config_dir=tmp_path / "configs",
-    )
     for frequency in (2500, 3200):
         draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
         draft = json.loads(draft_path.read_text())
         draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = frequency
         draft_path.write_text(json.dumps(draft))
-        handler = handler_cls.__new__(handler_cls)
-        handler.rfile = io.BytesIO(b"GET /active-speaker/crossover-preview HTTP/1.1\r\nHost: jts.local\r\n\r\n")
-        handler.wfile = io.BytesIO()
-        handler.client_address = ("127.0.0.1", 0)
-        handler.server = None
-        handler.raw_requestline = handler.rfile.readline()
-        handler.parse_request()
-        handler.do_GET()
-        response = handler.wfile.getvalue()
-        assert b" 200 " in response.split(b"\r\n", 1)[0]
-        payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+        payload = _get_json(tmp_path, "/active-speaker/crossover-preview")
         assert payload["status"] == "ready_for_protected_staging"
         assert payload["groups"][0]["crossovers"][0]["proposed_frequency_hz"] == frequency
         assert payload["safety"]["no_audio"] is True
@@ -3653,23 +3311,12 @@ def test_state_reports_whether_the_loaded_graph_can_host_eq(
 ):
     """/sound/eq/ opens on the refusal instead of discovering it at save time,
     so /state says whether the LOADED graph can carry preference EQ."""
-    import jasper.camilla
-
-    if layout:
-        _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    else:
-        monkeypatch.setenv(
-            "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "no_topology.json"),
-        )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / config_name
-    current.write_text(
-        "devices: {}\n" if config_name == "foreign.yml" else _room_config()
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, config_name, peqs=(), layout=layout,
     )
-    monkeypatch.setattr(
-        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
-    )
+    if config_name == "foreign.yml":
+        (config_dir / config_name).write_text("devices: {}\n")
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: fake)
 
     with sound_server(tmp_path) as base:
         payload = json.loads(
@@ -3688,7 +3335,6 @@ def test_state_falls_open_when_camilla_cannot_be_read(
 ):
     """The POST refusal is the fail-closed gate; an unreachable CamillaDSP must
     not blank the editor."""
-    import jasper.camilla
 
     class _Unreachable:
         async def get_config_file_path(self, *, best_effort: bool = False):
@@ -3696,7 +3342,7 @@ def test_state_falls_open_when_camilla_cannot_be_read(
                 raise RuntimeError("CamillaDSP websocket is not answering")
             return None
 
-    monkeypatch.setattr(jasper.camilla, "primary_controller", _Unreachable)
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", _Unreachable)
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(f"{base}/state") as resp:
@@ -3712,24 +3358,17 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(
 ):
     """The probe is a dry-run recompose of the loaded graph. Only /sound/eq/
     renders the editor, so no other page pays for it."""
-    import jasper.camilla
-    import jasper.sound.graph_carrier as graph_carrier
-
     # A reachable controller with a real loaded config, so nothing but the page
     # mode can be what stops the probe.
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    monkeypatch.setattr(
-        jasper.camilla, "primary_controller", lambda: FakeCamilla(str(current)),
-    )
+    _, fake = _eq_box(monkeypatch, tmp_path, peqs=())
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: fake)
 
     def _must_not_probe(*_args, **_kwargs):
         raise AssertionError("a hardware page must not probe the loaded graph")
 
-    monkeypatch.setattr(graph_carrier, "eq_block_for_loaded_config", _must_not_probe)
+    monkeypatch.setattr(
+        "jasper.sound.graph_carrier.eq_block_for_loaded_config", _must_not_probe,
+    )
 
     with sound_server(tmp_path) as base:
         with urllib.request.urlopen(
@@ -3744,16 +3383,7 @@ def test_state_skips_the_carrier_probe_off_the_eq_page(
 
 
 async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
-    )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml")
     profile_path = tmp_path / "sound_profile.json"
 
     payload = await sound_setup._apply_profile(
@@ -3776,14 +3406,7 @@ async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypa
 async def test_reconcile_current_dsp_reemits_saved_profile_without_restamping(
     tmp_path: Path, monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path)
     profile_path = tmp_path / "sound_profile.json"
     save_profile(
         SoundProfile(
@@ -3838,13 +3461,8 @@ async def test_reconcile_current_dsp_skips_unknown_config(
 async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
     tmp_path: Path, monkeypatch,
 ):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "sound_audition.yml", layout=False)
     audition = config_dir / "sound_audition.yml"
-    audition.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(audition))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(SoundProfile(simple_eq=SimpleEq(bass_db=6.0)), profile_path)
 
@@ -3868,7 +3486,6 @@ async def test_reconcile_current_dsp_skips_active_audition_without_promoting(
 async def test_reconcile_current_dsp_logs_unchanged_config(
     tmp_path: Path, monkeypatch, caplog,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
     # Realistic apply-then-redeploy: the wizard save stamps sound_current.yml
     # with a wall-clock ``time.time_ns()`` id, NOT the reconcile id, and a
     # redeploy's dry-run re-emits the SAME profile under RECONCILE_PROFILE_ID —
@@ -3876,14 +3493,9 @@ async def test_reconcile_current_dsp_logs_unchanged_config(
     # must still read as unchanged. The timestamp id below is load-bearing: a
     # pre-stamped reconcile id would make the raw byte comparison match by
     # accident, and the production no-op path never sees that id.
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, peqs=())
     profile = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
     current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
     profile_path = tmp_path / "sound_profile.json"
     save_profile(profile, profile_path)
     await reconcile_current_dsp(
@@ -3961,16 +3573,8 @@ async def test_apply_profile_trims_the_output_only_when_match_loudness_is_on(
     """By default boosts boost. The preamp filter is DEFINED either way — its
     presence must never depend on a value — and inert at 0 dB until
     match-loudness asks for a trim."""
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text(json.dumps({"match_loudness": match_loudness}))
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml", peqs=())
+    (tmp_path / "settings.json").write_text(json.dumps({"match_loudness": match_loudness}))
 
     payload = await sound_setup._apply_profile(
         SoundProfile(simple_eq=SimpleEq(bass_db=6.0)),
@@ -3989,15 +3593,8 @@ async def test_apply_profile_trims_the_output_only_when_match_loudness_is_on(
 async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
     tmp_path: Path, monkeypatch
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml", peqs=())
+    settings_path = tmp_path / "settings.json"
     profile_path = tmp_path / "sound_profile.json"
     # An applied profile with a boost, stamped at a fixed time.
     save_profile(
@@ -4028,8 +3625,10 @@ async def test_apply_settings_reapplies_with_trim_without_restamping_profile(
 async def test_apply_settings_merges_only_recognized_posted_fields(
     tmp_path: Path, monkeypatch,
 ):
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, "correction_abc_123.yml", peqs=(), layout=False,
+    )
+    settings_path = tmp_path / "settings.json"
     settings_path.write_text(
         json.dumps({
             "headroom_trim_db": 4.0,
@@ -4037,12 +3636,6 @@ async def test_apply_settings_merges_only_recognized_posted_fields(
             "volume_floor_db": -36.0,
         })
     )
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
 
     payload = await sound_setup._apply_settings(
         {"match_loudness": True, "not_a_sound_setting": "discard me"},
@@ -4387,22 +3980,12 @@ def test_concurrent_profile_and_settings_apply_converge_in_both_orders(
     assert last_response["last_dsp_apply"]["op_id"] == live_emits[-1]["epoch"]
 
 
-async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
-    tmp_path: Path, monkeypatch,
-):
-    settings_path = tmp_path / "sound_settings.json"
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
-    fake = FakeVolumeCamilla(db=-18.0, muted=True)
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
+async def test_audition_volume_floor_holds_updates_and_restores_on_stop(floor_tone):
+    settings_path = Path(os.environ["JASPER_SOUND_SETTINGS_PATH"])
+    fake = _owned(_FakeCamilla(db=-18.0))
+    fake.muted = True
 
-    payload = await session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+    payload = await _play(floor_tone, fake)
 
     assert payload == {
         "ok": True,
@@ -4416,33 +3999,26 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert FakeVolumeFloorToneRunner.instances[0].started is True
     assert fake.events[0] == (
-        "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), True,
+        "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)),
     )
-    assert fake.events[1] == ("mute", False, False)
-    assert fake.db == pytest.approx(percent_to_db(1, floor_db=-24.0))
+    assert fake.events[1] == ("mute", False)
+    assert fake._db == pytest.approx(percent_to_db(1, floor_db=-24.0))
     assert fake.muted is False
     assert not settings_path.exists()
 
-    payload = await session.start_or_update(
-        {"volume_floor_db": -36.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+    payload = await _play(floor_tone, fake, -36.0)
 
     assert payload["status"] == "updated"
     assert payload["volume_floor_db"] == -36.0
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert fake.events[-2:] == [
-        ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), True),
-        ("mute", False, False),
+        ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0))),
+        ("mute", False),
     ]
-    assert fake.db == pytest.approx(percent_to_db(1, floor_db=-36.0))
+    assert fake._db == pytest.approx(percent_to_db(1, floor_db=-36.0))
     assert fake.muted is False
 
-    stop_payload = await session.stop(
-        camilla_factory=lambda: fake,
-        reason="stop",
-    )
+    stop_payload = await _stop(floor_tone, fake)
 
     assert stop_payload == {
         "ok": True,
@@ -4452,49 +4028,31 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
         "volume_floor_db": -36.0,
     }
     assert FakeVolumeFloorToneRunner.instances[0].stopped is True
-    assert fake.events[-2:] == [
-        ("mute", True, True),
-        ("volume", pytest.approx(-18.0), True),
-    ]
-    assert fake.db == pytest.approx(-18.0)
+    assert fake.events[-2:] == [("mute", True), ("volume", pytest.approx(-18.0))]
+    assert fake._db == pytest.approx(-18.0)
     assert fake.muted is True
     assert not settings_path.exists()
 
 
-async def test_audition_volume_floor_update_survives_a_withdrawn_owner(
-    tmp_path: Path, monkeypatch,
-):
+async def test_audition_volume_floor_update_survives_a_withdrawn_owner(floor_tone):
     """An owner withdrawn mid-audition degrades the update, it does not fail it.
 
     Same contract as starting with no owner registered: the tone keeps
     playing at the floor it already holds rather than the request raising.
     """
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
-    fake = FakeVolumeCamilla(db=-18.0, muted=False)
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
+    fake = _owned(_FakeCamilla(db=-18.0))
 
-    await session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
-    held_db = fake.db
+    await _play(floor_tone, fake)
+    held_db = fake._db
     install_volume_owner(None)
 
-    payload = await session.start_or_update(
-        {"volume_floor_db": -36.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+    payload = await _play(floor_tone, fake, -36.0)
 
     assert payload["status"] == "updated"
     assert payload["volume_floor_db"] == -36.0
-    assert fake.db == pytest.approx(held_db)
+    assert fake._db == pytest.approx(held_db)
     assert FakeVolumeFloorToneRunner.instances[0].stopped is False
-    await session.stop(camilla_factory=lambda: fake, reason="stop")
+    await _stop(floor_tone, fake)
 
 
 def _dominant_frequency_hz(samples: np.ndarray, sample_rate: int) -> float:
@@ -4558,90 +4116,65 @@ def test_volume_floor_reference_tone_uses_low_mid_high_sequence(
         )
 
 
-async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
-    tmp_path: Path, monkeypatch,
-):
-    settings_path = tmp_path / "sound_settings.json"
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
-    fake = BlockingVolumeCamilla(block_on_volume_call=2)
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
-
-    await session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+async def test_volume_floor_stop_stops_runner_before_slow_update_restore(floor_tone):
+    fake = _owned(_FakeCamilla(db=-18.0))
+    fake.muted = True
+    await _play(floor_tone, fake)
     runner = FakeVolumeFloorToneRunner.instances[0]
+    update_entered, release_update = asyncio.Event(), asyncio.Event()
+    write_fader = fake.set_volume_db
 
-    update_task = asyncio.create_task(
-        session.start_or_update(
-            {"volume_floor_db": -36.0},
-            camilla_factory=lambda: fake,
-            runner_factory=FakeVolumeFloorToneRunner,
-        )
-    )
-    await asyncio.wait_for(fake.volume_call_entered.wait(), timeout=1.0)
+    async def slow_relevel(db: float, *, best_effort: bool = False) -> bool:
+        """Hold the update's relevel in its fader write once, before its new claim is back."""
+        del fake.set_volume_db
+        update_entered.set()
+        await release_update.wait()
+        return await write_fader(db, best_effort=best_effort)
 
-    stop_task = asyncio.create_task(
-        session.stop(
-            camilla_factory=lambda: fake,
-            reason="stop",
-        )
-    )
+    fake.set_volume_db = slow_relevel
+    update_task = asyncio.create_task(_play(floor_tone, fake, -36.0))
+    await asyncio.wait_for(update_entered.wait(), timeout=1.0)
+
+    stop_task = asyncio.create_task(_stop(floor_tone, fake))
     await asyncio.sleep(0)
 
     assert runner.stopped is True
     assert stop_task.done() is False
 
-    fake.release_volume_call.set()
+    release_update.set()
     update_payload = await asyncio.wait_for(update_task, timeout=1.0)
     stop_payload = await asyncio.wait_for(stop_task, timeout=1.0)
 
     assert update_payload["active"] is False
     assert update_payload["status"] == "stale"
     assert stop_payload["status"] == "stopped"
-    assert fake.events[-2:] == [
-        ("mute", True, True),
-        ("volume", pytest.approx(-18.0), True),
-    ]
-    assert fake.db == pytest.approx(-18.0)
+    assert fake.events[-2:] == [("mute", True), ("volume", pytest.approx(-18.0))]
+    assert fake._db == pytest.approx(-18.0)
     assert fake.muted is True
 
 
 @pytest.mark.parametrize("ending", ["stop", "max_duration"])
 async def test_floor_tone_moves_the_fader_only_under_the_dsp_writer_lock(
-    tmp_path: Path, monkeypatch, ending: str,
+    floor_tone, tmp_path: Path, ending: str,
 ):
     """Every audition write lands under the lock every reconciler probes, and
     the lock goes once the fader is back: on the page's (pagehide) stop, and on
     the runner's 10-minute limit, which ends a tone whose page vanished
     (ADR-0368)."""
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
     held = _writer_lock_held(tmp_path)
-    fake = _WitnessCamilla(held)
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
+    fake = _owned(_WitnessCamilla(held))
 
-    await session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+    await _play(floor_tone, fake)
     assert held() is True
     runner = FakeVolumeFloorToneRunner.instances[0]
     if ending == "stop":
-        await session.stop(camilla_factory=lambda: fake, reason="pagehide")
+        await _stop(floor_tone, fake, "pagehide")
     else:
         # The runner's thread restores under an asyncio.run of its own.
         await asyncio.to_thread(runner.on_finish, runner, "timeout")
 
     assert held() is False
-    assert fake.db == pytest.approx(-18.0)
+    assert fake._db == pytest.approx(-18.0)
     assert fake.muted is True
     assert fake.held_at_write and all(fake.held_at_write)
 
@@ -4659,31 +4192,26 @@ async def test_floor_tone_moves_the_fader_only_under_the_dsp_writer_lock(
     ],
 )
 async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
-    tmp_path: Path, monkeypatch, caplog, failure: str, raised: type[BaseException],
-    fader_moved: bool,
+    floor_tone, tmp_path: Path, monkeypatch, caplog, failure: str,
+    raised: type[BaseException], fader_moved: bool,
 ):
     """Never unannounced, never stranded (#3038): no lock, a lock that cannot be
     won, or a dead lock thread refuses before the fader moves; whatever else a
     start raises lets the lock go, only after the restore funnel once the fader
     moved. Either way the next audition plays."""
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
     held = _writer_lock_held(tmp_path)
-    fake = _WitnessCamilla(held, breaks={
+    fake = _owned(_WitnessCamilla(held, breaks={
         "camilla_unreadable": "read",
         "camilla_unavailable": "unmute",
         "cancelled": "unmute_hang",
-    }.get(failure, ""))
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
+    }.get(failure, "")))
 
-    def unbuildable() -> FakeVolumeCamilla:
+    def unbuildable() -> _FakeCamilla:
         raise ValueError("camilla port is not a number")
 
     with monkeypatch.context() as broken:
         if failure == "lock_directory_missing":
-            broken.setattr(session, "_writer_lock_dir", tmp_path / "absent")
+            broken.setattr(floor_tone, "_writer_lock_dir", tmp_path / "absent")
         if failure == "lock_thread_died":
             broken.setattr(volume_floor_tone._WriterLockHold, "_run", lambda self: None)
         async with AsyncExitStack() as writer:
@@ -4694,7 +4222,7 @@ async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
                 await writer.enter_async_context(camilla_graph_mutation(
                     source="test.swap", lock_path=tmp_path / ".dsp_apply.lock",
                 ))
-            start = asyncio.create_task(session.start_or_update(
+            start = asyncio.create_task(floor_tone.start_or_update(
                 {"volume_floor_db": -24.0},
                 camilla_factory=(
                     unbuildable if failure == "camilla_unbuildable" else lambda: fake
@@ -4708,7 +4236,7 @@ async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
                 await asyncio.wait_for(start, timeout=5.0)
 
     assert held() is False
-    assert fake.db == pytest.approx(-18.0)
+    assert fake._db == pytest.approx(-18.0)
     assert fake.muted is True
     assert bool(fake.held_at_write) is fader_moved
     assert all(fake.held_at_write)
@@ -4720,43 +4248,30 @@ async def test_a_floor_tone_that_cannot_start_leaves_fader_and_lock_as_found(
     )) == (failure == "lock_held_by_a_dsp_writer")
 
     fake.breaks = ""
-    payload = await asyncio.wait_for(session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    ), timeout=5.0)
+    payload = await asyncio.wait_for(_play(floor_tone, fake), timeout=5.0)
     assert payload["status"] == "started"
-    await session.stop(camilla_factory=lambda: fake, reason="stop")
+    await _stop(floor_tone, fake)
     assert held() is False
 
 
 @pytest.mark.parametrize("interruption", ["cancel", "stop"])
 async def test_a_floor_tone_interrupted_while_it_waits_never_plays(
-    tmp_path: Path, monkeypatch, interruption: str,
+    floor_tone, tmp_path: Path, interruption: str,
 ):
     """A start cancelled, or answered by a stop, while it waits for the lock
     never moves the fader, and lets go of the lock its thread wins after."""
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
     held = _writer_lock_held(tmp_path)
-    fake = _WitnessCamilla(held)
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
+    fake = _owned(_WitnessCamilla(held))
 
     async with camilla_graph_mutation(
         source="test.swap", lock_path=tmp_path / ".dsp_apply.lock",
     ):
-        start = asyncio.create_task(session.start_or_update(
-            {"volume_floor_db": -24.0},
-            camilla_factory=lambda: fake,
-            runner_factory=FakeVolumeFloorToneRunner,
-        ))
+        start = asyncio.create_task(_play(floor_tone, fake))
         await asyncio.sleep(0.1)
         if interruption == "cancel":
             start.cancel()
         else:
-            stopped = await session.stop(camilla_factory=lambda: fake, reason="stop")
+            stopped = await _stop(floor_tone, fake)
             assert stopped["status"] == "stopped"
     if interruption == "cancel":
         with pytest.raises(asyncio.CancelledError):
@@ -4773,28 +4288,21 @@ async def test_a_floor_tone_interrupted_while_it_waits_never_plays(
 
 @pytest.mark.parametrize("runner_stop", ["returns", "raises"])
 async def test_a_stop_between_publishing_and_starting_the_runner_still_restores(
-    tmp_path: Path, monkeypatch, runner_stop: str,
+    floor_tone, tmp_path: Path, runner_stop: str,
 ):
     """A page's stop that lands after the session published its runner and
     before the runner started — the real one, whose thread cannot be joined
     yet — restores the fader and releases the lock whatever the runner's stop
     does, and the next audition plays."""
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
-    FakeVolumeFloorToneRunner.instances.clear()
     held = _writer_lock_held(tmp_path)
-    fake = _WitnessCamilla(held)
-    _install_floor_tone_owner(fake)
-    session = _floor_tone_session(tmp_path)
+    fake = _owned(_WitnessCamilla(held))
     stop_called = threading.Event()
     stoppers: list[threading.Thread] = []
     answers: list[str] = []
 
     def page_stop() -> None:
         try:
-            answers.append(asyncio.run(session.stop(
-                camilla_factory=lambda: fake, reason="pagehide",
-            ))["status"])
+            answers.append(asyncio.run(_stop(floor_tone, fake, "pagehide"))["status"])
         except RuntimeError as exc:
             answers.append(type(exc).__name__)
 
@@ -4813,45 +4321,32 @@ async def test_a_stop_between_publishing_and_starting_the_runner_still_restores(
             assert stop_called.wait(timeout=2.0)
             super().start()
 
-    await session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=StoppedBeforeStart,
-    )
+    await _play(floor_tone, fake, runner=StoppedBeforeStart)
     await asyncio.to_thread(stoppers[0].join, 5.0)
 
     assert answers == ["stopped" if runner_stop == "returns" else "RuntimeError"]
     assert held() is False
-    assert fake.db == pytest.approx(-18.0)
+    assert fake._db == pytest.approx(-18.0)
     assert fake.muted is True
     assert all(fake.held_at_write)
-    payload = await asyncio.wait_for(session.start_or_update(
-        {"volume_floor_db": -24.0},
-        camilla_factory=lambda: fake,
-        runner_factory=FakeVolumeFloorToneRunner,
-    ), timeout=5.0)
+    payload = await asyncio.wait_for(_play(floor_tone, fake), timeout=5.0)
     assert payload["status"] == "started"
-    await session.stop(camilla_factory=lambda: fake, reason="stop")
+    await _stop(floor_tone, fake)
     assert held() is False
 
 
 @pytest.mark.parametrize("reconciler", ["voice_observer", "floor_save"])
 async def test_no_reconciler_corrects_the_floor_tone_up_but_each_repairs_it_after(
-    tmp_path: Path, monkeypatch, reconciler: str,
+    floor_tone, tmp_path: Path, monkeypatch, reconciler: str,
 ):
     """jasper-voice's 1 Hz observer and the fresh coordinator a Save of the floor
     runs both read the tone's floor as a deep quiet drift. Only the real lock
     holds them off, and each says it deferred; the same drift with no lock
     (jasper-web died mid-tone) is a stranded floor they walk back to the
     household level (ADR-0368)."""
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
     client, web, _hold = _household_fader(tmp_path, monkeypatch)
     household_db = client.db
-    install_volume_owner(VolumeOwner(
-        set_fader_db=lambda db: web.set_volume_db(db, best_effort=True),
-        get_fader_db=lambda: web.get_volume_db(best_effort=True),
-    ))
+    _owned(web)
     voice = VolumeCoordinator(
         camilla=_real_controller(client, tmp_path),
         persistence=VolumePersistence(configured_path()),
@@ -4867,20 +4362,14 @@ async def test_no_reconciler_corrects_the_floor_tone_up_but_each_repairs_it_afte
             camilla_factory=lambda: web,
         )
 
-    FakeVolumeFloorToneRunner.instances.clear()
-    session = _floor_tone_session(tmp_path)
-    await session.start_or_update(
-        {"volume_floor_db": -40.0},
-        camilla_factory=lambda: web,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+    await _play(floor_tone, web, -40.0)
     floor_db = client.db
     assert household_db - floor_db > 20.0
 
     assert await reconcile() is False
     assert client.db == pytest.approx(floor_db)
 
-    await session.stop(camilla_factory=lambda: web, reason="stop")
+    await _stop(floor_tone, web)
     assert client.db == pytest.approx(household_db)
 
     client.db = floor_db
@@ -4928,32 +4417,21 @@ async def test_a_floor_save_never_raises_the_fader_a_measurement_holds(
 
 
 async def test_saving_the_floor_while_the_tone_plays_neither_waits_nor_fails(
-    tmp_path: Path, monkeypatch,
+    floor_tone, tmp_path: Path, monkeypatch,
 ):
     """The floor never reaches the graph, so saving it takes no writer lock:
     the tone's hold costs the save nothing, the floor is kept, and its volume
     reconcile defers to the tone (ADR-0368)."""
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
-    monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     client, web, _hold = _household_fader(tmp_path, monkeypatch)
-    install_volume_owner(VolumeOwner(
-        set_fader_db=lambda db: web.set_volume_db(db, best_effort=True),
-        get_fader_db=lambda: web.get_volume_db(best_effort=True),
-    ))
+    _owned(web)
     emits: list[dict] = []
 
     async def emit(*_args: object, **kwargs: object) -> None:
         emits.append(kwargs)
 
     monkeypatch.setattr(sound_profile_apply, "_load_profile_config", emit)
-    FakeVolumeFloorToneRunner.instances.clear()
-    session = _floor_tone_session(tmp_path)
-    await session.start_or_update(
-        {"volume_floor_db": -40.0},
-        camilla_factory=lambda: web,
-        runner_factory=FakeVolumeFloorToneRunner,
-    )
+    await _play(floor_tone, web, -40.0)
     tone_db = client.db
 
     payload = await asyncio.wait_for(sound_profile_apply._apply_settings(
@@ -4968,7 +4446,7 @@ async def test_saving_the_floor_while_the_tone_plays_neither_waits_nor_fails(
     assert payload["sound_settings"]["volume_floor_db"] == -40.0
     assert payload["volume_reconciled"] is False
     assert client.db == pytest.approx(tone_db)
-    await session.stop(camilla_factory=lambda: web, reason="stop")
+    await _stop(floor_tone, web)
 
 
 async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
@@ -4976,15 +4454,10 @@ async def test_apply_settings_warns_but_keeps_settings_on_reapply_failure(
 ):
     # Without a saved layout the re-apply refuses before it ever reaches the
     # failing reload, and a refusal is a typed body, not this warning.
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
-    settings_path = tmp_path / "sound_settings.json"
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current), fail_set=True)  # reload fails
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, "correction_abc_123.yml", fail_set=True,
+    )
+    settings_path = tmp_path / "settings.json"
 
     payload = await sound_setup._apply_settings(
         SoundSettings(headroom_trim_db=6.0),
@@ -5036,21 +4509,10 @@ async def test_audition_profile_loads_draft_without_persisting(
     tmp_path: Path,
     monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
-    )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, "correction_abc_123.yml")
     profile_path = tmp_path / "sound_profile.json"
     # match-loudness on -> the audition gets a loudness-weighted output trim.
-    settings_path = tmp_path / "sound_settings.json"
-    settings_path.write_text('{"match_loudness": true}')
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    (tmp_path / "settings.json").write_text('{"match_loudness": true}')
     draft = SoundProfile(
         curve_id="harman",
         parametric_bands=(ParametricBand(freq_hz=1000.0, gain_db=3.0, q=1.0),),
@@ -5079,15 +4541,7 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     tmp_path: Path,
     monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
-    _record_dsp_epoch(state_path, "epoch-1")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
     profile_path = tmp_path / "sound_profile.json"
     draft = SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0))
 
@@ -5121,63 +4575,19 @@ async def _live(fake, draft, config_dir):
     )
 
 
-def _eq_box(monkeypatch, tmp_path):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
-    _record_dsp_epoch(state_path, "epoch-1")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    return config_dir, FakeCamilla(str(current))
-
-
-@pytest.mark.parametrize(
-    "moved",
-    [
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=5.0, q=1.0),
-            )),
-            id="gain",
-        ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=120.0, gain_db=2.0, q=1.0),
-            )),
-            id="frequency",
-        ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=4.5),
-            )),
-            id="q",
-        ),
-    ],
-)
-async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
-    tmp_path: Path, monkeypatch, moved,
-):
-    """The whole point: a drag must not reach the ducked swap path."""
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    start = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
+def _one_band(**band) -> SoundProfile:
+    """One parametric band: 1 kHz, +2 dB, Q 1, with ``band``'s fields moved."""
+    return SoundProfile(parametric_bands=(
+        ParametricBand(**{"freq_hz": 1000.0, "gain_db": 2.0, "q": 1.0, **band}),
     ))
-    await _live(fake, start, config_dir)
-    swaps_after_install = len(fake.active_raw_values)
-    assert fake.ducks[0] is True
-
-    payload = await _live(fake, moved, config_dir)
-
-    assert payload["live_status"] == "live"
-    assert fake.ducks[-1] is False
-    assert len(fake.active_raw_values) == swaps_after_install + 1
 
 
 @pytest.mark.parametrize(
-    "changed",
+    "edited",
     [
+        pytest.param(_one_band(gain_db=5.0), id="gain"),
+        pytest.param(_one_band(freq_hz=120.0), id="frequency"),
+        pytest.param(_one_band(q=4.5), id="q"),
         pytest.param(
             SoundProfile(parametric_bands=(
                 ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
@@ -5185,42 +4595,33 @@ async def test_dragging_a_band_writes_parameters_and_never_swaps_the_pipeline(
             )),
             id="band_added",
         ),
+        pytest.param(SoundProfile(parametric_bands=()), id="band_removed"),
+        pytest.param(_one_band(gain_db=0.0), id="gain_dragged_to_exactly_flat"),
         pytest.param(
-            SoundProfile(parametric_bands=()),
-            id="band_removed",
+            replace(_one_band(), curve_id="harman"), id="curve_preset_changed",
         ),
-        pytest.param(
-            SoundProfile(parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=0.0, q=1.0),
-            )),
-            id="gain_dragged_to_exactly_flat",
-        ),
-        pytest.param(
-            SoundProfile(curve_id="harman", parametric_bands=(
-                ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-            )),
-            id="curve_preset_changed",
-        ),
+        # A biquad's type lives in its parameters; CamillaDSP recomputes
+        # coefficients in place.
+        pytest.param(_one_band(biquad_type="Highshelf"), id="retyped"),
     ],
 )
-async def test_the_live_graphs_slots_keep_the_pipeline_still(
-    tmp_path: Path, monkeypatch, changed,
+async def test_a_live_edit_writes_parameters_and_never_swaps_the_pipeline(
+    tmp_path: Path, monkeypatch, edited,
 ):
-    """Adding, removing or flattening a band, or switching the curve preset,
-    writes numbers, not a pipeline.
+    """The whole point: a drag must not reach the ducked swap path.
 
-    The live draft carries a slot per band and one fixed pair of curve shelves,
-    so none of these changes which filters exist — which is what would
-    otherwise rebuild CamillaDSP's filter group and reset every filter's state.
+    Moving, adding, removing, flattening or retyping a band, or switching the
+    curve preset, writes numbers, not a pipeline. The live draft carries a slot
+    per band and one fixed pair of curve shelves, so none of these changes
+    which filters exist — which is what would otherwise rebuild CamillaDSP's
+    filter group and reset every filter's state.
     """
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    one = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
-    await _live(fake, one, config_dir)
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
+    await _live(fake, _one_band(), config_dir)
     swaps_after_install = len(fake.active_raw_values)
+    assert fake.ducks[0] is True
 
-    payload = await _live(fake, changed, config_dir)
+    payload = await _live(fake, edited, config_dir)
 
     assert payload["live_status"] == "live"
     assert fake.ducks[-1] is False
@@ -5238,10 +4639,8 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     level step. Derived from the SAVED profile it is one number for the whole
     session.
     """
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    settings_path = tmp_path / "settings.json"
-    settings_path.write_text('{"match_loudness": true}')
-    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
+    (tmp_path / "settings.json").write_text('{"match_loudness": true}')
     # Saved intent is flat, so the frozen trim is whatever flat earns...
     profile_path = tmp_path / "sound_profile.json"
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
@@ -5278,34 +4677,11 @@ async def test_the_live_trim_is_frozen_so_an_edit_cannot_step_the_level(
     assert len(fake.active_raw_values) == 2
 
 
-async def test_retyping_a_band_writes_parameters_without_ducking(
-    tmp_path: Path, monkeypatch,
-):
-    """A biquad's type lives in its parameters; CamillaDSP recomputes coefficients in place."""
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    one = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
-    await _live(fake, one, config_dir)
-    swaps_after_install = len(fake.active_raw_values)
-    retyped = SoundProfile(parametric_bands=(
-        ParametricBand(biquad_type="Highshelf", freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
-
-    payload = await _live(fake, retyped, config_dir)
-
-    assert payload["live_status"] == "live"
-    assert fake.ducks[-1] is False
-    assert len(fake.active_raw_values) == swaps_after_install + 1
-
-
 async def test_a_redraw_that_changed_nothing_writes_nothing(
     tmp_path: Path, monkeypatch,
 ):
-    config_dir, fake = _eq_box(monkeypatch, tmp_path)
-    draft = SoundProfile(parametric_bands=(
-        ParametricBand(freq_hz=1000.0, gain_db=2.0, q=1.0),
-    ))
+    config_dir, fake = _eq_box(monkeypatch, tmp_path, epoch="epoch-1")
+    draft = _one_band()
     await _live(fake, draft, config_dir)
 
     payload = await _live(fake, draft, config_dir)
@@ -5318,17 +4694,9 @@ async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(
     tmp_path: Path,
     monkeypatch,
 ):
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(state_path),
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, peqs=(), layout=False, epoch="newer-apply",
     )
-    _record_dsp_epoch(state_path, "newer-apply")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    fake = FakeCamilla(str(current))
     draft = SoundProfile(curve_id="bk", simple_eq=SimpleEq(treble_db=1.0))
 
     payload = await sound_setup._live_draft_profile(
@@ -5348,14 +4716,10 @@ async def test_live_draft_profile_reports_unavailable_without_reload(
     tmp_path: Path,
     monkeypatch,
 ):
-    state_path = tmp_path / "dsp_apply_state.json"
-    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
-    _record_dsp_epoch(state_path, "epoch-1")
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "sound_current.yml"
-    current.write_text(_room_config())
-    fake = FakeCamillaWithoutLiveRaw(str(current))
+    config_dir, live = _eq_box(
+        monkeypatch, tmp_path, peqs=(), layout=False, epoch="epoch-1",
+    )
+    fake = FakeCamillaWithoutLiveRaw(live.current_path)
     draft = SoundProfile(curve_id="bk", simple_eq=SimpleEq(treble_db=1.0))
 
     payload = await sound_setup._live_draft_profile(
@@ -5390,15 +4754,7 @@ async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
 
 
 def _active_baseline_config() -> str:
-    from tests.test_active_speaker_runtime_contract import _active_baseline_yaml
-
     return _active_baseline_yaml("mono", 2)
-
-
-def _program_bake_config() -> str:
-    from tests.test_active_speaker_runtime_contract import _program_bake_yaml
-
-    return _program_bake_yaml()
 
 
 def _program_bake_member_kwargs(monkeypatch) -> None:
@@ -5420,7 +4776,7 @@ def _program_bake_member_kwargs(monkeypatch) -> None:
         ),
         pytest.param(
             "grouping_active_leader_bake.yml",
-            _program_bake_config,
+            _program_bake_yaml,
             "program_bake_pipe_unavailable",
             _program_bake_member_kwargs,
             id="grouping_program_bake",
@@ -5442,8 +4798,6 @@ async def test_apply_profile_blocks_a_carrier_that_cannot_host_eq(
     dry-runs the active carrier), so jasper-doctor's check_dsp_apply_state
     stays clean on an active speaker.
     """
-    from jasper.dsp_apply import last_dsp_apply_state
-
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -5496,10 +4850,6 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     # vocabulary — never a 502 toast or a silent no-op. A regression that
     # dropped the handler's `return` (falling through to the 502 branch) would
     # pass every other test but fail this one.
-    import io
-
-    from jasper.dsp_apply import last_dsp_apply_state
-
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(tmp_path / "dsp.json"))
     # CSRF / host guard is covered by its own tests; bypass it to drive dispatch.
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
@@ -5509,32 +4859,12 @@ def test_apply_route_returns_200_blocked_for_active_config(tmp_path, monkeypatch
     active = config_dir / "active_speaker_baseline.yml"
     active.write_text(_active_baseline_config())
     fake = FakeCamilla(str(active))
+    body = json.dumps(SoundProfile().to_dict()).encode()
 
-    Handler = sound_setup._make_handler(
-        profile_path=tmp_path / "sound_profile.json",
-        library_path=tmp_path / "sound_profiles.json",
-        config_dir=config_dir,
+    resp, _ = _drive_raw_sound_post(
+        tmp_path, path="/apply", content_length=len(body), body=body,
         camilla_factory=lambda: fake,
     )
-    body = json.dumps(SoundProfile().to_dict()).encode()
-    raw = (
-        b"POST /apply HTTP/1.1\r\nHost: jts.local\r\n"
-        + f"Content-Length: {len(body)}\r\n".encode()
-        + b"\r\n"
-        + body
-    )
-    rfile = io.BytesIO(raw)
-    wfile = io.BytesIO()
-    handler = Handler.__new__(Handler)
-    handler.rfile = rfile
-    handler.wfile = wfile
-    handler.client_address = ("127.0.0.1", 0)
-    handler.server = None
-    handler.raw_requestline = rfile.readline()
-    handler.parse_request()
-    handler.protocol_version = "HTTP/1.1"
-    handler.do_POST()
-    resp = wfile.getvalue()
 
     status_line = resp.split(b"\r\n", 1)[0]
     assert b"200" in status_line, status_line
@@ -5600,18 +4930,11 @@ async def test_apply_profile_rolls_back_when_reload_fails(
     tmp_path: Path,
     monkeypatch,
 ):
-    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "JASPER_DSP_APPLY_STATE_PATH",
-        str(tmp_path / "dsp_apply_state.json"),
+    config_dir, fake = _eq_box(
+        monkeypatch, tmp_path, "correction_abc_123.yml", fail_set=True,
     )
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    current = config_dir / "correction_abc_123.yml"
-    current.write_text(_room_config([PeqFilter(freq=80.0, q=4.0, gain=-3.0)]))
-    fake = FakeCamilla(str(current), fail_set=True)
 
-    with pytest.raises(RuntimeError, match="reload failed"):
+    with pytest.raises(DspApplyError) as failed:
         await sound_setup._apply_profile(
             SoundProfile(simple_eq=SimpleEq(bass_db=1.0)),
             profile_path=tmp_path / "sound_profile.json",
@@ -5619,7 +4942,8 @@ async def test_apply_profile_rolls_back_when_reload_fails(
             camilla_factory=lambda: fake,
         )
 
-    assert fake.set_calls[-1] == str(current)
+    assert failed.value.state.phase == "load"
+    assert fake.set_calls[-1] == fake.current_path
     assert not (tmp_path / "sound_profile.json").exists()
 
 
@@ -5707,18 +5031,11 @@ def _write_repin_fixture(
 ) -> None:
     """Save the commissioned pair, then observe whichever units are attached."""
 
-    topology_path = tmp_path / "output_topology.json"
-    hardware_path = tmp_path / "output_hardware.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    monkeypatch.setenv("JASPER_OUTPUT_HARDWARE_STATE_PATH", str(hardware_path))
     monkeypatch.setenv(
         "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline.json")
     )
-    save_output_topology(
-        OutputTopology.from_mapping(_ported_dual_apple_topology_raw()),
-        path=topology_path,
-    )
-    _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, attached_serial_b)
+    save_output_topology(OutputTopology.from_mapping(_ported_dual_apple_topology_raw()))
+    _observe_apple_cards(LEFT_APPLE_SERIAL, attached_serial_b)
 
 
 def _stub_repin_runtime(monkeypatch) -> list[str]:
@@ -5731,10 +5048,7 @@ def _stub_repin_runtime(monkeypatch) -> list[str]:
         "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
         park_and_commit,
     )
-    monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
-        lambda **_kwargs: {"ok": True},
-    )
+    _stub_reconcile(monkeypatch, {"ok": True})
     return _stub_audio_stops(monkeypatch)
 
 
@@ -5769,7 +5083,7 @@ def test_repin_endpoint_keeps_the_design_and_drops_drift_evidence(
 
     def park_and_commit(_topology, commit, **kwargs):
         park_kwargs.update(kwargs)
-        _observe_apple_cards(tmp_path, LEFT_APPLE_SERIAL, "LATEST-DONGLE")
+        _observe_apple_cards(LEFT_APPLE_SERIAL, "LATEST-DONGLE")
         return _RuntimeMutation(commit())
 
     monkeypatch.setattr(
@@ -5858,25 +5172,6 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
     assert f"config_path: {baseline}" in statefile.read_text()
 
 
-@pytest.mark.parametrize(
-    ("reconcile", "status"),
-    [
-        (RECONCILE_STILL_CONVERGING, "converging"),
-        (RECONCILE_FAILED, "needs_attention"),
-    ],
-)
-def test_repin_reports_the_reconcile_verdict(
-    monkeypatch, tmp_path: Path, reconcile, status,
-):
-    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
-    _stub_repin_runtime(monkeypatch)
-    _stub_reconcile(monkeypatch, reconcile)
-
-    payload = sound_setup._repin_output_topology_payload({})
-
-    assert payload["repin"]["status"] == status
-
-
 def test_repin_refuses_when_the_attached_pair_is_already_pinned(
     monkeypatch,
     tmp_path: Path,
@@ -5894,56 +5189,6 @@ def test_repin_refuses_when_the_attached_pair_is_already_pinned(
         sound_setup._repin_output_topology_payload({})
 
     assert raised.value.code == "repin_unavailable"
-
-
-def test_sound_output_topology_repin_http_route_is_csrf_protected(
-    monkeypatch,
-    tmp_path: Path,
-):
-    calls = []
-    monkeypatch.setattr(
-        sound_setup,
-        "_repin_output_topology_payload",
-        lambda raw: calls.append(raw) or {"output_topology": {"status": "valid"}},
-    )
-    with sound_server(tmp_path) as base:
-        resp = json_post_with_csrf(base, "/output-topology/repin", {})
-        payload = json.loads(resp.read().decode("utf-8"))
-
-        assert calls == [{}]
-        assert payload["output_topology"]["status"] == "valid"
-
-
-def _save_topology(monkeypatch, tmp_path: Path, raw: dict) -> Path:
-    topology_path = tmp_path / "output_topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    save_output_topology(OutputTopology.from_mapping(raw), path=topology_path)
-    return topology_path
-
-
-def _passive_stereo_topology_raw() -> dict:
-    return {
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "passive",
-        "name": "Passive pair",
-        "hardware": {"device_id": "hifiberry_dac8x", "physical_output_count": 8},
-        "speaker_groups": [
-            {
-                "id": side,
-                "label": side.title(),
-                "kind": side,
-                "mode": "full_range_passive",
-                "channels": [{
-                    "role": "full_range",
-                    "physical_output_index": index,
-                    "identity_verified": True,
-                }],
-            }
-            for index, side in enumerate(("left", "right"))
-        ],
-        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
-    }
 
 
 @pytest.mark.parametrize("review_ready", [False, True])
@@ -6171,7 +5416,7 @@ def test_cardioid_compare_availability_contract(tmp_path, monkeypatch, reason):
     level = {"status": "matched", "trim_db": 1.2, "louder": "on", "reason": "",
              "round_id": "pair", "banked_at": "2026-09-20T12:00:00Z"}
     monkeypatch.setattr(sound_active_speaker, "rear_compare_level", lambda **kwargs: level)
-    payload = _drive_compare_get(tmp_path, "/cardioid-compare")
+    payload = _get_json(tmp_path, "/cardioid-compare")
     assert payload == {
         "available": not reason, "reason": reason, "state": "normal",
         "tune": {"label": "Current tune", "layers": [] if applied is None else
@@ -6187,7 +5432,7 @@ def test_cardioid_compare_session_disclosure(tmp_path, monkeypatch, layer, state
     monkeypatch.setattr(sound_active_speaker, "audition_summary", lambda: {
         "layer": layer, "state": state, "expires_in_s": seconds,
     })
-    payload = _drive_compare_get(tmp_path, "/cardioid-compare")
+    payload = _get_json(tmp_path, "/cardioid-compare")
     assert payload["state"] == (state or "normal")
     assert payload["expires_in_s"] == seconds
 
@@ -6249,7 +5494,7 @@ def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monk
     from unittest.mock import AsyncMock
     from jasper.active_speaker import rear_compare, state_paths
     from jasper.active_speaker.crossover_v2 import rear_preview, rear_pair_round as readers
-    from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused
+    from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 
     if failure == "rear":
         compare_evidence[1]["recomposition_snapshot"].clear()
@@ -6258,7 +5503,7 @@ def test_unavailable_level_never_blocks_compare(compare_evidence, tmp_path, monk
     elif failure == "range":
         monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: 6.01)
     elif failure == "preview":
-        monkeypatch.setattr(rear_preview, "preview_rear_section", Mock(side_effect=RoundCapturesRefused("refused", {})))
+        monkeypatch.setattr(rear_preview, "preview_rear_section", Mock(side_effect=EvidenceUnavailable("refused", {})))
     elif failure == "selector":
         monkeypatch.setattr(readers, "newest_rear_pair_round", Mock(side_effect=LookupError()))
     else:
@@ -6323,26 +5568,11 @@ def test_cardioid_compare_post_unavailable_and_csrf(tmp_path, monkeypatch):
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["error"] == "cardioid_compare_unavailable"
 
 
-def _drive_compare_get(tmp_path, path):
-    handler_cls = sound_setup._make_handler(profile_path=tmp_path / "profile.json",
-        library_path=tmp_path / "library.json", config_dir=tmp_path, camilla_factory=lambda: None)
-    handler = handler_cls.__new__(handler_cls)
-    handler.rfile = io.BytesIO(f"GET {path} HTTP/1.1\r\nHost: jts.local\r\n\r\n".encode())
-    handler.wfile = io.BytesIO()
-    handler.client_address, handler.server = ("127.0.0.1", 0), None
-    handler.raw_requestline = handler.rfile.readline()
-    assert handler.parse_request()
-    handler.do_GET()
-    response = handler.wfile.getvalue()
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    return json.loads(response.split(b"\r\n\r\n", 1)[1])
-
-
 def test_cardioid_compare_absent_from_get_state(tmp_path, monkeypatch):
     block = Mock(side_effect=AssertionError())
     monkeypatch.setattr(sound_setup, "_cardioid_compare_payload", block)
     monkeypatch.setattr(sound_setup, "_eq_carrier_block", lambda *a, **k: None)
-    assert "cardioid_compare" not in _drive_compare_get(tmp_path, "/state")
+    assert "cardioid_compare" not in _get_json(tmp_path, "/state")
     block.assert_not_called()
 
 
@@ -6381,9 +5611,10 @@ def test_compare_post_never_selects_or_previews(compare_evidence, tmp_path, monk
     preview.assert_not_called()
 
 
-def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch):
+def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
+    caplog.set_level(logging.INFO, logger=sound_setup.logger.name)
     responses = []
     for route in ("/cardioid-compare", "/live-draft"):
         response, reads = _drive_raw_sound_post(tmp_path, path=route, content_length=2, body=b"{}")
@@ -6392,6 +5623,9 @@ def test_cardioid_compare_uses_follower_post_guard(tmp_path, monkeypatch):
         responses.append(json.loads(response.split(b"\r\n\r\n", 1)[1]))
     assert responses[0] == responses[1]
     assert set(responses[0]) == {"error"}
+    assert event_field_maps(caplog, "sound.follower_content_dsp_blocked") == [
+        {"path": "/cardioid-compare"}, {"path": "/live-draft"},
+    ]
 
 
 def test_sound_server_construction_starts_no_thread(tmp_path, monkeypatch):
@@ -6441,7 +5675,7 @@ def test_web_startup_recovers_after_installing_idle_hold(monkeypatch):
     monkeypatch.setattr(web_main, "primary_controller", lambda: object())
     monkeypatch.setattr(web_main, "_specs_for_role", lambda role: (spec,))
     monkeypatch.setattr(web_main, "_active_install_role", lambda: "speaker")
-    monkeypatch.setattr("jasper.volume_process.install_env_canonical_target_provider", lambda: None)
+    monkeypatch.setattr("jasper.audio_control.volume_process.install_env_canonical_target_provider", lambda: None)
     monkeypatch.setattr(web_main._systemd, "IdleShutdownTracker", lambda: tracker)
     monkeypatch.setattr(web_main._systemd, "adopt_systemd_sockets", lambda: [])
     monkeypatch.setattr(web_main._systemd, "install_request_idle_bump", lambda *args: None)
@@ -6472,7 +5706,7 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
     async def anchor(**kwargs):
         return str(current)
     monkeypatch.setattr(cam, "get_config_file_path", anchor)
-    monkeypatch.setattr("jasper.camilla.MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
+    monkeypatch.setattr("jasper.audio_control.camilla.MAIN_VOLUME_RAMP_SETTLE_S", 0.0)
     payload = await sound_setup._live_draft_profile(
         SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0)),
         expected_dsp_write_epoch=dsp_write_epoch(), config_dir=tmp_path,
@@ -6492,8 +5726,6 @@ async def test_live_draft_retires_compare_record(tmp_path, monkeypatch):
 ])
 def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, channels, cardioid, count):
     from jasper.active_speaker.layout import build_speaker_layout, layout_choices
-    from jasper.active_speaker.measurement_programs import programs_for_topology
-    from tests.active_speaker_fixtures import mono_output_topology
 
     choices = dict(layout=layout, crossover=crossover, channels=channels, cardioid=cardioid)
     topology = build_speaker_layout(mono_output_topology(), choices)
@@ -6508,9 +5740,8 @@ def test_setup_layout_choices_build_distinct_driver_outputs(layout, crossover, c
 def test_setup_research_import_uses_one_draft_writer_and_preserves_edits(tmp_path, monkeypatch):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker.design_inputs import resolved_draft_inputs
-    from jasper.active_speaker.design_draft import load_design_draft, save_design_draft
+    from jasper.active_speaker.design_draft import save_design_draft
     from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _operator_inputs, _research_result
 
     topology = mono_output_topology()
@@ -6555,7 +5786,6 @@ def _stored_setup(tmp_path, monkeypatch, *, stereo):
     from jasper.active_speaker import baseline_profile
     from jasper.active_speaker.design_draft import save_design_draft
     from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import (
         _operator_inputs, _research_result, _stereo_operator_inputs, _stereo_topology,
     )
@@ -6666,7 +5896,6 @@ def test_setup_opens_a_high_pass_without_its_owner_in_its_driver_card(tmp_path, 
 def test_setup_saves_details_on_a_layout_with_a_subwoofer(tmp_path, monkeypatch):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile
-    from tests.active_speaker_fixtures import mono_output_topology
 
     topology = mono_output_topology(mode='full_range_passive', with_subwoofer=True)
     monkeypatch.setenv('JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE', str(tmp_path / 'draft.json'))
@@ -6687,7 +5916,6 @@ def test_setup_saves_details_on_a_layout_with_a_subwoofer(tmp_path, monkeypatch)
 def test_setup_partial_details_return_research_action_without_measurement_errors(tmp_path, monkeypatch, style):
     from jasper.web import sound_speaker_setup as setup
     from jasper.active_speaker import baseline_profile
-    from tests.active_speaker_fixtures import mono_output_topology
     from tests.test_active_speaker_driver_safety import _operator_inputs
 
     topology = mono_output_topology()
@@ -6722,7 +5950,7 @@ def test_setup_partial_details_return_research_action_without_measurement_errors
 
 
 def test_setup_apply_uses_declared_base_instead_of_the_incumbent(tmp_path, monkeypatch):
-    from jasper.web import sound_speaker_setup as setup, sound_active_speaker
+    from jasper.web import sound_speaker_setup as setup
     from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 
     _seed_baseline_apply_environment(monkeypatch, tmp_path)

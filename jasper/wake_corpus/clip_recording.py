@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
 from jasper.log_event import log_event
-from jasper.wake_conditions import CONDITIONS, DISTANCES
+from jasper.playback_state.wake_conditions import CONDITIONS, DISTANCES
 
 from . import active_session
 from .capture_plan import validate_active_capture_plan

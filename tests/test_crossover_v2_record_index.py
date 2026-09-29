@@ -23,7 +23,8 @@ import pytest
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
 )
-from jasper.active_speaker.crossover_v2.candidate_ladder import CandidateLadderRefused, candidate_ladder
+from jasper.active_speaker.crossover_v2.candidate_ladder import candidate_ladder
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     POSITION_EVIDENCE_KIND,
@@ -364,6 +365,6 @@ def test_the_scanners_read_the_speaker_takes_the_host_banks(tmp_path, monkeypatc
 
     lateral = bank_executor_take(tmp_path / "lateral", monkeypatch, raw_record={"program_phase": PHASE_LATERAL})
     bundle = bundle_of(tmp_path / "lateral")
-    with pytest.raises(CandidateLadderRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         candidate_ladder(bundle, round_inputs(bundle))
     assert refused.value.detail["candidates_named"] == [lateral["candidate_id"]]

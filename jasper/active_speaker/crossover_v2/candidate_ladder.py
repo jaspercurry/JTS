@@ -13,7 +13,7 @@ from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON
+from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON, EvidenceUnavailable
 from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
 from jasper.json_fields import finite_float
 
@@ -28,22 +28,12 @@ from ..run_manifest import kept_measurements
 
 __all__ = [
     "REFUSE_NO_LADDER",
-    "CandidateLadderRefused",
     "candidate_ladder",
 ]
 
 #: Published when no pose in the round played two candidates — including a
 #: round that walked none at all, which the detail's own counts tell apart.
 REFUSE_NO_LADDER = "candidates_no_ladder"
-
-
-class CandidateLadderRefused(Exception):
-    """A named refusal with the evidence behind it. Never a bare failure."""
-
-    def __init__(self, reason: str, detail: Mapping[str, Any]) -> None:
-        super().__init__(f"{reason}: {json.dumps(detail, sort_keys=True, default=str)}")
-        self.reason = reason
-        self.detail = dict(detail)
 
 
 class _Curve(NamedTuple):
@@ -322,14 +312,14 @@ def candidate_ladder(round_dir: Path, inputs: RoundInputs) -> dict[str, Any]:
     ``superseded_take_ids`` for an earlier take of one candidate at one pose,
     ``takes_naming_no_candidate`` for a take that names none.
 
-    Raises :class:`CandidateLadderRefused` when no pose played two candidates,
+    Raises :class:`EvidenceUnavailable` when no pose played two candidates,
     carrying the counts that tell a round which walked no ladder apart from one
     whose takes named no config.
     """
     read = _read_poses(inputs.session_dir, round_dir / FREQUENCY_VIEW_FILENAME)
     tables = _tables(read.poses)
     if not tables:
-        raise CandidateLadderRefused(REFUSE_NO_LADDER, {
+        raise EvidenceUnavailable(REFUSE_NO_LADDER, {
             "round_dir": str(round_dir),
             "poses_walked": len(read.poses),
             "candidates_named": sorted(

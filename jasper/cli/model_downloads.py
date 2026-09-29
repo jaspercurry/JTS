@@ -4,12 +4,12 @@
 
 """CLI entry point for install.sh's model staging.
 
-jasper.model_downloads is a leaf: it owns the generic download/hash/retry
+jasper.audio_resources.model_downloads is a leaf: it owns the generic download/hash/retry
 primitives but knows nothing about wake models, openWakeWord assets, or
 DTLN bundles. This module is the composition root that wires a
 `--registry` name to the registry that builds its `StageAsset` list —
 `jasper.cli` sits above every registry, so it is free to import them
-where `jasper.model_downloads` is not. See #4726.
+where `jasper.audio_resources.model_downloads` is not. See #4726.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import os
 import sys
 
 from jasper.aec_engines.dtln_models import dtln_stage_assets
-from jasper.model_downloads import (
+from jasper.audio_resources.model_downloads import (
     DEFAULT_MAX_BYTES,
     DEFAULT_RETRIES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -26,7 +26,7 @@ from jasper.model_downloads import (
     active_wake_model,
     stage_model_assets,
 )
-from jasper.wake_models import (
+from jasper.service_state.wake_models import (
     openwakeword_stage_assets,
     seed_default_wake_model_env,
     wake_model_stage_assets,

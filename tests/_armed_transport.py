@@ -54,6 +54,6 @@ def arm_ring_transport(monkeypatch: Any) -> None:
     avoid.
     """
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed",
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed",
         lambda env=None: True,
     )

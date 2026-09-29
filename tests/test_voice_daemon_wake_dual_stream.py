@@ -31,8 +31,8 @@ import pytest
 
 from jasper.voice.wake_detect import LegRuntime
 from jasper.voice_daemon import WakeLoop
-from jasper.wake_legs import by_token
-from jasper.wake_condition_context import classify_condition
+from jasper.playback_state.wake_legs import by_token
+from jasper.playback_state.wake_condition_context import classify_condition
 from tests._log_events import event_fields
 from tests._wake_loop import wake_loop_for_tests
 

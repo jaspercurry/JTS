@@ -9,8 +9,6 @@
     lifecycle mirror — B2 capability-gated arming + split-brain fix;
   - off a combo box the fan-in keys are EXPLICIT `disabled`, never unset — F5
     jasper.env-precedence fix;
-  - a stale JASPER_FANIN_RING_SLOTS self-heals so it cannot leave the box on a
-    Ring-A geometry the ioplug will not attach — F6;
   - idempotence (auto pass twice = one write).
 
 There is no coupling DECISION here since ADR-0100: the ring is the only central
@@ -26,16 +24,11 @@ from types import SimpleNamespace
 
 import pytest
 
-SHIPPED_RING_CONF_D = (
-    Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
-)
-
-from jasper import ring_conf
 from jasper.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
 from jasper.fanin import latency_mode as lm
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAMILLA_CHUNKSIZE,
@@ -43,7 +36,7 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
 )
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology
 from tests._log_events import event_field_maps
 
 
@@ -76,9 +69,9 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
 
 
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
     from jasper.local_sources import markers
-    from jasper.music_sources import Source
+    from jasper.playback_state.music_sources import Source
 
     seen = []
     monkeypatch.setattr(
@@ -96,7 +89,7 @@ def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatc
 def test_usbsink_desired_on_but_follower_parked_disarms_effective_gate(
     monkeypatch,
 ):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
     from jasper.local_sources import markers as markers
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
@@ -117,7 +110,7 @@ def test_usbsink_desired_on_but_follower_parked_disarms_effective_gate(
 def test_usbsink_desired_on_but_derived_lifecycle_not_ready_disarms(
     monkeypatch,
 ):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
     from jasper.local_sources import markers as markers
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
@@ -128,7 +121,7 @@ def test_usbsink_desired_on_but_derived_lifecycle_not_ready_disarms(
 
 
 def test_usbsink_canonical_off_dominates_stale_enabled_mirror(monkeypatch):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: False)
     monkeypatch.setattr(
@@ -354,16 +347,7 @@ def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
 
 
 def _stub_ring_geometry_heals(monkeypatch):
-    """Keep the ring convergence's own file reads out of these combo tests.
-
-    The two geometry heals run on every pass and read the conf.d and /dev/shm;
-    stub both so these tests exercise the combo half only. Their own behavior is
-    covered separately (the F6 tests below run the REAL slot heal).
-    """
-    monkeypatch.setattr(
-        cr, "_migrate_stale_fanin_ring_slots",
-        lambda path, reason: (cr.read_snapshot(path), False)
-    )
+    """Keep the ring-file repair reads out of these USB combo tests."""
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
     )
@@ -390,7 +374,7 @@ def _armed_outputd_env() -> str:
     that key's single writer and derives it from the coupling, so the fixture
     derives it the same way rather than naming a literal that could drift.
     """
-    from jasper.fanin_coupling import content_lane_format_for_coupling
+    from jasper.dsp_control.fanin_coupling import content_lane_format_for_coupling
 
     return (
         "JASPER_OUTPUTD_CONTENT_FORMAT="
@@ -715,69 +699,6 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
     assert r.restarted_fanin_for_combo is False
     assert restarts.index("camilla_stop") < restarts.index("fanin")
     assert restarts.index("fanin") < restarts.index("camilla_start")
-
-
-# --------------------------------------------------------------------------
-# F6 — a stale JASPER_FANIN_RING_SLOTS self-heals on every auto pass
-# --------------------------------------------------------------------------
-
-
-def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
-    """A box carrying a stale JASPER_FANIN_RING_SLOTS=8 line self-heals: the
-    pass writes the conf.d's coherent value so fan-in creates Ring A with the
-    geometry the ioplug attaches against, instead of leaving the box sheared.
-    """
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text("JASPER_FANIN_RING_SLOTS=8\n")
-    outputd.write_text(_armed_outputd_env())
-    _persist_ring_eligible_topology(tmp_path, monkeypatch)
-
-    # Uses the REAL slot heal so the wiring is exercised end to end; what is
-    # stubbed is the /dev/shm sweep beside it and the conf.d the heal reads.
-    monkeypatch.setattr(
-        cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
-    )
-    import jasper.ring_assets as ra
-
-    # The heal reads the conf.d's declared wire before it writes the slot count;
-    # point it at the SHIPPED file rather than the dev host's /etc.
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(ring_conf, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
-
-    restarts: list[str] = []
-    _auto(fanin, outputd, gadget=False, restarts=restarts)
-    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
-
-
-def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
-    """F6 through the real systemd env chain.
-
-    A stale ``JASPER_FANIN_RING_SLOTS=8`` in /etc/jasper/jasper.env is still the
-    effective fan-in value when fanin.env has no later override. The auto pass
-    must write the coherent fanin.env override.
-    """
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    jasper_env = tmp_path / "jasper.env"
-    fanin.write_text("", encoding="utf-8")
-    outputd.write_text(_armed_outputd_env(), encoding="utf-8")
-    jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
-    _persist_ring_eligible_topology(tmp_path, monkeypatch)
-
-    monkeypatch.setattr(
-        cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
-    )
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(ring_conf, "ring_conf_n_slots", lambda pcm, conf_d=None: 4)
-
-    restarts: list[str] = []
-    _auto(fanin, outputd, gadget=False, restarts=restarts)
-
-    assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
 
 
 def test_fresh_install_auto_arms_exactly_the_documented_combo_block(

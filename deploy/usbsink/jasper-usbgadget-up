@@ -232,7 +232,7 @@ if [[ "${WANT_AUDIO}" == "1" ]]; then
     # configfs unit for c_volume_*; see u_audio_volume_tlv "UAC volume
     # resolution is 1/256 dB"). We narrow it from the kernel's wide ~-128..0 dB
     # default to -50..0 dB so macOS tapers its slider POSITION over a range
-    # aligned with JTS's own volume curve (jasper.volume_curve.percent_to_db's
+    # aligned with JTS's own volume curve (jasper.audio_routes.volume_curve.percent_to_db's
     # -50 dB floor). WHY: a wide default compresses the whole Mac slider into
     # the top few dB, so a low-mid slider read ~73% on JTS (issue #1698).
     # WHAT: min=-12800 (-50 dB = -50*256), max=0 (0 dB), res=256 (1 dB step).

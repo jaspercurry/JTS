@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for jasper.wake_events.WakeEventStore.
+"""Unit tests for jasper.service_state.wake_events.WakeEventStore.
 
 Covers the public contract:
   - Schema migration is idempotent (open()-twice is safe).
@@ -35,8 +35,9 @@ import pytest
 
 from tests._log_events import event_fields
 
-from jasper import atomic_io, wake_events
-from jasper.wake_events import (
+from jasper import atomic_io
+from jasper.service_state import wake_events
+from jasper.service_state.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES,
     ROLLED_OFF_SENTINEL,
     SAMPLE_RATE_HZ,
@@ -226,7 +227,7 @@ def test_migration_columns_backfill_music_renderer_and_condition_class():
     missing from _MIGRATION_COLUMNS, so upgraded (not reset) DBs lacked it
     and dropped every telemetry INSERT; condition_class is new. Both must be
     in the ALTER list so open() backfills existing DBs idempotently."""
-    from jasper.wake_events import _MIGRATION_COLUMNS
+    from jasper.service_state.wake_events import _MIGRATION_COLUMNS
     cols = {name for name, _typ in _MIGRATION_COLUMNS}
     assert "music_renderer" in cols
     assert "condition_class" in cols
@@ -237,7 +238,7 @@ def test_migration_columns_include_chip_aec_columns():
     _MIGRATION_COLUMNS so an already-deployed Pi backfills them on upgrade
     (the same backfill gap music_renderer hit). CREATE TABLE carries the
     same columns for fresh DBs."""
-    from jasper.wake_events import _MIGRATION_COLUMNS
+    from jasper.service_state.wake_events import _MIGRATION_COLUMNS
     cols = {name for name, _typ in _MIGRATION_COLUMNS}
     for c in (
         "audio_chip_aec_150_path", "audio_chip_aec_210_path",
@@ -898,7 +899,7 @@ async def test_retention_marks_dtln_path_as_rolled_off(tmp_path: Path):
         assert row["audio_dtln_path"] == ROLLED_OFF_SENTINEL, (
             "audio_dtln_path still points at the deleted file; the "
             "sentinel update missed the third leg. Check "
-            "_mark_audio_rolled_off in jasper/wake_events.py."
+            "_mark_audio_rolled_off in jasper/service_state/wake_events.py."
         )
         # Second event keeps its real paths
         row2 = await s.get_event("evt-2")

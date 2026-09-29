@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from jasper.aec_sweep import AEC3_SWEEP_SOURCE_XVF
+from jasper.audio_routes.aec_sweep import AEC3_SWEEP_SOURCE_XVF
 
 from .bridge_session import build_capture_health
 from .runtime_probe import read_bridge_stats_snapshot

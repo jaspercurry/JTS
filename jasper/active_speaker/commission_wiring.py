@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 
 from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.crossover_preview import current_crossover_preview
-from jasper.output_topology import OutputTopology, topology_is_passive_mains
+from jasper.audio_routes.output_topology import OutputTopology, topology_is_passive_mains
 
 from ._common import coerce_finite_float
 

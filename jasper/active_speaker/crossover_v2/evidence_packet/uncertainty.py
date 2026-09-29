@@ -20,7 +20,6 @@ from ..feature_classification import (
 )
 from ..prescription_contract import CONTRACT_COMMAND, snr_shape
 from ..record_index import Measurement
-from ..round_evidence import ITERATION_PLATEAU_DB, MEASURED_BENEFIT_MARGIN_DB
 from .incumbent import read_candidate
 from .offline_reads import exact_json_value, read_json
 from .positions import POSITIONS_SUBDIR, banked_takes
@@ -130,23 +129,13 @@ def _capture_snr_block(
 
 
 def _unmeasured_repeat_floor(absence: str, reason: str) -> dict[str, Any]:
-    """The shared shape for every absence — thresholds falling back to the two
-    ``round_evidence`` constants that self-describe as assumptions. ``absence``
-    is the closed vocabulary a reader keys on; ``reason`` is for a human."""
+    """The shared shape for every absence. ``absence`` is the closed vocabulary
+    a reader keys on; ``reason`` is for a human."""
     return {
         "kind": UNCERTAINTY_RANDOM,
         "available": False,
         "absence": absence,
         "reason": reason,
-        "thresholds": {
-            "source": "codified_assumption",
-            "margin_db": MEASURED_BENEFIT_MARGIN_DB,
-            "plateau_db": ITERATION_PLATEAU_DB,
-            "note": (
-                "both self-described assumptions in round_evidence.py, "
-                "awaiting exactly this measurement"
-            ),
-        },
     }
 
 #: Why the repeat floor is not available: never banked, a file that is not

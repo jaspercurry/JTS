@@ -27,12 +27,12 @@ from tests.volume_coordinator_fixtures import (
     pushes as pushes,
 )
 
-from jasper import renderer
-from jasper.music_sources import Source
-from jasper.volume_curve import percent_to_db
-from jasper.volume_handoff import VolumeHandoff
-from jasper.volume_persistence import VolumePersistence
-from jasper.volume_state import VolumeState
+from jasper.audio_control import renderer
+from jasper.playback_state.music_sources import Source
+from jasper.audio_routes.volume_curve import percent_to_db
+from jasper.audio_control.volume_handoff import VolumeHandoff
+from jasper.service_state.volume_persistence import VolumePersistence
+from jasper.audio_control.volume_state import VolumeState
 
 
 @pytest.fixture
@@ -247,7 +247,7 @@ async def test_guard_settle_bounds_continuous_catchdown(carrier, monkeypatch):
         waits.append(delay)
         persistence.save_listening_level(persistence.load().listening_level - 10)
 
-    monkeypatch.setattr("jasper.volume_handoff.asyncio.sleep", sleep)
+    monkeypatch.setattr("jasper.audio_control.volume_handoff.asyncio.sleep", sleep)
     owner._handoff_settle_sec = 0.45
     handoff = await owner.prepare_source_handoff(
         Source.SPOTIFY, Source.AIRPLAY, reason="manual",

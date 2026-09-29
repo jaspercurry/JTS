@@ -54,7 +54,7 @@ from jasper.active_speaker.audition import (
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
-from jasper.volume_process import install_env_canonical_target_provider
+from jasper.audio_control.volume_process import install_env_canonical_target_provider
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ NOT_RESTORED = "audition_not_restored"
 def _camilla_controller() -> Any:
     """A CamillaController on the live websocket — the same graph the daemons see."""
 
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 
@@ -104,11 +104,13 @@ def _print_status(payload: dict[str, Any]) -> None:
             # without restoring. Nothing will now: say so instead of counting
             # down to a zero that never arrives.
             _say("  STALE: the owner is gone; run `jasper-audition stop`")
-    if payload.get("louder_than_full_db"):
+    louder_db = float(payload.get("louder_than_full_db") or 0.0)
+    quieter_db = float(payload.get("quieter_than_full_db") or 0.0)
+    if max(louder_db, quieter_db) > 0.05:
         _say(
-            "  NOT level-matched: dropping the measured correction hands back "
-            f"up to {float(payload['louder_than_full_db']):.1f} dB where it "
-            "was cutting, so this layer plays louder in those bands"
+            "  NOT level-matched: dropping the measured correction plays this "
+            f"layer up to {louder_db:.1f} dB louder where it was cutting, and "
+            f"{quieter_db:.1f} dB quieter elsewhere"
         )
     if payload.get("entry_config_path"):
         _say(f"  durable graph (untouched): {payload['entry_config_path']}")

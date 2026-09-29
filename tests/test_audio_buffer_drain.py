@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 
-from jasper.audio_buffer import AudioBuffer
+from jasper.audio_control.audio_buffer import AudioBuffer
 from jasper.voice.turn_lifecycle import State
 from jasper.voice_daemon import PRE_ROLL_FRAMES
 from tests._manual_mics import publish_remote_ready
@@ -29,7 +29,7 @@ def _stub_turn(**members) -> SimpleNamespace:
 
 @pytest.mark.parametrize("overflow", [False, True])
 def test_buffer_drops_oldest_and_marks_next_frame(monkeypatch, overflow):
-    monkeypatch.setattr("jasper.audio_buffer.time.monotonic", lambda: 10.0)
+    monkeypatch.setattr("jasper.audio_control.audio_buffer.time.monotonic", lambda: 10.0)
     buffer = AudioBuffer(max_frames=2, max_age_sec=1.0)
     for tag, captured_at in enumerate([8.0, 9.5, 10.0] if overflow else [8.0, 10.0]):
         buffer.append(_frame(tag), captured_at)

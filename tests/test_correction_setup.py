@@ -371,7 +371,7 @@ def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery
     plan = SimpleNamespace(needs_recovery=True)
     calls = []
     real_prepare = v2host.prepare_v2_session
-    body = {"plan": AngleCaptureRequest((AngleStop(0, REGIME_SUMMED),)).to_dict()}
+    body = {"plan": AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),)).to_dict()}
 
     def recover(run_async, camilla_factory):
         assert run_async is correction_runtime.run_async

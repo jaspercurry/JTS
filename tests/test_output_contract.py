@@ -18,7 +18,7 @@ from jasper.active_speaker.output_contract import (
     ring_channels_for_topology,
     topology_allows_flat_dac_graph,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 # Reuse the topology builders from the main runtime-contract suite.
 from tests.test_active_speaker_runtime_contract import (

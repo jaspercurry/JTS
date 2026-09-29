@@ -10,10 +10,10 @@ import os
 
 import pytest
 
-import jasper.volume_curve as volume_curve
-from jasper.music_sources import VolumeMode
+import jasper.audio_routes.volume_curve as volume_curve
+from jasper.playback_state.music_sources import VolumeMode
 from jasper.sound import settings as sound_settings
-from jasper.volume_curve import (
+from jasper.audio_routes.volume_curve import (
     canonical_target_db,
     configured_volume_floor_db,
     db_to_percent,

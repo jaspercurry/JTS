@@ -239,7 +239,7 @@ impl LaneResampler {
     /// shipped `usb_low_latency_48k` route runs a shallower six-period cushion
     /// (`512 + 1536 = 2048` frames total —
     /// `DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES` in
-    /// `jasper/audio_runtime_plan.py`). Hardware soak/cold-start validation must
+    /// `jasper/audio_control/audio_runtime_plan.py`). Hardware soak/cold-start validation must
     /// pass before any lower route default ships.
     ///
     /// `ring_frames` is the input buffer depth: it MUST exceed

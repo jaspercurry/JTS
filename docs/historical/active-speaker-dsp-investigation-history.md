@@ -1163,7 +1163,7 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   `OutputLayout`/`OutputTransportPlan`; resolvers → `OutputTopology`; collapse the
   resolver self-shadow; `ActivePlaybackRouteCapability` reads `OutputLayout`
   (**0.3 landed** — the data model lives in
-  [`jasper/output_topology.py`](../../jasper/output_topology.py); every physical-DAC
+  [`jasper/output_topology.py`](../../jasper/audio_routes/output_topology.py); every physical-DAC
   PCM is forced through `stable_card_pcm` → `hw:CARD=<name>` and the
   `OutputTransportPlan` boundary rejects any numeric-index/`plug`/`plughw` form, so
   the card-index drift class is fail-closed before Stage 1/2 ride the plan). *Red:*

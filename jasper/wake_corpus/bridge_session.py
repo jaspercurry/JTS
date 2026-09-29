@@ -35,11 +35,11 @@ from jasper.service_units import (
     read_unit_property,
     systemd_int,
 )
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
 )
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
 )
@@ -50,7 +50,7 @@ from jasper.cli.wake_enroll import (
     SAMPLE_RATE_HZ,
     VOICE_UNIT,
 )
-from jasper.wake_ports import build_ports
+from jasper.service_state.wake_ports import build_ports
 from jasper.atomic_io import write_env_file
 from jasper.env_file import delete_env_file, read_env_file
 from . import runtime_probe

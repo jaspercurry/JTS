@@ -28,27 +28,23 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
     emit_active_speaker_baseline_config,
 )
-from jasper.active_speaker.baseline_profile import (
-    applied_program_level_delta_db,
-    profile_program_headroom_db,
-)
 from jasper.biquad import SHELF_Q, PeqFilter
-from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER, boost_headroom_by_role, linearization_headroom_db
+from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER
 from jasper.active_speaker import program_headroom
+from jasper.active_speaker.graph_safety import GraphFilter, GraphView
 from jasper.active_speaker.camilla_names import (
     blend_correction_name, driver_linearization_peak_name, driver_linearization_shelf_name,
     driver_linearization_taper_name, room_peq_name,
 )
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME, PEAK_EPS_DB
 from jasper.active_speaker.runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_crossover_v2_driver_prescription import BRANCH_CONTEXT, _boost
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from tests.test_rear_output_foundation import _cardioid_baseline, _classify as _classify_rear, _rear_document
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
@@ -426,19 +422,6 @@ def test_linearization_headroom_takes_the_worst_branch_not_the_sum():
     )
 
 
-@pytest.mark.parametrize("volume,spl", [(-21.09, 36.0), (None, None), (-21.09, -3.0)])
-def test_program_headroom_discloses_cost_without_measurement_caps(volume, spl):
-    filters = {"woofer": [_boost(gain=6.0, role="woofer")], "tweeter": [_boost(gain=6.0)]}
-    bounds = boost_headroom_by_role(branch_context=BRANCH_CONTEXT, linearization=filters,
-                                   session_volume_db=volume, spl_headroom_db=spl)
-    for row in bounds.values():
-        assert row == {
-            "composed_boost_db": pytest.approx(6.0), "program_headroom_spent_db": pytest.approx(7.0),
-            "program_headroom_remaining_db": pytest.approx(33.0), "max_program_headroom_db": 40.0,
-            "session_volume_db": volume, "spl_headroom_db": spl, "binding": None,
-        }
-
-
 def test_linearization_headroom_is_zero_for_a_cut_only_correction():
     """Every pre-PR-L5 fit is cut-only, and its emitted graph must be
     byte-identical to what it was before boost existed."""
@@ -448,9 +431,6 @@ def test_linearization_headroom_is_zero_for_a_cut_only_correction():
         preset, playback_device=ACTIVE_PCM,
         linearization={"woofer": [_peak(gain=-4.0)]},
     )
-    assert linearization_headroom_db(
-        {"woofer": [_peak(gain=-4.0)]}, branch_context={},
-    ) == 0.0
     assert _headroom_gain_db(cut_only) == pytest.approx(_headroom_gain_db(flat))
 
 
@@ -528,152 +508,20 @@ def test_a_prescribable_boost_reproves_against_the_graph_it_emitted():
     assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
 
 
-def test_the_headroom_charge_cannot_be_asked_for_without_a_branch_context():
-    """**Required, not defaulted.** With no context the charge would silently
-    become the naked linearization cascade's peak — a strict over-estimate, so
-    still SAFE for an attenuation, but wrong for anyone reading it as what the
-    correction costs, and wrong in the LOUD direction for a delta between two
-    of them. There is no signature that lets a caller skip it by accident."""
-    with pytest.raises(TypeError, match="branch_context"):
-        linearization_headroom_db({"woofer": [_peak(gain=3.0)]})  # type: ignore[call-arg]
-
-
-# --------------------------------------------------------------------------- #
-# the apply-boundary level delta (#1811)
-# --------------------------------------------------------------------------- #
-
-
-def _delta_profile(linearization: dict | None, *, mirror_only: bool = False) -> dict:
-    """A profile mapping carrying what the delta reader consumes.
-
-    The snapshot carries the ``preset`` and ``corrections`` too, because since
-    #1808 the headroom charge is evaluated over the branch's WHOLE chain
-    (crossover ⊗ linearization ⊗ trim) — a fixture without them would read the
-    naked-cascade fallback and the "proven against the emitter" test below
-    would be comparing two different chains.
-    """
-    if linearization is None:
-        return {"kind": "active_speaker_baseline_profile"}
-    if mirror_only:
-        # An era-older frozen profile: the top-level convenience mirror without
-        # a snapshot copy — and so, deliberately, without a branch context.
-        return {"linearization": linearization}
-    return {
-        "linearization": linearization,
-        "recomposition_snapshot": {
-            "linearization": linearization,
-            "preset": _preset().to_dict(),
-            "corrections": {
-                role: {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False}
-                for role in ("woofer", "tweeter")
-            },
-        },
-    }
-
-
-def test_applied_program_level_delta_is_the_emitted_headroom_move():
-    """#1811's declared offset is the graph's OWN broadband move — proven
-    against the emitter, not asserted about it.
-
-    ``classify_delta_probe`` subtracts this number from the post-apply capture
-    before grading it, so a drift between this reader and
-    ``active_baseline_headroom`` would put a systematic error straight into
-    every verdict. Both sides come from ``linearization_headroom_db``; this
-    test is what keeps that true.
-    """
-    preset = _preset()
-    lin = {"woofer": [_peak(gain=3.0), _peak(freq=2200.0, gain=1.5)]}
-    flat = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
-    boosted = emit_active_speaker_baseline_config(
-        preset, playback_device=ACTIVE_PCM, linearization=lin,
+@pytest.mark.parametrize(("trim_db", "charged"), [(-3.999, False), (-3.995, True)])
+def test_one_epsilon_decides_what_is_uncharged_and_what_proves(trim_db, charged):
+    """ADR-0385: a netted peak at or under ``PEAK_EPS_DB`` rides uncharged, and one over it pays
+    the whole margin, so no graph the emitter writes lands between the charge and the verifier."""
+    text = emit_active_speaker_baseline_config(
+        _preset(), playback_device=ACTIVE_PCM, corrections={"woofer": {"gain_db": trim_db}},
+        linearization={"woofer": [_peak(100.0, 4.0, q=1.0)]},
     )
-    emitted_move_db = _headroom_gain_db(boosted) - _headroom_gain_db(flat)
-    # The PEAK-rule value (#1808), not the old sum's -4.5: the +1.5 dB bell at
-    # 2.2 kHz sits deep in the woofer's own 1600 Hz low-pass and so adds ~0.05
-    # dB to the branch's realized peak rather than its full 1.5. The margin is
-    # already inside this number.
-    assert emitted_move_db == pytest.approx(-2.8693, abs=1e-3)
-    # Tolerance is the EMITTED config's own quantization (the gain is written
-    # to 4 dp), not slack in the agreement: the reader returns
-    # -2.8692747…, the YAML carries -2.8693.
-    assert applied_program_level_delta_db(
-        _delta_profile({}), _delta_profile(lin),
-    ) == pytest.approx(emitted_move_db, abs=1e-4)
-
-
-def test_applied_program_level_delta_reads_any_magnitude_including_small():
-    """Read from the profiles, never assumed — whatever the charge rule of the
-    day produces, at whatever size, in either direction."""
-    big = _delta_profile({"woofer": [_peak(gain=22.458)]})
-    small = _delta_profile({"woofer": [_peak(gain=4.0)]})
-    none_ = _delta_profile({})
-    assert applied_program_level_delta_db(none_, big) == pytest.approx(
-        -22.2373, abs=1e-3
-    )
-    assert applied_program_level_delta_db(none_, small) == pytest.approx(
-        -3.8101, abs=1e-3
-    )
-    # Re-tuning a heavily-charged profile down to a light one hands headroom
-    # BACK — a positive move, and a downward correction for the probe.
-    assert applied_program_level_delta_db(big, small) == pytest.approx(
-        18.4271, abs=1e-3
-    )
-
-
-def test_applied_program_level_delta_is_era_tolerant_and_snapshot_first():
-    # First-ever apply: nothing to compare against, so the whole applied charge
-    # is the move.
-    assert applied_program_level_delta_db(
-        None, _delta_profile({"woofer": [_peak(gain=3.0)]}),
-    ) == pytest.approx(-2.8194, abs=1e-3)
-    # A pre-linearization profile on either side contributes 0.0, never a raise.
-    assert profile_program_headroom_db(_delta_profile(None)) == 0.0
-    assert profile_program_headroom_db(None) == 0.0
-    assert applied_program_level_delta_db(_delta_profile(None), _delta_profile(None)) == 0.0
-    # A cut-only correction costs nothing, so it moves nothing.
-    assert applied_program_level_delta_db(
-        _delta_profile({}), _delta_profile({"woofer": [_peak(gain=-4.0)]}),
-    ) == 0.0
-    # The snapshot copy is authoritative; the top-level mirror is the
-    # era-older fallback. Both read 4.0 here, not 2.82, because neither of
-    # these two profiles carries a preset/corrections snapshot — so the charge
-    # falls back to the naked cascade's peak plus margin, the documented
-    # over-estimate. What is under test is WHICH linearization was read.
-    lin = {"woofer": [_peak(gain=3.0)]}
-    assert profile_program_headroom_db(
-        _delta_profile(lin, mirror_only=True),
-    ) == pytest.approx(4.0, abs=1e-3)
-    assert profile_program_headroom_db({
-        "linearization": {"woofer": [_peak(gain=9.0)]},
-        "recomposition_snapshot": {"linearization": lin},
-    }) == pytest.approx(4.0, abs=1e-3)
-
-
-def test_a_profile_without_a_branch_context_over_estimates_rather_than_under():
-    """The fallback direction is load-bearing (#1811 + #1808).
-
-    A profile whose snapshot cannot yield a preset/corrections pair is charged
-    over the naked linearization cascade — no crossover credited, no trim —
-    which is a strict OVER-estimate of what the branch really does. For a
-    declared apply-boundary offset that is the safe direction: the probe
-    subtracts more than the graph moved, so the difference stays visible in
-    ``residual_offset_db`` instead of being quietly absorbed. Under-estimating
-    would hide it.
-    """
-    lin = {"woofer": [_peak(gain=3.0)]}
-    with_context = profile_program_headroom_db(_delta_profile(lin))
-    without = profile_program_headroom_db(
-        {"recomposition_snapshot": {"linearization": lin}},
-    )
-    assert without > with_context
-    # …and a snapshot whose preset cannot be parsed degrades the same way
-    # rather than raising on the apply path.
-    assert profile_program_headroom_db({
-        "recomposition_snapshot": {
-            "linearization": lin, "preset": {"nonsense": True},
-            "corrections": {"woofer": {"gain_db": 0.0}},
-        },
-    }) == pytest.approx(without, abs=1e-6)
+    peak = program_headroom.program_peak(yaml.safe_load(text)).db
+    assert 0.0 < peak <= 0.01, "premise: a peak over unity by less than 0.01 dB"
+    assert (peak > PEAK_EPS_DB) is charged
+    assert -_headroom_gain_db(text) == pytest.approx(peak + 1.0 if charged else 0.0, abs=1e-4)
+    graph = classify_camilla_graph(topology=_active_topology("mono", "active_2_way"), text=text)
+    assert graph.allowed is True, graph.issues
 
 
 @pytest.mark.parametrize("bad_freq", [0.0, -100.0, float("nan"), float("inf")])
@@ -951,10 +799,11 @@ def test_a_room_boost_behind_the_headroom_gain_is_refused():
     ]
 
 
-@pytest.mark.parametrize(("lift_db", "refused"), [(0.0, False), (0.1, True)])
+@pytest.mark.parametrize(("lift_db", "refused"), [(0.0, False), (0.99, False), (1.01, True)])
 def test_a_cardioid_graph_proves_its_rear_stage_by_number(lift_db, refused):
-    """The rear stage's evaluated peak is part of the charge (ADR-0324), so a
-    headroom gain lifted past it refuses with no boost anywhere else."""
+    """The whole graph's peak, rear stage included, is charged with one 1.0 dB
+    margin (ADR-0385), so a headroom gain lifted past the margin refuses with no
+    boost anywhere else."""
     _, topology, text = _cardioid_baseline()
     headroom = yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
     graph = _classify_rear(
@@ -1102,6 +951,17 @@ def test_runaway_program_headroom_is_refused():
             _preset(), playback_device=ACTIVE_PCM,
             linearization={"tweeter": [_peak(6000.0, 22.0)] * 3},
         )
+
+
+@pytest.mark.parametrize("headroom", [
+    None, GraphFilter("Gain", {"gain": float("nan")}), GraphFilter("Biquad", {"gain": -3.0}),
+])
+def test_an_active_graph_without_one_finite_headroom_gain_is_malformed(headroom):
+    """#5909: every emitted active program graph carries one finite pre-split ``Gain``."""
+    filters = {} if headroom is None else {program_headroom.PROGRAM_HEADROOM_FILTER: headroom}
+    with pytest.raises(program_headroom.ProgramHeadroomUnreadable) as refused:
+        program_headroom.graph_headroom_db(GraphView(parsed_ok=True, filters=filters))
+    assert refused.value.code == "program_headroom_unreadable"
 
 
 def test_a_generous_program_headroom_still_emits():

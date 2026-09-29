@@ -11,14 +11,14 @@ from typing import Any, Collection, Mapping, Sequence
 
 import yaml
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
     resolve_enable_rate_adjust,
 )
-from jasper.camilla_emit import emit_devices_block
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.audio_routes.camilla_emit import emit_devices_block
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.log_event import log_event
 
 from ..camilla_names import output_commission_mute_name, program_protection_name
@@ -183,7 +183,7 @@ def emit_active_speaker_program_config(
 
     * ``inverted_roles`` is level-neutral — see :func:`_emit_role_routed_mixer`.
     * ``measurement_delays_us`` reaches the YAML through a single
-      :func:`~jasper.camilla_emit.fmt` pass, the same formatter
+      :func:`~jasper.audio_routes.camilla_emit.fmt` pass, the same formatter
       :func:`~jasper.active_speaker.delay_graph.quantized_delay_ms` is
       implemented as, so a proof recomputing from the same ``delay_us`` agrees
       exactly. Delays ride ahead of the protection sections; a pure delay

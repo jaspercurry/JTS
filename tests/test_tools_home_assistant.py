@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from jasper.home_assistant import (
+from jasper.service_state.home_assistant import (
     DEFAULT_READ_TIMEOUT_SEC,
     HAResponse,
     OUTCOME_NETWORK,

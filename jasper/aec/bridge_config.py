@@ -19,7 +19,7 @@ import math
 import os
 from pathlib import Path
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_XVF,
     Aec3SweepConfig,
     Aec3SweepConfigError,
@@ -27,16 +27,16 @@ from jasper.aec_sweep import (
     current_aec3_sweep_source,
     load_aec3_sweep_config,
 )
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.config import env_bool
-from jasper.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
+from jasper.service_state.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
 from jasper.log_event import log_event
 from jasper.aec.bridge_telemetry import (
     BRIDGE_STATS_PATH,
     BRIDGE_STATS_PATH_ENV,
     logger,
 )
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     INTENT_PATH as USB_MIC_INTENT_PATH,
     USB_HOST_MIC_UDP_PORT,
     USB_MIC_LEG_KEY,

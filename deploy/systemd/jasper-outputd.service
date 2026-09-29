@@ -69,13 +69,13 @@ Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"
 # literal here wins over /etc/jasper/jasper.env above it (later line wins),
 # shadowing the documented operator seam. Absent, outputd resolves both against
 # its own compile-time defaults (rust/jasper-outputd/src/config.rs), which is
-# the bottom layer jasper.audio_runtime_plan models.
+# the bottom layer jasper.audio_control.audio_runtime_plan models.
 # JASPER_OUTPUTD_CONTENT_BRIDGE is deliberately UNSET: undeclared IS the one
 # transport (ADR-0100).
 Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"
 # Operator retune file, written by the audio-hardware reconciler. Keep it after
 # /etc/jasper/jasper.env so a reconciler-derived DAC floor wins over a hand-set
-# one — the precedence jasper.audio_runtime_plan models.
+# one — the precedence jasper.audio_control.audio_runtime_plan models.
 EnvironmentFile=-/var/lib/jasper/outputd.env
 # Wake-corpus test mode can temporarily enable the XVF USB-IN reference fanout
 # and outputd's UDP reference tap. Keep it after operator retunes so

@@ -13,7 +13,7 @@ import sys
 
 from jasper.usbsink.volume_bridge import VolumeBridge
 from jasper.logging_setup import configure_logging
-from jasper.usbgadget import UAC2_CARD_NAME
+from jasper.device_probe.usbgadget import UAC2_CARD_NAME
 
 logger = logging.getLogger("jasper.usbsink.volume")
 

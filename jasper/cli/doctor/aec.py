@@ -11,13 +11,12 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
-from ... import enhanced_aec
-from ...aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
-from ...audio_profile_state import (
+from jasper.audio_routes import enhanced_aec
+from jasper.service_state.aec_ready import aec_bridge_ready_marker_path, read_aec_bridge_ready
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_AUTO,
     AEC_MODE_ENV,
     AecIntent,
-    DEFAULT_AEC_MODE_PATH,
     MicProbe,
     PROFILE_CUSTOM,
     PROFILE_XVF_CHIP_AEC,
@@ -32,15 +31,20 @@ from ...audio_profile_state import (
     validation_profile as _audio_validation_profile,
 )
 from ...audio_validation import CHIP_AEC_PROFILE
-from ...audio_validation import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
-from ...audio_validation_artifacts import latest_artifact_summary as _audio_validation_summary
+from jasper.audio_control.audio_validation_probes import current_artifact_filter_kwargs as _audio_validation_filter_kwargs
+from jasper.audio_resources.audio_validation_artifacts import latest_artifact_summary as _audio_validation_summary
 from ...chip_aec.health import STATUS_READY
 from ...chip_aec.policy import (
     STATUS_APPROVED,
     effective_chip_aec_dac_gate,
     resolve_chip_aec_dac_gate,
 )
-from ...env_load import env_file_path, parse_bool_value, parse_env_file as _shared_parse_env_file
+from ...env_load import (
+    env_file_path,
+    parse_bool_value,
+    parse_env_file as _shared_parse_env_file,
+    DEFAULT_AEC_MODE_PATH,
+)
 from ...json_fields import finite_float, sha256_file
 from ...service_units import AEC_BRIDGE_SERVICE
 from ...aec.bridge_config import (

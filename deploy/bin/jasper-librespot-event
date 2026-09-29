@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # librespot --onevent hook: merge this event's env vars into the state
-# file that jasper.librespot_state reads (mux, volume_observers,
+# file that jasper.playback_state.librespot_state reads (mux, volume_observers,
 # jasper-control, the renderer client).
 #
 # librespot 0.8.0 has no local control API; it fires this command once

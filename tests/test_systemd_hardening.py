@@ -374,7 +374,7 @@ def _blocking_start_cost_sec(name: str, active: set[str]) -> float:
 
     PID 1 completes the start job only once the named unit *and* every unit it
     pulls with Wants=/Requires=/BindsTo= while ordering itself After= them have
-    reported terminal, recursively -- the rule jasper.source_intent already
+    reported terminal, recursively -- the rule jasper.audio_routes.source_intent already
     models for the USB gadget and AirPlay. Each unit's own ceiling is its
     declared TimeoutStartSec, or the manager default when it declares none;
     Type= does not shorten that, because an ExecStartPre= can hang a Type=simple
@@ -1043,10 +1043,10 @@ def test_usb_network_plan_unit_allows_netlink_for_if_nameindex():
     """RestrictAddressFamilies must allow AF_NETLINK, or the gate dies with
     errno 97 on real hardware.
 
-    `jasper-usb-network-plan.service` runs `jasper.usb_network promote`,
+    `jasper-usb-network-plan.service` runs `jasper.device_probe.usb_network promote`,
     which calls `observe_ipv4_cidr()` before promoting the plan (to avoid
     clobbering a live legacy USB address mid-session). `observe_ipv4_cidr`
-    calls `socket.if_nameindex()` (jasper/usb_network.py) to check whether
+    calls `socket.if_nameindex()` (jasper/device_probe/usb_network.py) to check whether
     `usb0` exists yet. On Linux/glibc, `if_nameindex()` opens an AF_NETLINK
     socket internally to do that enumeration — invisible at the call site,
     unlike an explicit `socket.socket(AF_NETLINK, ...)`. Without AF_NETLINK

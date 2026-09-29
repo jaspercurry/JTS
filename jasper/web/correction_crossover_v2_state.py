@@ -23,7 +23,6 @@ from jasper.active_speaker.crossover_v2.coordinator import (
     ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
 )
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
-from jasper.active_speaker.crossover_v2.verification import RESULT_INCONCLUSIVE, RESULT_KEEP_PREVIOUS
 from jasper.active_speaker import driver_base_trim
 from jasper.log_event import log_event
 
@@ -41,7 +40,7 @@ _door = threading.local()
 _state_path_override: Path | None = None
 
 #: How long a request waits for the other web process to release the state.
-#: Sized like the DSP writer lock (``jasper.dsp_apply``).
+#: Sized like the DSP writer lock (``jasper.dsp_control.dsp_apply``).
 STATE_LOCK_TIMEOUT_S = 10.0
 #: The wait for a write past a commit point (a graph already live, a session
 #: already over): losing that write costs the way back, and a live holder
@@ -235,7 +234,7 @@ def reset_v2_journey_state() -> None:
                       round_ordinal_epoch=epoch,
                       reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
         clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
-                 "gain_plan_db": None, "candidate": None, "verify": None, "failure": None,
+                 "gain_plan_db": None, "candidate": None, "failure": None,
                  "verify_priors": None, "evidence": None,
                  ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
         if applied:
@@ -395,13 +394,8 @@ def persist_conductor_state(
     is scoped the way it is — belongs to
     :func:`~jasper.active_speaker.crossover_v2.durable_state.build_conductor_state`.
     What is left here is the write: read the state being replaced, hand it over,
-    put the answer back, and journal the one transition a household would
-    notice.
+    and put the answer back.
     """
-    from jasper.active_speaker.crossover_envelope_v2 import crossover_v2_phase
-
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
-    from .correction_crossover_v2_grade import post_apply_grade  # lazy: its projections' import cost
     from jasper.active_speaker.bundles import sessions_dir  # lazy: capture-only bundle lookup
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
 
@@ -417,12 +411,7 @@ def persist_conductor_state(
             failure_detail=failure_detail,
             failure_roles=failure_roles,
         )
-        session_id = built.state["session_id"]
-        applied_profile = load_applied_baseline_profile_state()
-        # Graded BEFORE the write: this is the grade the household is currently looking at.
-        prior_grade = post_apply_grade(prior, applied_profile=applied_profile)
-        prior_outcome = str(prior_grade.get("outcome") or "") if prior.get("session_id") == session_id else ""
-        if prior.get("session_id") == session_id and prior.get("execution"):
+        if prior.get("session_id") == built.state["session_id"] and prior.get("execution"):
             built.state["execution"] = prior["execution"]
         save_v2_state(built.state, durable=built.durable)
         bundle_id = (built.state.get("evidence") or {}).get("bundle_session_id")
@@ -434,33 +423,12 @@ def persist_conductor_state(
                     json.dumps(built.state, allow_nan=False, sort_keys=True) + "\n",
                     mode=0o640, durable=built.durable,
                 )
-    from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
-
-    grade = post_apply_grade(built.state, applied_profile=applied_profile)
-    was_done = crossover_v2_phase(
-        prior, review_declined=review_declined(prior),
-    ) == PHASE_DONE
-    now_done = crossover_v2_phase(
-        built.state, review_declined=review_declined(built.state),
-    ) == PHASE_DONE
-    if (now_done and not was_done) or (
-        grade.get("outcome") == RESULT_KEEP_PREVIOUS
-        and prior_outcome != RESULT_KEEP_PREVIOUS
-    ):
-        log_event(
-            logger, "correction.crossover_v2_result_classified",
-            session_id=session_id, outcome=grade.get("outcome") or RESULT_INCONCLUSIVE,
-            improvement_db=grade.get("improvement_db"),
-            tracking_passed=grade.get("tracking_passed"), absolute_passed=grade.get("absolute_passed"),
-            absolute_miss_db=grade.get("absolute_miss_db"), absolute_worst_hz=grade.get("absolute_worst_hz"),
-            candidate_fingerprint=grade.get("candidate_fingerprint"),
-        )
 
 
 def persist_terminal_failure(
     conductor: Any, code: str, *, refusals: Sequence[str] = (), detail: str = "",
     failed_roles: Sequence[str] = (),
-) -> bool:
+) -> None:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
     with the session (restart at CHECK); post-apply, the applied candidate +
     verify priors survive so ``/v2/verify`` can re-arm.
@@ -478,42 +446,14 @@ def persist_terminal_failure(
     from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
 
     with v2_state_locked(timeout_s=POST_COMMIT_STATE_LOCK_TIMEOUT_S):
-        prior = load_v2_state()
-        session_id = str(getattr(conductor, "session_id", ""))
-        prior_verify = (prior or {}).get("verify")
-        prior_outcome = str(
-            (prior_verify or {}).get("outcome")
-            if isinstance(prior_verify, Mapping)
-            else ""
-        )
-        if (
-            isinstance(prior_verify, Mapping)
-            and prior_outcome in {"pass", "fail", "inconclusive"}
-            and (prior or {}).get("session_id") == session_id
-        ):
-            persist_execution_result(session_id, cleanup_fault_code=code)
-            # consume() persists VERIFY before publishing capture_result. Later
-            # trouble is a cleanup fault, not a commissioning verdict.
-            log_event(
-                logger,
-                "correction.crossover_v2_terminal_verdict_preserved",
-                level=logging.WARNING,
-                session_id=session_id,
-                outcome=prior_outcome,
-                verdict_code=prior_verify.get("code") or "",
-                cleanup_fault_code=code,
-            )
-            return True
-
         persist_conductor_state(
             conductor, failure_code=code, failure_refusals=refusals, failure_detail=detail,
             failure_roles=failed_roles,
         )
         state = load_v2_state()
         if state is None:
-            return False
+            return
         if not state.get("applied") and code != REASON_APPLY_FAILED:
             state["accepted_phases"] = []
             state["gain_plan_db"] = None
         save_v2_state(state)
-        return False

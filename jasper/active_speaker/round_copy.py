@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from jasper.speaker_layout import measurement_target_name
 
+from .crossover_v2.round_frequency_view import position_label
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT
 from .movers import MOVER_ARM
 
@@ -35,9 +36,7 @@ def pose_name(pose: Mapping[str, Any]) -> str:
                  POSE_KIND_SEAT: "at the seat"}.get(str(pose.get("kind") or ""))
     if placement:
         return placement
-    from .crossover_v2.round_frequency_view import position_label  # lazy: only bearing poses need angle words; keeps the CLI parser numpy-free
-
-    label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg", 0)})
+    label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg")})
     return f"{pose['kind']}: {label}" if pose.get("kind") else label
 
 

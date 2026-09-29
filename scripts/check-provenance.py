@@ -212,8 +212,8 @@ def pyproject_requirement_urls(path: Path) -> set[str]:
 def registry_urls() -> set[str]:
     sys.path.insert(0, str(ROOT))
     from jasper.aec_engines.dtln_models import REGISTRY as DTLN_REGISTRY
-    from jasper.wake_models import REGISTRY as WAKE_REGISTRY
-    from jasper.wake_models import OPENWAKEWORD_ASSETS
+    from jasper.service_state.wake_models import REGISTRY as WAKE_REGISTRY
+    from jasper.service_state.wake_models import OPENWAKEWORD_ASSETS
 
     urls: set[str] = set()
     for entry in WAKE_REGISTRY:
@@ -386,8 +386,8 @@ def _validate_model_registries(
 ) -> None:
     sys.path.insert(0, str(root))
     from jasper.aec_engines.dtln_models import REGISTRY as DTLN_REGISTRY
-    from jasper.wake_models import REGISTRY as WAKE_REGISTRY
-    from jasper.wake_models import OPENWAKEWORD_ASSETS
+    from jasper.service_state.wake_models import REGISTRY as WAKE_REGISTRY
+    from jasper.service_state.wake_models import OPENWAKEWORD_ASSETS
 
     artifacts = iter_artifacts(data)
     for entry in WAKE_REGISTRY:

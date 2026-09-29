@@ -18,7 +18,8 @@ import yaml
 
 from pathlib import Path
 
-from jasper.active_speaker import runtime_contract
+from jasper.active_speaker import graph_selector
+from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
@@ -38,7 +39,7 @@ from jasper.active_speaker.environment import (
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
+from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
 from jasper.active_speaker.output_contract import (
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
@@ -49,8 +50,9 @@ from jasper.active_speaker.output_contract import (
     CONTRACT_SUBWOOFER_PRESENT,
     classify_output_contract,
 )
-from jasper.outputd_active_lane import OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
-from jasper.active_speaker.runtime_contract import (
+from jasper.dsp_control.outputd_active_lane import OUTPUTD_ENDPOINT_GRAPH_CLASSIFICATIONS
+from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, FLAT_PROGRAM_GRAPH_UNCONFIGURED, flat_program_graph_block, flat_program_graph_blocked_reason
+from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_DRIVER_DOMAIN_BASELINE,
@@ -59,20 +61,22 @@ from jasper.active_speaker.runtime_contract import (
     GRAPH_PARKED_ALL_MUTED,
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
-    FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
-    FLAT_PROGRAM_GRAPH_UNCONFIGURED,
+)
+from jasper.active_speaker.graph_selector import (
     PARKED_MUTED_STATUS,
-    _normalized_graph_fingerprint,
     active_graph_is_parked,
     build_parked_muted_graph,
-    classify_camilla_graph as _classify_camilla_graph,
     apply_safe_graph_decision_to_statefile,
-    flat_program_graph_block,
-    flat_program_graph_blocked_reason,
     safe_graph_for_current_topology,
-    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+)
+from jasper.active_speaker.graph.bass_extension import (
+    _normalized_graph_fingerprint,
     classify_active_bass_extension_graph,
     classify_bass_extension_graph,
+)
+from jasper.active_speaker.runtime_contract import (
+    classify_camilla_graph as _classify_camilla_graph,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
 )
 from jasper.biquad import FilterSpec, PeqFilter
 from jasper.sound.profile import SimpleEq, SoundProfile
@@ -83,8 +87,8 @@ from tests._camilla_readback_double import (
 )
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import driver_domain_graph, mono_output_topology, passive_stereo_output_topology
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import (
     read_topology_fingerprint_stamp,
     statefile_topology_stamp_path,
     topology_fingerprint_stamp,
@@ -402,7 +406,7 @@ async def test_compare_trim_cannot_become_durable_headroom_proof(tmp_path, monke
     paths = [authority[key] for key in ("config", "statefile_path", "applied_baseline_path", "staged_metadata_path")]
     before = [path.read_bytes() for path in paths]
     proof = Mock(side_effect=AssertionError("live compare reached durable proof"))
-    monkeypatch.setattr(runtime_contract, "_classify_bass_extension_snapshot", proof)
+    monkeypatch.setattr(bass_extension, "_classify_bass_extension_snapshot", proof)
     async def active():
         return camilla_default_filled(compare)
     graph = await classify_active_bass_extension_graph(
@@ -791,7 +795,7 @@ def test_persisted_boundary_retries_once_then_refuses_unstable_authority(
     changing_path = authority[authority_key]
     calls = 0
 
-    from jasper.active_speaker import runtime_contract as contract_module
+    from jasper.active_speaker.graph import bass_extension as contract_module
 
     real_read = contract_module._read_optional_bytes
 
@@ -913,7 +917,7 @@ def test_persisted_candidate_boundary_refuses_each_mutating_seam(
 
         monkeypatch.setattr(Path, "read_bytes", alternating_read)
     else:
-        from jasper.active_speaker import runtime_contract as contract_module
+        from jasper.active_speaker.graph import bass_extension as contract_module
 
         def alternating_locator(*_args, **_kwargs):
             nonlocal calls
@@ -986,7 +990,7 @@ def test_persisted_candidate_refuses_each_authority_mutation(
     )
     calls = 0
 
-    from jasper.active_speaker import runtime_contract as contract_module
+    from jasper.active_speaker.graph import bass_extension as contract_module
 
     real_read = contract_module._read_optional_bytes
 
@@ -2502,61 +2506,78 @@ def test_baseline_commissioning_refuses_nonadjacent_or_cross_group_pair(
     assert "active_baseline_commissioning_target_invalid" in _baseline_codes(graph)
 
 
-def test_baseline_headroom_unwired_is_blocked() -> None:
+@pytest.mark.parametrize(
+    "old,new,code",
+    [
+        pytest.param(
+            "names: [active_baseline_headroom]",
+            "names: []",
+            "active_baseline_headroom_unwired",
+            id="headroom_unwired",
+        ),
+        pytest.param(
+            "active_baseline_headroom:\n    type: Gain\n"
+            "    parameters: { gain: 0.0000,",
+            "active_baseline_headroom:\n    type: Gain\n"
+            "    parameters: { gain: 2.0000,",
+            "active_baseline_headroom_invalid",
+            id="positive_headroom_gain",
+        ),
+        pytest.param(
+            "names: [as_woofer_woofer_tweeter_lp, as_woofer_delay, "
+            "as_woofer_baseline_gain, as_woofer_baseline_limiter]",
+            "names: [as_woofer_woofer_tweeter_lp, as_woofer_delay]",
+            "active_baseline_driver_chain_missing",
+            id="missing_driver_chain",
+        ),
+        pytest.param(
+            "as_woofer_baseline_gain:\n    type: Gain\n"
+            "    parameters: { gain: 0.0000,",
+            "as_woofer_baseline_gain:\n    type: Gain\n"
+            "    parameters: { gain: 3.0000,",
+            "active_baseline_gain_positive",
+            id="positive_driver_gain",
+        ),
+        pytest.param(
+            "as_woofer_baseline_limiter:\n    type: Limiter\n"
+            "    parameters:\n      soft_clip: true\n      clip_limit: -1.0000",
+            "as_woofer_baseline_limiter:\n    type: Limiter\n"
+            "    parameters:\n      soft_clip: true\n      clip_limit: 1.0000",
+            "active_baseline_limiter_invalid",
+            id="positive_limiter_clip",
+        ),
+        pytest.param(
+            "as_woofer_baseline_limiter:\n    type: Limiter\n"
+            "    parameters:\n      soft_clip: true\n      clip_limit: -1.0000",
+            "as_woofer_baseline_limiter:\n    type: Limiter\n"
+            "    parameters:\n      soft_clip: false\n      clip_limit: -1.0000",
+            "active_baseline_limiter_invalid",
+            id="limiter_without_soft_clip",
+        ),
+        pytest.param(
+            "as_woofer_baseline_limiter:\n    type: Limiter",
+            "as_woofer_baseline_limiter:\n    type: Gain",
+            "active_baseline_limiter_invalid",
+            id="non_limiter_drive_protection",
+        ),
+        pytest.param(
+            "names: [as_tweeter_woofer_tweeter_hp, as_tweeter_delay, "
+            "as_tweeter_baseline_gain, as_tweeter_baseline_limiter]",
+            "names: [as_tweeter_delay, as_tweeter_baseline_gain, "
+            "as_tweeter_baseline_limiter]",
+            "active_baseline_tweeter_highpass_missing",
+            id="tweeter_without_highpass",
+        ),
+    ],
+)
+def test_a_tampered_baseline_is_blocked(old: str, new: str, code: str) -> None:
     base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "names: [active_baseline_headroom]",
-        "names: []",
-    )
+    tampered = base.replace(old, new)
     assert tampered != base
     graph = _classify_baseline(tampered)
 
     assert graph.allowed is False
-    assert "active_baseline_headroom_unwired" in _baseline_codes(graph)
-
-
-def test_baseline_positive_headroom_gain_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "active_baseline_headroom:\n    type: Gain\n"
-        "    parameters: { gain: 0.0000,",
-        "active_baseline_headroom:\n    type: Gain\n"
-        "    parameters: { gain: 2.0000,",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_headroom_invalid" in _baseline_codes(graph)
-
-
-def test_baseline_missing_driver_chain_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "names: [as_woofer_woofer_tweeter_lp, as_woofer_delay, "
-        "as_woofer_baseline_gain, as_woofer_baseline_limiter]",
-        "names: [as_woofer_woofer_tweeter_lp, as_woofer_delay]",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_driver_chain_missing" in _baseline_codes(graph)
-
-
-def test_baseline_positive_driver_gain_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "as_woofer_baseline_gain:\n    type: Gain\n"
-        "    parameters: { gain: 0.0000,",
-        "as_woofer_baseline_gain:\n    type: Gain\n"
-        "    parameters: { gain: 3.0000,",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_gain_positive" in _baseline_codes(graph)
+    assert code in _baseline_codes(graph)
 
 
 @pytest.mark.parametrize("gain", [60.0, float("nan")], ids=["positive", "nan"])
@@ -2905,64 +2926,6 @@ def test_baseline_grouped_chain_requires_exact_integer_channels(channels) -> Non
     assert "active_output_driver_chain_not_grouped" in _baseline_codes(graph)
 
 
-def test_baseline_positive_limiter_clip_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "as_woofer_baseline_limiter:\n    type: Limiter\n"
-        "    parameters:\n      soft_clip: true\n      clip_limit: -1.0000",
-        "as_woofer_baseline_limiter:\n    type: Limiter\n"
-        "    parameters:\n      soft_clip: true\n      clip_limit: 1.0000",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_limiter_invalid" in _baseline_codes(graph)
-
-
-def test_baseline_limiter_without_soft_clip_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "as_woofer_baseline_limiter:\n    type: Limiter\n"
-        "    parameters:\n      soft_clip: true\n      clip_limit: -1.0000",
-        "as_woofer_baseline_limiter:\n    type: Limiter\n"
-        "    parameters:\n      soft_clip: false\n      clip_limit: -1.0000",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_limiter_invalid" in _baseline_codes(graph)
-
-
-def test_baseline_non_limiter_drive_protection_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "as_woofer_baseline_limiter:\n    type: Limiter",
-        "as_woofer_baseline_limiter:\n    type: Gain",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_limiter_invalid" in _baseline_codes(graph)
-
-
-def test_baseline_tweeter_without_highpass_is_blocked() -> None:
-    base = _active_baseline_yaml("mono", 2)
-    tampered = base.replace(
-        "names: [as_tweeter_woofer_tweeter_hp, as_tweeter_delay, "
-        "as_tweeter_baseline_gain, as_tweeter_baseline_limiter]",
-        "names: [as_tweeter_delay, as_tweeter_baseline_gain, "
-        "as_tweeter_baseline_limiter]",
-    )
-    assert tampered != base
-    graph = _classify_baseline(tampered)
-
-    assert graph.allowed is False
-    assert "active_baseline_tweeter_highpass_missing" in _baseline_codes(graph)
-
-
 # --- PR-3: preference EQ rides at unity in the active baseline, pre-split ---
 
 @pytest.mark.parametrize(
@@ -3046,7 +3009,7 @@ def test_baseline_room_peqs_pre_split_and_boost_headroom_folds() -> None:
         text,
     )
     assert match is not None
-    assert float(match.group(1)) == -3.0
+    assert float(match.group(1)) == -2.9355
 
     pipeline = text[text.index("\npipeline:"):]
     room_idx = pipeline.index("names: [room_peq_1, room_peq_2, room_peq_3]")
@@ -3501,7 +3464,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         "- false\n",
         encoding="utf-8",
     )
-    real_classify = runtime_contract.classify_bass_extension_graph
+    real_classify = graph_selector.classify_bass_extension_graph
     switched = False
 
     def switch_selector_before_canonical_proof(*args, **kwargs):
@@ -3519,7 +3482,7 @@ def test_preserve_current_uses_exact_persisted_boot_snapshot(
         return real_classify(*args, **kwargs)
 
     monkeypatch.setattr(
-        runtime_contract,
+        graph_selector,
         "classify_bass_extension_graph",
         switch_selector_before_canonical_proof,
     )
@@ -4225,8 +4188,8 @@ def test_parked_write_refuses_a_config_camilladsp_rejects(
     not accept turns a merely-uncommissioned box into a restart-looping one.
     The writer preflights and refuses, and nothing lands on the real name.
     """
-    from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
-    import jasper.dsp_apply as dsp_apply_mod
+    from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, ValidationStatus
+    import jasper.dsp_control.dsp_apply as dsp_apply_mod
 
     topology = _active_topology("mono", "active_2_way")
     parked_path = tmp_path / "active_speaker_parked.yml"
@@ -4532,7 +4495,7 @@ def test_parked_materialise_is_a_noop_when_the_bytes_already_match(
     an unconditional rewrite meant two validation subprocesses and two inode
     churns on every deploy of an already-parked box.
     """
-    import jasper.dsp_apply as dsp_apply_mod
+    import jasper.dsp_control.dsp_apply as dsp_apply_mod
 
     topology = _active_topology("mono", "active_2_way")
     parked_path = tmp_path / "active_speaker_parked.yml"

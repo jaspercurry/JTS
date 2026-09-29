@@ -34,7 +34,7 @@ import wave
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from ..assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
+from jasper.runtime_config.assistant_loudness import AssistantLoudnessProfile, measure_pcm_24k_mono
 from ..json_fields import age_seconds
 from ..log_event import log_event
 from .generator import (

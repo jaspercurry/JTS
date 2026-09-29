@@ -12,17 +12,17 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .. import librespot_state
-from ..accounts import legacy_cache_path, registry_path
-from ..camilla import CamillaController
-from ..renderer import RendererClient
-from ..spotify_oauth import resolved_spotify_redirect_uri
-from ..volume_owner import volume_owner
-from ..volume_persistence import (
+from jasper.playback_state import librespot_state
+from jasper.service_state.accounts import legacy_cache_path, registry_path
+from jasper.audio_control.camilla import CamillaController
+from jasper.audio_control.renderer import RendererClient
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
+from jasper.audio_resources.volume_owner import volume_owner
+from jasper.service_state.volume_persistence import (
     VolumePersistence,
     configured_path as volume_state_path,
 )
-from ..volume_state import VolumeState
+from jasper.audio_control.volume_state import VolumeState
 
 # Every `# lazy: import cost` below defers for one reason: jasper-control is
 # resident, so the coordinator/actuator graph (~16 modules, ~1.5 MB) must stay
@@ -77,7 +77,7 @@ def build_spotify_router_or_none():
     if not client_id:
         return None
     try:
-        from ..spotify_router import build_router, load_registry  # lazy: import cost, see module header
+        from jasper.service_state.spotify_router import build_router, load_registry  # lazy: import cost, see module header
 
         accounts_path = registry_path()
         cache_path = legacy_cache_path()
@@ -139,7 +139,7 @@ async def with_coordinator(
     Per-request like `dispatch_transport`, so this stdlib HTTP server never
     holds a long-lived asyncio loop. `op` is an async callable taking the live
     coordinator and returning the request's result."""
-    from ..volume_coordinator import build_volume_coordinator  # lazy: import cost, see module header
+    from jasper.audio_control.volume_coordinator import build_volume_coordinator  # lazy: import cost, see module header
 
     coord = build_volume_coordinator(
         camilla=CamillaController(host=camilla_host, port=camilla_port),
@@ -165,7 +165,7 @@ async def dispatch_transport(
 
     Rebuilt per request because httpx's AsyncClient is loop-bound; ~50 ms, and
     remote presses are rare. `action` is "toggle", "next" or "previous"."""
-    from ..renderer import RendererClient  # lazy: test patch boundary (tests/test_control_server_volume.py)
+    from jasper.audio_control.renderer import RendererClient  # lazy: test patch boundary (tests/test_control_server_volume.py)
     from ..tools.transport import make_transport_dispatcher  # lazy: import cost (rapidfuzz), see module header; test patch boundary (tests/test_control_server_volume.py)
 
     renderer = RendererClient(

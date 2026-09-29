@@ -70,7 +70,7 @@ fi
 
 STATEFILE="$JASPER_CAMILLA_STATEFILE"
 # Suffixes duplicated from STATEFILE_TOPOLOGY_STAMP_SUFFIX /
-# STATEFILE_UNPROVED_STAMP_SUFFIX in jasper/output_topology.py; pinned against
+# STATEFILE_UNPROVED_STAMP_SUFFIX in jasper/audio_routes/output_topology.py; pinned against
 # them by tests/test_camilla_topology_gate_script.py.
 PROVED_STAMP="${STATEFILE}.topology"
 UNPROVED_STAMP="${STATEFILE}.topology.unproved"
@@ -93,7 +93,7 @@ trap 'exit 130' INT
 # `digest` under that version. An unprefixed stamp is version 1's: the prefix
 # landed while the projection was still 1, so its digest and a v1 digest are of
 # the same thing and compare. Same rule in `topology_stamp_version`
-# (jasper/output_topology.py). Builtins only, into variables rather than through
+# (jasper/audio_routes/output_topology.py). Builtins only, into variables rather than through
 # `$(...)`: this runs on every CamillaDSP start, and neither a fork nor a
 # subshell buys anything here (ADR-0226).
 read_stamp() {

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from jasper.volume_diagnostics import build_volume_policy_snapshot
+from jasper.audio_routes.volume_diagnostics import build_volume_policy_snapshot
 
 
 def _snapshot(**overrides):

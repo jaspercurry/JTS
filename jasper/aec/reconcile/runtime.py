@@ -17,19 +17,26 @@ from pathlib import Path
 from jasper.aec.bridge_config import OUTPUTD_REF_UDP_PORT
 from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
 from jasper.aec.reconcile.observe import card_id, observe
-from jasper.aec_ready import aec_bridge_ready_marker_path
+from jasper.service_state.aec_ready import aec_bridge_ready_marker_path
 from jasper.atomic_io import atomic_write_json, locked_upsert_env_file
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     WAKE_LEG_DEFAULTS, infer_audio_input_profile, intent_from_env,
     normalize_aec_mode, normalize_audio_input_profile,
     resolve_profile_wake_legs,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.env_file import parse_env_mapping, quote_env_value, read_env_file, read_env_file_text
-from jasper.env_load import parse_bool_value
+from jasper.env_load import (
+    parse_bool_value,
+    DEFAULT_AEC_MODE_PATH,
+    VOICE_GROUPING_ENV_FILE,
+    VOICE_PROVIDER_ENV_PATH,
+)
 from jasper.mics import xvf3800
 from jasper.service_units import SYSTEMCTL_TIMEOUT_SEC, run_systemctl
 from jasper.voice.input_presence import voice_input_absent_marker_path
+from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
+from jasper.voice.catalog import PROVIDER_IDS_MANIFEST_FILE
 
 
 VOICE_IRRELEVANT_ENV_KEYS = frozenset({
@@ -68,18 +75,18 @@ class Reconcile:
     def __init__(self, reason: str):
         self.reason = reason
         self.env_path = _path("JASPER_ENV_FILE", "/etc/jasper/jasper.env")
-        self.mode_path = _path("JASPER_AEC_MODE_FILE", "/var/lib/jasper/aec_mode.env")
+        self.mode_path = _path("JASPER_AEC_MODE_FILE", str(DEFAULT_AEC_MODE_PATH))
         self.absent_marker = Path(voice_input_absent_marker_path())
         self.ready_marker = Path(aec_bridge_ready_marker_path())
         self.alignment_path = _path("JASPER_AEC_ALIGNMENT_RECORD_FILE", "/run/jasper-aec-init/alignment")
         self.restart_stamp = _path("JASPER_VOICE_RESTART_STAMP", "/run/jasper-aec-reconcile/voice-restart.stamp")
         self.restart_intent = _path("JASPER_VOICE_RESTART_INTENT_MARKER", VOICE_RESTART_INTENT_MARKER)
-        self.group_path = _path("JASPER_GROUPING_VOICE_ENV_FILE", "/var/lib/jasper/grouping-voice.env")
+        self.group_path = _path("JASPER_GROUPING_VOICE_ENV_FILE", VOICE_GROUPING_ENV_FILE)
         self.want_dropin = _path("JASPER_SYSTEMD_DIR", "/etc/systemd/system") / "jasper-voice.service.d/10-aec-bridge-want.conf"
         self.systemctl = os.environ.get("JASPER_SYSTEMCTL", "systemctl")
         self.start_env = read_env_file(self.env_path)
         self.values = dict(os.environ) | self.start_env
-        self.installed_build = _text(_path("JASPER_INSTALL_MANIFEST", "/var/lib/jasper/build.txt"))
+        self.installed_build = _text(_path("JASPER_INSTALL_MANIFEST", str(BUILD_MANIFEST_FILE)))
         self.group_text, self.group_error = read_env_file_text(self.group_path)
         self.voice_restart_needed = False
         self.outputd_restart_needed = False
@@ -191,8 +198,8 @@ class Reconcile:
             self.log(f"event=aec_reconcile.voice_restart_skipped reason=no_voice_relevant_change profile={self.profile} mic={self.current_mic or '<unset>'}")
             return
         self.clear_absent()
-        providers = _text(_path("JASPER_VOICE_PROVIDER_IDS_FILE", "/var/lib/jasper/voice_provider_ids")).splitlines()
-        provider_file = read_env_file(_path("JASPER_VOICE_PROVIDER_FILE", "/var/lib/jasper/voice_provider.env"))
+        providers = _text(_path("JASPER_VOICE_PROVIDER_IDS_FILE", PROVIDER_IDS_MANIFEST_FILE)).splitlines()
+        provider_file = read_env_file(_path("JASPER_VOICE_PROVIDER_FILE", VOICE_PROVIDER_ENV_PATH))
         provider = provider_file.get("JASPER_VOICE_PROVIDER", "")
         configured = (provider and provider in providers) or self.values.get("JASPER_VOICE_PROVIDER", "") in providers
         self.reset("jasper-voice.service")

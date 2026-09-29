@@ -29,12 +29,13 @@ from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
     log_grid_hz, magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
 )
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.series_stats import band_change_db, curve_difference, deviation_summary
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 
 from ..prediction_document import CAPTURE_PREDICTION_KIND
 from .measurement_context import capture_basis, compare_capture_basis
-from .round_captures import PoseCapture, RoundCapturesRefused, capture_row, select_capture
+from .round_captures import PoseCapture, capture_row, select_capture
 
 #: A take read through a window whose trusted band is too narrow to say anything.
 REFUSE_TAKE_BAND_TOO_NARROW = "take_band_too_narrow"
@@ -169,7 +170,7 @@ def group_delay_report(
     window, window_source = read.window(window_ms)
     band = trusted_band_hz(window, capture.sample_rate, capture.radiated_band_hz)
     if band is None:
-        raise RoundCapturesRefused(REFUSE_TAKE_BAND_TOO_NARROW, {
+        raise EvidenceUnavailable(REFUSE_TAKE_BAND_TOO_NARROW, {
             "capture_id": capture.capture_id, "role": read.role, "window_ms": window,
             "radiated_band_hz": list(capture.radiated_band_hz),
         })
@@ -240,7 +241,7 @@ def read_preview(document: Any) -> PreviewSide:
             fingerprint=str(summary["prediction_fingerprint"]),
         )
     except (KeyError, TypeError, ValueError, IndexError) as exc:
-        raise RoundCapturesRefused(REFUSE_PREVIEW_UNREADABLE, {"detail": str(exc)}) from exc
+        raise EvidenceUnavailable(REFUSE_PREVIEW_UNREADABLE, {"detail": str(exc)}) from exc
 
 
 def _difference_report(
@@ -249,7 +250,7 @@ def _difference_report(
     """``b - a``, summarised for the answer, and the curves for the artifact."""
     difference = curve_difference(grid, b_db, grid, a_db, band_hz=band, remove_level=remove_level)
     if difference is None:
-        raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {"band_hz": list(band)})
+        raise EvidenceUnavailable(REFUSE_COMPARE_NO_COMMON_BAND, {"band_hz": list(band)})
     delta = difference.delta_db
     b_side, a_side = difference.curve_db - difference.level_offset_db, difference.against_db
     summary = {key: _number(value, 2) if isinstance(value, float) else value
@@ -276,12 +277,12 @@ def compare_report(
     """
     rate = a.capture.sample_rate
     if b.capture.sample_rate != rate:
-        raise RoundCapturesRefused(REFUSE_COMPARE_RATES_DIFFER, {"a": rate, "b": b.capture.sample_rate})
+        raise EvidenceUnavailable(REFUSE_COMPARE_RATES_DIFFER, {"a": rate, "b": b.capture.sample_rate})
     (a_window, a_source), (b_window, b_source) = a.window(window_ms), b.window(window_ms)
     window = min(a_window, b_window)
     band = trusted_band_hz(window, rate, a.capture.radiated_band_hz, b.capture.radiated_band_hz)
     if band is None:
-        raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {
+        raise EvidenceUnavailable(REFUSE_COMPARE_NO_COMMON_BAND, {
             "window_ms": window, "a_band_hz": list(a.capture.radiated_band_hz),
             "b_band_hz": list(b.capture.radiated_band_hz),
         })
@@ -324,7 +325,7 @@ def compare_preview_report(
     band = trusted_band_hz(preview.window_ms, rate, b.capture.radiated_band_hz, preview.band_hz,
                            (preview.freqs_hz[0], preview.freqs_hz[-1]))
     if band is None:
-        raise RoundCapturesRefused(REFUSE_COMPARE_NO_COMMON_BAND, {
+        raise EvidenceUnavailable(REFUSE_COMPARE_NO_COMMON_BAND, {
             "window_ms": preview.window_ms, "preview_band_hz": list(preview.band_hz),
             "b_band_hz": list(b.capture.radiated_band_hz),
         })

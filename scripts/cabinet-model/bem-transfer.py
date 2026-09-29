@@ -5,10 +5,11 @@
 """Near-field -> far-field transfer of each woofer from a solved Boundary Lab case.
 
 Reads a completed case of the CAD repo's Boundary Lab study (read-only), integrates the solver's
-own surface solution (Kirchhoff-Helmholtz) to the microphone spots on each woofer's axis, and
-saves the pressure there and on the case's horizontal polar. The case's woofers face +z (front)
-and -z (rear), and its polar origin sits on the cabinet's front face (the seat model's
-reference). Two gates run first:
+own surface solution (Kirchhoff-Helmholtz) to the microphone spots on each woofer's axis and to
+the far-field microphone points predict.py --farfield checks (--mic-m in front of the front face
+and behind the back panel, on the polar's axis), and saves the pressure there and on the case's
+horizontal polar. The case's woofers face +z (front) and -z (rear), and its polar origin sits on
+the cabinet's front face (the seat model's reference). Two gates run first:
   1. the integral must reproduce the solver's own polar probes (relative error < 1e-3);
   2. with --measured-step, the model's gap -> gap+step level change must match the measured
      one within 0.2 dB (warns otherwise).
@@ -97,6 +98,8 @@ def main() -> int:
     ap.add_argument("--gap-m", type=float, default=0.01456,
                     help="mic tip to dust-cap apex; the E150HE-44 surround top sits 14.56 mm above the apex")
     ap.add_argument("--step-m", type=float, default=0.015, help="second spot this much farther out")
+    ap.add_argument("--mic-m", type=float, default=0.5,
+                    help="far-field microphone distance from the front face and from the back panel")
     ap.add_argument("--max-hz", type=float, default=1000.0)
     ap.add_argument("--measured-step", action="append", default=[], type=measured_step, metavar="WOOFER=DB",
                     help="the near-field view's 15 -> 30 mm step_db for that woofer, e.g. front=-2.37")
@@ -116,6 +119,7 @@ def main() -> int:
     ang = np.deg2rad(np.array(obs["angles_deg"]))
     probes = origin + radius * np.column_stack((np.sin(ang), np.zeros_like(ang), np.cos(ang)))
     depth = json.loads((args.case.parent / "source-facts.json").read_text())["cabinet"]["depth"] / 1000
+    mics = {"front": origin + [0, 0, args.mic_m], "behind": origin - [0, 0, depth + args.mic_m]}
 
     def apex(name: str, sign: float) -> np.ndarray:
         """Axial tip of a woofer's dust cap: on the axis through its source's centre (the woofers face
@@ -129,7 +133,8 @@ def main() -> int:
     spots = {"front": (apex("front", 1), 1.0), "rear": (apex("rear", -1), -1.0)}
     exc_index = {e.split(":")[1]: i for i, e in enumerate(rows[0]["exc"])}
     errors = []
-    out = {k: [] for k in ("f", "nf_front", "nf_rear", "nf2_front", "nf2_rear", "far_front", "far_rear")}
+    out = {k: [] for k in ("f", "nf_front", "nf_rear", "nf2_front", "nf2_rear", "far_front", "far_rear",
+                           *(f"mic_{side}_{w}" for side in mics for w in spots))}
     for row in rows:
         k = 2 * np.pi * row["f"] / C
         pn, qn = row["acoustic:pressure:bem-boundary"][:, tri], row["acoustic:normal-derivative:bem-boundary"]
@@ -145,6 +150,10 @@ def main() -> int:
             out[f"nf_{w}"].append(near[0])
             out[f"nf2_{w}"].append(near[1])
             out[f"far_{w}"].append(row["acoustic:pressure:probe:horizontal"][e])
+        for side, point in mics.items():
+            at = kh(point, k, xyz, area, normal, size, pn, qn)
+            for w in spots:
+                out[f"mic_{side}_{w}"].append(at[exc_index[w]])
     worst = float(np.max(errors))
     print(f"gate 1: surface integral vs solver probes, max relative error {worst:.1e}")
     if not worst <= 1e-3:
@@ -162,7 +171,8 @@ def main() -> int:
         print(line)
     with open(args.out, "wb") as fh:
         np.savez(fh, radius_m=radius, angles_deg=np.array(obs["angles_deg"]), front_z_m=origin[2], depth_m=depth,
-                 **{k: np.array(v) for k, v in out.items() if not k.startswith("nf2_")})
+                 mic_m=args.mic_m, **{k: np.array(v) for k, v in out.items() if not k.startswith("nf2_")})
+    print("microphone points, m: " + ", ".join(f"{side} {np.round(point, 4).tolist()}" for side, point in mics.items()))
     print(f"saved {args.out}")
     return 0
 

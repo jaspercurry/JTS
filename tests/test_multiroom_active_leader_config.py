@@ -11,7 +11,7 @@ re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
 from jasper import atomic_io
-from jasper import output_topology_store as output_topology_mod
+from jasper.audio_routes import output_topology_store as output_topology_mod
 from tests.active_speaker_fixtures import declared_profile_fixture
 
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
@@ -32,8 +32,9 @@ import yaml
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.runtime_contract as runtime_contract_mod
-import jasper.dsp_apply as dsp_apply_mod
+from jasper.active_speaker.graph import bass_extension
+from jasper.active_speaker import graph_selector, graph_types
+import jasper.dsp_control.dsp_apply as dsp_apply_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
 from jasper.multiroom import active_leader_config as alc
@@ -52,7 +53,7 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 
 @pytest.fixture(autouse=True)
@@ -67,10 +68,10 @@ def _stable_live_graph_authority(monkeypatch):
         assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         assert await cam.get_config_file_path() == str(expected_config_path)
         assert expected_classification in {
-            runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
-            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            graph_types.GRAPH_PROGRAM_BAKE_PIPE,
+            graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
         }
-        return runtime_contract_mod.GraphSafety(
+        return graph_types.GraphSafety(
             classification=expected_classification,
             allowed=True,
             config_path=str(expected_config_path),
@@ -208,7 +209,7 @@ def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
 ) -> None:
     """The bake captures Ring A at the box's resolved wire format — and its sink
     is STILL the snapfifo `File`, never Ring B."""
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
     from jasper.multiroom.snapfifo import SNAPFIFO
 
     topology = _dual_apple_topology()
@@ -429,14 +430,14 @@ def test_precheck_refuses_unprovable_bake_graph(monkeypatch, tmp_path) -> None:
         return SimpleNamespace(
             allowed=ok,
             classification=(
-                runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
                 if ok
                 else "unsafe"
             ),
             issues=[] if ok else [{"code": "forced_bake"}],
         )
 
-    monkeypatch.setattr(runtime_contract_mod, "classify_bass_extension_graph", _selective)
+    monkeypatch.setattr(bass_extension, "classify_bass_extension_graph", _selective)
 
     with pytest.raises(alc.ActiveLeaderError) as exc:
         asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
@@ -552,7 +553,7 @@ def test_apply_bake_live_proof_failure_rolls_back_before_unlock(
         assert expected_config_path == alc.LEADER_BAKE_CONFIG_PATH
         assert (
             expected_classification
-            == runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE
+            == graph_types.GRAPH_PROGRAM_BAKE_PIPE
         )
         assert await cam.get_config_file_path() == alc.LEADER_BAKE_CONFIG_PATH
         raise RuntimeError("candidate proof refused")
@@ -629,7 +630,7 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod, "safe_graph_for_current_topology", decide
+        graph_selector, "safe_graph_for_current_topology", decide
     )
 
 

@@ -22,11 +22,11 @@ from typing import Any
 
 from jasper.log_event import log_event
 
-from ..assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     active_voice_identity,
     tts_envelope_lufs_for_level,
 )
-from ..assistant_volume import resolved_route_consumes_volume_context
+from jasper.audio_control.assistant_volume import resolved_route_consumes_volume_context
 from ..tts_playout import TtsPlayout
 from ..config import Config
 from ..cues import AudioCueManager, registry
@@ -36,8 +36,8 @@ from ..cues.manager import (
     REASON_UNKNOWN_SLUG,
     wait_tts_drained_owned,
 )
-from ..tts_routing import resolve_tts_routing_snapshot
-from ..volume_coordinator import VolumeCoordinator
+from jasper.service_state.tts_routing import resolve_tts_routing_snapshot
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from ._tasks import await_cleanup_owned, capture_cleanup_error, run_cleanup_phases
 from .earcons import (
     generate_listening_chirp,

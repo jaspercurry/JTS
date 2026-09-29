@@ -1,32 +1,24 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resolve the CLI's run flags through the plan and preflight owners."""
+"""Read the CLI's run source and the facts only it can see; the plan comes from ``run_request``."""
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+import json
 
-from jasper.active_speaker.angle_capture import (
-    AngleCaptureRequest, LevelPolicy, LateralWalkRefused,
-    WALK_CANDIDATE_NOT_MEASURABLE, WALK_LEVEL_POLICY_INVALID,
-    default_run_level, request_for_preset,
-)
-from jasper.active_speaker.candidate_bank import CandidateBankRefusal, publish_authored_candidate
-from jasper.active_speaker.crossover_v2.prescription_document import rear_cleared_candidate
+from jasper.active_speaker.angle_capture import AngleCaptureRequest
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED
-from jasper.active_speaker.measurement_programs import (
-    PURPOSE_REAR, REGIME_BRANCHES, near_field_drivers, run_preset,
-)
+from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
+from jasper.active_speaker.run_request import REQUEST_KEYS, RunRequest, resolve_plan
 from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
 from jasper.active_speaker.movers import MOVER_ARM
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.active_speaker.seat_level_reference import seat_level_reference_state_path
 from jasper.active_speaker.state_paths import baseline_profile_state_path
-from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import household_mic_path
-from jasper.output_topology_store import load_output_topology, topology_path
+from jasper.audio_routes.output_topology_store import load_output_topology, topology_path
 from ._refusal import read_json_source
 
 #: The facts only this CLI can see; the session door re-reads every other one and owns admission.
@@ -52,37 +44,15 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
             raise
         except OSError:
             pass
+    stated = {key: getattr(args, key) for key in REQUEST_KEYS if getattr(args, key) is not None}
+    if stated and (args.plan or args.request):
+        raise ValueError("a plan or request document already states its run parameters")
     if args.plan:
-        if any(getattr(args, key) is not None
-               for key in ("program", "poses", "layout", "driver", "candidates", "repeats", "mover", "level_db")):
-            raise ValueError("a plan document already states its run parameters")
         document = read_json_source(args.plan)
         if not isinstance(document, dict):
             raise ValueError("plan must be an object")
-        request = AngleCaptureRequest.from_mapping(document)
-        return preflight_levels(request, _facts(request, args))
-    program = run_preset(args.program or "speaker", args.layout, args.poses)
-    if args.repeats is not None:
-        try:
-            program = replace(program, poses=tuple(replace(pose, repeats=args.repeats) for pose in program.poses))
-        except ValueError as exc:
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, str(exc)) from exc
-    candidates = tuple(value.strip() for value in args.candidates.split(",")) if args.candidates is not None else ()
-    if any(not value for value in candidates):
-        raise ValueError("candidates must name a fingerprint or base")
-    if not candidates and (program.purpose, program.regime) == (PURPOSE_REAR, REGIME_BRANCHES):
-        try:
-            candidates = (publish_authored_candidate(rear_cleared_candidate()).fingerprint,)
-        except (CandidateBankRefusal, BundleError) as exc:
-            raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, str(exc)) from exc
-    operator_level = args.level_db is not None
-    level, level_source = default_run_level(program, state_path=seat_level_reference_state_path())
-    request = request_for_preset(
-        program, candidates=candidates,
-        level=LevelPolicy(level_db=args.level_db) if operator_level else level,
-        level_source="operator" if operator_level else level_source,
-        mover=args.mover or program.mover or "human",
-        targets=near_field_drivers(load_output_topology()), driver=args.driver or "",
-    )
-    facts = _facts(request, args)
-    return preflight_levels(request, facts, program.levels if args.level_db is None else None)
+        source: RunRequest | AngleCaptureRequest = AngleCaptureRequest.from_mapping(document)
+    else:
+        source = RunRequest.from_mapping(json.loads(args.request) if args.request else stated)
+    plan, levels = resolve_plan(source, targets=lambda: near_field_drivers(load_output_topology()))
+    return preflight_levels(plan, _facts(plan, args), levels)

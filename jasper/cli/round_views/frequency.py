@@ -24,7 +24,7 @@ from jasper.active_speaker.measurement_archive import (
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.round_view_builders import analyzed_frequency_run, frequency_payload, frequency_image
 from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, round_inputs
-from jasper.audio_measurement.evidence_reasons import EVIDENCE_REASONS
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
@@ -32,7 +32,6 @@ from ._common import (
     _ROUND_TOOL_ERRORS,
     _write,
     answer,
-    refused_by_name,
     subject,
 )
 
@@ -109,9 +108,9 @@ def _cmd_frequency(args: argparse.Namespace) -> int:
         if args.source_b
         else None
     )
-    for run in (run_a, run_b):
+    for source, run in ((args.source_a, run_a), (args.source_b, run_b)):
         if run is not None and (unbanked := run.metadata.get("curves")):
-            return refused_by_name(unbanked["reason"], EVIDENCE_REASONS[unbanked["reason"]], code=EXIT_UNREADABLE)
+            raise EvidenceUnavailable(unbanked["reason"], {"source": source})
     payload, series = frequency_payload(run_a, run_b, ref_band_hz=args.ref_band_hz, normalize=args.normalize)
     schema = ARTIFACT_BY_VIEW[args.command].schema
     written = _write(payload, args.out, _frequency_default_out(source_a), schema=schema)

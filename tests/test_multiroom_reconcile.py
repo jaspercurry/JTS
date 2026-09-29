@@ -20,15 +20,15 @@ plain asserts; file I/O goes to pytest's tmp_path.
 
 from __future__ import annotations
 
-from jasper import output_topology_store as topology_mod
+from jasper.audio_routes import output_topology_store as topology_mod
 import dataclasses
 import fcntl
 import os
 
 import pytest
 
-from jasper.audio_runtime_settings import resolve_outputd_period_setting
-from jasper.ring_assets import (
+from jasper.service_state.audio_runtime_settings import resolve_outputd_period_setting
+from jasper.audio_control.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_WRITER_LOCK_SUFFIX,
     ring_writer_lock_path,
@@ -48,11 +48,11 @@ from tests.multiroom_reconcile_fixtures import (
 from jasper import systemd_probe
 from jasper.env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
 from jasper.audio_hardware import dac as _dac
-from jasper.fanin_coupling import dac_content_lane_marker_armed
+from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
 from jasper.multiroom import grouping_env as grouping_env_mod
 from jasper.multiroom import reconcile as reconcile_mod
 from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PCM, DAC_CONTENT_RING_PERIOD_FRAMES
-from jasper.fanin_coupling import DAC_CONTENT_LANE_ENV
+from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV
 from jasper.multiroom.grouping_env import (
     LANE_REFUSED_ACTIVE_ENDPOINT,
     LANE_REFUSED_FLAT_OUTPUT_DENIED,
@@ -78,8 +78,8 @@ from jasper.multiroom.reconcile_plan import (
     snapclient_argv,
     snapserver_argv,
 )
-from jasper.output_topology import OutputTopologyError
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 def _desired(plan_: ReconcilePlan, unit: str) -> str:
@@ -454,7 +454,7 @@ def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     round-trip lane marker is cleared; TTS also stays off outputd because active
     voice rides fan-in upstream of the crossover. A DUMB member still arms the
     lane."""
-    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV
+    from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET_ENV
 
     active = bonded_grouping_env(_follower(), active_endpoint=True)
     assert active[DAC_CONTENT_LANE_ENV] == ""  # cleared (no dac_content)
@@ -575,7 +575,7 @@ def test_outputd_direct_dac_paths_follow_one_topology_predicate(
         outputd_grouping_env,
         voice_grouping_env,
     )
-    from jasper.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
+    from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET_ENV, VOICE_TTS_SOCKET_ENV
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(build_topology(), path=topology_path)
@@ -2652,7 +2652,7 @@ def test_crossover_teardown_contains_spawn_oserror(monkeypatch, caplog):
 def test_unit_state_queries_share_exact_systemctl_contract(monkeypatch):
     """`_systemctl_unit_state` is a thin wrapper: the spawn + classification
     it delegates to is jasper.systemd_probe.unit_query (shared with
-    jasper.source_intent's `_query_unit_state`)."""
+    jasper.audio_routes.source_intent's `_query_unit_state`)."""
     import subprocess as sp
 
     calls: list[list[str]] = []
@@ -3036,7 +3036,7 @@ def test_the_period_gate_reads_what_outputd_loads_not_what_policy_intends(
     follow the daemon, or it arms a box that bails EX_CONFIG (Case A) or refuses
     one that plays (Case B).
     """
-    from jasper.audio_runtime_plan import outputd_period_frames_as_loaded
+    from jasper.audio_control.audio_runtime_plan import outputd_period_frames_as_loaded
     from jasper.multiroom.dac_content_ring import dac_content_ring_servable
 
     base = tmp_path / "jasper.env"
@@ -3078,7 +3078,7 @@ def test_the_merged_env_outputd_starts_with_never_pairs_marker_and_bridge(
     `env_str`, whose blank it parks on.
     """
     from jasper.env_load import outputd_reconciled_env
-    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+    from jasper.dsp_control.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(

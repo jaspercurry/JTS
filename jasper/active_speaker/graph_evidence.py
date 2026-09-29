@@ -41,7 +41,7 @@ from typing import Any
 
 import yaml
 
-from jasper.output_topology import canonical_fingerprint
+from jasper.audio_routes.output_topology import canonical_fingerprint
 
 from . import graph_safety as gs
 

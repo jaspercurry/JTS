@@ -20,8 +20,6 @@ from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_state as v2state
 
-import dataclasses
-
 from types import SimpleNamespace
 
 import pytest
@@ -29,14 +27,10 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import candidate_bank
-from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     MEASURE_KIND_CANDIDATE,
     POLARITY_INVERTED,
-)
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_LATERAL,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
@@ -51,19 +45,6 @@ _ROLES_BANDS = (
 )
 
 
-#: Where the design-axis MEASURE capture sits in a stage-1 plan, which is the
-#: index a walk's own walk-level spec is keyed to.
-_MEASURE_INDEX = 2
-
-
-def _hand_shape():
-    return capture_plan.resolve_plan_shape()
-
-
-def _arm_shape():
-    return dataclasses.replace(capture_plan.resolve_plan_shape(), externally_positioned=True)
-
-
 #: A measurement mic whose registry row names the channel an SPL watch reads.
 _MIC = SimpleNamespace(model_key="minidsp_umik2", model_label="UMIK-2")
 
@@ -73,25 +54,6 @@ def _events(caplog) -> list[str]:
         rec.getMessage() for rec in caplog.records
         if "crossover_v2_angle_walk" in rec.getMessage()
     ]
-
-
-# --- the ordinary session -----------------------------------------------------
-
-
-def test_the_shipped_stage_1_still_plans_no_lateral_group():
-    """The retirement is untouched by the take existing.
-
-    With no staged document the session ships no lateral group at all -- so
-    the shipped map is the 3-entry shape and the walk's indexes are not in
-    it. This is the control every claim below rests on.
-    """
-    shipped = capture_plan.build_v2_cloud_index_phase_map(
-        plan_shape=_hand_shape(),
-        include_lateral=False,
-        include_entry_baseline=capture_plan.STAGE1_INCLUDES_ENTRY_BASELINE,
-    )
-    assert PHASE_LATERAL not in shipped.values()
-    assert len(shipped) == 3
 
 
 # --- the take -----------------------------------------------------------------
@@ -105,7 +67,7 @@ def test_the_shipped_stage_1_still_plans_no_lateral_group():
 
 def _inverted_walk(**template):
     return ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
         template=ac.walk_template(
             kind=MEASURE_KIND_CANDIDATE, polarity=POLARITY_INVERTED, **template,
         ),
@@ -140,17 +102,10 @@ def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
     template overlay is refused where the walk is stated, not at the open."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id),),
+            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id, purpose="speaker"),),
             template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **overlay),
         )
     assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
-
-
-def _seat_index_phases(prompts):
-    return capture_plan.build_v2_cloud_index_phase_map(
-        plan_shape=_hand_shape(),
-        include_lateral=True, lateral_prompts=prompts,
-    )
 
 
 def _with_measured_trims(monkeypatch, trims, source="banked_base_trim"):

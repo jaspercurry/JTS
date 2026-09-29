@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper import aec_ready
+from jasper.service_state import aec_ready
 from tests.systemd_unit_helpers import (
     value_for as _value_for,
     values_for as _values_for,

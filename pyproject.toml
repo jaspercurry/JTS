@@ -306,18 +306,22 @@ module = [
     "jasper.active_speaker.commissioning_coordinator",
     "jasper.active_speaker.crossover_preview",
     "jasper.active_speaker.graph.active_verifier",
+    "jasper.active_speaker.graph.bass_extension",
+    "jasper.active_speaker.graph_selector",
     "jasper.active_speaker.path_safety",
     "jasper.active_speaker.runtime_contract",
     "jasper.active_speaker.safe_playback",
     "jasper.active_speaker.staging",
     "jasper.active_speaker.startup_load",
-    "jasper.aec_sweep",
-    "jasper.assistant_loudness",
+    "jasper.audio_routes.aec_sweep",
+    "jasper.runtime_config.assistant_loudness",
     # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
     "jasper.audio_validation",
+    "jasper.audio_control.audio_validation_readiness",
+    "jasper.audio_control.audio_validation_hardware_checks",
     "jasper.bluetooth.scan",
-    "jasper.camilla",
+    "jasper.audio_control.camilla",
     "jasper.transit.citibike",
     "jasper.cli.aec_bridge",
     "jasper.cli.aec_init",
@@ -332,16 +336,16 @@ module = [
     "jasper.control.state_aggregate",
     "jasper.control.system_metrics",
     "jasper.control.system_supervisor",
-    "jasper.home_assistant",
+    "jasper.service_state.home_assistant",
     "jasper.mic_capture",
     "jasper.multiroom.leader_config",
     "jasper.mux",
     "jasper.net.wifi_scan_repair",
-    "jasper.output_topology",
-    "jasper.outputd_active_lane",
+    "jasper.dsp_control.outputd_active_lane",
     "jasper.peering.daemon",
-    "jasper.spotify_router",
-    "jasper.spotify_routing",
+    "jasper.sound.flat_verifier",
+    "jasper.service_state.spotify_router",
+    "jasper.service_state.spotify_routing",
     "jasper.transit.subway",
     "jasper.tools.catalog",
     "jasper.tools.packs",
@@ -350,13 +354,13 @@ module = [
     "jasper.transit.providers.citibike",
     "jasper.transit.providers.nyc_subway",
     "jasper.tts_playout",
-    "jasper.usage",
+    "jasper.service_state.usage",
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
     "jasper.voice_daemon",
-    "jasper.volume_diagnostics",
+    "jasper.audio_routes.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
-    "jasper.weather",
+    "jasper.service_state.weather",
     "jasper.web._common",
     "jasper.web.rooms_setup",
     "jasper.web.sound_active_speaker",
@@ -398,30 +402,18 @@ type = "layers"
 containers = ["jasper"]
 broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
 layers = [
-  "cli : turntable : web",
-  # Kept above volume_process so multiroom can rank between them later (#4719).
-  "output_topology_runtime",
-  "volume_observers",
-  "volume_process",
-  # Ranked above aec: transitively imports aec.bridge_engines via assistant_loudness/cues/config/voice/audio_profile_state (#4719).
-  "volume_coordinator",
-  "volume_reconcile",
-  "volume_carrier",
-  "aec : usage_writer",
-  "accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
-  "audio_runtime_settings",
-  "ring_conf",
-  "output_topology_observation",
-  "outputd_active_lane",
-  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : route_latency : usb_mic : volume_diagnostics",
-  "output_topology_store",
-  "output_topology",
-  # Own layer, not usb_mic's, so local_sources can rank above it later without pulling in usb_mic (#4719).
-  "output_hardware",
-  "aec_engines : bluealsa_probe : mics : usb_network : usbgadget : xvf",
-  "airplay_session : capture_protocol : dsp_numpy : install_profile : librespot_state : music_sources : mux_mode_persistence : spotify_uri : wake_condition_context : wake_conditions : wake_legs",
-  "audio_measurement : audio_validation_artifacts : bass_extension : model_downloads : volume_owner",
+  "mux : voice_daemon : cli : turntable : web",
+  "audio_input_view : audio_validation : conversation_history : flight_recorder : google_routes : measurement_window : mic_capture : outputd_failure_reconcile_state : tts_playout : output_topology_runtime",
+  "audio_control",
+  "aec : runtime_config : config",
+  "service_state",
+  "dsp_control",
+  "audio_routes : route_latency",
+  "aec_engines : device_probe : mics : xvf",
+  "playback_state",
+  "audio_measurement : audio_resources : bass_extension",
   "identity : net",
+  "logging_setup",
   "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : platform : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",
 ]
 exhaustive = true
@@ -429,65 +421,84 @@ exhaustive = true
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
-  "assistant_loudness",
-  "assistant_volume",
   "attribution",
-  "audio_buffer",
   "audio_hardware",
-  "audio_input_view",
-  "audio_profile_state",
-  "audio_runtime_plan",
-  "audio_validation",
   "bluetooth",
-  "camilla",
-  "camilla_config_contract",
-  "camilla_latency",
   "chip_aec",
-  "config",
   "control",
-  "conversation_history",
   "cues",
   "data",
-  "debug_mode",
-  "dsp_apply",
   "fanin",
-  "fanin_coupling",
-  "flight_recorder",
-  "google_oauth",
-  "google_routes",
-  "home_assistant",
   "local_sources",
-  "logging_setup",
-  "measurement_window",
-  "mic_capture",
-  "mic_presence",
   "multiroom",
-  "mux",
-  "oauth_redirect",
-  "outputd_failure_reconcile_state",
   "peering",
-  "renderer",
-  "ring_assets",
   "sound",
-  "source_intent",
-  "source_state",
-  "spotify_oauth",
   "tools",
   "transit",
-  "transport_coherence",
-  "tts_playout",
-  "tts_routing",
   "usbsink",
   "voice",
-  "voice_daemon",
-  "volume_curve",
-  "volume_echo",
-  "volume_handoff",
-  "volume_measurement_gate",
-  "volume_persistence",
-  "volume_push_sources",
-  "volume_scales",
-  "volume_state",
   "wake_corpus",
-  "wake_ports",
 ]
+
+[[tool.importlinter.contracts]]
+name = "DSP control layers"
+type = "layers"
+containers = ["jasper.dsp_control"]
+exhaustive = true
+layers = [
+    "ring_conf",
+    "output_topology_observation",
+    "outputd_active_lane",
+    "camilla_latency : dsp_apply",
+    "camilla_config_contract",
+    "fanin_coupling",
+]
+
+[[tool.importlinter.contracts]]
+name = "Service state layers"
+type = "layers"
+containers = ["jasper.service_state"]
+exhaustive = true
+layers = [
+  "google_oauth : home_assistant : spotify_oauth : tts_routing : volume_persistence : wake_ports : accounts : aec_ready : google_creds : location_state : mic_mute_persistence : openwakeword_guard : source_events : spotify_router : spotify_routing : timers : usage : vad : wake : wake_events : wake_models : weather",
+  "oauth_redirect : audio_runtime_settings",
+]
+
+[[tool.importlinter.contracts]]
+name = "Audio control layers"
+type = "layers"
+containers = ["jasper.audio_control"]
+exhaustive = true
+layers = [
+  "audio_buffer : audio_runtime_plan : audio_validation_hardware_checks : debug_mode : mic_presence : volume_observers",
+  "audio_validation_readiness : transport_coherence : volume_process",
+  "audio_validation_probes : camilla : ring_assets : volume_coordinator",
+  "assistant_volume : renderer : volume_echo : volume_handoff : volume_measurement_gate : volume_push_sources : volume_reconcile",
+  "volume_scales : volume_state : volume_carrier",
+]
+
+[[tool.importlinter.contracts]]
+name = "Audio routes layers"
+type = "layers"
+containers = ["jasper.audio_routes"]
+exhaustive = true
+layers = [
+  "aec_sweep : audio_quality : audio_runtime_overrides : audio_validation_route : camilla_emit : camilla_stereo_prefix : enhanced_aec : usb_mic : volume_diagnostics",
+  "source_intent : volume_curve : output_topology_store",
+  "output_topology",
+  "output_topology_evaluation",
+  "output_hardware",
+]
+
+[[tool.importlinter.contracts]]
+name = "Audio routes retain route latency rank"
+type = "forbidden"
+source_modules = [
+  "jasper.audio_routes.source_intent",
+  "jasper.audio_routes.volume_curve",
+  "jasper.audio_routes.output_topology_store",
+  "jasper.audio_routes.output_topology",
+  "jasper.audio_routes.output_topology_evaluation",
+  "jasper.audio_routes.output_hardware",
+]
+forbidden_modules = ["jasper.route_latency"]

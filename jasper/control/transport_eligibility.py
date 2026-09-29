@@ -49,11 +49,11 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from ..audio_hardware.dac import by_id as _dac_by_id
 from ..env_load import outputd_reconciled_env
-from ..output_hardware import load_state as _load_output_hardware_state
-from ..output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_hardware import load_state as _load_output_hardware_state
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 
 if TYPE_CHECKING:
-    from ..output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
 #: Park class tokens. Structured, matched by tests and by the web surface;
 #: the human prose beside them is presentation. See ADR-0178 for what each
@@ -233,7 +233,7 @@ def _assess(
         ring_channels_for_topology,
         topology_sink_is_composite,
     )
-    from ..fanin_coupling import (  # lazy: test patch boundary (tests/_armed_transport.py)
+    from jasper.dsp_control.fanin_coupling import (  # lazy: test patch boundary (tests/_armed_transport.py)
         dac_content_marker_contradicted,
         ring_active_endpoint_armed,
     )

@@ -9,7 +9,7 @@ from email.message import Message
 import pytest
 
 from jasper.net import http_security
-from jasper.usb_network import derive_plan
+from jasper.device_probe.usb_network import derive_plan
 
 
 USB_PLAN = derive_plan("10000000abcdef01")

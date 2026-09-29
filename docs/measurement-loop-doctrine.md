@@ -41,8 +41,10 @@ summed, cloud, on-axis, and off-axis.
 - **Rear (cardioid) stage:** play the stack as composed — the applied speaker,
   bass and room layers with the candidate's rear section — and compare rear
   settings on one band against one rear-muted reference per position; the
-  pair take plays the raw woofers with the rear section cleared (see
-  [ADR-0325](adr/0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md)).
+  pair take plays the raw woofers with the rear section cleared, which the
+  rear program row declares and the door derives (see
+  [ADR-0325](adr/0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md),
+  [ADR-0386](adr/0386-a-rear-pair-take-clears-the-rear-layer-at-the-door.md)).
 
 Retain household settings while measurement uses its temporary graph. Restore
 normal playback after the operation. Record the graph that actually played;
@@ -100,7 +102,7 @@ mechanisms are:
    valid microphone sensitivity and capture-gain context; never invent it.
 5. **Firmware hazards:** never call XVF3800 `SAVE_CONFIGURATION`.
 
-The blend door cannot emit boost: its graph stage has no boost headroom term.
+The blend door cannot emit boost: its graph stage admits cuts only.
 Use a supported driver candidate for a boost experiment (plan ruling R8).
 Do not remove an unsupported-candidate refusal until the candidate can be
 rendered, protected, and identified correctly.

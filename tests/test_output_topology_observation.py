@@ -13,19 +13,19 @@ from pathlib import Path
 import pytest
 
 import jasper.cli.output_hardware as output_hardware_cli
-import jasper.output_hardware as output_hardware
-import jasper.output_topology_observation as output_topology_observation
-from jasper import output_topology_store as output_topology
+import jasper.audio_routes.output_hardware as output_hardware
+import jasper.dsp_control.output_topology_observation as output_topology_observation
+from jasper.audio_routes import output_topology_store as output_topology
 from jasper.audio_hardware import dac, output_probe
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputCardFact,
     classify_output_cards,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     write_state as write_output_hardware_state,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
@@ -33,7 +33,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_observation import (
+from jasper.dsp_control.output_topology_observation import (
     CLOCK_DOMAIN_REPORT_KIND,
     clock_domain_report,
     composite_serial_repin_plan,
@@ -41,7 +41,7 @@ from jasper.output_topology_observation import (
     dual_apple_runtime_mapping,
     repin_composite_child_serials,
 )
-from jasper.output_topology_store import load_output_topology, new_topology_draft
+from jasper.audio_routes.output_topology_store import load_output_topology, new_topology_draft
 from tests.test_active_speaker_runtime_contract import _active_topology, _full_range_stereo
 from tests.output_topology_fixtures import (
     _dual_apple_hardware,

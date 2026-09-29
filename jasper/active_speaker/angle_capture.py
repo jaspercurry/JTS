@@ -29,7 +29,7 @@ from typing import Any, Mapping, Sequence
 from jasper.json_fields import finite_float
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 
-from .crossover_v2.refusal_copy import REASON_WALK_MOVER_MISMATCH
+from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
@@ -57,10 +57,9 @@ from .measurement_programs import (
     REGIME_BRANCHES,
     REGIME_NEAR_FIELD,
     REGIMES,
-    resolved_measurement_purpose,
     validated_branch_pair,
     validated_capture_purpose,
-    validated_pose_driver,
+    validated_purposes,
     pose_place,
     validated_pose,
     validated_angle,
@@ -88,7 +87,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     stage1_plan_max_attempts,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
-from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
+from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
 __all__ = [
     "REGIME_PER_DRIVER",
@@ -243,6 +242,9 @@ class AngleStop:
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
     purpose: str | None = None
+    #: Every purpose its takes serve, :attr:`purpose` first; a stop that names
+    #: only its purpose serves that one (ADR-0383).
+    purposes: tuple[str, ...] = ()
     headline: str = ""
     detail: str = ""
     stimulus: Mapping[str, Any] | None = None
@@ -259,9 +261,12 @@ class AngleStop:
         )
         try:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
-            object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.kind, self.regime))
+            purpose = validated_capture_purpose(self.purpose, self.regime)
+            purposes = validated_purposes(self.purposes or (purpose,), self.regime, (self.driver,))
+            if purposes[0] != purpose:
+                raise ValueError(f"a stop's purposes start with its purpose {purpose!r}, got {list(purposes)}")
+            object.__setattr__(self, "purposes", purposes)
             validated_branch_pair(self.branch_pair, self.regime)
-            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose)
             if self.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:
@@ -498,7 +503,7 @@ class AngleCaptureRequest:
             "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
                 {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else
-                 list(stop.seat_offset_m) if f.name == "seat_offset_m" and stop.seat_offset_m is not None else getattr(stop, f.name)
+                 list(getattr(stop, f.name)) if isinstance(getattr(stop, f.name), tuple) else getattr(stop, f.name)
                  for f in fields(stop)
                  if f.name in ("angle_deg", "regime", "elevation_deg", "candidate_id", "purpose")
                  or getattr(stop, f.name) != f.default}
@@ -705,7 +710,7 @@ def stop_specs(
             positions=(stop.angle_deg,),
             sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
                 room_sweep_band_hz(roles_bands, (prompt,))
-                if roles_bands and resolved_measurement_purpose(stop.purpose, stop.kind) != PURPOSE_SPEAKER else None
+                if roles_bands and stop.purpose != PURPOSE_SPEAKER else None
             ) or (),
             sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.elevation_deg,
@@ -715,7 +720,7 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
-            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id),
+            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime),
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
@@ -732,7 +737,7 @@ def per_driver_at(
     to :class:`AngleStop` UNCOERCED (see :func:`_validated_angle`).
     """
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(a, REGIME_PER_DRIVER) for a in angles_deg),
+        stops=tuple(AngleStop(a, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER) for a in angles_deg),
         mover=mover,
     )
 
@@ -742,7 +747,7 @@ def summed_at(
 ) -> AngleCaptureRequest:
     """Summed captures at each angle -- the system response off the axis."""
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(a, REGIME_SUMMED) for a in angles_deg),
+        stops=tuple(AngleStop(a, REGIME_SUMMED, purpose=PURPOSE_SPEAKER) for a in angles_deg),
         mover=mover,
     )
 
@@ -756,8 +761,8 @@ def both_at(
     """
     stops: list[AngleStop] = []
     for angle in angles_deg:
-        stops.append(AngleStop(angle, REGIME_PER_DRIVER))
-        stops.append(AngleStop(angle, REGIME_SUMMED))
+        stops.append(AngleStop(angle, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER))
+        stops.append(AngleStop(angle, REGIME_SUMMED, purpose=PURPOSE_SPEAKER))
     return AngleCaptureRequest(stops=tuple(stops), mover=mover)
 
 
@@ -794,8 +799,13 @@ def request_for_preset(
     (:func:`~.measurement_programs.plan_poses`)."""
     if preset.mover is not None and preset.mover != mover:
         raise LateralWalkRefused(REASON_WALK_MOVER_MISMATCH, f"{preset.preset} requires mover={preset.mover}")
-    if preset.regime == REGIME_BRANCHES and (len(candidates) != 1 or candidate_identity(candidates[0]) == BASE_CANDIDATE):
-        raise CrossoverV2FlowError("branches needs one saved complete candidate fingerprint")
+    # A pair whose takes clear a layer reads the drivers raw, so the applied base
+    # may be its one candidate (ADR-0386).
+    saved = bool(candidates) and candidate_identity(candidates[0]) != BASE_CANDIDATE
+    if preset.regime == REGIME_BRANCHES and (len(candidates) > 1 or not saved and not cleared_layers(
+            preset.purpose, base=True, regime=REGIME_BRANCHES)):
+        raise LateralWalkRefused(REASON_MEASUREMENT_CANDIDATE_REQUIRED,
+                                 f"{preset.preset} plays one candidate: name one saved fingerprint")
     room_sweep = preset.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
@@ -805,6 +815,7 @@ def request_for_preset(
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
                 purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else preset.purpose,
+                purposes=(PURPOSE_ROOM,) if room_sweep and stop.plays_summed else preset.purposes,
                 headline=pose.headline, detail=pose.detail,
                 stimulus=preset.stimulus,
                 branch_pair=preset.branch_pair,
@@ -924,10 +935,8 @@ def program_for_stop(
 
 
 def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
-    """Capture index -> the phase whose program runs there. Same shape
-    ``build_v2_cloud_index_phase_map`` returns, so shipped consumers
-    (:func:`announced_capture_indexes`) work over an angle walk unchanged.
-    """
+    """Capture index -> the phase whose program runs there, the map
+    :func:`announced_capture_indexes` reads."""
     return {stop.index: stop.program_phase for stop in resolve_request(request)}
 
 
@@ -1004,6 +1013,7 @@ SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     REASON_WALK_MOVER_MISMATCH,
+    REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
     WALK_SCHEMA_VERSION_UNSUPPORTED,

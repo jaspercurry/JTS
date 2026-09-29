@@ -9,6 +9,7 @@ import logging
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -36,7 +37,7 @@ from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, design_draft_view, save_design_draft
-from jasper.active_speaker.crossover_contract import legacy_manual_preservation_state
+from jasper.active_speaker.crossover_contract import crossover_snapshot_state
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -44,12 +45,12 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.active_speaker.runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME, classify_bass_extension_graph,
-)
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.audio_measurement import measurement_geometry
-from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.web import sound_active_speaker
 from tests.active_speaker_fixtures import (
     current_research, declared_profile_fixture, declared_graph_fixture, research_design_draft, standard_design_draft,
     mono_output_topology,
@@ -165,7 +166,7 @@ def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
+def test_noop_draft_save_preserves_source_identity(tmp_path, changed):
     topology = _dual_apple_topology()
     path = tmp_path / "draft.json"
     sources = []
@@ -181,12 +182,11 @@ def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
         ))
     first, second = sources
     assert first["design_draft_updated_at"] != second["design_draft_updated_at"]
-    state = legacy_manual_preservation_state(
-        {"status": "applied", "source": first},
-        current_source_fingerprint=second["fingerprint"],
-    )
-    assert state["ready"] is not changed
-    assert state["reason"] == ("manual_crossover_source_changed" if changed else None)
+    assert (first["fingerprint"] == second["fingerprint"]) is not changed
+
+
+def test_an_applied_profile_without_its_snapshot_refuses_by_that_field():
+    assert crossover_snapshot_state({"status": "applied"})["reason"] == "active_applied_profile_snapshot_missing"
 
 
 def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
@@ -947,6 +947,24 @@ def test_a_rear_calibration_discloses_what_it_cannot_prove(
 
     assert [issue["code"] for issue in issues] == codes
     assert {issue["severity"] for issue in issues} <= {"warning"}
+
+
+def test_an_unreadable_rig_is_a_warning_and_the_rear_calibration_bank_still_answers(monkeypatch):
+    """ADR-0322: the wall-gap check only discloses, so an unreadable rig neither
+    blocks the review nor refuses a bank that has already been made (ADR-0388)."""
+    def unreadable():
+        raise measurement_geometry.GeometryFieldError("front_wall_m", "front_wall_m is no longer read")
+
+    candidate = _v2_candidate(_rear_pair("mono")[0], rear_calibration=_rear_document())
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", unreadable)
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.prescription_document.bank_section",
+                        lambda *_args, **_kwargs: candidate)
+    monkeypatch.setattr("jasper.active_speaker.candidate_bank.publish_authored_candidate",
+                        lambda banked: SimpleNamespace(fingerprint=banked.fingerprint, candidate=banked))
+    payload = sound_active_speaker._active_speaker_rear_calibration_bank_payload({})
+    assert (payload["ok"], payload["candidate_fingerprint"]) == (True, candidate.fingerprint)
+    assert [(issue["severity"], issue["code"], issue["field"]) for issue in payload["issues"]] == [
+        ("warning", measurement_geometry.DECLARED_GEOMETRY_UNREADABLE, "front_wall_m")]
 
 
 @pytest.mark.parametrize("band,room,room_band", [

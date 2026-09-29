@@ -30,7 +30,7 @@ class RoleStash:
 
     def camilla(self):
         """The default `camilla_factory`: camilla#1
-        (jasper.camilla.primary_controller)."""
+        (jasper.audio_control.camilla.primary_controller)."""
         return _stash.camilla()
 
     def read_stash(self, path: str | None = None) -> str | None:

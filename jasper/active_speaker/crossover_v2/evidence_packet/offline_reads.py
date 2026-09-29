@@ -201,7 +201,7 @@ def _harmonics_block(raw: Any, reason: str) -> dict[str, Any]:
     captures = as_mapping(raw.get("captures"))
     return {
         "available": True,
-        "artifact_schema_version": raw.get("artifact_schema_version"),
+        "schema": raw.get("schema"),
         "orders": orders,
         "n_roles": len(roles),
         "roles": roles,

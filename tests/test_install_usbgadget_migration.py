@@ -151,7 +151,7 @@ def test_usb_network_boot_gate_blocks_gadget_but_never_wifi_on_plan_failure():
     gadget = GADGET_UNIT.read_text(encoding="utf-8")
 
     assert "Before=NetworkManager.service jasper-usbgadget.service" in plan_unit
-    assert "ExecStart=/opt/jasper/.venv/bin/python -m jasper.usb_network promote" in plan_unit
+    assert "ExecStart=/opt/jasper/.venv/bin/python -m jasper.device_probe.usb_network promote" in plan_unit
     assert "Requires=jasper-usb-network-plan.service" in gadget
     assert "jasper-usb-network-plan.service" in next(
         line for line in gadget.splitlines() if line.startswith("After=")

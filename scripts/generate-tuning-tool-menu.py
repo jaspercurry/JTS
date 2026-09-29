@@ -101,7 +101,8 @@ BOUND_SOURCES = {
         ("delta_highpass_exclusive_upper", "field", "contract.bass.bounds.delta_highpass_hz_exclusive_upper_field"),
         ("linkwitz_transform", "Hz, Q", "contract.bass.schema.properties.linkwitz_transform.properties"),
         ("linkwitz_transform_rules", "rule", "contract.bass.bounds.linkwitz_transform"),
-        ("shared_headroom_layers", "layers", "contract.bass.shared_headroom.layers"),
+        ("charged_layers", "layers", "contract.bass.shared_headroom.charged_layers"),
+        ("uncharged_layers", "layers", "contract.bass.shared_headroom.uncharged_layers"),
     ),
     "Rear": (
         ("document_section", "field", "contract.rear.document_section"),

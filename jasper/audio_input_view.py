@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     PROFILE_AUTO,
     PROFILE_CUSTOM,
     PROFILE_DIRECT_MIC,

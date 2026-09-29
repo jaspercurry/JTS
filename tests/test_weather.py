@@ -7,8 +7,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-import jasper.weather as weather_module
-from jasper.weather import (
+import jasper.service_state.weather as weather_module
+from jasper.service_state.weather import (
     FORECAST_TTL_SECONDS,
     GEOCODE_CACHE_MAX,
     RAIN_PROBABILITY_THRESHOLD,
@@ -785,7 +785,7 @@ def test_wmo_descriptions_complete():
     """Sanity check: the codes that appear in RAINY_CODES are all in
     WMO_DESCRIPTIONS (otherwise will_rain would say yes but the model
     would describe the condition as 'unknown')."""
-    from jasper.weather import RAINY_CODES
+    from jasper.service_state.weather import RAINY_CODES
     for code in RAINY_CODES:
         assert code in WMO_DESCRIPTIONS, f"code {code} missing from descriptions"
 

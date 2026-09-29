@@ -74,7 +74,7 @@ class UnitIntent:
 
     `desired` is one of {"start", "stop"}; `reason` is a short human-readable
     explanation for the log line. Source lifecycle verbs deliberately do not
-    exist here — ``jasper.source_intent`` owns them.
+    exist here — ``jasper.audio_routes.source_intent`` owns them.
     """
 
     unit: str

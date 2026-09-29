@@ -15,16 +15,16 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import camilla_yaml
-from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES, boost_headroom_by_role
+from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
 from tests.active_speaker_fixtures import mono_output_topology
+from jasper.active_speaker.candidate_parts import program_charge_db
 from jasper.active_speaker.baseline_profile import (
     BASELINE_PROFILE_KIND,
     SCHEMA_VERSION as BASELINE_SCHEMA_VERSION,
 )
 from jasper.active_speaker.branch_chain import (
     CHAIN_GRID_HZ,
-    HEADROOM_MARGIN_DB,
     chain_response,
     crossover_response_db,
     _evaluation_grid,
@@ -77,9 +77,10 @@ from jasper.active_speaker.linearization_fit import (
     MAX_FILTERS_PER_DRIVER,
     linearization_filters_by_role,
 )
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, PeqFilter
+from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ, SHELF_Q
 
 from tests.test_crossover_v2_blend_prescription import _bundle
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, view_path
 
@@ -318,18 +319,17 @@ def packet_incumbent_linearization(
     return out
 
 
-BRANCH_CONTEXT = {"woofer": ((), 0.0), "tweeter": ((), -9.52)}
+SPEAKER_ROLES = ("woofer", "tweeter")
 
 
-def _gate(packet: dict[str, Any], document: Any, *, context=None, room_peqs=()) -> Any:
+def _gate(packet: dict[str, Any], document: Any, *, roles=SPEAKER_ROLES) -> Any:
     return read_driver_prescription(
         document,
         packet_fingerprint=packet.get("packet_fingerprint"),
         passbands_hz=packet_driver_passbands_hz(packet),
         classifications=packet_feature_classifications(packet),
         incumbent_filters=packet_incumbent_linearization(packet),
-        branch_context=BRANCH_CONTEXT if context is None else context,
-        room_peqs=room_peqs,
+        speaker_roles=roles,
     )
 
 
@@ -738,7 +738,6 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     # The Q ceiling and the declared band are boost-only bars (ADR-0367), so the
     # block a boost's author reads is where they have to be named.
     assert set(fmt["boosts"]["refusals"]) == {
-        dp.COMPOSED_BOOST_EXCEEDED,
         dp.FILTER_Q_OUT_OF_RANGE,
         dp.FILTER_OUTSIDE_PASSBAND,
         dp.PASSBAND_UNAVAILABLE,
@@ -756,6 +755,7 @@ def test_the_response_format_states_every_bound_the_gate_applies():
         "driver_boost_in_crossover_overlap",
         "driver_filter_cut_too_shallow", "driver_filter_boost_too_shallow",
         "driver_filter_cut_too_deep", "driver_composed_cut_exceeded",
+        "driver_composed_boost_exceeded",
     ):
         assert retired not in DRIVER_PRESCRIPTION_REFUSAL_REASONS
         assert not hasattr(dp, retired.upper().removeprefix("DRIVER_"))
@@ -997,8 +997,6 @@ _EDGE_BANDS = {**_BANDS, "tweeter": (1e-4, 24000.0)}
     pytest.param([_boost()], {}, {}, dp.PASSBAND_UNAVAILABLE, None, id="boost with no declared band"),
     pytest.param([_cut(), _boost()], {}, {}, dp.PASSBAND_UNAVAILABLE, None,
                  id="mixed with no declared band"),
-    pytest.param([_boost(gain=60.0), _cut(freq=1200.0)], _BANDS, {}, dp.COMPOSED_BOOST_EXCEEDED, None,
-                 id="boost past headroom beside a cut out of band"),
     pytest.param([_cut(role="midrange")], {}, {}, dp.ROLE_UNKNOWN, None, id="role the speaker lacks"),
     pytest.param([_cut(freq=0.5)], _BANDS, {}, dp.FILTER_MALFORMED, None, id="cut below the evaluable range"),
     pytest.param([_cut(freq=23999.0)], _BANDS, {}, dp.FILTER_MALFORMED, None,
@@ -1021,7 +1019,7 @@ def test_the_declared_band_bounds_a_boost_and_discloses_a_cut(filters, passbands
     """
     document = _document(filters, {"packet_fingerprint": "fp"}, pinned_trim_db=pins)
     args = dict(packet_fingerprint="fp", passbands_hz=passbands, classifications=None,
-                incumbent_filters={"tweeter": INCUMBENT_TWEETER}, branch_context=BRANCH_CONTEXT)
+                incumbent_filters={"tweeter": INCUMBENT_TWEETER}, speaker_roles=SPEAKER_ROLES)
     if reason is not None:
         with pytest.raises(BlendPrescriptionRefused) as excinfo:
             read_driver_prescription(document, **args)
@@ -1121,17 +1119,17 @@ def test_optional_evidence_echo_and_author_are_disclosed(packet, filters, pin, e
     ([], None),
     ([_cut(role="aux")], dp.ROLE_UNKNOWN),
 ])
-def test_only_an_empty_chain_may_pin_a_role_known_by_branch_context(
+def test_only_an_empty_chain_may_pin_a_role_the_speaker_has(
     packet, filters, reason,
 ):
     document = _document(filters, packet, pinned_trim_db={"aux": -3.0})
-    context = {**BRANCH_CONTEXT, "aux": ((), 0.0)}
+    roles = (*SPEAKER_ROLES, "aux")
     if reason:
         with pytest.raises(BlendPrescriptionRefused) as excinfo:
-            _gate(packet, document, context=context)
+            _gate(packet, document, roles=roles)
         assert excinfo.value.reason == reason
     else:
-        assert dict(_gate(packet, document, context=context).pinned_trim_db) == {"aux": -3.0}
+        assert dict(_gate(packet, document, roles=roles).pinned_trim_db) == {"aux": -3.0}
 
 
 
@@ -2068,13 +2066,11 @@ def test_the_composed_grid_sees_a_narrow_boost_at_a_wide_bands_edge(tmp_path):
     )
     assert packet_driver_passbands_hz(packet)["tweeter"] == (1000.0, 24000.0)
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(
-            [_boost(gain=26.0, freq=23800.0), _boost(gain=26.0, freq=23800.0)], packet,
-        ))
+    prescription = _gate(packet, _document(
+        [_boost(gain=26.0, freq=23800.0), _boost(gain=26.0, freq=23800.0)], packet,
+    ))
 
-    assert excinfo.value.reason == dp.COMPOSED_BOOST_EXCEEDED
-    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(52.0, abs=0.01)
+    assert prescription.composed_boost_db == pytest.approx(52.0, abs=0.01)
 
 
 def test_the_terms_the_composed_cap_ignores_are_non_positive(tmp_path):
@@ -2549,9 +2545,9 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
         emit_active_speaker_baseline_config,
     )
 
+    from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
     from tests.test_active_speaker_linearization_emission import (
         ACTIVE_PCM,
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
         _active_topology,
         _headroom_gain_db,
         _two_way_preset,
@@ -3305,23 +3301,6 @@ def test_a_total_cascade_can_offset_a_filter_above_headroom(packet):
     assert _gate(packet, document).composed_boost_db == pytest.approx(10.0)
 
 
-@pytest.mark.parametrize("trim,room_gain", [(-9.52, 0.0), (0.0, 6.0)])
-@pytest.mark.parametrize("offset", [-0.1, 0.1])
-def test_door_charges_total_program_headroom(packet, trim, room_gain, offset):
-    gain = 40.0 - HEADROOM_MARGIN_DB - trim - room_gain + offset
-    document = _document([_boost(gain=gain / 2)] * 2, packet)
-    document["pinned_trim_db"] = {"tweeter": trim}
-    room = [PeqFilter(freq=100.0, q=1.0, gain=room_gain)]
-    if offset < 0:
-        assert _gate(packet, document, room_peqs=room).composed_boost_db == pytest.approx(gain)
-    else:
-        with pytest.raises(BlendPrescriptionRefused) as exc:
-            _gate(packet, document, room_peqs=room)
-        assert exc.value.reason == dp.COMPOSED_BOOST_EXCEEDED
-        assert exc.value.evidence["binding"] == "program_headroom"
-        assert exc.value.evidence["program_headroom_spent_db"] == pytest.approx(40.1)
-
-
 @pytest.mark.parametrize("filters,pins,reason", [
     ([_boost(role="midrange")], {"midrange": -3.0}, dp.ROLE_UNKNOWN),
     ([], {"midrange": -3.0}, dp.ROLE_UNKNOWN),
@@ -3336,24 +3315,8 @@ def test_request_refuses_unknown_roles_and_nonfinite_arithmetic(packet, filters,
 
 
 def test_jts3_hf_compensation_spends_no_program_headroom(packet):
-    document = _document([_boost(gain=6.0, freq=12000.0)], packet)
-    assert _gate(packet, document).composed_boost_db == pytest.approx(6.0)
-    bounds = boost_headroom_by_role(branch_context=BRANCH_CONTEXT,
-                                   linearization={"tweeter": document["filters"]}, session_volume_db=-21.09)
-    assert bounds["tweeter"]["program_headroom_spent_db"] == 0.0
-    assert bounds["tweeter"]["program_headroom_remaining_db"] == 40.0
-
-
-@pytest.mark.parametrize("trim,accepted", [(-20.0, True), (0.0, False)])
-def test_unchanged_roles_keep_their_trim_in_the_program_charge(packet, trim, accepted):
-    document = _document([_boost(gain=6.0)], packet)
-    args = dict(packet_fingerprint=packet["packet_fingerprint"], passbands_hz={"tweeter": (1600, 20000)},
-                classifications=None, incumbent_filters={"woofer": [_boost(gain=45.0)]},
-                branch_context={"woofer": ((), trim), "tweeter": ((), -9.52)})
-    if accepted:
-        assert read_driver_prescription(document, **args).composed_boost_db == pytest.approx(6.0)
-    else:
-        with pytest.raises(BlendPrescriptionRefused) as exc:
-            read_driver_prescription(document, **args)
-        assert exc.value.reason == dp.COMPOSED_BOOST_EXCEEDED
-        assert exc.value.evidence["program_headroom_spent_db"] == pytest.approx(46.0)
+    prescription = _gate(packet, _document([_boost(gain=6.0, freq=12000.0)], packet))
+    assert prescription.composed_boost_db == pytest.approx(6.0)
+    fields = driver_prescription_to_candidate_fields(prescription, fitted=None)
+    candidate = _candidate(trims={"woofer": 0.0, "tweeter": -9.52}, linearization=fields[LINEARIZATION_CANDIDATE_FIELD])
+    assert program_charge_db(candidate) == 0.0

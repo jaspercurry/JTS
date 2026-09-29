@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
-from jasper import audio_validation, audio_validation_artifacts as artifacts
+from jasper import audio_validation
+from jasper.audio_resources import audio_validation_artifacts as artifacts
+from jasper.audio_control import audio_validation_hardware_checks
 from jasper.cli import audio_hw_validate
 from tests.audio_validation_fixtures import (
     NOW,
@@ -145,7 +147,7 @@ def test_run_audio_hardware_validation_uses_one_bounded_window(
 
     def poll_chip(**kwargs):
         chip_poll_durations.append(kwargs["duration_seconds"])
-        return [{audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]}]
+        return [{audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]}]
 
     monkeypatch.setattr(audio_hw_validate, "_poll_chip_convergence", poll_chip)
 
@@ -169,7 +171,7 @@ def test_poll_chip_convergence_uses_full_window_after_convergence(monkeypatch):
     now = [100.0]
 
     def read_xvf_parameter(command, *, timeout):
-        assert command == audio_validation.CHIP_AEC_CONVERGENCE_COMMAND
+        assert command == audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND
         assert timeout == 5.0
         reads.append(now[0])
         return {command: [1]}
@@ -190,10 +192,10 @@ def test_poll_chip_convergence_uses_full_window_after_convergence(monkeypatch):
     assert sleeps == [4, 4, 2]
     assert reads == [100.0, 104.0, 108.0, 110.0]
     assert polls == [
-        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
-        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
-        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
-        {audio_validation.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
+        {audio_validation_hardware_checks.CHIP_AEC_CONVERGENCE_COMMAND: [1]},
     ]
 
 

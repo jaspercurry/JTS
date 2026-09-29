@@ -13,17 +13,16 @@ from typing import Any, Mapping
 import numpy as np
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.json_fields import finite_float
 
 from ..measurement_analysis import analyzed_measurements
-from ..measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_ROOM, resolved_measurement_purpose, validated_pose,
-)
+from ..measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, validated_pose
 from .journey import PHASE_LATERAL
 from .position_cycle import parse_curve_magnitude
-from .record_index import Measurement, measurement_documents, record_path
+from .record_index import Measurement, measurement_documents, record_path, take_purpose
 from .measurement_context import capture_basis
-from .round_captures import RoundCapturesRefused, doc_pose_key
+from .round_captures import doc_pose_key
 
 REFUSE_ROOM_SELECTION = "room_capture_selection_required"
 REFUSE_ROOM_CAPTURE = "room_capture_not_found"
@@ -77,13 +76,7 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
     )
 
 def is_purpose_take(row: Measurement, record: Mapping[str, Any], purposes: tuple[str, ...] = (PURPOSE_ROOM,)) -> bool:
-    try:
-        resolved = resolved_measurement_purpose(
-            record.get("measurement_purpose"), record.get("pose_kind") or POSE_KIND_BEARING,
-        )
-    except ValueError:
-        return False
-    return row.phase == PHASE_LATERAL and resolved in purposes
+    return row.phase == PHASE_LATERAL and take_purpose(row, record) in purposes
 
 
 def purpose_take_records(
@@ -141,7 +134,7 @@ def select_seat_takes(
         if capture_id is None or any(record.get("take_id") == capture_id for _, record, _ in rows)
     ]
     if (capture_id is not None and not matches) or len(matches) > 1:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_ROOM_CAPTURE if not matches else REFUSE_ROOM_SELECTION,
             {"capture_id": capture_id, "groups": [
                 {"basis": bases[key], "capture_ids": [record.get("take_id") for _, record, _ in rows]}

@@ -16,13 +16,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import wake_legs
-from jasper.aec_ready import read_aec_bridge_ready
+from jasper.playback_state import wake_legs
+from jasper.service_state.aec_ready import read_aec_bridge_ready
 from jasper.aec.reconcile.runtime import VOICE_IRRELEVANT_ENV_KEYS
 from jasper.aec.reconcile import runtime as reconcile_runtime
 from jasper.chip_aec import health as chip_aec_health
 from jasper.accessories.constants import WIIM_REMOTE_2_MIC_DEVICE
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     ALL_PROFILES,
     WAKE_LEG_DEFAULTS,
     normalize_audio_input_profile,
@@ -30,13 +30,13 @@ from jasper.audio_profile_state import (
     profile_env_updates,
 )
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
-from jasper import aec_sweep
+from jasper.audio_routes import aec_sweep
 from jasper.aec import bridge_engines, bridge_telemetry
 from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV, REF_SOURCE_ENV
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
 from jasper.cli import aec_init
 from jasper.env_load import parse_bool_value, parse_env_file
-from jasper.mic_presence import (
+from jasper.audio_control.mic_presence import (
     MIC_ABSENT_ACCESSORY_UNKNOWN,
     MIC_ABSENT_CHIP_AEC_BRINGUP_FAILED,
     MIC_ABSENT_CHIP_AEC_VALIDATING,
@@ -47,8 +47,8 @@ from jasper.mic_presence import (
 )
 from jasper.mics import xvf3800
 from jasper.multiroom.tts_route import VOICE_PARK_ENV
-from jasper.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
-from jasper.usb_mic import (
+from jasper.service_state.tts_routing import OUTPUTD_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
+from jasper.audio_routes.usb_mic import (
     USB_MIC_RAW_XVF_LEG,
     read_usb_mic_leg,
     usb_mic_enabled,
@@ -755,7 +755,7 @@ def test_the_alignment_record_names_the_selection_it_was_written_under(
 ) -> None:
     """Every write site is guarded on a non-custom profile, and stamps it.
 
-    The stamp is what lets the consumer in jasper.audio_profile_state tell a
+    The stamp is what lets the consumer in jasper.runtime_config.audio_profile_state tell a
     live verdict from one the last managed pass left behind.
     """
     env_file = _stage(tmp_path, "Array", profile=selection, channels=6)

@@ -31,7 +31,7 @@ from collections.abc import Callable
 from statistics import median
 from typing import Any
 
-from jasper.camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.control._health_fields import (
     as_int,
     as_int_or_none,
@@ -44,7 +44,7 @@ from jasper.control.camilla_health import CamillaHealth
 from jasper.control.fanin_view import FaninView
 from jasper.json_fields import as_float
 from jasper.service_units import SHAIRPORT_SYNC_SERVICE, JournalctlUnavailable, run_journalctl_json
-from jasper.source_state import airplay_playing
+from jasper.playback_state.source_state import airplay_playing
 
 logger = logging.getLogger(__name__)
 

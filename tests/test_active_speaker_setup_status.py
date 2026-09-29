@@ -20,9 +20,9 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import jasper.active_speaker.applied_tune as applied_tune_mod
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
-from jasper.output_topology import topology_config_fingerprint
-from jasper.output_topology import OutputTopology, OutputTopologyError
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import topology_config_fingerprint
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology_store import save_output_topology
 from tests.active_speaker_fixtures import (
     mono_output_topology,
 )
@@ -500,7 +500,7 @@ def test_commissioning_summary_transport_follows_the_box(
     second-source-of-truth failure the single helper exists to prevent.
     """
     monkeypatch.setattr(
-        "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
+        "jasper.dsp_control.fanin_coupling.ring_active_endpoint_armed", lambda env=None: armed
     )
     result = setup_mod.commissioning_summary(
         topology_factory(),

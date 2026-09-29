@@ -23,8 +23,8 @@ from ..active_speaker.playback_route import (
     ActiveLaneCapabilityGap,
     active_lane_capability_gap,
 )
-from ..output_topology import OutputTopologyError
-from ..output_topology_store import load_output_topology_strict, load_output_topology
+from jasper.audio_routes.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict, load_output_topology
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def _transport_state(
     means.  The capability gap says *why* it cannot self-heal when the saved
     layout needs hardware the DAC does not have.
     """
-    from ..transport_coherence import transport_coherence_report  # lazy: import cost, keeps route assembly off control startup
+    from jasper.audio_control.transport_coherence import transport_coherence_report  # lazy: import cost, keeps route assembly off control startup
 
     report = transport_coherence_report(
         outputd_env=dict(outputd_env),
@@ -78,7 +78,7 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     :func:`_transport_state` resolves it, so a no-active-lane DAC still gets
     that clause after this reason, not instead of it.
     """
-    from ..active_speaker.runtime_contract import (  # lazy: import cost, the graph verifier loads only for a parked graph
+    from ..active_speaker.graph_selector import (  # lazy: import cost, the graph verifier loads only for a parked graph
         active_graph_is_parked,
         parked_muted_exits,
     )
@@ -124,7 +124,7 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     mixes these contradictions with USB low-latency route-policy errors, and a
     policy error is not a reason to tell a household its speaker is parked.
     """
-    from ..audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
+    from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles  # lazy: import cost, keeps route assembly off control startup
 
     evidence = output_endpoint_evidence_from_statefiles(
         paths.camilla_statefile(), paths.crossover_statefile()
@@ -153,7 +153,7 @@ def read_route_claim() -> dict[str, Any]:
     live audio probe, so it runs on the slow cadence.
     """
     try:
-        from ..audio_runtime_plan import build_audio_runtime_plan_from_system  # lazy: import cost, keeps route assembly off control startup
+        from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan_from_system  # lazy: import cost, keeps route assembly off control startup
 
         plan = build_audio_runtime_plan_from_system()
         profile = plan.route_profile

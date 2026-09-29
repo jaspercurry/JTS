@@ -8,16 +8,16 @@ import asyncio
 import logging
 
 from ..busctl import run_busctl
-from ..source_state import (
+from jasper.playback_state.source_state import (
     GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE, MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE,
 )
 from ..identity.reader import resolve_hostname
-from ..music_sources import SOURCE_TO_ACTIVE_KEY, Source
+from jasper.playback_state.music_sources import SOURCE_TO_ACTIVE_KEY, Source
 from ..bluetooth.avrcp import bluetooth_avrcp_call as _bluetooth_call
-from ..renderer import airplay_now_playing
+from jasper.audio_control.renderer import airplay_now_playing
 from . import tool
 from .spotify import ensure_clients, no_account_msg
-from ..spotify_router import airplay_client_name
+from jasper.service_state.spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
 

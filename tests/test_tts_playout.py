@@ -36,7 +36,7 @@ import numpy as np
 import pytest
 
 import jasper.tts_playout as tts_mod
-from jasper.assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     UPSAMPLE_2X_CONTEXT,
     AssistantLoudnessProfile,
     LoudnessMeasurement,

@@ -10,7 +10,7 @@ import asyncio
 
 
 from jasper.tools import ToolRegistry, dispatch_tool
-from jasper.wake_events import WakeEventStore
+from jasper.service_state.wake_events import WakeEventStore
 from tests._async_wait import wait_signalled
 from tests._wake_loop import wake_loop_for_tests
 
@@ -133,8 +133,8 @@ async def test_actual_fire_ids_and_delayed_observers_stay_with_their_turn(tmp_pa
     import time
     from contextlib import closing
     from datetime import datetime, timezone
-    from jasper import wake_events
-    from jasper.wake_condition_context import classify_condition
+    from jasper.service_state import wake_events
+    from jasper.playback_state.wake_condition_context import classify_condition
 
     class FrozenDateTime(datetime):
         @classmethod

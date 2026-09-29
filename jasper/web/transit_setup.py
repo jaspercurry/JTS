@@ -63,13 +63,15 @@ from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
-from .. import google_routes, location_state, transit
+from .. import google_routes
+from jasper.service_state import location_state
+from .. import transit
 from ..atomic_io import locked_transform_env_file, write_env_file
 from ..transit import geocode as geocode_mod
 from ..secret_redaction import redact_secrets
 from ..log_event import log_event
 from ..env_file import delete_env_file, read_env_file
-from ..env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
+from ..env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH, GOOGLE_ROUTES_ENV_PATH
 from ._common import (
     RESTART_CLAUSE,
     api_key_token_is_valid,
@@ -102,7 +104,7 @@ logger = logging.getLogger(__name__)
 # Mode 0640 — the BusTime key is mildly sensitive but not as critical as an
 # OAuth token.
 TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
-GOOGLE_ROUTES_SECRET_FILE = google_routes.GOOGLE_ROUTES_SECRET_FILE
+GOOGLE_ROUTES_SECRET_FILE = GOOGLE_ROUTES_ENV_PATH
 
 # ----------------------------------------------------------------------
 # State helpers — pure functions, IO confined to read/write_env_file.

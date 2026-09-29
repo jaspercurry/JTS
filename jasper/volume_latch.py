@@ -32,7 +32,7 @@ GetMainVolumeDb = Callable[[], Awaitable[Any]]
 #: Errors a fader read/write is allowed to fail with. Injected setters/getters
 #: must REPORT failure rather than raise: bind ``CamillaController``'s methods
 #: with ``best_effort=True``. ``CamillaUnavailable`` is absent because naming it
-#: would import ``jasper.camilla``, which imports this leaf.
+#: would import ``jasper.audio_control.camilla``, which imports this leaf.
 FADER_IO_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError)
 
 

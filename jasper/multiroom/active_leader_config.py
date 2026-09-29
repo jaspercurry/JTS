@@ -65,12 +65,16 @@ import logging
 import shutil
 from pathlib import Path
 
+from jasper.active_speaker.graph_types import (
+    GRAPH_DRIVER_DOMAIN_BASELINE,
+    GRAPH_PROGRAM_BAKE_PIPE,
+)
 from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, crossover_statefile
 from ..log_event import log_event
 from . import _stash, follower_config
 from .config import GroupingConfig
 from .follower_config import program_channel_for
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -132,12 +136,9 @@ async def precheck_active_leader(
         emit_active_speaker_program_bake_config,
     )
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_DRIVER_DOMAIN_BASELINE,
-        classify_bass_extension_graph,
-    )
-    from jasper.fanin_coupling import capture_half, capture_kwargs_for_coupling
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
+    from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
+    from jasper.dsp_control.fanin_coupling import capture_half, capture_kwargs_for_coupling
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_active_leader_config pins the store lookup
     from jasper.sound.profile import load_profile
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
@@ -301,8 +302,7 @@ async def apply_active_leader_bake(*, camilla_factory=_stash.camilla) -> str:
     is up (the pipe's reader exists — a FIFO write-open blocks until a reader
     exists, exactly like the passive leader's apply_bonded_leader_config).
     """
-    from jasper.active_speaker.runtime_contract import GRAPH_PROGRAM_BAKE_PIPE
-    from jasper.dsp_apply import apply_dsp_config, dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
 
     cam = camilla_factory()
     async with dsp_writer_lock(
@@ -370,7 +370,7 @@ def seed_crossover_statefile(
     (never full-range to a tweeter) guarantee
     for an ARMED camilla#2 rests on THIS arm-time re-seed pointing the statefile
     at the re-proven driver-domain (Layer-A-intact) graph. Reuses the canonical
-    :func:`jasper.active_speaker.runtime_contract.write_camilla_statefile` (the
+    :func:`jasper.active_speaker.graph_selector.write_camilla_statefile` (the
     same writer install.sh + the runtime contract use), which preserves any
     existing statefile fields, writes ``config_path`` + muted/unity slots, mode
     0644. Returns the statefile path written.
@@ -378,7 +378,7 @@ def seed_crossover_statefile(
     Paths read from the module globals / env at CALL time (the reconcile idiom),
     overridable for tests.
     """
-    from jasper.active_speaker.runtime_contract import write_camilla_statefile
+    from jasper.active_speaker.graph_selector import write_camilla_statefile
 
     target_config = config_path or CROSSOVER_CONFIG_PATH
     target_statefile = str(crossover_statefile(statefile))

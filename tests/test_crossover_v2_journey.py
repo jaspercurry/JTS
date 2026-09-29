@@ -40,10 +40,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 
 # A stage-1-shaped map: the anchor pair, a two-pose lateral group, a two-
-# position cloud group, and the baseline last. Deliberately NOT built by
-# ``build_v2_cloud_index_phase_map`` — this suite pins what the journey does
-# with a map, and borrowing the flow's builder would make a change there able
-# to move these expectations with it.
+# position cloud group, and the timing take last.
 STAGE1_MAP = {
     1: PHASE_CHECK,
     2: PHASE_MEASURE,
@@ -487,61 +484,6 @@ def test_the_package_import_graph_stays_acyclic():
 
     cycle = _import_cycle(edges)
     assert cycle is None, f"crossover_v2 import cycle: {' -> '.join(cycle or ())}"
-
-
-# architecture — the renderer speaks the vocabulary by symbol
-
-
-def _guarded_vocabulary() -> dict[str, str]:
-    """``{value: owning symbol}`` for the two code vocabularies the renderer
-    speaks: ``refusal_copy.REASON_*`` and ``verification.RESULT_*``."""
-
-    from jasper.active_speaker.crossover_v2 import refusal_copy, verification
-
-    owners: dict[str, str] = {}
-    for module, prefix in ((refusal_copy, "REASON_"), (verification, "RESULT_")):
-        for name in dir(module):
-            value = getattr(module, name)
-            if name.startswith(prefix) and isinstance(value, str):
-                owners[value] = name
-    return owners
-
-
-def _retyped_vocabulary(module: Path, owners: dict[str, str]) -> list[str]:
-    """Every string literal in ``module`` that re-types a guarded code."""
-
-    tree = ast.parse(module.read_text(), filename=str(module))
-    return [
-        f"{module.name}:{node.lineno}: {node.value!r} is {owners[node.value]}"
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and node.value in owners
-    ]
-
-
-def test_the_retyping_guard_sees_a_planted_literal(tmp_path):
-    """The conventions guard's own positive control.
-
-    A value-matching walk that matched nothing — a changed node type, a
-    vocabulary read that came back empty — would report the renderer clean and
-    read exactly like compliance, which is the state this guard exists to tell
-    apart from the real thing.
-    """
-
-    owners = _guarded_vocabulary()
-    assert len(owners) >= 40, f"the vocabulary read came back thin: {len(owners)}"
-
-    planted = tmp_path / "_retyping_probe.py"
-    planted.write_text('BADGE = {"keep_previous": "Keep the previous sound."}\n')
-
-    # Asserted by MARKER, not by the whole formatted string: the message is
-    # diagnostic prose, and a control that breaks when someone improves the
-    # wording teaches the next person to loosen the control.
-    found = _retyped_vocabulary(planted, owners)
-    assert len(found) == 1
-    assert "_retyping_probe.py:1" in found[0]
-    assert "RESULT_KEEP_PREVIOUS" in found[0]
 
 
 def test_the_journey_is_pure_the_same_inputs_give_the_same_plan():

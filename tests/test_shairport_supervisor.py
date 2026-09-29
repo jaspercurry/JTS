@@ -705,7 +705,7 @@ async def test_session_gate_maps_probe_to_active(
 ):
     sup = ShairportSupervisor()
     monkeypatch.setattr(
-        "jasper.source_state.run_busctl", AsyncMock(return_value=busctl),
+        "jasper.playback_state.source_state.run_busctl", AsyncMock(return_value=busctl),
     )
     monkeypatch.setattr(
         sup, "is_shairport_unit_active", AsyncMock(return_value=unit_active),

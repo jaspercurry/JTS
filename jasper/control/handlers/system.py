@@ -15,7 +15,7 @@ import time
 from typing import Any, Callable, Iterable
 
 from jasper.control.service_restart import RestartOutcome, restart_voice_daemon
-from ...audio_quality import (
+from jasper.audio_routes.audio_quality import (
     DEFAULT_CONVERTER as _default_audio_converter,
     apply_requested_converter,
     converter_options as _audio_converter_options,

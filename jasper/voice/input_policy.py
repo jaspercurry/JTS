@@ -17,9 +17,9 @@ from typing import Any
 
 from .catalog import provider_by_id
 
-from jasper.audio_profile_state import PROFILE_XVF_CHIP_AEC, PROFILE_XVF_SOFTWARE_AEC3
+from jasper.runtime_config.audio_profile_state import PROFILE_XVF_CHIP_AEC, PROFILE_XVF_SOFTWARE_AEC3
 from jasper.mics.xvf3800 import ALSA_CARD_NAMES
-from jasper.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST, parse_udp_device
+from jasper.service_state.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP_HOST, parse_udp_device
 
 
 # The endpointer JTS ships. Provider server VAD was measured and ruled out

@@ -18,8 +18,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from jasper import openwakeword_guard
-from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.service_state import openwakeword_guard
+from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 
 _VERIFIER = "openwakeword.custom_verifier_model"
 

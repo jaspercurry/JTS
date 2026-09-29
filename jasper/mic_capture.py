@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .audio_buffer import AudioBuffer, InputFrame
-from .dsp_numpy import resample_poly
-from .mic_presence import read_mic_presence
-from . import wake_ports
+from jasper.audio_control.audio_buffer import AudioBuffer, InputFrame
+from jasper.playback_state.dsp_numpy import resample_poly
+from jasper.audio_control.mic_presence import read_mic_presence
+from jasper.service_state import wake_ports
 
 # `sounddevice` (PortAudio bindings) is a Pi-side dep absent from the dev venv,
 # so the two places that open a stream import it lazily and this module stays
@@ -58,7 +58,7 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     """
     # The AEC reconciler already owns "is there a microphone". Once it has
     # confirmed absence, a capture-open failure is that same expected fact, so
-    # log one line and skip the snapshot cascade. See jasper/mic_presence.py.
+    # log one line and skip the snapshot cascade. See jasper/audio_control/mic_presence.py.
     if role == "MicCapture":
         try:
             if read_mic_presence().absent_confirmed:

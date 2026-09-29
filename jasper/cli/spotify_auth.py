@@ -27,7 +27,7 @@ from spotipy.oauth2 import SpotifyPKCE
 
 from .. import env_load
 from ..config import Config
-from ..spotify_router import SPOTIFY_SCOPE
+from jasper.service_state.spotify_router import SPOTIFY_SCOPE
 
 
 def main() -> None:

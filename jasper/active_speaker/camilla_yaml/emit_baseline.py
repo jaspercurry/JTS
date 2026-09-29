@@ -7,19 +7,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
 
-from jasper.camilla_config_contract import (
+import yaml as yaml_lib
+
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_SAMPLE_RATE,
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import SHELF_Q, SHELF_Q_EMIT_DECIMALS, FilterSpec, PeqFilter
-from jasper.camilla_emit import emit_devices_block
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.audio_routes.camilla_emit import emit_devices_block
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 
 from ..camilla_names import blend_correction_name, room_peq_name
 from ..graph_safety import view_from_yaml_dict
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
+from ..program_headroom import charge_db
 
 from ..crossover_section import CrossoverSection
 from .decorate_dynamic_bass import _dynamic_bass_graph, _with_dynamic_bass
@@ -40,6 +43,7 @@ from .devices import (
 from .document import _atomic_write_text, _reserialize_keeping_header, logger
 from .filters import (
     BASELINE_LIMITER_CLIP_LIMIT_DB,
+    ProgramHeadroomExhausted,
     _emit_baseline_filter_definitions,
     linearization_slot,
     _validated_blend_correction,
@@ -53,7 +57,7 @@ from .gates import (
     _assert_tweeter_outputs_protected,
     _assert_view_tweeters_protected,
 )
-from .ledger import BASELINE_HEADROOM_DB
+from .ledger import MAX_PROGRAM_HEADROOM_DB
 from .pipeline import _emit_baseline_pipeline, _emit_split_mixer
 from .topology import _output_count
 
@@ -69,7 +73,6 @@ def emit_active_speaker_baseline_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    baseline_headroom_db: float = BASELINE_HEADROOM_DB,
     limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
@@ -94,15 +97,14 @@ def emit_active_speaker_baseline_config(
     Every program-domain layer is emitted on channels [0, 1] strictly BEFORE the
     split mixer, upstream of every crossover, limiter and tweeter high-pass:
 
-    * ``room_peqs`` (Layer B) — the preserved room-correction PEQ set; any
-      positive boost is folded into ``active_baseline_headroom``.
+    * ``room_peqs`` (Layer B) — the preserved room-correction PEQ set, charged
+      with every other stage (``program_headroom.charge_db``).
     * ``preference_filters`` (Layer C) — the same ``FilterSpec`` objects the
       stereo emitter takes, emitted VERBATIM (dropping neutral bands is the
       caller's job, because the live editing draft needs its idle slots).
       Preference boosts ride at unity, matching ``emit_sound_config``.
     * ``output_trim_db`` — the household's manual headroom + loudness-match
-      attenuation, folded into the same headroom gain, applied only when some
-      band actually boosts.
+      attenuation, added to the same headroom gain and never netted.
     * ``blend_correction`` — the crossover blend region's summed-response-owned
       shape correction, flat rather than per-role because it describes the SUM;
       see ``_emit_baseline_pipeline`` for what that placement buys.
@@ -146,14 +148,11 @@ def emit_active_speaker_baseline_config(
     chunksize, target_level, queuelimit = _camilla_latency(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    baseline_headroom_db = _finite_float(baseline_headroom_db, "baseline_headroom_db")
     limiter_clip_limit_db = _finite_float(
         limiter_clip_limit_db,
         "limiter_clip_limit_db",
     )
     output_trim_db = _finite_float(output_trim_db, "output_trim_db")
-    if baseline_headroom_db < 0 or baseline_headroom_db > 40:
-        raise ActiveSpeakerConfigError("baseline_headroom_db must be between 0 and 40")
     if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
         raise ActiveSpeakerConfigError(
             "limiter_clip_limit_db must be between -120 and 0 dB"
@@ -168,52 +167,52 @@ def emit_active_speaker_baseline_config(
     room_peqs = tuple(room_peqs)
 
     output_count = _output_count(preset)
+    if enable_rate_adjust is None:
+        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
     # The ring's width is one of its declaring ends — refuse a shear here
     # rather than let the ioplug attach crash on it (see
     # _assert_ring_playback_width).
     _assert_ring_playback_width(playback_device, output_count)
-    filter_yaml = _emit_baseline_filter_definitions(
-        preset,
-        baseline_headroom_db=baseline_headroom_db,
-        limiter_clip_limit_db=limiter_clip_limit_db,
-        corrections=safe_corrections,
-        room_peqs=room_peqs,
-        preference_filters=emitted_preference_filters,
-        output_trim_db=output_trim_db,
-        linearization=safe_linearization,
-        blend_correction=safe_blend_correction,
-        rear_calibration=safe_rear_calibration,
-    )
-    # apply_region_polarity=False: this graph carries polarity through
-    # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
-    # stay a no-op inverter — see the docstring on _emit_split_mixer.
-    mixer_yaml = _emit_split_mixer(preset, apply_region_polarity=False)
-    pipeline_yaml = _emit_baseline_pipeline(
-        preset,
-        room_peq_names=[room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
-        preference_filter_names=[spec.name for spec in emitted_preference_filters],
-        linearization=safe_linearization,
-        blend_correction_names=[
-            blend_correction_name(i)
-            for i in range(1, len(safe_blend_correction) + 1)
-        ],
-    )
-    filter_yaml, pipeline_yaml = _add_baseline_protection(
-        preset, filter_yaml, pipeline_yaml, protection_sections_by_role,
-    )
-    metadata_comments = [f"# preset_id={preset.preset_id}"]
-    metadata_yaml = "\n".join(metadata_comments)
 
-    if enable_rate_adjust is None:
-        enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
-    devices_yaml = emit_devices_block(
-        samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
-        target_level=target_level, enable_rate_adjust=enable_rate_adjust,
-        capture_channels=2, capture_device=capture_device, capture_format=capture_format,
-        playback_channels=output_count, playback_target=playback_device,
-        playback_format=playback_format,
-    )
-    yaml = f"""---
+    def _emit(headroom_db: float) -> str:
+        filter_yaml = _emit_baseline_filter_definitions(
+            preset,
+            headroom_db=headroom_db,
+            limiter_clip_limit_db=limiter_clip_limit_db,
+            corrections=safe_corrections,
+            room_peqs=room_peqs,
+            preference_filters=emitted_preference_filters,
+            linearization=safe_linearization,
+            blend_correction=safe_blend_correction,
+        )
+        # apply_region_polarity=False: this graph carries polarity through
+        # ``safe_corrections`` (a per-driver Gain filter below), so the mixer must
+        # stay a no-op inverter — see the docstring on _emit_split_mixer.
+        mixer_yaml = _emit_split_mixer(preset, apply_region_polarity=False)
+        pipeline_yaml = _emit_baseline_pipeline(
+            preset,
+            room_peq_names=[room_peq_name(i) for i in range(1, len(room_peqs) + 1)],
+            preference_filter_names=[spec.name for spec in emitted_preference_filters],
+            linearization=safe_linearization,
+            blend_correction_names=[
+                blend_correction_name(i)
+                for i in range(1, len(safe_blend_correction) + 1)
+            ],
+        )
+        filter_yaml, pipeline_yaml = _add_baseline_protection(
+            preset, filter_yaml, pipeline_yaml, protection_sections_by_role,
+        )
+        metadata_comments = [f"# preset_id={preset.preset_id}"]
+        metadata_yaml = "\n".join(metadata_comments)
+
+        devices_yaml = emit_devices_block(
+            samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
+            target_level=target_level, enable_rate_adjust=enable_rate_adjust,
+            capture_channels=2, capture_device=capture_device, capture_format=capture_format,
+            playback_channels=output_count, playback_target=playback_device,
+            playback_format=playback_format,
+        )
+        yaml = f"""---
 # Auto-generated active-speaker baseline config.
 # Source: jasper.active_speaker.camilla_yaml.emit_active_speaker_baseline_config
 {metadata_yaml}
@@ -233,34 +232,42 @@ pipeline:
 {pipeline_yaml}
 """
 
-    # The rear output plays only behind its own fitted stage; without one it stays
-    # terminally muted (ADR-0318, issue #5161) — unless a measurement take names
-    # it as an excited target, which is how the stage's own transfer gets
-    # measured in the first place. Empty for every household graph.
-    #
-    # L0 emit gates (fail-closed) run on the FINAL graph so every decoration is
-    # inside them: the durable (unmuted) baseline is what a household plays
-    # through, so re-prove every tweeter output carries its crossover /
-    # protective high-pass, and that the pipeline the baseline assembled from
-    # independent helper calls references nothing undefined.
-    if safe_rear_calibration:
-        import yaml as yaml_lib  # lazy: the local `yaml` here is the emitted text
+        # The rear output plays only behind its own fitted stage; without one it stays
+        # terminally muted (ADR-0318, issue #5161) — unless a measurement take names
+        # it as an excited target, which is how the stage's own transfer gets
+        # measured in the first place. Empty for every household graph.
+        #
+        # L0 emit gates (fail-closed) run on the FINAL graph so every decoration is
+        # inside them: the durable (unmuted) baseline is what a household plays
+        # through, so re-prove every tweeter output carries its crossover /
+        # protective high-pass, and that the pipeline the baseline assembled from
+        # independent helper calls references nothing undefined.
+        if safe_rear_calibration:
+            # Read ONCE, decorated in place, dumped once below.
+            graph = yaml_lib.safe_load(yaml)
+            if bass_extension:
+                graph = _dynamic_bass_graph(graph, preset, bass_extension)
+            graph = _rear_calibration_graph(graph, preset, safe_rear_calibration)
+            _assert_view_tweeters_protected(view_from_yaml_dict(graph), preset)
+            _assert_graph_references_closed(graph, preset)
+            yaml = _reserialize_keeping_header(yaml, graph)
+        else:
+            yaml = _mute_unfitted_rear_outputs(
+                _with_dynamic_bass(yaml, preset, bass_extension), preset,
+                excited_target_ids=excited_target_ids,
+            )
+            _assert_tweeter_outputs_protected(yaml, preset, decorated=bool(bass_extension))
+            _assert_pipeline_references_closed(yaml, preset)
+        return yaml
 
-        # Read ONCE, decorated in place, dumped once below.
-        graph = yaml_lib.safe_load(yaml)
-        if bass_extension:
-            graph = _dynamic_bass_graph(graph, preset, bass_extension)
-        graph = _rear_calibration_graph(graph, preset, safe_rear_calibration)
-        _assert_view_tweeters_protected(view_from_yaml_dict(graph), preset)
-        _assert_graph_references_closed(graph, preset)
-        yaml = _reserialize_keeping_header(yaml, graph)
-    else:
-        yaml = _mute_unfitted_rear_outputs(
-            _with_dynamic_bass(yaml, preset, bass_extension), preset,
-            excited_target_ids=excited_target_ids,
-        )
-        _assert_tweeter_outputs_protected(yaml, preset, decorated=bool(bass_extension))
-        _assert_pipeline_references_closed(yaml, preset)
+    # The charge is measured on the graph this call emits, its headroom gain held
+    # at 0 dB; only that gain's value differs between the two emits (ADR-0385).
+    yaml = _emit(0.0)
+    charge = charge_db(yaml_lib.safe_load(yaml), output_trim_db=output_trim_db)
+    if charge > MAX_PROGRAM_HEADROOM_DB:
+        raise ProgramHeadroomExhausted(charge)
+    if charge:
+        yaml = _emit(charge)
 
     if out_path is not None:
         out_path = Path(out_path)

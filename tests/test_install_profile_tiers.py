@@ -171,7 +171,7 @@ def _plan_steps(profile: str) -> list[str]:
 
 
 def test_python_normalize_passes_the_two_profiles_and_refuses_the_rest():
-    from jasper.install_profile import (
+    from jasper.playback_state.install_profile import (
         VALID_INSTALL_PROFILES,
         normalize_install_profile,
     )
@@ -202,7 +202,7 @@ def test_bash_normalize_passes_the_two_profiles_and_refuses_the_rest():
 
 
 def test_python_and_bash_normalize_agree():
-    from jasper.install_profile import normalize_install_profile
+    from jasper.playback_state.install_profile import normalize_install_profile
 
     for token in ("", "full", "streambox"):
         py = normalize_install_profile(token)

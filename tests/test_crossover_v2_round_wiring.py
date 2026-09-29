@@ -30,7 +30,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from jasper.active_speaker import candidate_bank, commissioning_coordinator, measurement_view
 from jasper.active_speaker.crossover_v2 import coordinator
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_status as v2status
 
@@ -309,18 +312,7 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
 def test_persisted_verify_priors_carries_only_measurement_context(monkeypatch):
     _conductor, state = _stage_1(monkeypatch)
 
-    assert set(state["verify_priors"]) == {
-        "predicted_sum",
-        "predicted_spec",
-        "gate_window_ms",
-        "pilot_transfer_reference",
-        "commanded_delta",
-        "declared_transfer",
-        "entry_baseline",
-        "proposal_fingerprint",
-        "verify_measured",
-        "alignment_objective",
-    }
+    assert set(state["verify_priors"]) == {"predicted_sum", "pilot_transfer_reference"}
 
 
 def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
@@ -368,3 +360,22 @@ async def test_a_session_from_the_real_preparer_drives_the_measure_verb(monkeypa
     assert fakes.graph.installs == 2 and fakes.graph.restores == 1
     assert not fakes.volume.held, "the claim went back"
     assert not session.is_open
+
+
+def test_the_pages_rear_pair_choice_starts_a_session_on_the_applied_base(monkeypatch, isolated_candidate_bank):
+    """A rear pair plays its parent with the rear stage cleared, so the page's
+    choice names no candidate and nothing is banked for it (ADR-0386)."""
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": (), "next_action": {"program": "rear"}})
+    choice = next(c for c in measurement_view.round_choices(_status(), "rear/pair") if c["id"] == "rear/pair")
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda topology: (store, store.session_id))
+
+    prepared = v2host.prepare_v2_session(choice["action"]["body"], status=_status(), run_async=asyncio.run,
+                                         camilla_factory=None)
+
+    plan = next(payload for path, payload in store.published if path.endswith("/plan.json"))
+    assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
+    assert (plan["candidates"], {(stop["regime"], stop["candidate_id"]) for stop in plan["stops"]}) == (
+        [], {("branches", "base")})
+    assert candidate_bank.banked_candidates() == []

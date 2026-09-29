@@ -20,13 +20,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from jasper.aec_sweep import AEC3_SWEEP_SOURCE_XVF
+from jasper.audio_routes.aec_sweep import AEC3_SWEEP_SOURCE_XVF
 from jasper.log_event import log_event
-from jasper.mic_mute_persistence import (
+from jasper.service_state.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
 )
-from jasper.wake_ports import build_ports
+from jasper.service_state.wake_ports import build_ports
 
 from . import active_session, clip_recording, session_store
 from .clip_capture import RecordingTask
@@ -299,7 +299,7 @@ class RecordingBackend:
         by jasper-control / the /system/ dashboard in a different
         process, so in-memory state would go stale. Fail-safe direction
         matches the daemon's: an unreadable/missing file reads as
-        unmuted (see jasper/mic_mute_persistence.py)."""
+        unmuted (see jasper/service_state/mic_mute_persistence.py)."""
         return read_mic_muted(self._mic_mute_path)
 
     def _refuse_if_muted(self, op: str) -> None:

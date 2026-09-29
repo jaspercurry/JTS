@@ -16,7 +16,8 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.capture_prediction import read_diagnostic
 from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
-from jasper.active_speaker.crossover_v2.round_captures import RoundCapturesRefused, select_capture
+from jasper.active_speaker.crossover_v2.round_captures import select_capture
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.take_reading import read_take
 from jasper.active_speaker.crossover_v2.take_impulses import (
     IMPULSES_KIND, TakeImpulsesUnreadable, analysis_impulses, impulse_for, take_impulses,
@@ -157,13 +158,13 @@ def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
     # A take view reads that rebuilt sum over the span a kept impulse holds.
     rebuilt = read_take(round_dir, take_id=doc["take_id"], role="summed").capture
     assert rebuilt.ir.size <= round((DECONV_PRE_GUARD_S + DEFAULT_VERIFY_TAIL_S) * 48000) + 1 < summed.ir.size
-    with pytest.raises(RoundCapturesRefused) as refused:
+    with pytest.raises(EvidenceUnavailable) as refused:
         select_capture(round_dir, capture_id=doc["take_id"], role="mid")
     assert (refused.value.reason, refused.value.detail["roles"]) == (
         "round_role_not_recorded", ["tweeter", "woofer"])
     ladder = sweep_round(round_dir, role="tweeter")
     assert [pose["direct_peak_ms"] for pose in ladder["poses"]] == [pytest.approx(1000 * 310 / 48000)] * 2
     # The rebuilt sum stands off the take's recording clock, so the forecast refuses it by name.
-    with pytest.raises(RoundCapturesRefused) as unclocked:
+    with pytest.raises(EvidenceUnavailable) as unclocked:
         read_diagnostic(round_dir, doc["take_id"], 5.0)
     assert (unclocked.value.reason, unclocked.value.detail["role"]) == ("round_branch_diagnostic_missing", "summed")

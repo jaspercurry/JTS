@@ -9,10 +9,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from jasper.active_speaker.crossover_v2.candidate_ladder import (
-    CandidateLadderRefused,
-    candidate_ladder,
-)
+from jasper.active_speaker.crossover_v2.candidate_ladder import candidate_ladder
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
@@ -25,7 +22,6 @@ from ._common import (
     answer,
     default_out,
     omitted_note,
-    refused_by_name,
     subject,
 )
 
@@ -33,13 +29,9 @@ from ._common import (
 def _cmd_candidates(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
-    try:
-        # Unstaged on purpose: resolving the round is the LOAD stage above,
-        # and what the ladder itself raises is a view declining a round it
-        # read -- ``main``'s bucket, the same one every sibling verb uses.
-        document = candidate_ladder(round_dir, inputs)
-    except CandidateLadderRefused as refusal:
-        return refused_by_name(refusal.reason, refusal.detail)
+    # Unstaged on purpose: resolving the round is the LOAD stage above, and
+    # what the ladder itself raises is ``main``'s to publish.
+    document = candidate_ladder(round_dir, inputs)
     summary = document["summary"]
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(document, args.out, default_out(inputs, round_dir, spec.artifact), schema=spec.schema)

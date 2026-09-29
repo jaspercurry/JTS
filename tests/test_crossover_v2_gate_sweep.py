@@ -33,9 +33,9 @@ from jasper.active_speaker.crossover_v2.gate_sweep import (
 )
 from jasper.active_speaker.crossover_v2.round_captures import (
     PoseCapture,
-    RoundCapturesRefused,
     discover_captures,
 )
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from tests.crossover_v2_fixtures import (
     CAPTURE_AZIMUTHS_DEG as AZIMUTHS_DEG,
     CAPTURE_RATE as RATE,
@@ -436,7 +436,7 @@ def test_the_in_memory_door_refuses_fewer_than_two_poses(
 ) -> None:
     """Across-pose sigma needs two poses, whichever door asked for it."""
     _root, captures = in_memory_round
-    with pytest.raises(RoundCapturesRefused) as refusal:
+    with pytest.raises(EvidenceUnavailable) as refusal:
         sweep_features(captures[:n_poses], at_hz=(FEATURE_HZ,))
     assert refusal.value.reason == gate_sweep.REFUSE_SINGLE_POSE
 
@@ -710,7 +710,7 @@ def test_gate_sweep_never_pools_candidate_graphs_at_one_pose(tmp_path):
         doc.update(candidate_id="a" if index < 2 else "b", graph_fingerprint="same-entry-graph")
         doc["provenance"]["graph"] = {"fingerprint": "played-a" if index < 2 else "played-b"}
         path.write_text(json.dumps(doc))
-    with pytest.raises(RoundCapturesRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         sweep_round(root)
     assert caught.value.reason == "gate_sweep_mixed_graphs"
     selected = sweep_round(root, candidate_id="a", graph_fingerprint="played-a")

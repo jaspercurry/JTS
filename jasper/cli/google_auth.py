@@ -19,9 +19,9 @@ import sys
 import urllib.parse
 
 from .. import env_load
-from ..accounts import valid_account_name
+from jasper.service_state.accounts import valid_account_name
 from ..config import Config
-from ..google_creds import (
+from jasper.service_state.google_creds import (
     GOOGLE_SCOPES,
     GoogleAccount,
     GoogleRegistry,

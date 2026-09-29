@@ -30,15 +30,8 @@ pub const HEADER_BYTES: usize = 128;
 
 /// `sample_format` = 1: interleaved signed 16-bit little-endian (S16LE).
 ///
-/// This is a header VOCABULARY id, not the wire a box carries. Which of the two
-/// ids a ring actually declares is `resolve_ring_wire`'s answer (the Python
-/// control plane), and since the wide-wire flip that answer is
-/// [`SAMPLE_FORMAT_S32LE`] on any box that has not been pinned narrow — the same
-/// width the general ALSA playback lane already had
-/// (`DEFAULT_PLAYBACK_FORMAT = "S32_LE"`). So a ring reaching this id today is
-/// either an operator's `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` rollback pin or a
-/// pre-flip file still on disk. The narrow peer that genuinely stays narrow by
-/// policy is the pipe/File sink (`DEFAULT_PIPE_SINK_FORMAT = "S16_LE"`).
+/// A protocol id retained for generic readers and stale-file mismatch checks.
+/// The program ring writer uses [`SAMPLE_FORMAT_S32LE`].
 pub const SAMPLE_FORMAT_S16LE: u32 = 1;
 
 /// `sample_format` = 2: interleaved signed 32-bit little-endian (S32LE).
@@ -57,7 +50,7 @@ pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 /// dac-content lane takes its `period_frames` from it, the C ioplug's
 /// `JTS_RING_DEFAULT_PERIOD` (`c/jts-ring-ioplug/pcm_jts_ring.c`) is the same
 /// number, and the shipped `deploy/alsa/conf.d` blocks declare it. The Python
-/// declaration `jasper.fanin_coupling.RING_SLOT_FRAMES` is what every remaining
+/// declaration `jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES` is what every remaining
 /// spelling is pinned against, by the Python contract tests. Making the slot
 /// derivable from a DAC's declared floor is issue #2147.
 pub const RING_SLOT_FRAMES: u32 = 128;
@@ -72,7 +65,7 @@ pub const RATE_HZ: u32 = 48_000;
 ///
 /// A compile-time constant with no env override, the same shape as
 /// [`RING_SLOT_FRAMES`]: outputd reads it for its Ring B reader and
-/// `jasper.ring_conf` renders it into the outputd-read `conf.d` blocks
+/// `jasper.dsp_control.ring_conf` renders it into the outputd-read `conf.d` blocks
 /// (`jts_ring_playback`, `jts_ring_active_playback`), so the ioplug and
 /// outputd cannot declare different depths there today. Ring A
 /// (`jts_ring_capture`) takes its depth from jasper-fanin's own

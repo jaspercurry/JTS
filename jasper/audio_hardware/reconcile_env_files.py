@@ -4,7 +4,7 @@
 
 """The env files the reconcile pass publishes: the outputd.env candidate it
 stages, validates and commits; fan-in's route keys and outputd's latency
-floor, both planned by :mod:`jasper.audio_runtime_plan`; and the published
+floor, both planned by :mod:`jasper.audio_control.audio_runtime_plan`; and the published
 files' group and mode.
 
 Each step takes the pass, whose state says where the stage is and what the
@@ -112,7 +112,7 @@ def finish_outputd_env_stage(run: Pass) -> None:
 def validate_outputd_env_stage(run: Pass) -> bool:
     # lazy: patch target — the tests replace it on the source module,
     # which only a per-call import sees.
-    from jasper.audio_runtime_plan import validate_outputd_env
+    from jasper.audio_control.audio_runtime_plan import validate_outputd_env
 
     stage = run.outputd_env_stage
     if stage is None:
@@ -189,7 +189,7 @@ def apply_route_env(run: Pass) -> bool:
     """Apply the route-owned fan-in env actions. Returns whether it moved."""
     # lazy: import cost — the route plan is a policy layer the --print-env
     # path never reaches (ADR-0226).
-    from jasper.audio_runtime_plan import (
+    from jasper.audio_control.audio_runtime_plan import (
         resolve_audio_route_profile,
         route_owned_env_actions,
     )
@@ -223,7 +223,7 @@ def apply_route_env(run: Pass) -> bool:
 def apply_latency_floor_env(run: Pass, dac_id: str) -> None:
     """Apply the active DAC's codified latency floor into outputd.env.
 
-    The decisions come from jasper.audio_runtime_plan (operator env >
+    The decisions come from jasper.audio_control.audio_runtime_plan (operator env >
     profile floor > packaged default, in one policy layer); this only
     performs the requested mutations and reports whether the file moved.
 
@@ -233,7 +233,7 @@ def apply_latency_floor_env(run: Pass, dac_id: str) -> None:
     while a stale floor is the loud option.
     """
     # lazy: import cost — --print-env never reaches the floor policy (ADR-0226).
-    from jasper.audio_runtime_plan import outputd_floor_plan
+    from jasper.audio_control.audio_runtime_plan import outputd_floor_plan
 
     try:
         summary, actions = outputd_floor_plan(

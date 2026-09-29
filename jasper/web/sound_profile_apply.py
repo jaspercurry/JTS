@@ -47,7 +47,7 @@ from jasper.sound.settings import (
     output_trim_db as _output_trim,  # aliased so local `output_trim_db` vars don't shadow it
     save_sound_settings,
 )
-from jasper.volume_owner import volume_owner
+from jasper.audio_resources.volume_owner import volume_owner
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ _SOUND_SETTINGS_FIELDS = frozenset({
 
 
 def _camilla():
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
 
     return primary_controller()
 
@@ -91,7 +91,7 @@ def _state_payload(
     ),
     eq_block: Any = _EQ_CARRIER_NOT_PROBED,
 ) -> dict[str, Any]:
-    from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
 
     if last_dsp_apply_snapshot is _LAST_DSP_APPLY_SNAPSHOT_UNSET:
         last_dsp_apply = last_dsp_apply_state()
@@ -343,7 +343,7 @@ async def _apply_settings(
             apply_state, out_path, _ = apply_result
             last_dsp_apply_snapshot = apply_state.to_dict()
         else:
-            from jasper.dsp_apply import last_dsp_apply_state
+            from jasper.dsp_control.dsp_apply import last_dsp_apply_state
 
             last_dsp_apply_snapshot = last_dsp_apply_state()
 
@@ -383,11 +383,11 @@ async def _reconcile_volume_curve_after_settings(
     at the next volume change or the next save that changes the floor
     (ADR-0368).
     """
-    from jasper import librespot_state
-    from jasper.renderer import RendererClient
-    from jasper.volume_coordinator import VolumeCoordinator
-    from jasper.volume_persistence import VolumePersistence
-    from jasper.volume_persistence import configured_path as volume_state_path
+    from jasper.playback_state import librespot_state
+    from jasper.audio_control.renderer import RendererClient
+    from jasper.audio_control.volume_coordinator import VolumeCoordinator
+    from jasper.service_state.volume_persistence import VolumePersistence
+    from jasper.service_state.volume_persistence import configured_path as volume_state_path
 
     coord = VolumeCoordinator(
         camilla=camilla_factory(),
@@ -474,8 +474,8 @@ async def _live_draft_profile(
     nothing else from this response (`runLiveDraft` in
     `deploy/assets/sound-profile/js/main.js`).
     """
-    from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
-    from jasper.fanin_coupling import capture_kwargs_for_coupling
+    from jasper.dsp_control.dsp_apply import dsp_write_epoch, dsp_writer_lock
+    from jasper.dsp_control.fanin_coupling import capture_kwargs_for_coupling
     from jasper.sound.graph_carrier import carrier_for_loaded_config
     from jasper.sound.live_edit import does_live_edits, plan_live_edit_for
 
@@ -492,7 +492,7 @@ async def _live_draft_profile(
     # match_loudness does move the trim, at one swap; the property this buys
     # is only "not draft-derived". Safe because the trim is comfort accounting,
     # not a clip guard — `devices.volume_limit` stays the hard ceiling regardless
-    # (`jasper.camilla_stereo_prefix`). The cost is that match-loudness stops
+    # (`jasper.audio_routes.camilla_stereo_prefix`). The cost is that match-loudness stops
     # tracking the draft until save.
     output_trim_db = _output_trim(load_profile(profile_path), settings)
     sound_filter_count = len(build_sound_filters(profile))

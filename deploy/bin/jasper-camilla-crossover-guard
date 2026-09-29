@@ -34,7 +34,7 @@
 # How "never flat" is GUARANTEED, not just intended: the repair delegates
 # to `jasper-active-speaker runtime-safe-graph`, whose contract is that a
 # roleful/protected topology (every active speaker) can NEVER select the
-# flat fallback (jasper/active_speaker/runtime_contract.py
+# flat fallback (jasper/active_speaker/graph_selector.py
 # safe_graph_for_current_topology: the `select_flat` branch is gated on
 # `output_contract.topology_allows_flat_dac_graph(contract)`, which is false whenever the
 # topology needs per-driver DSP). We still pass --flat-config because the

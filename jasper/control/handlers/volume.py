@@ -15,10 +15,10 @@ from typing import Any
 from ...active_speaker.setup_status import read_active_speaker_setup_status
 from ...local_sources import status as source_status
 from ...log_event import log_event
-from ...music_sources import MUSIC_SOURCE_SPECS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from ...platform import wire
 from ...platform.uds import mux_socket_command
-from ...volume_curve import db_to_percent
+from jasper.audio_routes.volume_curve import db_to_percent
 from .. import measurement_hold
 from .. import volume_ops
 from ._base import ControlHandlerMixin, logger

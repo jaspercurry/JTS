@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
@@ -31,8 +31,8 @@ from jasper.camilla_config_contract import (
     resolve_enable_rate_adjust,
 )
 from jasper.biquad import PeqFilter
-from jasper.camilla_latency import resolve_camilla_latency_for_devices
-from jasper.camilla_emit import (
+from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
+from jasper.audio_routes.camilla_emit import (
     FLAT_PROGRAM_WIDTH,
     MONO_SUM_GAIN_DB,
     emit_devices_block,
@@ -41,8 +41,8 @@ from jasper.camilla_emit import (
     fmt,
     mono_sum_sources,
 )
-from jasper.camilla_stereo_prefix import build_stereo_prefix
-from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
+from jasper.audio_routes.camilla_stereo_prefix import build_stereo_prefix
+from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from .profile import (
@@ -50,9 +50,9 @@ from .profile import (
     build_sound_filter_slots,
 )
 
-if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
+if TYPE_CHECKING:  # `jasper.audio_routes.output_topology` has no jasper imports, but keep
     # the runtime edge out of this hot emitter module all the same.
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ def _master_gain_mixer_yaml(
     channels onto that one output: a mono cabinet declares one full-range
     output on a 2-channel amp, so an identity mixer drops the program's other
     channel into an output it never declared. The feeds come from
-    :func:`~jasper.camilla_emit.mono_sum_sources`, which owns the clip-safe
+    :func:`~jasper.audio_routes.camilla_emit.mono_sum_sources`, which owns the clip-safe
     L+R recipe and the reason for its gain — and is PROGRAM-bounded, so a wider
     graph still sums exactly two. The complement dest keeps its identity route
     and its terminal hard mute, which :func:`_normalize_mono_fold_output`
@@ -373,7 +373,7 @@ def emit_sound_config(
     the ALSA loopback. ``None`` (default — solo) is **byte-identical**
     to before this parameter existed (the solo-impact contract). The
     pipe sink's emitted ``format`` is ALWAYS ``DEFAULT_PIPE_SINK_FORMAT``
-    (``jasper.camilla_config_contract``), a DIFFERENT axis from
+    (``jasper.dsp_control.camilla_config_contract``), a DIFFERENT axis from
     ``playback_format`` — snapserver's pipe source is a fixed-format wire
     contract (``sampleformat=48000:16:2``,
     ``jasper.multiroom.reconcile_plan.snapserver_argv``), so the ALSA loopback
@@ -389,7 +389,7 @@ def emit_sound_config(
     the resolver below answers ``False`` for.
 
     ``enable_rate_adjust`` defaults to
-    :func:`~jasper.camilla_config_contract.resolve_enable_rate_adjust`'s answer
+    :func:`~jasper.dsp_control.camilla_config_contract.resolve_enable_rate_adjust`'s answer
     for the sink this call emits — see it for why the sink decides. It stays a
     parameter only as the lab/explicit seam, so a lab emit can set it; no live
     caller passes one.
@@ -525,7 +525,7 @@ def emit_sound_config(
             "fold collapses the program the map is spreading"
         )
     program_dests = _program_dests(dest_map)
-    # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
+    # The shared stereo-prefix builder (jasper.audio_routes.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the list once
     # and reuse it for the summary log below.
     sound_filters = build_sound_filter_slots(profile)
@@ -596,7 +596,7 @@ def emit_sound_config(
     # Playback sink: ALSA loopback (solo — the default, byte-identical) or the
     # bonded-leader File/pipe sink feeding snapserver. D4: a pipe is pinned to
     # DEFAULT_PIPE_SINK_FORMAT, NOT playback_format — see the guard above and
-    # the constant's own comment (jasper.camilla_config_contract).
+    # the constant's own comment (jasper.dsp_control.camilla_config_contract).
     devices_yaml = emit_devices_block(
         samplerate=sample_rate, chunksize=chunksize, queuelimit=queuelimit,
         target_level=target_level, enable_rate_adjust=enable_rate_adjust,
@@ -729,8 +729,8 @@ def flat_graph_channel_plan(
         flat_graph_muted_outputs,
         flat_graph_program_dest_map,
     )
-    from jasper.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
+    from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
 
     try:
         if topology is None:
@@ -797,7 +797,7 @@ def emit_flat_outputd_cutover_config(
     a wide graph from it rather than counting live channels it cannot place.
     """
 
-    from jasper.fanin_coupling import RING_CAMILLA_GEOMETRY, resolve_ring_wire
+    from jasper.dsp_control.fanin_coupling import RING_CAMILLA_GEOMETRY, resolve_ring_wire
 
     # BOTH HALVES ARE THE RING (ADR-0100) — capture is Ring A and playback is
     # Ring B, both off the module defaults — so this graph passes the certified
@@ -904,7 +904,7 @@ def render_flat_cutover_configs(
         # Explicitly, so a corrupt artifact raises HERE rather than being
         # swallowed downstream into "mute nothing". A missing file returns an
         # empty draft (the golden case) and does not raise.
-        from jasper.output_topology_store import load_output_topology_strict  # lazy: topology needed only for cutover
+        from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: topology needed only for cutover
 
         topology = load_output_topology_strict()
     directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent

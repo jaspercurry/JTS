@@ -82,7 +82,7 @@ from typing import Any
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
 from ..env_load import SPOTIFY_CREDENTIALS_ENV_PATH
-from ..accounts import (
+from jasper.service_state.accounts import (
     ACCOUNT_NAME_PATTERN,
     Account,
     Registry,
@@ -90,7 +90,7 @@ from ..accounts import (
     default_cache_path_for,
     valid_account_name,
 )
-from ..spotify_router import (
+from jasper.service_state.spotify_router import (
     ACCOUNT_NEEDS_OAUTH,
     ACCOUNT_OK,
     ACCOUNT_REVOKED,
@@ -99,8 +99,8 @@ from ..spotify_router import (
     BuildResult,
     build_clients,
 )
-from ..spotify_oauth import resolved_spotify_redirect_uri
-from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
+from jasper.playback_state.spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ..log_event import log_event
 from ..secret_redaction import redact_secrets
 from ..atomic_io import write_env_file

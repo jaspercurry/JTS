@@ -9,16 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_runtime_settings as audio_settings
+from jasper.service_state import audio_runtime_settings as audio_settings
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     latency_floor_for,
 )
-from jasper.audio_runtime_overrides import (
+from jasper.audio_routes.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     RuntimeOverrideEntry,
 )
-from jasper.audio_runtime_settings import (
+from jasper.service_state.audio_runtime_settings import (
     AUDIO_ROUTE_PROFILE_KEY,
     DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
@@ -31,8 +31,8 @@ from jasper.audio_runtime_settings import (
     outputd_dac_buffer_pair_error,
     outputd_env_buffer_pair_error,
 )
-from jasper.audio_runtime_plan import build_audio_runtime_plan
-from jasper.camilla_config_contract import DEFAULT_TARGET_LEVEL
+from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan
+from jasper.dsp_control.camilla_config_contract import DEFAULT_TARGET_LEVEL
 
 
 ROOT = Path(__file__).resolve().parents[1]

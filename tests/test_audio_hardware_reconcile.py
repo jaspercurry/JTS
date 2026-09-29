@@ -31,9 +31,10 @@ from jasper.audio_hardware.output_probe import observe as _REAL_OBSERVE
 from jasper.audio_hardware.usb_port_role import (
     reconcile_boot_config as _real_boot_config,
 )
-from jasper import audio_runtime_plan, ring_conf
-from jasper.fanin_coupling import RING_SLOT_FRAMES, RingWire
-from jasper.ring_assets import ring_conf_wire_report
+from jasper.audio_control import audio_runtime_plan
+from jasper.dsp_control import ring_conf
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES, RingWire
+from jasper.audio_control.ring_assets import ring_conf_wire_report
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import parse_event, stderr_event, stderr_events
 from tests.active_speaker_fixtures import driver_domain_graph
@@ -42,14 +43,14 @@ from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
 )
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     save_output_topology,
     load_output_topology_strict,
     read_topology_fingerprint_stamp,
     statefile_unproved_stamp_path,
     topology_fingerprint_stamp,
 )
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -394,7 +395,6 @@ def _render_log(tmp_path: Path) -> str:
     return log.read_text(encoding="utf-8") if log.exists() else ""
 
 
-
 def _assert_states(text: str, *needles: str) -> None:
     """Every needle present. Reports ALL that are missing, not just the first."""
     assert [n for n in needles if n not in text] == [], text
@@ -587,7 +587,7 @@ def _active_graph_env(
     the gate would decline and fall through to the passive branch.
     """
     from jasper.active_speaker import emit_active_speaker_baseline_config
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     topology, preset = _preset_and_topology(channels)
     active_config = tmp_path / "active_speaker_baseline.yml"
@@ -639,7 +639,7 @@ def _active_leader_graph_env(
     from jasper.active_speaker import (
         emit_active_speaker_program_bake_config,
     )
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     topology, preset = _preset_and_topology(channels, strict=True)
@@ -925,7 +925,7 @@ def test_a_candidate_refused_after_convergence_keeps_the_preliminary_env(
         "--reason",
         "test",
         initial_outputd_env="JASPER_OUTPUTD_BACKEND=stale\n",
-        patches={"jasper.audio_runtime_plan.validate_outputd_env": accept_then_refuse},
+        patches={"jasper.audio_control.audio_runtime_plan.validate_outputd_env": accept_then_refuse},
     )
 
     assert result.returncode == 78, result.stderr
@@ -1506,7 +1506,7 @@ def _lane_less_registry():
 
 
 #: The lane-cap probe has TWO names: the dac module's, and the module-scope
-#: from-import in jasper/audio_runtime_plan.py that the pass reaches lazily.
+#: from-import in jasper/audio_control/audio_runtime_plan.py that the pass reaches lazily.
 #: Patch both, and import that module ABOVE any patch — a first import taken
 #: while the dac copy is a raising stub binds the stub for the whole session.
 _LANE_CAP_TARGETS = (
@@ -2121,7 +2121,7 @@ def _assert_publications_agree(tmp_path: Path) -> None:
     """After one reconcile pass, JASPER_AUDIO_DAC_ID names what the record's
     ``active_profile_id`` names — the one contract between the two."""
     from jasper.env_load import parse_env_file
-    from jasper.output_hardware import active_dac_profile_id, published_dac_id
+    from jasper.audio_routes.output_hardware import active_dac_profile_id, published_dac_id
 
     env = parse_env_file(str(tmp_path / "jasper.env"))
     recorded = active_dac_profile_id(tmp_path / "output_hardware.json")
@@ -2271,7 +2271,7 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
 ):
     """The current legal endpoint set cannot reach this accepted/no-endpoint
     case. Both lane markers must still agree if that set grows."""
-    from jasper.outputd_active_lane import OutputdActiveLaneDecision
+    from jasper.dsp_control.outputd_active_lane import OutputdActiveLaneDecision
 
     result = _run_reconcile(
         tmp_path,
@@ -2280,14 +2280,14 @@ def test_a_composite_whose_accepted_graph_names_no_endpoint_clears_the_pair(
         "test",
         extra_env=_active_dual_apple_env(tmp_path, _DUAL_APPLE_CARDS_SWAPPED),
         patches={
-            "jasper.outputd_active_lane.outputd_active_lane_decision":
+            "jasper.dsp_control.outputd_active_lane.outputd_active_lane_decision":
                 lambda *_a, **_k: OutputdActiveLaneDecision(
                     ok=True, width=4, reason="accepted", endpoint_device=None
                 ),
             # The staged validator refuses this pair against a live ring graph,
             # which is its own job and its own pin. Out of the frame here so the
             # candidate the WRITER produced reaches disk to be read back.
-            "jasper.audio_runtime_plan.validate_outputd_env":
+            "jasper.audio_control.audio_runtime_plan.validate_outputd_env":
                 lambda **_kwargs: (True, ()),
         },
     )
@@ -2467,7 +2467,7 @@ def test_dual_apple_park_names_an_unavailable_active_graph_contract(tmp_path: Pa
             "JASPER_OUTPUT_TOPOLOGY_PATH": str(_dual_apple_topology(tmp_path)),
         },
         patches={
-            "jasper.outputd_active_lane.outputd_active_lane_decision": (
+            "jasper.dsp_control.outputd_active_lane.outputd_active_lane_decision": (
                 _raises(RuntimeError("contract module unusable"))
             )
         },
@@ -2953,7 +2953,7 @@ _FLOOR_KEYS = (
 _DROPPED_CAMILLA_KEYS = ("JASPER_CAMILLA_CHUNKSIZE", "JASPER_CAMILLA_TARGET_LEVEL")
 
 _FLOOR_PLAN_PROBE_FAILS = {
-    "jasper.audio_runtime_plan.outputd_floor_plan": _raises(RuntimeError("gone"))
+    "jasper.audio_control.audio_runtime_plan.outputd_floor_plan": _raises(RuntimeError("gone"))
 }
 
 
@@ -2967,7 +2967,7 @@ _FLOOR_PLAN_PROBE_FAILS = {
 def test_reconcile_emits_the_declared_latency_floor(
     tmp_path: Path, listing: str, dac_id: str
 ):
-    from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
+    from jasper.dsp_control.camilla_config_contract import DEFAULT_CHUNKSIZE, DEFAULT_TARGET_LEVEL
 
     result = _run_reconcile(tmp_path, listing, "--reason", "test")
 
@@ -3213,7 +3213,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
 ) -> None:
     """The validator's literal note prefix is the only link to the stage
     reader's transient-result classification."""
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
     from tests.test_ring_active_endpoint import (
         _active_topology,
         _emit_active_baseline,
@@ -3242,7 +3242,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
     run.outputd_env_stage = str(tmp_path / "candidate.env")
     with (
         mock.patch(
-            "jasper.audio_runtime_plan.validate_outputd_env",
+            "jasper.audio_control.audio_runtime_plan.validate_outputd_env",
             lambda **_kwargs: (True, (out.strip(),)),
         ),
         _captured_events() as events,
@@ -3309,7 +3309,7 @@ def declare_slot_floor(monkeypatch):
             outputd_dac_buffer_frames=8 * period_frames,
         )
         monkeypatch.setattr(
-            "jasper.ring_assets.latency_floor_for",
+            "jasper.audio_control.ring_assets.latency_floor_for",
             lambda profile_id: floor if profile_id == "hifiberry_dac8x" else None,
         )
 
@@ -3618,7 +3618,7 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
 # --- the content-lane format axis ---------------------------------------------
 # The reconciler is the single writer of JASPER_OUTPUTD_CONTENT_FORMAT, and its
 # value comes from the SAME function that decides what CamillaDSP emits
-# (jasper.fanin_coupling.content_lane_format_for_coupling) — so outputd cannot
+# (jasper.dsp_control.fanin_coupling.content_lane_format_for_coupling) — so outputd cannot
 # ask for a width the emitters do not produce.
 
 
@@ -3637,16 +3637,7 @@ def test_reconcile_renders_the_golden_when_no_topology_is_saved(tmp_path: Path):
 def test_reconcile_emits_the_wide_content_format(
     tmp_path: Path, initial_outputd_env: str | None
 ):
-    """Both boxes carry the wide program lane, plumbed verbatim from
-    content_lane_format_for_coupling.
-
-    An operator narrow pin (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE) is not
-    reachable here: the probe's ring-wire read is file-fresh against the
-    REAL /etc/jasper/jasper.env and /var/lib/jasper/fanin.env, which on a
-    Pi are the files this harness diverges into tmp_path. That pin is
-    exercised in tests/test_fanin_coupling.py and
-    tests/test_audio_runtime_plan.py.
-    """
+    """The content wire stays S32 independently of the DAC edge format."""
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -3692,7 +3683,7 @@ def test_reconcile_no_longer_narrows_for_the_removed_rate_match_bridge(
 
 # The two registry/policy probes that must degrade rather than write a guess.
 _CONTENT_FORMAT_PROBE_FAILS = {
-    "jasper.fanin_coupling.content_lane_format_for_coupling": _raises(
+    "jasper.dsp_control.fanin_coupling.content_lane_format_for_coupling": _raises(
         RuntimeError("coupling policy unavailable")
     )
 }
@@ -3713,13 +3704,13 @@ _LANE_CAP_ANSWERS_FOUR = _lane_cap(lambda _id: 4)
 _PROBE_FAILURES = {
     "observe": ({"jasper.audio_hardware.reconcile_hardware.observe": _raises(OSError("no /proc"))}, 0),
     "outputd_env_validator": (
-        {"jasper.audio_runtime_plan.validate_outputd_env": _raises(RuntimeError("gone"))},
+        {"jasper.audio_control.audio_runtime_plan.validate_outputd_env": _raises(RuntimeError("gone"))},
         78,
     ),
     "active_graph_decision": (
         {
             **_LANE_CAP_ANSWERS_FOUR,
-            "jasper.outputd_active_lane.outputd_active_lane_decision": (
+            "jasper.dsp_control.outputd_active_lane.outputd_active_lane_decision": (
                 _raises(RuntimeError("contract gone"))
             ),
         },
@@ -3729,7 +3720,7 @@ _PROBE_FAILURES = {
     "edge_format": (_EDGE_FORMAT_PROBE_FAILS, 0),
     "content_format": (_CONTENT_FORMAT_PROBE_FAILS, 0),
     "route_plan": (
-        {"jasper.audio_runtime_plan.route_owned_env_actions": _raises(ValueError("x"))},
+        {"jasper.audio_control.audio_runtime_plan.route_owned_env_actions": _raises(ValueError("x"))},
         0,
     ),
     "latency_floor": (_FLOOR_PLAN_PROBE_FAILS, 0),
@@ -3743,7 +3734,7 @@ def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
 ):
     """A skipped probe leaves an owned value unwritten, so --changed must
     rerun even when the physical inputs match the last successful stamp."""
-    from jasper.output_hardware import degraded_marker_path
+    from jasper.audio_routes.output_hardware import degraded_marker_path
 
     patches, expected_rc = _PROBE_FAILURES[probe]
     state_path = tmp_path / "output_hardware.json"
@@ -3766,7 +3757,7 @@ def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
 def test_a_pass_whose_probes_all_answered_is_not_marked_degraded(
     monkeypatch, tmp_path: Path
 ):
-    from jasper.output_hardware import degraded_marker_path
+    from jasper.audio_routes.output_hardware import degraded_marker_path
 
     state_path = tmp_path / "output_hardware.json"
     result = _run_reconcile(

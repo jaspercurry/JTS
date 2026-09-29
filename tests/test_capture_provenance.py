@@ -445,7 +445,7 @@ def _drive_one_capture(
     cleared_layers: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Run the shared session, composer and analyzer with hardware stand-ins."""
-    from jasper import dsp_apply
+    from jasper.dsp_control import dsp_apply
     from jasper.active_speaker import program_admission, program_playback
     from jasper.active_speaker.crossover_v2 import door
     from jasper.active_speaker.crossover_v2.composition import bind_engine_seams

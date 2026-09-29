@@ -4,7 +4,7 @@
 
 """The install-tier capability axis: registry shape, purity, no drift.
 
-``jasper.install_profile`` names what a tier GRANTS on its own axis —
+``jasper.playback_state.install_profile`` names what a tier GRANTS on its own axis —
 ``Capability.WAKE_DETECTION`` — with a pure-data grant table
 (``PROFILE_CAPABILITIES``) and one predicate
 (``install_profile_has_capability``).
@@ -36,7 +36,7 @@ from unittest import mock
 
 import pytest
 
-from jasper.install_profile import (
+from jasper.playback_state.install_profile import (
     PROFILE_CAPABILITIES,
     VALID_INSTALL_PROFILES,
     Capability,
@@ -164,7 +164,7 @@ def test_capability_map_ignores_the_persisted_marker(monkeypatch, tmp_path):
     marker = tmp_path / "install_profile"
     marker.write_text("streambox\n", encoding="utf-8")
     monkeypatch.setattr(
-        "jasper.install_profile.INSTALL_PROFILE_FILE", marker,
+        "jasper.playback_state.install_profile.INSTALL_PROFILE_FILE", marker,
     )
 
     assert system_capabilities_for_profile("full") == baseline

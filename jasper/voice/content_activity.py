@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
-from ..camilla import CamillaController
-from ..wake_condition_context import MUSIC_FLOOR_DBFS
+from jasper.audio_control.camilla import CamillaController
+from jasper.playback_state.wake_condition_context import MUSIC_FLOOR_DBFS
 
 CONTENT_ACTIVITY_POLL_SEC = 1.0
 

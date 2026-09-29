@@ -79,7 +79,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | ADR | Decision | Status |
 |---|---|---|
 | [0004](0004-duck-release-algebra-and-reference.md) | The duck release algebra — `min(reference, current + own depth)`, and the reference is a reader | amended by 0375 |
-| [0121](0121-preference-boosts-boost-room-boosts-are-compensated.md) | Preference boosts boost; room-correction boosts are headroom-compensated | accepted |
+| [0121](0121-preference-boosts-boost-room-boosts-are-compensated.md) | Preference boosts boost; room-correction boosts are headroom-compensated | active-path room rule superseded by 0385 |
 | [0176](0176-the-airplay-sender-slider-is-not-a-control-surface.md) | The AirPlay sender slider is not a control surface — AirPlay 2 took the back-channel away | accepted |
 | [0177](0177-duck-ownership-is-asked-of-the-owner-never-inferred-from-a-db-gap.md) | Duck ownership is asked of the owner, never inferred from a dB gap | superseded by 0376 |
 | [0206](0206-the-airplay-sender-slider-is-an-inbound-control-surface.md) | The AirPlay sender slider is an inbound control surface — shairport's volume hook drives the master fader | accepted |
@@ -304,15 +304,15 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0311](0311-a-run-plays-at-one-session-level.md) | One run, one level | accepted |
 | [0312](0312-the-ladder-has-no-rebuild-to-compare.md) | The ladder has no rebuild to compare | accepted |
 | [0316](0316-rear-woofer-outputs-have-a-physical-variant-identity.md) | Rear woofer outputs have a physical variant identity | accepted |
-| [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | accepted |
+| [0317](0317-wall-placement-starts-at-the-cabinet-back.md) | Wall placement starts at the cabinet back | `front_wall_m` reading superseded by 0388 |
 | [0318](0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md) | Rear calibration separates acoustic targets from electrical settings | accepted |
 | [0319](0319-timing-measured-once-with-confidence.md) | Timing is measured once with confidence | reset rule amended by 0345 |
 | [0320](0320-live-hangup-is-one-silence-window.md) | Live hang-up is one silence window | amended by 0321 |
 | [0321](0321-live-first-answer-wait-is-separate-from-followup.md) | Live first-answer wait is separate from follow-up | accepted |
 | [0322](0322-rear-calibration-is-a-candidate-section.md) | Rear calibration is a candidate section, spliced ahead of the role chain | headroom amended by 0324 |
 | [0323](0323-speaker-setup-binds-by-driver-computes-on-read.md) | Speaker setup binds a pasted reply by driver, computes the safety profile on read, and builds the crossover preview on request | accepted |
-| [0324](0324-cardioid-headroom-is-the-stages-evaluated-peak.md) | The cardioid headroom charge is the stage's evaluated peak | accepted |
-| [0325](0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md) | The rear program compares measured symptoms and previews by superposition | accepted |
+| [0324](0324-cardioid-headroom-is-the-stages-evaluated-peak.md) | The cardioid headroom charge is the stage's evaluated peak | charge decision superseded by 0385 |
+| [0325](0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md) | The rear program compares measured symptoms and previews by superposition | §3's composed pair candidate superseded by 0386 |
 | [0326](0326-rear-stage-may-boost-within-the-headroom-charge.md) | The rear stage may boost, bounded, because the headroom charge pays for it | rear-weight sentence amended by 0327 |
 | [0327](0327-rear-weight-is-a-boost-on-both-rear-branches.md) | The rear weight is a boost on both rear branches, never front attenuation | accepted |
 | [0328](0328-the-measurement-band-is-the-audio-band.md) | The measurement band is the audio band; the only protective band edge is a high-frequency driver's floor | accepted |
@@ -330,8 +330,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0341](0341-fit-repeat-spread-comes-from-the-rounds-mark-pairs.md) | Fit repeat spread comes from the round's mark pairs | accepted; supersedes repeat-floor authority in 0192 and 0302 |
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
-| [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | accepted |
-| [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | accepted |
+| [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | §1's home and scope and §4's `ANSWER_SCHEMAS` clause superseded by 0387; §3 amended by 0389 for the `jasper-round` action verbs |
+| [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | §1's rear-headroom fold superseded by 0385; its `entry_grade` note by 0390 |
 | [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | §3 superseded by 0371 |
 | [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | amended by 0359 |
 | [0353](0353-the-cabinet-model-is-an-optional-laptop-aid.md) | The cabinet model (near-field takes x a Boundary Lab solve) is an optional laptop-side aid; it reaches the speaker only as a prescription document | accepted |
@@ -347,9 +347,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) | A take's level is read from its located sweeps in their band, over the room before its pilots; a level retake aims 1 dB under the target | accepted |
 | [0365](0365-a-drivers-pose-finds-its-level-with-a-probe.md) | A driver's pose finds its level with a probe: a rising staircase of short sweeps, stopped at the ramp bound under the SPL stop, solves its take's gain | accepted |
 | [0366](0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) | One pose model (kind, distance, angle or seat offset, optional driver), a level found at each pose by one solver, and a trusted band stated from the pose; registry rows become presets over named layouts | §6's retired-id and retired-layout keeping superseded by 0377 |
-| [0367](0367-a-drivers-declared-band-bounds-a-boost-and-discloses-a-cut.md) | A driver's declared band bounds a boost; a cut outside it is admitted and disclosed on the receipt | partly superseded by 0374 |
+| [0367](0367-a-drivers-declared-band-bounds-a-boost-and-discloses-a-cut.md) | A driver's declared band bounds a boost; a cut outside it is admitted and disclosed on the receipt | partly superseded by 0374, 0385 |
 | [0374](0374-every-prescribed-filter-sits-inside-the-evaluators-domain.md) | Every prescribed filter, cut or boost, in band or not, sits inside the evaluator's domain (1-23,995.2 Hz) | accepted |
-| [0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) | Each run purpose declares on its program row which applied layers its takes clear; a bass run plays with room off and its base with bass off, the door derives the played graph and banks nothing measurement-only, and preflight folds the room-off rise into the opener | accepted |
+| [0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) | Each run purpose declares on its program row which applied layers its takes clear; a bass run plays with room off and its base with bass off, the door derives the played graph and banks nothing measurement-only, and preflight folds the room-off rise into the opener | §1's rear row amended by 0386, §5's rise formula superseded by 0385 |
 | [0371](0371-a-rounds-evidence-packet-is-built-once-when-it-is-banked.md) | A round's evidence packet is built once, when it is banked: readers load `packet.json`'s `evidence`, and its stored `packet_fingerprint` never moves | §2's rebuild of a banked round with no stored packet and §3's old-round fingerprint superseded by 0383 |
 | [0373](0373-a-room-bass-or-rear-take-banks-its-analysed-curves-on-its-record.md) | A room, bass or rear take banks its analysed curves on its record: the frequency, room and rear views read them instead of decoding its recording, and a measurement with none says `take_curves_not_banked` | §1-§3 superseded by 0383 |
 | [0377](0377-a-retired-preset-id-refuses-as-an-unknown-preset.md) | A retired preset id is not kept: it refuses as an unknown preset, and a layout no preset offers is deleted | accepted |
@@ -359,3 +359,9 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0382](0382-a-tweeters-cap-is-declared-or-derived-else-the-plan-refuses-by-name.md) | A tweeter's cap is declared or derived, else the plan refuses by name (`driver_sensitivity_undeclared`); a stored class default is a declaration | accepted |
 | [0383](0383-one-take-record-for-every-purpose.md) | One take record for every purpose: every take banks its curves, each naming its window, and its analysis; the run manifest copies them, no reader decodes a take for them, and a banked round with no stored packet refuses | accepted |
 | [0384](0384-the-speaker-is-its-declared-components.md) | The speaker is its declared components: no per-speaker measurement profile, and each declared driver fact resolves by measurement target, manual over research; a driver's size is its own `radiating_diameter_mm` | accepted |
+| [0385](0385-the-program-charge-is-the-emitted-graphs-peak-with-one-margin.md) | The program charge is the emitted graph's netted peak plus one 1.0 dB margin: every series stage nets, preference EQ and dynamic bass do not, one ε decides the charge and the proof, and timing and the room-off rise read the same charge | accepted |
+| [0386](0386-a-rear-pair-take-clears-the-rear-layer-at-the-door.md) | A rear pair take clears the rear layer at the door: the rear row declares it, the pair plays the applied base with no candidate named, and nothing is composed or banked | accepted |
+| [0387](0387-the-tuning-clis-answer-through-one-envelope.md) | The tuning CLIs answer through one envelope: `jasper-round-views`, `jasper-round list\|show` and the prescriber answer through `_refusal.answer`, no success answer has a top-level `status`, and `schema` alone names an artifact's shape | amended by 0389 |
+| [0388](0388-a-declared-geometry-that-carries-front-wall-m-refuses-by-that-field.md) | A declared rig geometry that carries `front_wall_m` refuses by that field and names `jasper-declare-geometry set` as the fix; the front wall comes only from the cabinet-back gap, depth and toe-in | accepted |
+| [0389](0389-the-jasper-round-action-verbs-answer-through-the-envelope.md) | The `jasper-round` action verbs answer through ADR-0387's envelope: their `parameters` are the resolved plan's values, a blocking dry run is a refusal record, and `status` names the wizard's state `state` | accepted |
+| [0390](0390-there-is-no-discrete-before.md) | There is no discrete "before": no take, packet block, state copy, view or page series is kept as a round's "before", a comparison with an earlier take uses #5737 P6's comparand rule, and the ADR-0319 timing take stays | accepted |

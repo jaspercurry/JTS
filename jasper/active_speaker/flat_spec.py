@@ -67,7 +67,7 @@ class BandResult:
     resolution-valid rung over the shortest, same bin. ``n_valid_rungs``:
     how many ladder rungs were resolution-valid there. ``gate_sensitivity_note``:
     why the three above are ``None``. ``gate_sensitivity_detail``: the
-    ``RoundCapturesRefused`` behind a capture-refusal note. ``gate_window_verdict``:
+    ``EvidenceUnavailable`` behind a capture-refusal note. ``gate_window_verdict``:
     ``"stable"``/``"moved"``/``"unresolved"``, ``None`` only if never swept.
     ``gate_window_verdict_reasons``: which routes produced it.
     """

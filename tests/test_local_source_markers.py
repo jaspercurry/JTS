@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from jasper.local_sources import local_source_lifecycles
 from jasper.local_sources import markers
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.multiroom.config import (
     DEFAULT_BUFFER_MS,
     DEFAULT_CODEC,

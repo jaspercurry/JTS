@@ -17,9 +17,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from .. import tts_routing as _tts_routing
+from jasper.service_state import tts_routing as _tts_routing
 from ..env_load import AIRPLAY_BONDED_EXTRA_DELAY_ENV
-from ..fanin_coupling import DAC_CONTENT_LANE_ENV, OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+from jasper.dsp_control.fanin_coupling import DAC_CONTENT_LANE_ENV, OUTPUTD_CONTENT_BRIDGE_ENV_VAR
 from ..log_event import log_event
 from . import config
 from .config import GroupingConfig
@@ -29,7 +29,7 @@ from .dac_content_ring import (
     dac_content_ring_servable,
 )
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +257,7 @@ def output_topology_state() -> tuple[bool | None, bool]:
             classify_output_contract,
             topology_allows_flat_dac_graph,
         )  # lazy: import cost — same active_speaker tree
-        from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
+        from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
 
         topology = load_output_topology_strict()
         active = active_playback_route_capability(topology).active_group_count > 0
@@ -295,7 +295,7 @@ def is_active_speaker_box() -> bool:
 def box_outputd_period_frames() -> int | None:
     """The outputd period THIS box will LOAD, or ``None`` if unresolved.
 
-    :func:`jasper.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
+    :func:`jasper.audio_control.audio_runtime_plan.outputd_period_frames_as_loaded`, never the
     plan's policy resolver: the slot gate has to match the value outputd's own
     ``env_u32_positive_or_bail`` reads off its three EnvironmentFile= layers,
     and the two differ exactly where guessing is fatal (a DAC floor of 128 with
@@ -309,7 +309,7 @@ def box_outputd_period_frames() -> int | None:
     Lazy import: same ADR-0226 import-cost tree as the topology probes above.
     """
     try:
-        from jasper.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
+        from jasper.audio_control.audio_runtime_plan import outputd_period_frames_as_loaded  # lazy: import cost — same ADR-0226 tree as the topology probes above
 
         return outputd_period_frames_as_loaded()
     except Exception as e:  # noqa: BLE001 - an unresolved period must not raise

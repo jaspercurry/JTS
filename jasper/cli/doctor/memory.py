@@ -31,12 +31,13 @@ from ...memory_policy import (
     memory_pressure,
     zram_usage,
 )
-from ...wake_events import (
+from jasper.service_state.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, run
+from jasper.paths import WAKE_EVENTS_DIR
 
 # Machine-stable codes naming which branch of a memory check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -565,7 +566,7 @@ def check_wake_events_storage() -> CheckResult:
     larger cap doesn't get spurious warnings, and a healthy ring never
     warns."""
     wake_dir = Path(
-        os.environ.get("JASPER_WAKE_EVENTS_DIR", "/var/lib/jasper/wake-events")
+        os.environ.get("JASPER_WAKE_EVENTS_DIR", WAKE_EVENTS_DIR)
     )
     configured_cap = _storage_warn_bytes(
         "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",

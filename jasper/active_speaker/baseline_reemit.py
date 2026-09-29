@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper import atomic_io
-from jasper.active_speaker import baseline_apply, candidate_parts, measurement_emit, runtime_contract
+from jasper.active_speaker import baseline_apply, candidate_parts, measurement_emit
+from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from jasper.sound import settings
 
 
@@ -36,8 +37,8 @@ def reemit_applied_baseline(
         declaration, candidate=candidate_parts.candidate_from_applied_profile(topology, applied),
         preference_filters=preference_filters, output_trim_db=trim_db,
     )
-    graph = runtime_contract.prove_desired_graph(topology, text, snapshot=applied.get("recomposition_snapshot"))
-    if not runtime_contract.desired_graph_approved(graph):
+    graph = bass_extension.prove_desired_graph(topology, text, snapshot=applied.get("recomposition_snapshot"))
+    if not bass_extension.desired_graph_approved(graph):
         raise ActiveSpeakerConfigError(
             f"re-emitted baseline failed runtime proof: {graph.classification}; {graph.issues}",
             code="baseline_reemit_reproof_failed",

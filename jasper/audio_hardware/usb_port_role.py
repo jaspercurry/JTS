@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.atomic_io import atomic_write_text
-from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
+from jasper.device_probe.usbgadget import DEFAULT_UDC_CLASS_DIR
 
 from .config_txt import (
     DEFAULT_BOOT_CONFIG_PATH,

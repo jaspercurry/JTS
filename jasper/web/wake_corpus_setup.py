@@ -67,7 +67,7 @@ from urllib.parse import parse_qs, urlparse
 
 from jasper.control.restart_broker import manage_units
 from jasper.log_event import log_event
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
     AEC3_SWEEP_VARIANTS,
@@ -75,7 +75,7 @@ from jasper.aec_sweep import (
     USB_AEC3_SWEEP_BASELINE_LABEL,
 )
 from jasper.cli.wake_enroll import VOICE_UNIT, require_root
-from jasper.wake_ports import (
+from jasper.service_state.wake_ports import (
     DEFAULT_AEC_CHIP_AEC_150_PORT,
     DEFAULT_AEC_CHIP_AEC_210_PORT,
     DEFAULT_AEC_DTLN_PORT,

@@ -277,7 +277,7 @@ production's WakeLoop: template cross-correlation locates each utterance, then
 peak score / RMS / category (`detected` / `near_miss` / `weak_signal` /
 `silent_miss`) is reported per utterance.
 
-- **Thresholds 0.5 / 0.3 / 0.1** match production (`jasper/wake.py` default 0.5)
+- **Thresholds 0.5 / 0.3 / 0.1** match production (`jasper/service_state/wake.py` default 0.5)
   and the wake-events DB near-miss floor (0.10). Do not invent new tiers.
 - It imports `jasper` on the scoring path (openWakeWord import guard), so run it
   under `/opt/jasper/.venv/bin/python` on a speaker or the repo venv on a
@@ -291,7 +291,7 @@ peak score / RMS / category (`detected` / `near_miss` / `weak_signal` /
 
 ## Wake-event telemetry (production)
 
-Production capture is [`jasper/wake_events.py`](../jasper/wake_events.py) —
+Production capture is [`jasper/service_state/wake_events.py`](../jasper/service_state/wake_events.py) —
 SQLite at `/var/lib/jasper/wake-events/wake-events.sqlite3` plus per-event WAVs
 (4 s pre + 2 s post wake fire, AEC ON and AEC OFF legs).
 
@@ -321,7 +321,7 @@ bash scripts/audit-wake-corpus.sh data/enrollment_positives --expect-raw0
   target distribution and are reviewed separately).
 - `--expect-leg <leg>` repeated for cheap-USB sessions (`ref`, `usb_raw`,
   `usb_webrtc`; `usb_dtln` only where USB DTLN was enabled). AEC3 sweep pilots
-  discover their legs from `jasper/aec_sweep.py` and still accept legacy sweep
+  discover their legs from `jasper/audio_routes/aec_sweep.py` and still accept legacy sweep
   legs so same-day recordings stay auditable.
 
 It checks session metadata and `include_raw_mic_0` flags, missing legs,

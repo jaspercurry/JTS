@@ -11,8 +11,7 @@ Two questions a box has to answer before its graph can attach to the ring:
   shape of a bad deploy, not an exotic one);
 * does every declaring end state the SAME wire?
 
-Plus the two heals the reconciler runs on every pass: a shear-prone stale
-``JASPER_FANIN_RING_SLOTS`` and a geometry-mismatched on-disk ring file.
+The reconciler also repairs geometry-mismatched on-disk ring files.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from jasper.fanin.ring_readiness import (
     ring_edge_width_ready,
     ring_wire_caps_ready,
 )
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
 )
@@ -41,7 +40,11 @@ from tests.test_fanin_coupling_reconcile import (
 
 # Captured at import, BEFORE any fixture can stub the module attribute — see
 # :func:`_real_caps_record_compare`.
-from jasper.ring_assets import ring_ioplug_wire_supported as _REAL_WIRE_SUPPORTED
+from jasper.audio_control.ring_assets import ring_ioplug_wire_supported as _REAL_WIRE_SUPPORTED
+from jasper.ring_header import (
+    RING_SAMPLE_FORMAT_NAMES,
+    RING_SAMPLE_FORMAT_S16LE,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -65,35 +68,13 @@ def _wide_wire(monkeypatch):
     answers; it stays explicit so these tests state the wire they are about
     rather than inheriting it.
     """
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     monkeypatch.setattr(
         fc,
         "resolve_ring_wire",
         lambda topology=None: fc.RingWire(
             sample_format="S32_LE",
-            ring_a_channels=2,
-            ring_b_channels=2,
-            period_frames=fc.RING_SLOT_FRAMES,
-        ),
-    )
-
-
-def _narrow_pin(monkeypatch):
-    """The OPERATOR'S ROLLBACK PIN — the one wire that still needs no capability.
-
-    ``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`` resolves the token the C ioplug
-    compiles in, so the wire forces no ``format`` key by the capability
-    predicate's rule. Before the resolver's default went wide this was every
-    box; it is now a deliberate act.
-    """
-    import jasper.fanin_coupling as fc
-
-    monkeypatch.setattr(
-        fc,
-        "resolve_ring_wire",
-        lambda topology=None: fc.RingWire(
-            sample_format=fc.RING_WIRE_FORMAT,
             ring_a_channels=2,
             ring_b_channels=2,
             period_frames=fc.RING_SLOT_FRAMES,
@@ -109,7 +90,7 @@ def _real_caps_record_compare(monkeypatch):
     test whose SUBJECT is that refusal has to put the real predicate back, or it
     would assert against its own stub.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "ring_ioplug_wire_supported", _REAL_WIRE_SUPPORTED)
 
@@ -136,21 +117,6 @@ def _armed_env(tmp_path):
 # --- the ioplug CAPABILITY gate ---------------------------------------------
 
 
-def test_caps_gate_is_inert_only_on_an_operator_narrow_pin(monkeypatch):
-    """What is LEFT of this gate's dormancy, stated as a behaviour.
-
-    A wire at the ioplug's own compiled-in token renders no conf.d field beyond
-    its defaults, so the gate answers ok WITHOUT reading a provenance record or
-    hashing a plugin. That short-circuit used to describe the whole fleet. Since
-    the ring wire's resolver defaults WIDE it describes exactly one box: one an
-    operator has pinned back to `S16_LE`.
-    """
-    _narrow_pin(monkeypatch)
-    ok, detail = ring_wire_caps_ready()
-    assert ok is True
-    assert "no conf.d field beyond" in detail
-
-
 def test_caps_gate_is_live_on_an_undeclared_box(monkeypatch, tmp_path):
     """THE FLIP'S FLEET CONSEQUENCE, at the gate that acts on it.
 
@@ -165,7 +131,7 @@ def test_caps_gate_is_live_on_an_undeclared_box(monkeypatch, tmp_path):
     chain exactly as a real undeclared box resolves it, so this fails if the
     resolver's default is ever moved back without moving this pin.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     _real_caps_record_compare(monkeypatch)
     monkeypatch.setattr(ra, "RING_IOPLUG_PROVENANCE", str(tmp_path / "absent"))
@@ -177,7 +143,7 @@ def test_caps_gate_is_live_on_an_undeclared_box(monkeypatch, tmp_path):
 
 
 def test_caps_gate_refuses_a_wide_wire_with_no_record(monkeypatch, tmp_path):
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     _real_caps_record_compare(monkeypatch)
     _wide_wire(monkeypatch)
@@ -185,126 +151,6 @@ def test_caps_gate_refuses_a_wide_wire_with_no_record(monkeypatch, tmp_path):
     ok, detail = ring_wire_caps_ready()
     assert ok is False
     assert "no provenance record" in detail
-
-
-# --- the slot migration declines when the WIRE is sheared -------------------
-
-
-def _migrate(tmp_path, monkeypatch, *, fanin_text: str):
-    """Run the slot migration against ``fanin_text`` on the SHIPPED conf.d.
-
-    Returns (post_migration_text, records) where ``records`` is the log_event
-    result tokens the migration emitted — the migration's only externally
-    visible statement about what it decided.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    path = _write(tmp_path / "fanin.env", fanin_text)
-
-    records: list[str] = []
-    real_log_event = cr.log_event
-
-    def _capture(logger, event, **kw):
-        records.append(str(kw.get("result", "")))
-        return real_log_event(logger, event, **kw)
-
-    monkeypatch.setattr(cr, "log_event", _capture)
-    result, _healed = cr._migrate_stale_fanin_ring_slots(path, "t")
-    return result.text, records
-
-
-def test_slot_migration_writes_the_coherent_value_when_only_slots_are_stale(
-    tmp_path, monkeypatch
-):
-    """POSITIVE CONTROL for the decline below: the migration does fire.
-
-    Without this, a decline test proves only that the function wrote nothing —
-    which a broken migration that never writes would also satisfy.
-    """
-    from jasper.fanin_coupling import DEFAULT_FANIN_RING_SLOTS, RING_SLOTS_ENV_VAR
-
-    text, records = _migrate(
-        tmp_path, monkeypatch, fanin_text=f"{RING_SLOTS_ENV_VAR}=8\n"
-    )
-    assert "stale_ring_slots_overridden" in records
-    assert f"{RING_SLOTS_ENV_VAR}={DEFAULT_FANIN_RING_SLOTS}" in text
-
-
-def test_slot_migration_declines_when_the_wire_format_is_sheared(
-    tmp_path, monkeypatch
-):
-    """It does not converge an axis it does not own, and says so.
-
-    Writing the slot count while fan-in and the conf.d disagree about the WIRE
-    would make the geometry look repaired — the operator reads
-    ``stale_ring_slots_overridden`` as progress — while the arm still cannot
-    succeed. The wire gate is the one that refuses with the reason that actually
-    describes the box, so the migration steps aside and leaves it to say so.
-
-    THE SHEAR IS SPELLED THE OTHER WAY ROUND NOW. The shipped conf.d declares
-    the WIDE wire, so declaring ``S32_LE`` here would AGREE with it and shear
-    nothing. The operator's narrow pin is what disagrees with the shipped file
-    — same two ends, same disagreement, opposite tokens.
-    """
-    from jasper.fanin_coupling import (
-        RING_SLOTS_ENV_VAR,
-        RING_WIRE_FORMAT,
-        RING_WIRE_FORMAT_ENV_VAR,
-    )
-
-    text, records = _migrate(
-        tmp_path,
-        monkeypatch,
-        # Both true at once: a stale slot count the migration WOULD write, and a
-        # wire shear that must stop it.
-        fanin_text=(
-            f"{RING_SLOTS_ENV_VAR}=8\n"
-            f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n"
-        ),
-    )
-    assert "stale_ring_slots_override_declined" in records
-    assert "stale_ring_slots_overridden" not in records
-    assert f"{RING_SLOTS_ENV_VAR}=8" in text, (
-        "the declined migration must leave the stale value alone, not half-write it"
-    )
-
-
-def test_slot_migration_declines_on_a_sheared_channel_count(tmp_path, monkeypatch):
-    """The channels axis declines the write for the same reason the format does."""
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
-    import jasper.ring_assets as ra
-
-    # A conf.d whose Ring-A block declares a channel count fan-in's fixed-stereo
-    # mixer cannot produce.
-    conf = tmp_path / "sheared.conf"
-    conf.write_text(
-        "pcm.jts_ring_capture {\n    period_frames 128\n    n_slots 2\n"
-        "    channels 4\n}\n"
-        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(conf))
-
-    import jasper.fanin.coupling_reconcile as cr
-
-    path = _write(tmp_path / "fanin.env", f"{RING_SLOTS_ENV_VAR}=8\n")
-    records: list[str] = []
-    real_log_event = cr.log_event
-    monkeypatch.setattr(
-        cr,
-        "log_event",
-        lambda logger, event, **kw: (
-            records.append(str(kw.get("result", ""))) or real_log_event(
-                logger, event, **kw
-            )
-        ),
-    )
-    out, healed = cr._migrate_stale_fanin_ring_slots(path, "t")
-    assert "stale_ring_slots_override_declined" in records
-    assert healed is False
-    assert f"{RING_SLOTS_ENV_VAR}=8" in out.text
 
 
 # --- the sample_format axis at BOTH on-disk-header consumers ----------------
@@ -328,7 +174,7 @@ def _ring_file(path, *, sample_format, n_slots=2, period=128, channels=2):
 
 def _point_ring_files_at(monkeypatch, tmp_path):
     """Repoint both ring files into the tmpdir. Returns (ring_a, ring_b)."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     ring_a = tmp_path / "program.ring"
     ring_b = tmp_path / "content.ring"
@@ -339,21 +185,7 @@ def _point_ring_files_at(monkeypatch, tmp_path):
 
 
 def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch):
-    """WHAT MAKES THE WIRE ROLLBACK LEVER ONE-SHOT-ABLE, as a behaviour.
-
-    While this guard was blind to ``sample_format``, forcing the wire narrow
-    again left the WIDE file on disk: the writer rejected it at attach as a
-    config-class fault and the box PARKED until someone ran ``rm`` by hand — so
-    the lever worked once and then needed an operator. The file must be cleared
-    here, on an axis where slots and period both still match.
-
-    THE STALE TOKEN IS THE NARROW ONE NOW. The resolved wire is wide on an
-    undeclared box, so a leftover S16 header is what disagrees with it — the
-    same guard, the same axis, the roles swapped by the resolver's default. The
-    rollback direction the docstring describes is now the routine one, and it
-    lands on the OTHER file: an operator pinning narrow leaves a wide header
-    behind, which this guard clears the same way.
-    """
+    """A stale S16 header is removed even when slots and period still match."""
     import jasper.fanin.coupling_reconcile as cr
 
     ring_a, ring_b = _point_ring_files_at(monkeypatch, tmp_path)
@@ -372,22 +204,14 @@ def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize(
-    ("fanin_text", "outputd_text", "expected_substrings"),
+    ("outputd_text", "expected_substrings"),
     [
         pytest.param(
-            "JASPER_FANIN_RING_WIRE_FORMAT=S16_LE\n",
-            "",
-            ("fan-in (Ring A writer)", "S16_LE"),
-            id="fanin_declares_the_narrow_pin",
-        ),
-        pytest.param(
-            "",
             "JASPER_OUTPUTD_ACTIVE_CHANNELS=6\n",
             ("6 channels", "outputd (Ring B reader)"),
             id="outputd_channels_the_ring_does_not_carry",
         ),
         pytest.param(
-            "",
             "JASPER_OUTPUTD_ACTIVE_CHANNELS=stereo\n",
             ("outputd (Ring B reader)", "declares no channel count at all"),
             id="outputd_channels_will_not_parse",
@@ -395,27 +219,14 @@ def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch
     ],
 )
 def test_wire_gate_names_the_end_that_disagrees(
-    monkeypatch, fanin_text, outputd_text, expected_substrings
+    monkeypatch, outputd_text, expected_substrings
 ):
-    """A refusal must say WHICH end declared what, and why.
-
-    A bare "mismatch" leaves an operator with four files to read and no order
-    to read them in. Three declaring ends can each be the one out of step —
-    fan-in's format, outputd's channel count out of range, and outputd's
-    channel count that will not even parse — and each refusal must name its
-    (the unparseable case is its own per-axis flag rather than a reuse of the
-    format-axis note: otherwise an outputd channel count that will not parse
-    would pass on every unarmed box, i.e. every box about to arm)
-    own end and its own reason. (The disagreeing token on the format axis is
-    the NARROW one now: the shipped conf.d and the resolver both answer wide,
-    so a fan-in snapshot still carrying an ``S16_LE`` declaration is the end
-    out of step.)
-    """
-    import jasper.ring_assets as ra
+    """A mismatched or unparseable outputd channel count names that end."""
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     ok, detail = ring_edge_width_ready(
-        fanin_text=fanin_text, outputd_text=outputd_text
+        outputd_text=outputd_text
     )
     assert ok is False
     for substring in expected_substrings:
@@ -438,16 +249,15 @@ def test_wire_gate_compares_outputd_only_once_armed(monkeypatch):
     what proves the verdict is decided by whether the reconciler has written
     outputd.env and not by the token.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     stale_format = "JASPER_OUTPUTD_CONTENT_FORMAT=S16_LE\n"
 
-    ok_unreconciled, _ = ring_edge_width_ready(fanin_text="", outputd_text=stale_format)
+    ok_unreconciled, _ = ring_edge_width_ready(outputd_text=stale_format)
     assert ok_unreconciled is True, "an unreconciled box must not be refused for this"
 
     ok_reconciled, detail = ring_edge_width_ready(
-        fanin_text="",
         outputd_text=(
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={COUPLING_SHM_RING}\n" + stale_format
         ),
@@ -472,12 +282,12 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
     The positive control below is what keeps this a test of the COMPARISON
     rather than of "absence always refuses".
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     reconciled = f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={COUPLING_SHM_RING}\n"
 
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text=reconciled)
+    ok, detail = ring_edge_width_ready(outputd_text=reconciled)
     assert ok is False
     assert "outputd (Ring B reader)" in detail
     # The gate read the ABSENT key as the daemon's own token, not as "unknown".
@@ -486,7 +296,6 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
     # Positive control: the key the hardware reconciler writes agrees with the
     # resolved wire, and the same gate is silent.
     ok, detail = ring_edge_width_ready(
-        fanin_text="",
         outputd_text=reconciled + "JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE\n",
     )
     assert ok is True, detail
@@ -495,13 +304,13 @@ def test_wire_gate_reads_an_absent_outputd_key_as_the_daemon_default(monkeypatch
 def test_wire_gate_defers_an_absent_conf_d_to_the_asset_gate(monkeypatch, tmp_path):
     """One missing file, one reason. ``ring_assets_ready`` owns the absent
     conf.d; a second refusal here would bury the one that names the fix."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(tmp_path / "nope.conf"))
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, False, True)
     )
-    ok, _ = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, _ = ring_edge_width_ready(outputd_text="")
     assert ok is True
 
 
@@ -509,13 +318,13 @@ def test_wire_gate_refuses_a_conf_d_that_is_present_but_unreadable(
     monkeypatch, tmp_path
 ):
     """A torn conf.d is nobody else's refusal to own, so it stays this gate's."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(tmp_path / "torn.conf"))
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is False
     assert "declares no format at all" in detail
 
@@ -532,7 +341,7 @@ def test_wire_gate_refuses_an_indeterminate_channel_count_like_an_indeterminate_
     nothing had actually agreed. Note the format here is single and CORRECT, so
     the refusal can only be coming from the channels axis.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     torn = tmp_path / "torn.conf"
     torn.write_text(
@@ -545,7 +354,7 @@ def test_wire_gate_refuses_an_indeterminate_channel_count_like_an_indeterminate_
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
     )
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is False
     assert "declares no channel count at all" in detail
     assert "jts_ring_capture" in detail
@@ -564,20 +373,20 @@ def test_wire_gate_does_not_invent_a_channels_refusal_for_ends_that_state_none(
     either axis while the asset gate owns that refusal. Neither may be reported
     as indeterminate, or the shipped fleet fails a gate it has always passed.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is True, detail
 
 
 def test_wire_gate_passes_on_the_shipped_wire(monkeypatch):
     """The dormancy bar for the wire gate: a fleet box declares one wire at every
     end, so nothing about this rung changes what it does."""
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is True, detail
     assert "declaring ends state one ring wire" in detail
     # An unarmed fleet box loads a NON-ring graph, so the graph is not one of
@@ -644,10 +453,9 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
     EMITTED. So this is no longer only archaeology: it is the refusal a
     not-yet-re-emitted box meets, and it must name the file to fix.
     """
-    import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
+    import jasper.audio_control.ring_assets as ra
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_WIRE_FORMAT,
         RING_WIRE_FORMAT_WIDE,
     )
 
@@ -659,7 +467,7 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
     config.write_text(
         _ring_graph_text(
             device=RING_ACTIVE_PLAYBACK_DEVICE,
-            sample_format=RING_WIRE_FORMAT,
+            sample_format=RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE],
         ),
         encoding="utf-8",
     )
@@ -669,11 +477,11 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
 
     # The gate reads the graph itself when no snapshot is handed to it, so this
     # walks the same path the arm takes.
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
 
     assert ok is False, detail
     assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
-    assert f"declares format {RING_WIRE_FORMAT}" in detail
+    assert f"declares format {RING_SAMPLE_FORMAT_NAMES[RING_SAMPLE_FORMAT_S16LE]}" in detail
     assert str(config) in detail, "the refusal must name the file to fix"
 
     # CONTROL: the same box with the resolver's own answer in the graph passes,
@@ -686,7 +494,7 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
         ),
         encoding="utf-8",
     )
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is True, detail
     assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
     assert "was NOT one of them" not in detail
@@ -706,8 +514,8 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
     axis is the only thing that disagrees — a graph that also sheared on format
     would be refused either way and prove nothing about this axis.
     """
-    import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
+    import jasper.audio_control.ring_assets as ra
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
     )
@@ -729,7 +537,7 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
 
     assert ok is False, detail
     assert "declares 4 channels, expected 2" in detail
@@ -776,8 +584,8 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
     the CORRECT graph (3 outputs) must be accepted, and a graph declaring Ring
     B's 2 must be REFUSED.
     """
-    import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
+    import jasper.audio_control.ring_assets as ra
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_WIRE_FORMAT_WIDE,
         resolve_ring_wire,
@@ -804,7 +612,7 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
             channels=3,
         ),
     )
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is True, detail
 
     # Ring B's width is NOT the active ring's, and stating it is refused —
@@ -818,7 +626,7 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
             channels=2,
         ),
     )
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
     assert ok is False, detail
     assert "declares 2 channels, expected 3" in detail
     assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
@@ -832,7 +640,7 @@ def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
     box that has not run step 1 yet — the PR-1 defect shape, re-introduced from
     the other side.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
@@ -849,89 +657,10 @@ def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
 
     assert ok is True, detail
     assert "it names no ring PCM on either lane" in detail
-
-
-def test_a_declared_narrow_pin_moves_the_resolver_and_the_refusal(
-    monkeypatch, tmp_path
-):
-    """The R6/R7 activation input, walked: one env key moves the whole answer.
-
-    Before PR #2335 ``resolve_ring_wire`` pinned the format narrow with no
-    input, so declaring a wire to ``jasper-fanin`` moved fan-in and nothing else
-    — the arm was unreachable rather than refused. The resolver reads the same
-    key the daemon does now, so the declaration moves the WHOLE answer, and the
-    refusal lands on whichever end has not caught up.
-
-    THE DECLARATION THAT DOES THIS IS THE NARROW PIN NOW. With the resolver
-    defaulting wide and the shipped conf.d spelling ``S32_LE``, declaring wide
-    changes nothing to disagree about. An operator's ``S16_LE`` moves the
-    resolver to narrow and leaves the still-wide conf.d as the end out of step —
-    whose remedy is the hardware reconciler's render, exactly as before. Same
-    mechanism, same remedy, the tokens exchanged.
-    """
-    import jasper.ring_assets as ra
-    from jasper.fanin_coupling import (
-        RING_WIRE_FORMAT,
-        RING_WIRE_FORMAT_ENV_VAR,
-        resolve_ring_wire,
-    )
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
-    )
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr(
-        "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
-    )
-
-    assert resolve_ring_wire().sample_format == RING_WIRE_FORMAT
-
-    ok, detail = ring_edge_width_ready(
-        fanin_text=fanin_env.read_text(encoding="utf-8"), outputd_text=""
-    )
-    assert ok is False, detail
-    assert f"resolves to {RING_WIRE_FORMAT}" in detail
-    # fan-in agrees (it IS the input); the shipped conf.d does not.
-    assert "fan-in (Ring A writer)" not in detail
-    assert "conf.d jts_ring_capture" in detail
-
-
-def test_an_unparseable_declared_wire_refuses_instead_of_raising(
-    monkeypatch, tmp_path
-):
-    """A typo must REFUSE the arm, not traceback out of it.
-
-    ``resolve_ring_wire`` fails loud on a token neither language recognizes —
-    correct for an emitter, and the same verdict ``jasper-fanin`` reaches before
-    parking. A refused gate must leave the box exactly as it was found, so an
-    uncaught exception here would cost the pass its refusal. Both wire-reading
-    gates resolve through ``resolve_wire_for_gate`` for exactly that reason.
-    """
-    import jasper.ring_assets as ra
-    from jasper.fanin import ring_readiness as rr
-    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
-
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s16le\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-    monkeypatch.setattr(
-        "jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env)
-    )
-
-    for gate in (rr.ring_edge_width_ready, rr.ring_wire_caps_ready):
-        ok, detail = gate()
-        assert ok is False, f"{gate.__name__} did not refuse"
-        assert RING_WIRE_FORMAT_ENV_VAR in detail
-        # Fails closed (ADR-0100), never a fallback — the reason code this gate
-        # actually carries, not the English sentence around it.
-        assert "ADR-0100" in detail
 
 
 def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_path):
@@ -941,7 +670,7 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     unattended pass on every new speaker. What must not happen is the gate
     reporting agreement it never checked — which is defect B in one sentence.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(
@@ -951,7 +680,7 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    ok, detail = ring_edge_width_ready(fanin_text="", outputd_text="")
+    ok, detail = ring_edge_width_ready(outputd_text="")
 
     assert ok is True, detail
     assert "was NOT one of them" in detail
@@ -959,7 +688,7 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
 
 
 def test_topology_read_fails_soft_when_its_module_will_not_import(monkeypatch):
-    """An unimportable ``jasper.output_topology`` answers ``None``, not a raise.
+    """An unimportable ``jasper.audio_routes.output_topology`` answers ``None``, not a raise.
 
     The read defers that module, so the import is one more thing that can fail
     at call time; the exception type it raises with lives in the same module.
@@ -968,6 +697,6 @@ def test_topology_read_fails_soft_when_its_module_will_not_import(monkeypatch):
 
     from jasper.fanin import ring_readiness as rr
 
-    monkeypatch.setitem(sys.modules, "jasper.output_topology", None)
+    monkeypatch.setitem(sys.modules, "jasper.audio_routes.output_topology", None)
 
     assert rr.load_topology_for_wire() is None

@@ -14,14 +14,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, NamedTuple
 
+from jasper.active_speaker.graph_types import GRAPH_ALL_MUTED_ACTIVE_STARTUP
 from jasper.control.restart_broker import manage_units
-from jasper.dsp_apply import (
+from jasper.dsp_control.dsp_apply import (
     CamillaConfigValidationResult,
     validate_camilla_config,
 )
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 from jasper.active_speaker.crossover_preview import current_crossover_preview
 
@@ -44,8 +45,7 @@ from .path_safety import (
     topology_target_signature,
     validate_startup_load_evidence_binding,
 )
-from .runtime_contract import (
-    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+from .graph_selector import (
     safe_graph_for_current_topology,
     write_camilla_statefile,
 )

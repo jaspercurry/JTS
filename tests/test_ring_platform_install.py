@@ -253,7 +253,7 @@ def test_caps_probe_reads_capabilities_off_the_artifact(tmp_path, markers, expec
 
 @pytest.mark.skipif(not _has_bash(), reason="bash required")
 def test_record_then_revoke_round_trips_through_the_python_reader(tmp_path):
-    """The installer WRITES what jasper.ring_assets READS, and revoke undoes it.
+    """The installer WRITES what jasper.audio_control.ring_assets READS, and revoke undoes it.
 
     The two halves are in different languages, so nothing but an executed
     round-trip proves the key names and the comma-joined caps value survive the
@@ -262,7 +262,7 @@ def test_record_then_revoke_round_trips_through_the_python_reader(tmp_path):
     on a box whose plugin is in fact capable, and the installer transcript would
     say it recorded one.
     """
-    from jasper import ring_assets
+    from jasper.audio_control import ring_assets
 
     so = _fake_so(tmp_path, markers=(_CAP_FORMAT_MARKER, _CAP_CHANNELS_MARKER))
     provenance = tmp_path / "ring-ioplug.provenance"
@@ -296,7 +296,7 @@ def test_recording_an_uncapable_plugin_is_a_record_with_no_caps(tmp_path):
     still refused). Collapsing the two would either vouch for capabilities the
     plugin lacks or report a fresh build as stale.
     """
-    from jasper import ring_assets
+    from jasper.audio_control import ring_assets
 
     so = _fake_so(tmp_path, markers=())
     proc = _run_sh(tmp_path, f'record_ring_ioplug_provenance "{so}" abc123')

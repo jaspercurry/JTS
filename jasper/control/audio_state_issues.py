@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ..service_units import CAMILLA_SERVICE, unit_failed
 from ._health_fields import mapping
 from ._health_sources import (

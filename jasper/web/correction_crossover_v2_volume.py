@@ -71,7 +71,7 @@ def _session_volume_read(camilla_factory: Any) -> Callable[[], Any]:
     Reads never were the exception, and both survivors are reads: the
     capture-time hold, and :func:`_volume_door`'s physical snapshot.
     """
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
 
     async def _get() -> float | None:
         try:
@@ -119,7 +119,7 @@ def _volume_door(
     """The plan's one door for every path in this module that drains or opens.
 
     ONE builder, which is the point: this module's fader authority is
-    :class:`~jasper.volume_owner.VolumeOwner`, and every caller asks for its
+    :class:`~jasper.audio_resources.volume_owner.VolumeOwner`, and every caller asks for its
     door here rather than assembling one, so the binding is a single fact.
 
     ``claim`` is the session's :class:`~jasper.active_speaker.crossover_v2.
@@ -139,7 +139,7 @@ def _volume_door(
     a household level.
     """
     from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
-    from jasper.volume_owner import volume_owner
+    from jasper.audio_resources.volume_owner import volume_owner
 
     owner = volume_owner()
     if owner is None:

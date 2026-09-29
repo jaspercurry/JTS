@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from jasper.openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 
 try:
     from scripts._wake_audio_metrics import rms_amplitude as _rms
@@ -287,7 +287,7 @@ def _score_key_for_model(model_path: str) -> str:
 
 
 def _make_wake_model(model_path: str):
-    # Must precede the openwakeword import; see jasper/openwakeword_guard.py.
+    # Must precede the openwakeword import; see jasper/service_state/openwakeword_guard.py.
     ensure_openwakeword_import_safe()
     from openwakeword.model import Model
 

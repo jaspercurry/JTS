@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, overload
 
 from jasper.env_file import parse_env_mapping, read_env_file_text
@@ -55,6 +56,9 @@ AIRPLAY_BONDED_EXTRA_DELAY_ENV = "JASPER_AIRPLAY_BONDED_EXTRA_DELAY_SEC"
 ACCESSORY_MIC_ENV_FILE = "/var/lib/jasper/accessory-mics.env"
 FANIN_ENV_PATH = "/var/lib/jasper/fanin.env"
 GOOGLE_CREDENTIALS_ENV_PATH = "/var/lib/jasper-secrets/google_credentials.env"
+GOOGLE_ROUTES_ENV_PATH = "/var/lib/jasper-secrets/google_routes.env"
+HOME_ASSISTANT_ENV_PATH = "/var/lib/jasper-intsecrets/home_assistant.env"
+VOICE_KEYS_ENV_PATH = "/var/lib/jasper-secrets/voice_keys.env"
 GROUPING_ENV_FILE = "/var/lib/jasper/grouping.env"
 OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
 #: PERSISTENT (never /run) so a bonded speaker boots with the content lane
@@ -75,6 +79,9 @@ VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_PROVIDER_ENV_PATH = "/var/lib/jasper/voice_provider.env"
 WAKE_MODEL_ENV_PATH = "/var/lib/jasper/wake_model.env"
 WEATHER_ENV_PATH = "/var/lib/jasper/weather.env"
+DEFAULT_AEC_MODE_PATH = Path("/var/lib/jasper/aec_mode.env")
+CONVERSATION_HISTORY_ENV_PATH = "/var/lib/jasper/conversation_history.env"
+WAKE_CORPUS_BRIDGE_ENV_PATH = "/var/lib/jasper/wake_corpus_bridge.env"
 
 
 def env_file_path() -> str:
@@ -92,17 +99,17 @@ ENV_FILES = (
     SPOTIFY_CREDENTIALS_ENV_PATH,
     VOICE_PROVIDER_ENV_PATH,
     # Compartment non-members load no values on EACCES; root doctor can read them.
-    "/var/lib/jasper-secrets/voice_keys.env",
+    VOICE_KEYS_ENV_PATH,
     GOOGLE_CREDENTIALS_ENV_PATH,
-    "/var/lib/jasper-secrets/google_routes.env",
+    GOOGLE_ROUTES_ENV_PATH,
     WAKE_MODEL_ENV_PATH,
     WEATHER_ENV_PATH,
     TRANSIT_ENV_PATH,
-    "/var/lib/jasper-intsecrets/home_assistant.env",
+    HOME_ASSISTANT_ENV_PATH,
     TOOL_STATE_ENV_PATH,
-    "/var/lib/jasper/conversation_history.env",
+    CONVERSATION_HISTORY_ENV_PATH,
     # ...plus persistent files sourced by OTHER units (control / aec / etc.):
-    "/var/lib/jasper/aec_mode.env",
+    str(DEFAULT_AEC_MODE_PATH),
     FANIN_ENV_PATH,
     GROUPING_ENV_FILE,
     OUTPUTD_GROUPING_ENV_FILE,
@@ -111,7 +118,7 @@ ENV_FILES = (
     PEERING_ENV_PATH,
     ACCESSORY_MIC_ENV_FILE,
     USB_MIC_ENV_FILE,
-    "/var/lib/jasper/wake_corpus_bridge.env",
+    WAKE_CORPUS_BRIDGE_ENV_PATH,
 )
 
 EnvFileReadStatus = Literal["loaded", "missing", "unreadable"]

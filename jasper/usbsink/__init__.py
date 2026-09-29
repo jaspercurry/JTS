@@ -17,7 +17,7 @@ Production audio data plane:
   jasper-usbsink.service
                     Process-free oneshot readiness/lifecycle marker. Its
                     bounded card gate is not data-plane liveness.
-  jasper.usbgadget  Import-light kernel UDC connection-state reader used by
+  jasper.device_probe.usbgadget  Import-light kernel UDC connection-state reader used by
                     management surfaces instead of a copied daemon state file.
 
 Package layout:

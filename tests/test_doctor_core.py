@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 
-import jasper.mic_presence as mic_presence_module
+import jasper.audio_control.mic_presence as mic_presence_module
 from jasper.cli import doctor
 # `main` and `run_async` resolve these names in their own module's
 # namespace, so a patch aimed at the package would not apply.
@@ -27,7 +27,7 @@ from jasper.cli.doctor import voice as doctor_voice
 from jasper.cli.doctor._registry import RegisteredCheck
 from jasper.config import Config, VoiceProviderNotConfigured
 from jasper.control.restart_broker import MANAGED_UNITS
-from jasper.mic_presence import MicPresence
+from jasper.audio_control.mic_presence import MicPresence
 
 
 def _reg(func, *, module="env", **kw) -> RegisteredCheck:
@@ -249,10 +249,6 @@ def test_streambox_doctor_skips_voice_brain_but_keeps_local_audio_checks():
     )
     assert _harness._doctor_skip_detail(by_name["check_mic_capture"], "streambox")
     assert _harness._doctor_skip_detail(by_name["check_tts_open"], "streambox")
-    assert _harness._doctor_skip_detail(
-        by_name["check_crossover_v2_cloud_pipeline"],
-        "streambox",
-    )
     # Cloud-integration rows the voice module also owns: a streambox has no
     # assistant, so these never register a tool either.
     for name in (
@@ -301,12 +297,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         ran.append("correction")
         return doctor.CheckResult("room correction service", "ok", "ran")
 
-    def check_crossover_v2_cloud_pipeline():
-        ran.append("crossover_v2")
-        return doctor.CheckResult(
-            "crossover v2 cloud pipeline", "fail", "should not run",
-        )
-
     monkeypatch.setattr(_harness, "read_install_profile", lambda: "streambox")
     monkeypatch.setattr(
         _harness,
@@ -326,7 +316,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
                 label="librespot.service",
             ),
             _reg(correction_check, module="correction"),
-            _reg(check_crossover_v2_cloud_pipeline, module="correction"),
         ],
     )
 
@@ -338,7 +327,6 @@ def test_streambox_profile_doctor_keeps_local_audio_groups(monkeypatch):
         ("mic capture", "skipped", _harness.REASON_NOT_INSTALLED),
         ("librespot.service", "ok", ""),
         ("room correction service", "ok", ""),
-        ("crossover v2 cloud pipeline", "skipped", _harness.REASON_NOT_INSTALLED),
     ]
 
 

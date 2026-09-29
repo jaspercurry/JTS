@@ -11,8 +11,8 @@ from typing import Any, Collection, Mapping
 
 import yaml
 
-from jasper.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
-from jasper.camilla_emit import mono_sum_sources
+from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
+from jasper.audio_routes.camilla_emit import mono_sum_sources
 from jasper.json_fields import as_float, finite_float, issue as _issue
 from jasper.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
@@ -24,7 +24,7 @@ from jasper.speaker_layout import (
     WAY_COUNT_BY_MAIN_MODE,
     measurement_target_id,
 )
-from jasper.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
+from jasper.audio_routes.camilla_emit import CHANNEL_SELECT_MIXER as _channel_select_mixer_name
 from ..camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB, STARTUP_LIMITER_CLIP_LIMIT_DB
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
@@ -73,6 +73,7 @@ from ..output_contract import (
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
+from ..graph_types import PEAK_EPS_DB
 from ..program_headroom import PROGRAM_HEADROOM_FILTER, program_peak
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 
@@ -87,11 +88,6 @@ _BASELINE_LIKE_SOURCES = (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE)
 
 ACTIVE_SPLIT_MIXER_PREFIX = "split_active_"
 
-
-# Float slack (dB) on the charged peak. The emitter spells every gain,
-# frequency and q to 4 decimals, so a graph charged exactly can read a hair
-# above unity after the YAML round-trip.
-_CHARGED_PEAK_EPS_DB: float = 1e-3
 
 #: The one NUMERIC refusal in this walk, named apart from the shape refusals
 #: because two other seams key on it rather than re-deriving the condition. A
@@ -606,7 +602,7 @@ def _program_headroom_issues(payload: dict[str, Any]) -> list[dict[str, str]]:
         fields: dict[str, Any] = {"error": str(exc)}
         detail = f"the graph's program peak cannot be evaluated: {exc}"
     else:
-        if peak.db <= _CHARGED_PEAK_EPS_DB:
+        if peak.db <= PEAK_EPS_DB:
             return []
         output = "" if peak.output is None else f" on DAC output {peak.output + 1}"
         fields = {"output": peak.output, "peak_db": round(peak.db, 4), "peak_hz": round(peak.hz, 1)}

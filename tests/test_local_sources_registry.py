@@ -11,7 +11,7 @@ from jasper.local_sources import (
     local_source_lifecycles,
     local_source_park_units,
 )
-from jasper.music_sources import (
+from jasper.playback_state.music_sources import (
     MUSIC_SOURCE_SPECS,
     SOURCE_TO_ACTIVE_KEY,
     Source,
@@ -96,9 +96,9 @@ def test_renderer_active_keys_are_consumed_from_source_registry():
     """
 
     consumers = (
-        "jasper/renderer.py",
-        "jasper/spotify_routing.py",
-        "jasper/volume_coordinator.py",
+        "jasper/audio_control/renderer.py",
+        "jasper/service_state/spotify_routing.py",
+        "jasper/audio_control/volume_coordinator.py",
         "jasper/tools/spotify.py",
         "jasper/tools/transport.py",
     )

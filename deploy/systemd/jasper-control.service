@@ -167,7 +167,7 @@ NoNewPrivileges=true
 #   - /var/lib/jasper-asound/asound.conf, rendered by jasper-render-asound-conf.
 #   - /var/lib/camilladsp/configs/.dsp_apply.lock: the /system USB-latency
 #     control runs the coupling reconcile in-process, which takes the shared
-#     DSP-writer lock there (jasper/dsp_apply.py).
+#     DSP-writer lock there (jasper/dsp_control/dsp_apply.py).
 #   - /var/lib/jasper-intsecrets: Spotify token refreshes from the transport /
 #     volume path and fresh HA status reads from /state.
 #   - /etc/avahi/services/jasper-peer.service when wake-response peering

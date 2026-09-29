@@ -6,17 +6,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Literal
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED
-from jasper.output_topology import OutputTopology
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 
-from .branch_chain import branch_headroom_db
-from .crossover_section import sections_by_role
+from .camilla_yaml import ProgramHeadroomExhausted
 from .candidate_bank import BankedCandidate, CandidateBankRefusal, find_banked_candidate, publish_authored_candidate, load_applied_candidate
 from .baseline_profile import (
     load_applied_baseline_profile_state,
@@ -26,6 +25,7 @@ from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .crossover_v2.topology_prescription import apply_topology_pin
 from .crossover_preview import build_crossover_preview
 from .commission_wiring import resolve_commission_preset
+from .graph_safety import view_from_emitted_text
 from .measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -40,8 +40,11 @@ from .level_trim import declared_driver_gains
 from ._common import MeasurementGraphRefused
 from .measurement_programs import PRESCRIPTION_SECTIONS
 from .profile import ActiveSpeakerPreset, required_driver_roles
+from .program_headroom import graph_headroom_db
 
 COMPOSITION_KIND = "jts_candidate_composition"
+#: What an emitter refusal that names no code of its own is refused as.
+COMPOSITION_INVALID = "composition_invalid"
 DECLARED_CROSSOVER_PROGRAM_ID = "jts_declared_crossover"
 AlignmentSource = Literal["document", "cleared", "saved", "measured", "base"]
 
@@ -50,20 +53,32 @@ def _source(parent: BankedCandidate) -> dict[str, str]:
     return {"fingerprint": parent.fingerprint, "artifact_path": str(parent.path)}
 
 
-def _linearization_entry(filters: Any, *, role: str, sections: Mapping[str, Any], trim_db: float) -> dict[str, Any]:
+def _linearization_entry(filters: Any, *, role: str, roles: Collection[str]) -> dict[str, Any]:
     if (
-        not isinstance(filters, Sequence) or isinstance(filters, (str, bytes))
+        role not in roles or not isinstance(filters, Sequence) or isinstance(filters, (str, bytes))
         or any(not isinstance(item, Mapping) for item in filters)
     ):
         raise CandidateBankRefusal("composition_filters_invalid", f"invalid filters for {role}")
-    return {
-        "filters": [dict(item) for item in filters],
-        "headroom_cost_db": branch_headroom_db(filters, sections=sections.get(role, ()), trim_db=trim_db),
-    }
+    return {"filters": [dict(item) for item in filters]}
+
+
+def _emitted(candidate: MeasuredCrossoverCandidate) -> str:
+    return compile_candidate_config(candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate))
+
+
+def program_charge_db(candidate: MeasuredCrossoverCandidate) -> float:
+    """:func:`~.program_headroom.graph_headroom_db` of the graph composition compiles for
+    ``candidate``, so every judge agrees with the emitter. Past the ceiling, the charge the
+    emitter refused.
+    """
+    try:
+        return graph_headroom_db(view_from_emitted_text(_emitted(candidate)))
+    except ProgramHeadroomExhausted as exc:
+        return exc.charge_db
 
 
 def candidate_from_applied_profile(
-    topology: OutputTopology, applied_profile: Mapping[str, Any],
+    topology: OutputTopology | None, applied_profile: Mapping[str, Any],
     *, find_candidate: Callable[[str], BankedCandidate] | None = None,
 ) -> MeasuredCrossoverCandidate:
     """Look up the applied candidate, migrating pre-bank records once."""
@@ -111,14 +126,13 @@ def _migrate_applied_candidate(
     corrections = snapshot.get("corrections")
     if not isinstance(corrections, Mapping) or set(corrections) != set(required_driver_roles(preset.way_count)):
         raise CandidateBankRefusal("composition_saved_tune_unavailable", "saved driver corrections are missing")
-    sections = sections_by_role(preset.crossover_regions)
     candidate = MeasuredCrossoverCandidate(
         program_id="jts_saved_tune",
         analysis={"measurement_status": "unmeasured", "saved_snapshot_sha256": json_fingerprint(snapshot)},
         source_preset=preset,
         role_attenuations_db={role: values["gain_db"] for role, values in corrections.items()},
         linearization={
-            role: _linearization_entry(filters, role=role, sections=sections, trim_db=corrections[role]["gain_db"])
+            role: _linearization_entry(filters, role=role, roles=corrections)
             for role, filters in snapshot.get("linearization", {}).items()
         },
         blend_correction=snapshot.get("blend_correction", ()),
@@ -210,9 +224,8 @@ def compose_candidate(
         else:
             trims = {role: 0.0 for role in trims}
             linearization = {}
-    sections_by_driver = sections_by_role(preset.crossover_regions)
     linearization = {
-        role: _linearization_entry(entry["filters"], role=role, sections=sections_by_driver, trim_db=trims[role])
+        role: _linearization_entry(entry["filters"], role=role, roles=trims)
         for role, entry in linearization.items()
     }
     roles = required_driver_roles(preset.way_count)
@@ -268,9 +281,11 @@ def compose_candidate(
         blend_correction=selected.get("blend", base.candidate.blend_correction) or (),
         room_correction=room, bass_extension=bass, rear_calibration=rear,
     )
-    # The room set is emitted here so the emitter's headroom charge runs at
-    # compose rather than at apply.
-    prove_candidate_config(candidate, compile_candidate_config(
-        candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate),
-    ))
+    # The room set is emitted here so the emitter's headroom charge is judged
+    # at compose rather than at apply (#5909).
+    try:
+        text = _emitted(candidate)
+    except ProgramHeadroomExhausted as exc:
+        raise CandidateBankRefusal(exc.code, str(exc), evidence=exc.evidence) from exc
+    prove_candidate_config(candidate, text)
     return candidate

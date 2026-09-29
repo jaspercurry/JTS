@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from importlib import import_module
 
 import pytest
 
@@ -15,6 +16,7 @@ from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import (
     refusal_copy,
 )
+from jasper.audio_measurement import evidence_reasons
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
     "refusal_copy": (
@@ -56,7 +58,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "reason_message",
     ),
     "spatial": ("GEOMETRY_RETRY_POSITIONS",),
-    "crossover_v2_flow": ("PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",),
     "capture_dispatch": (
         "_gate_window_ms",
         "_pilot_transfer_by_role",
@@ -65,13 +66,11 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-FLOW_OWNED: frozenset[str] = frozenset(MOVED_NAMES["crossover_v2_flow"])
-
 
 def test_the_flow_defines_none_of_the_moved_names_itself():
     src = pathlib.Path(flow.__file__).read_text(encoding="utf-8")
     tree = ast.parse(src)
-    moved = {s for names in MOVED_NAMES.values() for s in names} - FLOW_OWNED
+    moved = {s for names in MOVED_NAMES.values() for s in names}
 
     redefined: list[str] = []
     for node in ast.walk(tree):
@@ -89,47 +88,6 @@ def test_the_flow_defines_none_of_the_moved_names_itself():
     assert redefined == [], (
         "the flow re-declares names the crossover_v2 package owns: "
         f"{sorted(redefined)}"
-    )
-
-
-def test_nothing_but_the_flow_declares_the_names_the_flow_owns():
-    """The single-owner pin for :data:`FLOW_OWNED`, as absence across the tree.
-
-    For a name the PACKAGE owns, "one definition" is pinned by identity against
-    that owner. These three have no package module — the ``attempt_grading``
-    fold put them where the flow applies them — so the same guarantee has to be
-    read the other way round: no OTHER module may declare the name at all.
-    Walked at any nesting depth, over every product module rather than the
-    handful that import them, because the copy this suite exists to prevent
-    would appear in whichever module found it easier to restate 0.5 than to
-    import it.
-    """
-
-    product = pathlib.Path(flow.__file__).parents[1]
-    owner = pathlib.Path(flow.__file__).resolve()
-
-    declared: list[str] = []
-    for path in sorted(product.rglob("*.py")):
-        if path.resolve() == owner:
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                names = [node.name]
-            elif isinstance(node, ast.Assign):
-                names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-                names = [node.target.id]
-            else:
-                continue
-            declared += [
-                f"{path.relative_to(product.parent)}:{node.lineno}:{n}"
-                for n in names if n in FLOW_OWNED
-            ]
-
-    assert declared == [], (
-        "a second declaration of a name crossover_v2_flow owns: "
-        f"{sorted(declared)}"
     )
 
 
@@ -161,3 +119,30 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
 @pytest.mark.parametrize("layer", ["base", "tune", "room"])
 def test_upstream_mismatch_reasons_are_retired(layer):
     assert f"measurement_candidate_{layer}_mismatch" not in refusal_copy.REASON_REGISTRY
+
+
+@pytest.mark.parametrize("module_name, prefixes", [
+    ('jasper.audio_measurement.evidence_reasons', ''),
+    ('jasper.audio_measurement.rear_evidence', 'REASON_'),
+    ('jasper.audio_measurement.interference_nulls', 'REASON_'),
+    ('jasper.audio_measurement.room_limits', 'REASON_'),
+    ('jasper.audio_measurement.timing_verification', 'REASON_'),
+    ('jasper.active_speaker.crossover_v2.rear_views', ('REASON_', 'REFUSE_')),
+    ('jasper.active_speaker.crossover_v2.feature_classifier', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
+    ('jasper.active_speaker.crossover_v2.feature_classifier.captures', ('CAPTURE_', 'CAPTURES_', 'NO_ADMISSIBLE_', 'NO_FEATURES_', 'PROGRAM_MISSING', 'ROUND_SHAPE_')),
+    ('jasper.active_speaker.round_verdicts', 'REASON_'),
+    ('jasper.active_speaker.round_view_artifacts', 'REASON_'),
+    ('jasper.cli.round_views._common', 'REASON_'),
+    ('jasper.cli.round_views.repeat', 'REASON_'),
+    ('jasper.active_speaker.crossover_v2.round_views.directivity', 'REASON_'),
+])
+def test_every_analysis_reason_is_one_evidence_code_with_a_next_action(module_name, prefixes):
+    constants = {name: value for name, value in vars(evidence_reasons).items()
+                 if name.isupper() and isinstance(value, str)}
+    assert len(constants) == len(set(constants.values()))
+    codes = {value for name, value in vars(import_module(module_name)).items()
+             if name.isupper() and name.startswith(prefixes) and isinstance(value, str)}
+    assert codes and codes <= set(constants.values())
+    for code in codes:
+        spec = refusal_copy.REASON_REGISTRY[code]
+        assert spec.code == code and spec.message and spec.next_action

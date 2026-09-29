@@ -146,7 +146,6 @@ def test_connect_new_rolls_back_on_failure(monkeypatch):
         lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
     )
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
 
     def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
         calls.append(list(cmd))
@@ -285,7 +284,6 @@ def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
         lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
     )
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
 
     def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
         if "connect" in cmd:
@@ -313,7 +311,7 @@ def test_connect_new_never_puts_psk_on_argv(monkeypatch):
 
     monkeypatch.setattr(wifi_setup, "_current_wifi", lambda: None)
     monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-    monkeypatch.setattr(wifi_setup, "_stash_after_connect", lambda *a, **k: None)
+    monkeypatch.setattr(wifi_setup, "_stash_after_saved", lambda *a, **k: None)
 
     def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
         captured.append((list(cmd), stdin_secret))

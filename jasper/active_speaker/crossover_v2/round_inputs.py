@@ -56,6 +56,7 @@ __all__ = [
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
     'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
+    'subject',
 ]
 
 STATE_FILENAME = "state.json"
@@ -368,7 +369,11 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
             else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
         room = {"median": {"code": ROOM_NOT_BANKED}}
-    return {"candidate": _read_json_mapping(artifact_dir / "candidate.json") or {},
+    path = artifact_dir / "candidate.json"
+    # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
+    # so each refuses it by this code. Only a round that banked none has no base.
+    candidate = (_read_json_mapping(path) or {"code": "candidate_malformed"}) if path.is_file() else {}
+    return {"candidate": candidate,
             "manifest": _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME) or {},
             **{f"room_{section}": room.get(section, {})
                for section in ("median", "persistence", "ceiling")}}
@@ -499,3 +504,19 @@ def resolve_set(
         raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])
     row, = matches
     return SetTakes.from_row(row)
+
+
+def subject(
+    inputs: RoundInputs | None, selected: SetTakes | None = None, *, set_id: str | None = None,
+    take_ids: Iterable[str] | None = None, candidate_id: str | None = None,
+) -> dict[str, Any]:
+    """What an answer read, by the catalog's ids (``jasper-round list``); an id
+    that does not apply, or a live bundle no bank holds, is absent (ADR-0344 §2)."""
+    banked = bank_of(inputs) if inputs is not None else None
+    if selected is not None:
+        set_id = selected.set_id
+        candidate_id = candidate_id or selected.capture_basis.get("candidate_id")
+    return {key: value for key, value in (
+        ("round_id", banked.name if banked else None), ("set_id", set_id),
+        ("take_ids", None if take_ids is None else list(take_ids)), ("candidate_id", candidate_id),
+    ) if value is not None}

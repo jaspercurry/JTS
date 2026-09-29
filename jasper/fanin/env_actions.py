@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from jasper.atomic_io import CONFIG_FILE_MODE, env_key_action, locked_upsert_env_file
-from jasper.audio_runtime_settings import RuntimeEnvAction
+from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import remove, upsert
 
 

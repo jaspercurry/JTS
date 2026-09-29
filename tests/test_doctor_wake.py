@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import wake_models
+from jasper.service_state import wake_models
 from jasper.cli.doctor import wake
 
 # -------------------------------------------------- openWakeWord assets
@@ -244,8 +244,8 @@ def test_push_to_talk_only_speaker_needs_both_published_facts(
 ):
     """The derivation ANDs the reconcilers' two published facts — the same
     pairing `configured_wake_legs` requires."""
-    from jasper import mic_presence as mic_presence_mod
-    from jasper.mic_presence import MicPresence
+    from jasper.audio_control import mic_presence as mic_presence_mod
+    from jasper.audio_control.mic_presence import MicPresence
 
     monkeypatch.setattr(
         mic_presence_mod,

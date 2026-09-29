@@ -11,12 +11,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.dsp_apply import same_config_file
-from jasper.output_topology import canonical_fingerprint as _fingerprint
+from jasper.dsp_control.dsp_apply import same_config_file
+from jasper.audio_routes.output_topology import canonical_fingerprint as _fingerprint
 
-from .camilla_yaml import _branch_context, linearization_headroom_db
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER
-from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from .state_paths import baseline_profile_state_path
 from .environment import read_camilla_statefile_config_path
 
@@ -139,48 +137,6 @@ def _frozen_applied_profile(
     }
 
 
-def _profile_branch_context(
-    profile: Mapping[str, Any],
-) -> dict[str, tuple[Any, float]]:
-    """The ``(crossover sections, trim_db)`` context for one profile's charge.
-
-    Rebuilt from the SAME two snapshot fields the graph was emitted from — the
-    preset's crossover regions and the per-driver ``corrections`` gains — via
-    the emitter's own :func:`~jasper.active_speaker.camilla_yaml._branch_context`,
-    so a headroom read back off a profile is evaluated over the chain that
-    profile actually carries.
-
-    ``{}`` when either field is missing or unparseable. That is the same
-    over-estimating fallback ``linearization_headroom_db`` applies to a role
-    absent from a supplied context ("no crossover, no trim"), and it is the
-    right direction here: an over-estimated headroom read makes the DECLARED
-    apply-boundary offset larger than the graph's, which under-corrects the
-    delta probe and leaves the difference visible as ``residual_offset_db``
-    rather than hiding it.
-    """
-    snapshot = profile.get("recomposition_snapshot")
-    if not isinstance(snapshot, Mapping):
-        return {}
-    corrections = snapshot.get("corrections")
-    if not isinstance(corrections, Mapping):
-        return {}
-    try:
-        preset = ActiveSpeakerPreset.from_mapping(dict(snapshot.get("preset") or {}))
-    except (ActiveSpeakerConfigError, TypeError, ValueError):
-        return {}
-    return _branch_context(preset, corrections)
-
-
-def profile_program_headroom_db(profile: Mapping[str, Any] | None) -> float:
-    """The pre-split common attenuation one profile's linearization costs, dB."""
-    linearization = profile_linearization(profile)
-    if not linearization:
-        return 0.0
-    return linearization_headroom_db(
-        linearization, branch_context=_profile_branch_context(profile or {}),
-    )
-
-
 def profile_blend_correction(
     profile: Mapping[str, Any] | None,
 ) -> tuple[Any, ...] | None:
@@ -253,37 +209,6 @@ def profile_driver_corrections(profile: Mapping[str, Any] | None) -> Mapping[str
     ):
         return {}
     return corrections
-
-
-def applied_program_level_delta_db(
-    previous_profile: Mapping[str, Any] | None,
-    applied_profile: Mapping[str, Any] | None,
-) -> float:
-    """dB the emitted graph's broadband level moved across one apply (#1811).
-
-    Negative when the apply made the speaker quieter, the ordinary case: the
-    applied correction's boost is absorbed as a pre-split common attenuation,
-    so the same commanded volume plays quieter the instant the config swaps.
-
-    An input to analysis, never to the speaker's level: the absorption keeps
-    the boosted branch at or below unity (``camilla_yaml.program_headroom_db``)
-    and compensating at main volume would undo it. The consumer is
-    :func:`~jasper.active_speaker.delta_probe.classify_delta_probe`, whose
-    realized-vs-commanded comparison is not mean-centred. Read from the
-    profiles, never assumed; a correction that hands headroom back yields a
-    positive number.
-
-    The pre-split term only (#2611): the absorption precedes the branch split,
-    so ``predicted_branch_sum`` has no place for it, while the per-branch trims
-    are on the commanded axis (:mod:`jasper.active_speaker.crossover_v2.commanded`)
-    and counting them here would remove them twice. Room-PEQ and preference-EQ
-    headroom are not read: a round that changes either can move level this
-    cannot see, which is the remainder the probe's ``residual_offset_db``
-    measures (``delta_probe.VERDICT_LEVEL_MISMATCH``).
-    """
-    return profile_program_headroom_db(previous_profile) - (
-        profile_program_headroom_db(applied_profile)
-    )
 
 
 def load_baseline_profile_state(

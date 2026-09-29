@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Value objects for canonical volume intent.
+
+`jasper.audio_control.volume_coordinator` is the sole mutator of these; this module holds
+the frozen shapes so `jasper.control`, `jasper.mux`, and their tests can
+read the same contract without importing the coordinator class itself.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from jasper.service_state.volume_persistence import FIRST_BOOT_DEFAULT_PCT
+
+if TYPE_CHECKING:
+    from jasper.service_state.volume_persistence import VolumeRecord
+
+
+@dataclass
+class OutboundStamp:
+    """Per-source last-outbound timestamp, for the same-source echo window."""
+    at_mono: float
+
+
+@dataclass(frozen=True)
+class VolumeState:
+    """One canonical interpretation of persisted speaker-volume intent.
+
+    ``listening_level`` is the level to restore after a temporary mute.
+    ``pre_mute_level`` being present is the temporary mute latch.  Every
+    external surface should render ``effective_percent`` rather than
+    interpreting those two persisted fields independently. ``mute_token`` is
+    internal transition identity: it prevents a push renderer's stale
+    pre-mute reading from being mistaken for a later user edit.
+    """
+
+    listening_level: int
+    pre_mute_level: int | None = None
+    mute_token: str | None = None
+
+    @classmethod
+    def from_record(cls, record: "VolumeRecord | None") -> "VolumeState":
+        """Project persistence through the one public volume-state contract."""
+        if record is None:
+            return cls(FIRST_BOOT_DEFAULT_PCT)
+        level = (
+            int(record.listening_level)
+            if record.listening_level is not None
+            else FIRST_BOOT_DEFAULT_PCT
+        )
+        return cls(
+            listening_level=max(0, min(100, level)),
+            pre_mute_level=record.pre_mute_level,
+            mute_token=record.mute_token,
+        )
+
+    @property
+    def effective_percent(self) -> int:
+        return 0 if self.pre_mute_level is not None else self.listening_level
+
+    @property
+    def muted(self) -> bool:
+        # Explicit 0% and temporary mute both assert the same final-output
+        # silence contract. Only temporary mute has a restore target.
+        return self.effective_percent == 0
+
+    @property
+    def restore_percent(self) -> int | None:
+        return self.pre_mute_level

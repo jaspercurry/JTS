@@ -20,8 +20,8 @@ import jasper.active_speaker.applied_tune as applied_tune
 import jasper.active_speaker.baseline_profile as baseline
 import jasper.active_speaker.setup_status as setup
 from jasper.control.server import _make_handler
-from jasper.output_topology_store import save_output_topology
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.volume_curve import percent_to_db
 
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
@@ -729,10 +729,10 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
     wiring."""
     from unittest.mock import patch, MagicMock
     from jasper.control.volume_ops import build_spotify_router_or_none
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_OK, AccountClient, AccountStatus, BuildResult, Router,
     )
-    from jasper.accounts import Account
+    from jasper.service_state.accounts import Account
 
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
     monkeypatch.setenv(
@@ -755,7 +755,7 @@ def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypat
             default_name="jasper",
         )
 
-    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+    with patch("jasper.service_state.spotify_router.build_clients", side_effect=fake_build_clients):
         router = build_spotify_router_or_none()
 
     assert isinstance(router, Router)
@@ -774,7 +774,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
     from unittest.mock import patch
     from jasper.control import volume_ops
     from jasper.control.volume_ops import build_spotify_router_or_none
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_REVOKED, AccountStatus, BuildResult,
     )
 
@@ -801,7 +801,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
             default_name="jasper",
         )
 
-    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+    with patch("jasper.service_state.spotify_router.build_clients", side_effect=fake_build_clients):
         assert build_spotify_router_or_none() is None
         assert build_spotify_router_or_none() is None
         cache_path.write_text("revoked-v2-but-file-changed")
@@ -813,7 +813,7 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
 async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
     import jasper.control.handlers.volume as volume_mod
     import jasper.control.volume_ops as volume_ops_mod
-    import jasper.renderer as renderer_mod
+    import jasper.audio_control.renderer as renderer_mod
     import jasper.tools.transport as transport_mod
 
     router = object()

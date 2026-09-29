@@ -90,8 +90,8 @@ def _cmd_render_flat_cutover(args: argparse.Namespace) -> int:
     the one it claims; see jasper.sound.camilla_yaml.flat_graph_channel_plan).
     """
 
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.output_topology import OutputTopologyError
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
+    from jasper.audio_routes.output_topology import OutputTopologyError
     from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
     try:
@@ -193,12 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     # load, fanin.env wins last) so a reconcile run from the CLI / install.sh —
     # neither of which pre-sources those files — sees the persisted
     # chunksize / target-level keys the emit consults from the live env. The
-    # coupling TOKEN itself does not depend on this hydration:
-    # capture_kwargs_for_coupling() resolves the ring devices
-    # unconditionally (ONE transport, ADR-0100) and reads its wire format
-    # FILE-FRESH (read_declared_ring_wire_format, not os.environ), so even
-    # an un-hydrated CLI run resolves the same ring kwargs. setdefault
-    # semantics keep an explicit shell override winning.
+    # ring format is fixed; setdefault keeps an explicit shell override
+    # winning for the keys that remain configurable.
     from jasper.env_load import load_env_files
 
     load_env_files()

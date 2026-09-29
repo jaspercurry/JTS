@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.usb_mic import GADGET_PATH, INTENT_PATH, usb_mic_enabled
+from jasper.audio_routes.usb_mic import GADGET_PATH, INTENT_PATH, usb_mic_enabled
 from tests.systemd_unit_helpers import seconds_for, values_for
 
 
@@ -181,7 +181,7 @@ def test_usb_mic_start_condition_gates_on_intent_gadget_and_bridge(
     reason: str,
 ) -> None:
     """#3697: the start gate is inline sh, so RUN it — intent (fail-closed and
-    byte-for-byte the intent jasper.usb_mic.read_intent reports), then the UAC2
+    byte-for-byte the intent jasper.audio_routes.usb_mic.read_intent reports), then the UAC2
     capture channel mask, then the AEC bridge. Exit 0 starts the relay; any
     non-zero exit is a clean skip that names its reason.
     """

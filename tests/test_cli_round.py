@@ -27,10 +27,12 @@ import yaml
 
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import baseline_apply
-from jasper import output_topology_store
+from jasper.audio_routes import output_topology_store
 from jasper.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
+from jasper.active_speaker import commissioning_coordinator, measurement_view
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
+from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_design_draft
@@ -40,12 +42,14 @@ from jasper.active_speaker.crossover_v2 import prescription_document as prescrip
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
-from jasper.web import correction_crossover_v2_volume as v2volume
+from jasper.web import correction_crossover_v2_evidence as v2evidence, correction_crossover_v2_volume as v2volume
 from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import run_preset
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, near_field_drivers, run_preset
+from jasper.active_speaker.preflight import PreflightReport
+from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -54,6 +58,7 @@ from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
+from tests.crossover_v2_fixtures import _RecordingCheckStore
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
@@ -63,23 +68,32 @@ from tests.test_arm_walk import (
     FakeMover, FakeSession, FakeWalkClock, LiveThen, _COMPLETE, _STOPPED,
     _IN_FLIGHT_QUIET, _RecordingTrail, _own_signals,
 )
-from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
+from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _inline_context, _seed_baseline_apply_environment
 from tests.test_prescription_document import document, timing_evidence
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
+_ENVELOPE = ("view", "schema", "subject", "parameters")
 
-def test_round_parser_does_not_import_numpy():
+
+def _unwrapped(answer):
+    """An answer's own fields, without the envelope every answer shares."""
+    return {key: value for key, value in answer.items() if key not in _ENVELOPE}
+
+@pytest.mark.parametrize("argv,heavy", [(None, "numpy"), (["list"], "scipy"), (["show", "no-such-round"], "scipy")])
+def test_round_stays_light_enough_for_a_pi_zero(argv, heavy):
+    """The parser loads no NumPy, and the reads load no view stack (ADR-0226)."""
     result = subprocess.run(
         [sys.executable, "-c", (
-            "import json, sys\n"
+            "import contextlib, io, json, sys\n"
             "from jasper.cli import round as cli\n"
-            "imported = 'numpy' in sys.modules\n"
-            "cli.build_parser()\n"
-            "print(json.dumps([imported, 'numpy' in sys.modules]))\n"
-        )], capture_output=True, text=True, check=True, timeout=10,
+            f"imported = {heavy!r} in sys.modules\n"
+            "with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):\n"
+            f"    cli.build_parser() if {argv!r} is None else cli.main({argv!r})\n"
+            f"print(json.dumps([imported, {heavy!r} in sys.modules]))\n"
+        )], capture_output=True, text=True, check=True, timeout=30,
     )
     assert json.loads(result.stdout) == [False, False]
 
@@ -194,7 +208,7 @@ def test_apply_selects_a_banked_fingerprint_before_using_the_full_apply_path(
     )
 
     assert code == cli.EXIT_OK
-    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+    assert receipt["subject"] == {"candidate_id": _FINGERPRINT}
     assert [json.loads(request.data) for request in opener.posts()] == [
         {"expected_candidate_fingerprint": _FINGERPRINT},
     ]
@@ -210,7 +224,7 @@ def test_apply_posts_the_named_fingerprint_when_it_is_the_live_one(
     )
 
     assert code == cli.EXIT_OK
-    assert receipt["candidate_fingerprint"] == _FINGERPRINT
+    assert receipt["subject"] == {"candidate_id": _FINGERPRINT}
     assert "status" not in receipt
     posted = opener.posted_to(wc.APPLY_PATH)
     assert [json.loads(r.data.decode()) for r in posted] == [
@@ -289,7 +303,7 @@ def test_reset_composes_and_applies_the_selected_scope(
                       opener, monkeypatch, capsys)
 
     assert code == cli.EXIT_OK, body
-    candidate = candidate_bank.find_banked_candidate(body["candidate_fingerprint"]).candidate
+    candidate = candidate_bank.find_banked_candidate(body["subject"]["candidate_id"]).candidate
     assert candidate.role_attenuations_db == base.candidate.role_attenuations_db
     assert set(composed_with["document"]["sections"]) == sections
     for section, field in (("driver", "linearization"), ("blend", "blend_correction"),
@@ -361,7 +375,7 @@ def test_apply_document_timing_reaches_record_and_loaded_graph(monkeypatch, tmp_
 
     opener.open = open_and_apply
     code, receipt = _run(["apply", child.fingerprint], opener, monkeypatch, capsys)
-    assert code == 0 and receipt["candidate_fingerprint"] == child.fingerprint
+    assert code == 0 and receipt["subject"] == {"candidate_id": child.fingerprint}
     applied = baseline_profile.load_applied_baseline_profile_state()
     timing = applied["timing"]
     assert timing == (saved or {"delay_us": -37.5, "polarity": "inverted", "provenance": "measured", "measured": {
@@ -455,7 +469,7 @@ def arm_runtime(monkeypatch):
 def arm_plan_answer(monkeypatch):
     def wait(client, args, **kw):
         plan = _run_request.resolve_run(args)
-        return cli.answered({"verb": args.command, "shape": "trial" if plan.plan.candidates else "measure", "schedule": plan.to_dict()})
+        return cli.answer(args.command, schema=None, subject={}, parameters={}, line="", schedule=plan.to_dict())
     monkeypatch.setattr(cli, "_cmd_wait", wait)
 
 
@@ -502,7 +516,7 @@ def test_trial_runs_the_program_its_document_states(
     if program is None:
         assert (code, body["code"], opener.posts()) == (cli.EXIT_REFUSED, "trial_program_unknown", [])
         return
-    assert code == 0 and body["verb"] == "trial" and body["shape"] == "trial"
+    assert code == 0 and body["view"] == "trial"
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     expected = run_preset(program, layout)
     assert (plan.program, plan.layout, plan.mover, plan.candidates) == (program, layout, mover, ("base", fingerprint))
@@ -529,17 +543,26 @@ def test_a_declared_crossover_states_no_trial_program(isolated_candidate_bank, m
     assert not opener.requests
 
 
-@pytest.mark.parametrize("resolution,flags", [({"driver": "document"}, ()), ({"bass": "document"}, ("--mover", "human"))])
-def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags):
+@pytest.mark.parametrize("resolution,flags,repeats", [
+    ({"driver": "document"}, (), 2), ({"bass": "document"}, ("--mover", "human", "--repeats", "3"), 3)])
+def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags,
+                                               repeats):
+    """The dry run states the run it prices: the ladder's levels, and a preset's own repeats when none are typed."""
     fingerprint = bank_trial(resolution)
     silent = _opener()
     code, priced = _run(["trial", fingerprint, "--dry-run", *flags], silent, monkeypatch, capsys)
-    assert (code, priced["verb"], priced["dry_run"], silent.requests) == (0, "trial", True, [])
+    assert (code, priced["view"], priced["schema"], silent.requests) == (
+        0, "trial", ANSWER_SCHEMAS["jasper-round run --dry-run"], [])
     opener = _opener(session='{"session_id": "trial-1"}')
     code, ran = _run(["trial", fingerprint, *flags], opener, monkeypatch, capsys)
     posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
-    assert code == 0 and (priced.pop("program"), priced.pop("mover")) == (posted["program"], posted["mover"])
-    assert {key: value for key, value in priced.items() if key not in ("verb", "dry_run")} == ran["schedule"]
+    assert code == 0 and (priced["subject"], priced["parameters"]) == (ran["subject"], ran["parameters"])
+    assert priced["parameters"] == {**{key: posted[key] for key in ("program", "layout", "mover")},
+                                    "level_db": posted["level"]["level_db"], "levels": posted.get("levels"),
+                                    "repeats": repeats, "driver": None}
+    assert (posted["level"]["level_db"] is None) is bool(posted.get("levels"))
+    assert priced["subject"] == {"candidate_ids": posted["candidates"]}
+    assert _unwrapped(priced) == ran["schedule"]
 
 
 def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_plan_answer):
@@ -564,9 +587,10 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
     ]
 
 
-@pytest.mark.parametrize("candidates,shape", [(None, "measure"), ("base", "trial")])
+@pytest.mark.parametrize("candidates", [None, "base"])
 @pytest.mark.parametrize("source", ["flags", "file"])
-def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, shape, source):
+def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, source):
+    """A plan document states the run its flags would have: the answer names the same plan either way."""
     opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
     argv = ["run", "--program", "room", "--layout", "seat_express", "--level-db", "-25"]
     if candidates:
@@ -584,14 +608,16 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert (plan["artifact_schema_version"], body["run_id"]) == (5, "run-1")
     assert plan["level"]["level_db"] == -25
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
-    assert body["shape"] == shape
+    assert body["subject"] == ({"candidate_ids": [candidates]} if candidates else {})
+    assert body["parameters"] == {"program": "room/seat", "layout": "seat_express", "mover": "human", "level_db": -25,
+                                  "levels": None, "repeats": 1, "driver": None}
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
 
 
 def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys):
     opener = _opener()
     code, body = _run(["run", "--dry-run"], opener, monkeypatch, capsys)
-    assert code == 0 and body["dry_run"] is True and not body["issues"]
+    assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"] and not body["issues"]
     assert not opener.requests
 
 
@@ -634,7 +660,7 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
     selected = run_preset(program, **{flag.removeprefix("--"): value})
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
-    code, _ = _run(argv, opener, monkeypatch, capsys)
+    code, body = _run(argv, opener, monkeypatch, capsys)
     assert code == 0
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.repeats == 1
@@ -642,6 +668,29 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
         pose.place: (pose.repeats if repeats is None else repeats) + selected.room_sweep
         for pose in selected.poses
     }
+    # The answer counts takes per pose and configuration; a room sweep is taken once (ADR-0389).
+    takes = sorted({pose.repeats if repeats is None else repeats for pose in selected.poses}
+                   | ({1} if selected.room_sweep else set()))
+    assert (body["parameters"]["repeats"], body["parameters"]["driver"]) == (
+        takes[0] if len(takes) == 1 else takes, "woofer" if program == "nearfield" else None)
+
+
+@pytest.mark.parametrize("flags,asked", [
+    (["--program", "room", "--layout", "seat_cloud", "--level-db", "-25"],
+     {"program": "room", "layout": "seat_cloud", "level_db": -25}),
+    (["--program", "rear", "--poses", "0,-45,45", "--repeats", "2", "--mover", "human"],
+     {"program": "rear", "poses": [0, -45, 45], "repeats": 2, "mover": "human"}),
+    (["--program", "nearfield", "--poses", _NEAR_FIELD_POSES], {"program": "nearfield", "poses": json.loads(_NEAR_FIELD_POSES)}),
+    (["--program", "speaker", "--candidates", "base,{fp}"], {"program": "speaker", "candidates": ["base", "{fp}"]}),
+    (["--program", "speaker", "--layout", "seat_cloud"], {"program": "speaker", "layout": "seat_cloud"}),
+    (["--program", "nearfield", "--driver", "woofer:rear"], {"program": "nearfield", "driver": "woofer:rear"}),
+])
+def test_a_request_states_the_run_its_flags_state(preflight_ready, bank_trial, monkeypatch, capsys, flags, asked):
+    """`--request` keys the run by the flags' own names: the same dry run, or the same refusal (#5737 A3)."""
+    fingerprint = bank_trial({"driver": "document"})
+    asked = json.loads(json.dumps(asked).replace("{fp}", fingerprint))
+    by_flags = _run(["run", *(flag.replace("{fp}", fingerprint) for flag in flags), "--dry-run"], _opener(), monkeypatch, capsys)
+    assert _run(["run", "--request", json.dumps(asked), "--dry-run"], _opener(), monkeypatch, capsys) == by_flags
 
 
 @pytest.mark.parametrize("repeats", [None, 2])
@@ -661,7 +710,8 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
         argv += ["--repeats", str(repeats)]
     opener = _opener()
     code, body = _run(argv, opener, monkeypatch, capsys)
-    assert code == 0 and body["dry_run"] is True and body["issues"] == []
+    assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"] and body["issues"] == []
+    assert (body["subject"], body["parameters"]["repeats"]) == ({"candidate_ids": list(names)}, repeats or 1)
     assert not opener.requests
     poses = run_preset("rear", "rear_behind").poses
     assert Counter((tuple(row["pose"]), row["candidate_id"]) for row in body["schedule"]) == {
@@ -690,7 +740,7 @@ def test_stop_cancels_only_live_runs(status, session_id, monkeypatch, capsys):
         assert body["detail"]["http"] == 409
         assert not opener.posts()
     else:
-        assert code == cli.EXIT_OK and body == answer
+        assert code == cli.EXIT_OK and _unwrapped(body) == answer
         assert len(opener.posts()) == 1
         assert json.loads(opener.posted_to(wc.CAPTURE_CANCEL_PATH)[0].data) == {"reason": "user_stopped"}
 
@@ -737,7 +787,7 @@ def test_commands_print_composed_measurement_lines(capsys, monkeypatch, verb):
     lines = round_lines(progress)
     assert output.err.splitlines()[:len(lines)] == lines
     if verb == "status":
-        assert json.loads(output.out) == progress
+        assert _unwrapped(json.loads(output.out)) == progress
 
 
 @pytest.mark.parametrize("verb", ["status", "placed", "stop", "wait"])
@@ -822,14 +872,14 @@ def test_never_joined_end_reports_own_reason(verb, reason, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_round_session_dir", lookup)
     code, body = _run([verb, "--run", "run-1", *(["--timeout", "0"] if verb == "wait" else [])],
                       opener, monkeypatch, capsys)
-    expected = {"run_id": "run-1", "status": "stopped", "result": None, "pending": None,
+    expected = {"run_id": "run-1", "result": None, "pending": None,
                 "current": None, "code": reason, "faults": [], "captured": False}
     if verb == "wait":
         assert code == cli.EXIT_REFUSED
         assert body == {"status": "refused", "reason": reason,
                         "detail": {**expected, "status": "terminal"}}
     else:
-        assert code == cli.EXIT_OK and body == expected
+        assert code == cli.EXIT_OK and _unwrapped(body) == {**expected, "state": "stopped"}
     lookup.assert_not_called()
     assert len(opener.requests) == 1
 
@@ -868,8 +918,10 @@ def test_wait_banks_and_returns_packet(preflight_ready, bank_trial, monkeypatch,
     assert code == 0 and calls == [(tmp_path, {
         "view_runner": run_bookkeeping,
     })]
-    assert list(body)[:5] == ["result", "reason", "round_dir", "packet", "picture"]
-    assert body == {"result": "complete", "reason": None, "round_dir": str(tmp_path),
+    assert list(body)[:9] == ["view", "schema", "parameters", "subject", "result", "reason", "round_dir", "packet", "picture"]
+    assert body == {"view": verb, "schema": ANSWER_SCHEMAS["jasper-round wait"], "parameters": {},
+                    "subject": {"round_id": tmp_path.name},
+                    "result": "complete", "reason": None, "round_dir": str(tmp_path),
                     "packet": str(tmp_path / "packet.json"), "picture": str(tmp_path / "frequency.png"),
                     **links,
                     **({"views": views} if verbose else {})}
@@ -958,44 +1010,51 @@ def test_a_pose_set_reads_the_same_spaced_or_joined(poses, azimuths):
     assert tuple(pose.azimuth_deg for pose in program.poses) == azimuths
 
 
-@pytest.mark.parametrize("named", [False, True])
-def test_a_rear_pair_run_composes_its_own_candidate_only_when_none_is_named(
-    named, monkeypatch, tmp_path, isolated_candidate_bank,
+def test_a_rear_pair_at_custom_bearings_plans_branch_takes_on_the_applied_base(
+    monkeypatch, capsys, preflight_ready, isolated_candidate_bank,
 ):
-    """The branches regime demands one candidate, and a rear pair take must
-    measure the woofers raw: with no ``--candidates`` the run composes the
-    applied tune with its rear calibration cleared (issue #5330).
-    """
-    from jasper.active_speaker import candidate_bank
-    from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
+    """#5404 09-20 item 8: a pair run at custom bearings stays a pair, never a
+    summed round. It names no candidate and banks none (ADR-0386)."""
+    code, body = _run(["run", "--program", "rear/pair", "--poses", "0,30", "--dry-run"],
+                      _opener(), monkeypatch, capsys)
 
-    topology, _ = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    applied = publish_authored_candidate(
-        candidate_from_design_draft(topology, load_design_draft(topology=topology))
-    )
-    monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
-                        lambda: {"status": "applied",
-                                 "source": {"measured_candidate_fingerprint": applied.fingerprint}})
-    monkeypatch.setattr(output_topology_store, "load_output_topology_strict", lambda *_args: topology)
-    monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(
-        plan, **kw, candidates={name: candidate_bank.find_banked_candidate(name).candidate
-                          for name in plan.candidates}))
-    argv = ["run", "--program", "rear/pair",
-            *(["--candidates", applied.fingerprint] if named else [])]
+    assert code == cli.EXIT_OK
+    assert [(row["pose"][1], row["candidate_id"], row["graph_scope"], row["regime"]) for row in body["schedule"]] == [
+        (0, "base", "candidate_branches", "branches"), (30, "base", "candidate_branches", "branches")]
+    assert candidate_bank.banked_candidates() == []
 
-    plan = _run_request.resolve_run(cli.build_parser().parse_args(argv)).plan
 
-    measured, = plan.candidates
-    assert [stop.candidate_id for stop in plan.stops] == [measured] * len(plan.stops)
-    assert {stop.regime for stop in plan.stops} == {"branches"}
-    if named:
-        assert measured == applied.fingerprint
-        assert [row.fingerprint for row in candidate_bank.banked_candidates()] == [applied.fingerprint]
-        return
-    assert measured != applied.fingerprint
-    composed = candidate_bank.find_banked_candidate(measured).candidate
-    assert composed.analysis["resolution"]["rear_calibration"] == "cleared"
-    assert composed.analysis["base"]["fingerprint"] == applied.fingerprint
+@pytest.mark.parametrize("choice_id", ["room/seat", "bass/axis@seat_express", "rear/pair", "nearfield/each"])
+def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
+    monkeypatch, preflight_ready, banked_session_level, choice_id,
+):
+    """`--request`, the page's start action and the session door resolve one
+    request to one plan and one level ladder (#5737 A3)."""
+    topology, context = mono_output_topology(), _inline_context()
+    context = replace(context, topology=topology, driver_bands={role.role: role.band for role in context.roles_bands})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": near_field_drivers(topology),
+        "next_action": {"program": "speaker"}})
+    body = next(c for c in measurement_view.round_choices({}, choice_id) if c["id"] == choice_id)["action"]["body"]
+    monkeypatch.setattr(_run_request, "load_output_topology", lambda: topology)
+    by_cli = _run_request.resolve_run(cli.build_parser().parse_args(["run", "--request", json.dumps(body["request"])]))
+    admitted: list = []
+    monkeypatch.setattr(v2host, "preflight_levels", lambda *args: admitted.append(preflight_levels(*args)) or admitted[-1])
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
+    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _topology: (store, store.session_id))
+
+    v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
+
+    by_door, = admitted
+    published = next(payload for path, payload in store.published if path.endswith("/plan.json"))
+    assert AngleCaptureRequest.from_mapping(published) == by_door.plan == by_cli.plan
+    assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
+    assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
 
 
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])
@@ -1010,6 +1069,11 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
 @pytest.mark.parametrize("argv,reason", [
     (["--repeats", "0"], "walk_level_policy_invalid"),
     (["--program", "room", "--mover", "arm"], "walk_mover_mismatch"),
+    (["--request", '{"repeats": 0}'], "walk_level_policy_invalid"),
+    (["--request", '{"program": "room", "layouts": "seat_cloud"}'], "program_plan_shape_invalid"),
+    (["--request", '{"layout": "seat_cloud", "poses": [0]}'], "program_plan_shape_invalid"),
+    (["--request", '{"program": "room"}', "--layout", "seat_cloud"], "program_plan_shape_invalid"),
+    (["--request", '{"program": "room"'], "program_plan_shape_invalid"),
 ])
 def test_run_shape_refusal_is_json(preflight_ready, argv, reason, monkeypatch, capsys):
     code, body = _run(["run", "--wait", *argv], _opener(), monkeypatch, capsys)
@@ -1046,7 +1110,7 @@ def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, c
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate}))
     opener = _opener(session='{"session_id": "trial-1"}')
     code, body = _run(["run", "--program", "room", "--candidates", candidate.fingerprint], opener, monkeypatch, capsys)
-    assert code == 0 and body["shape"] == "trial"
+    assert code == 0 and body["subject"] == {"candidate_ids": [candidate.fingerprint]}
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == [candidate.fingerprint]
     assert {stop["candidate_id"] for stop in plan["stops"]} == {candidate.fingerprint}
@@ -1107,10 +1171,20 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbf
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code, body = _run(["run", "--program", program, "--dry-run"],
-                      opener, monkeypatch, capsys)
-    assert code == (0 if levels else 1)
-    assert body["dry_run"] is True
+    code = cli.main(["run", "--program", program, "--dry-run"], opener=opener)
+    output = capsys.readouterr()
+    answered = json.loads(output.out)
+    if levels:
+        assert (code, answered["schema"]) == (0, ANSWER_SCHEMAS["jasper-round run --dry-run"])
+        body = answered
+    else:
+        assert (code, answered["status"]) == (1, "refused")
+        body = answered["detail"]
+        # The human line is the blocking issue's sentence; the report stays on stdout.
+        issue = next(issue for issue in body["issues"] if issue["blocking"])
+        assert output.err == f"refused ({answered['reason']}): {issue['detail']}\n"
+    # A refused dry run's detail names the run it refused, as the answer would have (ADR-0389).
+    assert (body["subject"], body["parameters"]["program"], body["parameters"]["levels"]) == ({}, "bass/axis", levels or None)
     assert body["admissible_levels_db"] == levels
     expected = [None] * 4 if noise_dbfs is None else levels
     assert [row["offset_db"] for row in body["levels"]] == [level + 18 if level is not None else None for level in expected]
@@ -1150,7 +1224,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     verb, flags, noise, levels,
 ):
     from jasper.active_speaker import bundles, round_bank, plan_run
-    from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
     from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, default_out
@@ -1300,8 +1373,9 @@ def test_run_refusals_keep_their_exit_and_code(
 ):
     """When an arm fact, which only the CLI can see, blocks, the CLI refuses with
     the report's first blocking issue; otherwise it forwards, and the door's own
-    context and preflight refuse. The dry run keeps its report. Either way the
-    answer keeps its exit code, reason and action, and the arm never moves."""
+    context and preflight refuse. The dry run refuses with its report as the
+    detail. Either way the answer keeps its exit code, reason and action, and the
+    arm never moves."""
     arm_runtime.mover.available.return_value = available
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw, **changes))
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan, **changes))
@@ -1315,7 +1389,7 @@ def test_run_refusals_keep_their_exit_and_code(
         monkeypatch.setattr(v2host, "resolve_conductor_context", resolve)
     flags = ["--poses", "0", "--mover", "arm"]
     if source == "plan":
-        plan = AngleCaptureRequest((AngleStop(0, "summed"),), mover="arm")
+        plan = AngleCaptureRequest((AngleStop(0, "summed", purpose="speaker"),), mover="arm")
         path = tmp_path / "arm-plan.json"
         path.write_text(json.dumps(plan.to_dict()))
         flags = ["--plan", str(path)]
@@ -1338,9 +1412,8 @@ def test_run_refusals_keep_their_exit_and_code(
                       *(["--attest-rig-clear"] if attested else []),
                       *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
     assert code == cli.EXIT_REFUSED
-    answer = body["issues"][0] if dry_run else body
-    assert (answer["code"], answer["next_action"]["id"]) == (reason, action)
-    assert dry_run or body["reason"] == reason
+    assert (body["reason"], body["code"], body["next_action"]["id"]) == (reason, reason, action)
+    assert not dry_run or body["detail"]["issues"][0]["code"] == reason
     assert len(opener.posted_to(wc.SESSION_PATH)) == forwarded
     assert forwarded or not opener.posts()
     assert not arm_runtime.mover.moves and not arm_runtime.threads
@@ -1432,7 +1505,7 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
 def test_arm_dry_run_needs_neither_wait_nor_attestation(flags, preflight_ready, arm_runtime, monkeypatch, capsys):
     opener = _opener()
     code, body = _run(["run", "--program", "bass", "--dry-run", *flags], opener, monkeypatch, capsys)
-    assert code == 0 and body["dry_run"] is True
+    assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"]
     assert "walk_rig_clear_not_attested" not in {issue["code"] for issue in body["issues"]}
     assert body["levels"] and not opener.requests and not arm_runtime.threads
     arm_runtime.mover.available.assert_called_once_with()
@@ -1463,12 +1536,13 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
         assert not worker.is_alive()
 
 
-_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "status", "sets", "applied_identity"}
+_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "result", "sets", "applied_identity"}
 
 
 @pytest.mark.parametrize("argv,code,reason", [
     (["list", "--limit", "1"], cli.EXIT_OK, None),
     (["show", "r1"], cli.EXIT_OK, None),
+    (["show", "<r1's bundle>"], cli.EXIT_OK, None),
     (["show", "absent"], cli.EXIT_UNREADABLE, "round_not_found"),
     (["show", "no-manifest"], cli.EXIT_REFUSED, "round_manifest_missing"),
 ])
@@ -1481,8 +1555,9 @@ def test_list_and_show_answer_through_the_shared_contract(tmp_path, monkeypatch,
     next(bank_measure_round(tmp_path / "campaigns", name="no-manifest").rglob("run_manifest.json")).unlink()
     monkeypatch.chdir(tmp_path)
     capsys.readouterr()
+    bundle = round_inputs(tmp_path / "campaigns" / "r1").session_dir
 
-    assert cli.main(argv) == code
+    assert cli.main([str(bundle) if arg == "<r1's bundle>" else arg for arg in argv]) == code
     printed = capsys.readouterr()
     answer = json.loads(printed.out)
     assert printed.err.count("\n") == 1
@@ -1490,9 +1565,10 @@ def test_list_and_show_answer_through_the_shared_contract(tmp_path, monkeypatch,
         assert (answer["status"], answer["reason"]) == (STATUS_BY_CODE[code], reason)
         assert printed.err.startswith(f"{answer['status']} ({reason}): ")
     elif argv[0] == "list":
-        assert (set(answer), answer["truncated"]) == ({"verb", "rounds", "truncated"}, True)
+        assert (set(answer), answer["truncated"]) == ({*_ENVELOPE, "rounds", "truncated"}, True)
         assert [set(row) for row in answer["rounds"]] == [_CATALOG_ROW]
     else:
         selected = resolve_set(round_inputs(tmp_path / "campaigns" / "r1"))
-        assert set(answer) == {"verb", *_CATALOG_ROW}
+        assert set(answer) == {*_ENVELOPE, *_CATALOG_ROW}
+        assert answer["subject"] == {"round_id": "r1"}
         assert [take["take_id"] for group in answer["sets"] for take in group["takes"]] == list(selected.selected_ids)

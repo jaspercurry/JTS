@@ -33,7 +33,7 @@ from jasper.active_speaker.safe_playback import stop_safe_playback_session
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.active_speaker.measurement_programs import program_entries
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
@@ -51,25 +51,25 @@ from ._common import bonded_follower_active
 from jasper.log_event import log_event
 from jasper.platform import wire
 from jasper.platform.uds import mux_socket_command
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
-    topology_hardware_from_state,
 )
-from jasper.output_topology_observation import (
+from jasper.dsp_control.output_topology_observation import (
     clock_domain_report,
     composite_serial_repin_plan,
     declared_hardware_mismatch,
     repin_composite_child_serials,
 )
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     load_output_topology,
     new_topology_draft,
     load_output_topology_snapshot,
     output_topology_mutation,
+    topology_hardware_from_state,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     detected_hardware_adoption_precondition,
     load_state as load_output_hardware_state,
 )
@@ -1030,6 +1030,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
             "rear_calibration", raw,
             rationale="Bank a cardioid rear calibration edited in the wizard.",
         )
+        issues = rear_calibration_issues(candidate)
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
         return exc.to_dict()
@@ -1045,11 +1046,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
         "sound.active_speaker_rear_calibration_bank",
         candidate_fingerprint=published.fingerprint,
     )
-    return {
-        "ok": True,
-        "candidate_fingerprint": published.fingerprint,
-        "issues": rear_calibration_issues(published.candidate),
-    }
+    return {"ok": True, "candidate_fingerprint": published.fingerprint, "issues": issues}
 
 
 def _cardioid_compare_payload(*, cached_only: bool = False) -> dict[str, Any]:

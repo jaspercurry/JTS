@@ -14,7 +14,7 @@ import pytest
 
 from jasper.cli.doctor import _evidence, _shared, renderers
 from jasper.cli.doctor.renderers import _classify_mux_mode
-from jasper.music_sources import MUSIC_SOURCES
+from jasper.playback_state.music_sources import MUSIC_SOURCES
 
 from .doctor_test_support import _fresh_cfg, _grouping_cfg, _make_unit_states_fake
 
@@ -1439,7 +1439,7 @@ def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):
 
 def test_check_spotify_connect_device_redacts_client_build_crash(monkeypatch):
     cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", SPOTIFY_CLIENT_ID="cid")
-    import jasper.spotify_router as spotify_router_mod
+    import jasper.service_state.spotify_router as spotify_router_mod
 
     def _boom(*a, **k):
         raise RuntimeError("token=abcdef0123456789 client build failed")
@@ -1456,8 +1456,8 @@ def test_check_spotify_connect_device_redacts_client_build_crash(monkeypatch):
 def test_check_spotify_connect_device_redacts_devices_fetch_crash(monkeypatch):
     cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaSyTest", SPOTIFY_CLIENT_ID="cid")
     cfg = dataclasses.replace(cfg, spotify_device_name="jts-test-device")
-    import jasper.spotify_router as spotify_router_mod
-    from jasper.accounts import Account
+    import jasper.service_state.spotify_router as spotify_router_mod
+    from jasper.service_state.accounts import Account
 
     class _OkSp:
         def devices(self):

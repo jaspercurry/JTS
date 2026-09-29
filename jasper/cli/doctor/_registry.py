@@ -97,11 +97,6 @@ STREAMBOX_OMITTED_DOCTOR_CHECKS = frozenset({
     "check_mic_card_matches_config",
     "check_mic_capture",
     "check_tts_open",
-    # A streambox has no crossover at all; the ``correction`` module still
-    # owns a cert-SAN check that does apply, so only this one is omitted
-    # rather than the whole module. Its row also folds in the applied-grade
-    # finding, which is equally inapplicable here.
-    "check_crossover_v2_cloud_pipeline",
     # Unlike their voice module neighbours, these need Config fields
     # (voice_provider, API keys, daily_spend_cap_*, integration settings) the
     # streambox doctor cfg (_cli._local_audio_config_from_env) does not

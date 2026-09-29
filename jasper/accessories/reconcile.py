@@ -40,13 +40,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.atomic_io import atomic_write_text
-from jasper.install_profile import (
+from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
 from jasper.local_sources.markers import local_sources_allowed
 from jasper.log_event import log_event
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from jasper.service_units import (
     AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
@@ -54,7 +54,7 @@ from jasper.service_units import (
     run_systemctl as _systemctl,
     show_blocks,
 )
-from jasper.source_intent import source_intent_enabled
+from jasper.audio_routes.source_intent import source_intent_enabled
 from jasper.systemd_probe import unit_state
 
 from . import status as accessory_status
@@ -430,7 +430,7 @@ def _gate_owner_state(*, systemctl: Systemctl) -> str:
       owns that unit with start/stop only (ADR-0217).
 
     Reads ``LoadState``/``UnitFileState`` rather than branching on an exit code,
-    matching ``jasper/source_intent.py``. Any unexpected failure answers
+    matching ``jasper/audio_routes/source_intent.py``. Any unexpected failure answers
     ``absent``, which is the conservative direction: we do not start anything.
     """
     try:

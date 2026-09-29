@@ -13,8 +13,8 @@ from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_LABEL,
     register_passive_only_dac,
 )
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
 from .audio_health_fixtures import _RETIRED_ACTIVE_LANE, _compose
 
 
@@ -27,7 +27,7 @@ def _plan_for(outputd_env: dict[str, str] | None = None):
     """
     from types import SimpleNamespace
 
-    from jasper.transport_coherence import transport_topology_for_coupling
+    from jasper.audio_control.transport_coherence import transport_topology_for_coupling
 
     return SimpleNamespace(
         transport_topology=transport_topology_for_coupling(
@@ -46,7 +46,7 @@ def _armed_active_outputd_env(**overrides: str) -> dict[str, str]:
     resolved rather than spelled, so the premise stays coherent by construction
     instead of shearing the moment the shipped ring wire changes.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
@@ -65,7 +65,7 @@ def _armed_active_outputd_env(**overrides: str) -> dict[str, str]:
 
 
 def _armed_active_camilla_devices() -> dict[str, str]:
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
     )
@@ -78,7 +78,7 @@ def _armed_active_camilla_devices() -> dict[str, str]:
 
 def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **env_overrides):
     """Run ``_read_transport_state`` against the armed-ACTIVE-ring premise."""
-    from jasper import audio_runtime_plan
+    from jasper.audio_control import audio_runtime_plan
 
     outputd_env = _armed_active_outputd_env(**env_overrides)
     devices = _armed_active_camilla_devices()
@@ -93,7 +93,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, capture_device=None, **e
     # `grouping-outputd.env`); the grouping layer is absent on this box.
     monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(env_file))
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
             devices=devices
         ),
@@ -118,7 +118,7 @@ def test_armed_active_ring_reports_only_broken_capture_routes(
     ring-armed outputd against a plan it had invented. There is no token left to
     substitute, which is what closes the class.
     """
-    from jasper.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
+    from jasper.dsp_control.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
 
     plan = _plan_for(_armed_active_outputd_env())
     assert plan.transport_topology.name == TRANSPORT_SHM_RING_ACTIVE
@@ -209,8 +209,8 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     deliberately, permanently silent — trading one false "Audio is ready" for
     another.
     """
-    from jasper import audio_runtime_plan
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from jasper.audio_control import audio_runtime_plan
+    from jasper.active_speaker.graph_selector import build_parked_muted_graph
 
     register_passive_only_dac(monkeypatch)
     topology = _no_lane_active_two_way()
@@ -263,7 +263,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
 
 def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path) -> None:
     """A fresh/reset speaker is intentionally silent, never a hidden outage."""
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_selector import (
         UNCONFIGURED_PARKED_EXIT,
         build_parked_muted_graph,
     )
@@ -297,7 +297,7 @@ def test_corrupt_layout_is_not_relabelled_as_unconfigured_silence(
     monkeypatch, tmp_path
 ) -> None:
     """A safe parked graph does not conceal corrupt persisted intent."""
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from jasper.active_speaker.graph_selector import build_parked_muted_graph
     from tests.test_active_speaker_runtime_contract import _topology
 
     text, graph = build_parked_muted_graph(_topology([]))
@@ -327,10 +327,10 @@ def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> Non
     list, so a single append by any consumer would make every later degraded
     read report the box as parked for the lifetime of jasper-control.
     """
-    from jasper import audio_runtime_plan
+    from jasper.audio_control import audio_runtime_plan
 
     monkeypatch.setattr(
-        "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(devices=None),
     )
     plan = _plan_for()
@@ -349,7 +349,7 @@ def test_transport_state_is_clean_when_the_ring_pair_is_undeclared(monkeypatch) 
     the ordinary healthy shape, not a half-configured one. Reading absence the
     other way put a playing speaker's pair on the parked card.
     """
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
     register_passive_only_dac(monkeypatch)
     state = audio_route_claim._transport_state(

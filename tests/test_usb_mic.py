@@ -36,9 +36,9 @@ from jasper.cli.usb_mic import (
     _split_writer_periods,
     _source_age_percentiles,
 )
-from jasper.music_sources import Source
-from jasper.source_intent import intent_env_key
-from jasper.usb_mic import (
+from jasper.playback_state.music_sources import Source
+from jasper.audio_routes.source_intent import intent_env_key
+from jasper.audio_routes.usb_mic import (
     USB_MIC_LEG_KEY,
     USB_MIC_PRIMARY_LEG,
     USB_MIC_RAW_XVF_LEG,
@@ -1337,7 +1337,7 @@ def test_host_pcm_status_parser_reads_hw_and_application_pointers(
 
 
 def test_status_uses_canonical_speaker_name(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("jasper.usb_mic.runtime_name", lambda: "Kitchen")
+    monkeypatch.setattr("jasper.audio_routes.usb_mic.runtime_name", lambda: "Kitchen")
     status = _status_fixture(tmp_path)
     assert status["label"] == "Kitchen Mic"
     assert "Kitchen Mic" in status["detail"]

@@ -17,7 +17,7 @@ from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
 from jasper.audio_measurement.piston import at_driver_near_field
-from jasper.output_topology import OutputTopology, topology_is_subless_passive_mains
+from jasper.audio_routes.output_topology import OutputTopology, topology_is_subless_passive_mains
 from jasper.speaker_layout import cardioid_cabinet_channels, measurement_target_id, measurement_target_parts
 
 from .measurement import active_driver_targets
@@ -27,8 +27,7 @@ POSE_KIND_SEAT = "seat"
 POSE_KIND_CLOSE = "close"
 #: A pose behind the cabinet, on axis, ``distance_m`` from the back panel
 #: toward the wall -- the cardioid null the turntable arm cannot reach
-#: (issue #5330). Never a legacy inference target: a behind pose always
-#: states its own purpose.
+#: (issue #5330).
 POSE_KIND_BEHIND = "behind"
 POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE, POSE_KIND_BEHIND)
 
@@ -86,9 +85,11 @@ class TuningProgram:
     profile_fallback: bool = True
     graph_evidence: bool = False
     #: Applied layers every take of this purpose plays cleared, and whether its
-    #: base also clears the purpose's own layer (doctrine §1a; ADR-0370).
+    #: base, or its branches take, also clears the purpose's own layer
+    #: (doctrine §1a; ADR-0370, ADR-0386).
     clears: tuple[str, ...] = ()
     base_clears_own: bool = False
+    branches_clear_own: bool = False
 
 
 # Row order is the tuning order; stored documents retain their existing orders.
@@ -112,6 +113,7 @@ _PROGRAM_SECTIONS = (
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
         "Measure the rear woofer", "rear", trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
+        branches_clear_own=True,
     ),
     TuningProgram(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
@@ -166,13 +168,14 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
                  if not (name == PURPOSE_SPEAKER and passive or name == PURPOSE_REAR and not rear))
 
 
-def cleared_layers(purpose: str | None, *, base: bool) -> tuple[str, ...]:
-    """The applied candidate layers a take of ``purpose`` plays cleared, on the
-    run's base or on a candidate it names (ADR-0370)."""
+def cleared_layers(purpose: str | None, *, base: bool, regime: str) -> tuple[str, ...]:
+    """The applied candidate layers a take of ``purpose`` in ``regime`` plays
+    cleared, on the run's base or on a candidate it names (ADR-0370)."""
     row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
     if row is None:
         return ()
-    return row.clears + ((row.candidate_fields[0].name,) if base and row.base_clears_own else ())
+    own = base and row.base_clears_own or regime == REGIME_BRANCHES and row.branches_clear_own
+    return row.clears + ((row.candidate_fields[0].name,) if own else ())
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
@@ -192,34 +195,17 @@ BRANCH_PAIR_DRIVERS = "drivers"
 BRANCH_PAIR_FRONT_REAR = "front_rear"
 BRANCH_PAIRS = (BRANCH_PAIR_DRIVERS, BRANCH_PAIR_FRONT_REAR)
 
-_LEGACY_PURPOSE_BY_KIND = {
-    POSE_KIND_BEARING: PURPOSE_SPEAKER,
-    POSE_KIND_SEAT: PURPOSE_ROOM,
-    POSE_KIND_CLOSE: PURPOSE_REFERENCE,
-}
-
 
 def _validated_purpose(purpose: str | None) -> str:
-    if purpose is None:
-        return PURPOSE_SPEAKER
-    if purpose not in PURPOSES:
+    """The purpose a stop or take names; one that names none refuses (#2902)."""
+    if purpose is None or purpose not in PURPOSES:
         raise ValueError(f"a measurement purpose must be one of {PURPOSES}, got {purpose!r}")
     return purpose
 
 
-def resolved_measurement_purpose(purpose: str | None, kind: str) -> str:
-    """Resolve explicit purpose, or infer the purpose of an old pose."""
-    if purpose is not None:
-        return _validated_purpose(purpose)
-    try:
-        return _LEGACY_PURPOSE_BY_KIND[kind]
-    except KeyError:
-        raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}") from None
-
-
-def validated_capture_purpose(purpose: str | None, kind: str, regime: str) -> str:
-    """Resolve purpose and validate the capture mode supported by the runner."""
-    resolved = resolved_measurement_purpose(purpose, kind)
+def validated_capture_purpose(purpose: str | None, regime: str) -> str:
+    """The purpose a stop names, in a capture mode the runner supports for it."""
+    resolved = _validated_purpose(purpose)
     if regime not in REGIMES:
         raise ValueError(f"a measurement regime must be one of {REGIMES}, got {regime!r}")
     supported = _REGIMES_BY_PURPOSE[resolved]
@@ -239,6 +225,20 @@ def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> s
     if not driver and purpose == PURPOSE_REFERENCE and regime != REGIME_SUMMED:
         raise ValueError(f"a {PURPOSE_REFERENCE} {regime} pose names the one driver it plays")
     return driver
+
+
+def validated_purposes(purposes: Sequence[str], regime: str, drivers: Collection[str]) -> tuple[str, ...]:
+    """What a preset's or a stop's takes serve, each named once. Every purpose,
+    not only the first, must admit the regime and each driver a pose plays
+    alone, so their order never decides what loads (ADR-0383)."""
+    purposes = tuple(purposes)
+    if not purposes or len(set(purposes)) < len(purposes):
+        raise ValueError("a measurement names its purposes, each once")
+    for purpose in purposes:
+        validated_capture_purpose(purpose, regime)
+        for driver in drivers:
+            validated_pose_driver(driver, regime=regime, purpose=purpose)
+    return purposes
 
 
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
@@ -265,12 +265,11 @@ def run_purpose(banked: str | None) -> str:
 
 
 def run_purposes(banked: str) -> tuple[str, ...]:
-    """The primary purpose and co-purposes of a run manifest's preset."""
+    """The purposes of a run manifest's preset, its program's first."""
     try:
-        row = preset(banked)
+        return preset(banked).purposes
     except UnknownPresetError:
         return (run_purpose(banked),)
-    return (row.purpose, *row.co_purposes)
 
 
 def gate_exemption(purpose: str | None, *, driver: str = "", distance_m: float | None = None) -> str | None:
@@ -373,7 +372,8 @@ class Preset:
     offers (ADR-0366 §6)."""
     preset: str
     poses: tuple[ProgramPose, ...]
-    purpose: str = PURPOSE_SPEAKER
+    #: What its takes serve, its program's first (ADR-0336, ADR-0383).
+    purposes: tuple[str, ...]
     regime: str = REGIME_PER_DRIVER
     mover: str | None = None
     layout: str = ""
@@ -381,7 +381,6 @@ class Preset:
     stimulus: Mapping[str, Any] | None = None
     room_sweep: bool = False
     branch_pair: str = BRANCH_PAIR_DRIVERS
-    co_purposes: tuple[str, ...] = ()
     #: The named layouts this preset offers; ``layout`` is the one these poses are,
     #: or :data:`CUSTOM_LAYOUT` for an inline list (ADR-0366 §6).
     layouts: tuple[str, ...] = ()
@@ -389,17 +388,16 @@ class Preset:
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement preset must contain at least one pose")
-        validated_capture_purpose(self.purpose, POSE_KIND_BEARING, self.regime)
-        for purpose in self.co_purposes:
-            if purpose not in PURPOSES or purpose == self.purpose or self.co_purposes.count(purpose) > 1:
-                raise ValueError("co_purposes must be distinct from each other and the primary purpose")
-            validated_capture_purpose(purpose, POSE_KIND_BEARING, self.regime)
+        object.__setattr__(self, "purposes", validated_purposes(
+            self.purposes, self.regime, [pose.driver for pose in self.poses]))
         validated_branch_pair(self.branch_pair, self.regime)
-        for pose in self.poses:
-            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
-                (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
+                (set(self.purposes) != {PURPOSE_SPEAKER} or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
+
+    @property
+    def purpose(self) -> str:
+        return self.purposes[0]
 
     @property
     def mic_move_count(self) -> int:
@@ -528,13 +526,14 @@ def _load_presets(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
-        unknown = set(row) - {"preset", "layout", "layouts", "purpose", "regime", "levels", "stimulus",
-                              "room_sweep", "branch_pair", "co_purposes"}
+        unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "levels", "stimulus",
+                              "room_sweep", "branch_pair"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
             preset_id = _text(row["preset"], f"preset {index} id")
             layout = _text(row["layout"], f"preset {index} layout")
+            purposes = row["purposes"]
         except KeyError as exc:
             raise ValueError(f"preset {index} is missing {exc.args[0]}") from None
         offered = row.get("layouts", [layout])
@@ -553,20 +552,18 @@ def _load_presets(
         levels = row.get("levels")
         if levels not in (None, "auto"):
             raise ValueError(f"preset {preset_id} levels must be 'auto', got {levels!r}")
-        co_purposes = row.get("co_purposes", [])
-        if not isinstance(co_purposes, list):
-            raise ValueError("co_purposes must be a list")
+        if not isinstance(purposes, list):
+            raise ValueError(f"preset {preset_id} purposes must be a list")
         presets[preset_id] = Preset(
             preset_id,
             layouts[layout],
-            purpose=row.get("purpose", PURPOSE_SPEAKER),
+            purposes=tuple(_text(value, f"preset {preset_id} purpose") for value in purposes),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
             layout=layout, layouts=tuple(offered), levels=levels,
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
-            co_purposes=tuple(_text(value, "co-purpose") for value in co_purposes),
         )
     named = {name: (poses, movers.get(name)) for name, poses in layouts.items()}
     return MappingProxyType(presets), MappingProxyType(named)
@@ -600,9 +597,10 @@ def preset(name: str) -> Preset:
     return found
 
 
-def run_preset(name: str, layout: str | None = None, poses: str | None = None) -> Preset:
+def run_preset(name: str, layout: str | None = None, poses: str | Sequence[Any] | None = None) -> Preset:
     """Resolve a run's preset (a bare program name is its first preset) at a named
-    layout it offers, or at an inline JSON pose list or bearing list (ADR-0298,
+    layout it offers, or at an inline list of pose objects or whole-degree bearings,
+    given as a list or as text: a JSON list or comma-separated bearings (ADR-0298,
     ADR-0366 §6)."""
     selected = preset(name)
     if layout is not None:
@@ -612,12 +610,13 @@ def run_preset(name: str, layout: str | None = None, poses: str | None = None) -
         selected = replace(selected, layout=layout, poses=layout_poses, mover=mover)
     if poses is None:
         return selected
-    if poses in _LAYOUTS:
-        raise PosesNameALayoutError(poses)
-    rows = json.loads(poses) if poses.lstrip().startswith("[") else [
-        {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
+    if isinstance(poses, str):
+        if poses in _LAYOUTS:
+            raise PosesNameALayoutError(poses)
+        poses = json.loads(poses) if poses.lstrip().startswith("[") else [int(value) for value in poses.split(",")]
     return replace(selected, layout=CUSTOM_LAYOUT, poses=tuple(
-        _pose(value, CUSTOM_LAYOUT, index) for index, value in enumerate(rows)))
+        _pose({"azimuth_deg": value, "elevation_deg": 0} if isinstance(value, int) else value, CUSTOM_LAYOUT, index)
+        for index, value in enumerate(poses)))
 
 
 def plan_poses(preset: Preset, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:

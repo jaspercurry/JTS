@@ -45,7 +45,7 @@ from jasper.audio_measurement.room_limits import (
     ROOM_PEQ_Q_MIN,
 )
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import PeqFilter, total_positive_boost_db
 from jasper.json_fields import finite_float, issue, require_sha256_hex
 
@@ -407,14 +407,12 @@ class MeasuredCrossoverCandidate:
     """A v2 measured-crossover proposal: required trims + optional alignment.
 
     ``linearization`` entries come in two shapes: a FITTED role
-    (``linearization_fit.LinearizationFit.to_dict``) and a PRESCRIBED role
-    (``filters``, ``prescribed_by``, ``mic_tier``, ``headroom_cost_db`` and
-    deliberately no fit-quality fields, since a prescription measured nothing),
-    so every reader must treat a fit-quality key as OPTIONAL rather than a shape
-    guarantee. Only the compact fit result is persisted, never the underlying
-    ``EnvelopeCurve``. ``linearization_outcome`` is the WHY behind the FITTED
-    half only: a candidate may read ``fit_failed`` while carrying prescribed
-    filters, and the entry's own ``prescribed_by`` is what distinguishes them.
+    (``linearization_fit.LinearizationFit.to_dict``) and a COMPOSED role
+    (``filters`` only: ``candidate_parts.compose_candidate`` keeps nothing
+    else), so every reader must treat a fit-quality key as OPTIONAL rather than
+    a shape guarantee. Only the compact fit result is persisted, never the
+    underlying ``EnvelopeCurve``. ``linearization_outcome`` is the WHY behind
+    the FITTED half only.
 
     ``trim_decision`` is WHICH trim pair ``role_attenuations_db`` came from,
     never those dB: ``{"strategy", "committed_side", "anchor_drift_db"}``. It

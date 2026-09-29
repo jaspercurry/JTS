@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 
 from ...log_event import log_event
-from ...volume_owner import (
+from jasper.audio_resources.volume_owner import (
     ClaimKind,
     VolumeClaimHandle,
     VolumeClaimRefused,
@@ -34,7 +34,7 @@ class MeasurementVolumeClaim:
     """One session-measurement claim, taken and given back through the owner.
 
     Construct with the process's owner
-    (:func:`~jasper.volume_owner.volume_owner`), never a freshly minted one: a
+    (:func:`~jasper.audio_resources.volume_owner.volume_owner`), never a freshly minted one: a
     second owner over one fader defeats the arbitration.
     """
 
@@ -48,9 +48,9 @@ class MeasurementVolumeClaim:
         Idempotent for the same level — two callers (the plan's
         :class:`OwnerVolumeDoor` and :meth:`~.session.TuningSession.open`) ask
         for one claim — and raises
-        :class:`~jasper.volume_owner.VolumeClaimRefused` on a re-acquire at a
+        :class:`~jasper.audio_resources.volume_owner.VolumeClaimRefused` on a re-acquire at a
         different level. Moving a held claim is
-        :meth:`~jasper.volume_owner.VolumeOwner.relevel`, not this verb. The
+        :meth:`~jasper.audio_resources.volume_owner.VolumeOwner.relevel`, not this verb. The
         handle is stored only once ``acquire_level`` returns one, so a raised
         acquire leaves nothing held and :meth:`release` is then a no-op.
         """
@@ -160,7 +160,7 @@ class OwnerVolumeDoor:
         ``declare_household_level_db`` answers ``True`` both for a written fader
         and for a level merely RECORDED behind a higher-ranked claim; the
         discriminator between them is
-        :meth:`~jasper.volume_owner.VolumeOwner.declared_level_db`, and the
+        :meth:`~jasper.audio_resources.volume_owner.VolumeOwner.declared_level_db`, and the
         recorded case is ``DEFERRED`` rather than ``FAILED`` so the drain does
         not fall to its −60 dB emergency rung.
         """

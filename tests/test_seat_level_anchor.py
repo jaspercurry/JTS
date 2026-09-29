@@ -225,3 +225,19 @@ def test_pose_reader_banks_declared_geometry_and_supplied_offset(monkeypatch, of
     monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda: geometry)
     assert provenance.read_pose(arm_offset_deg=offset) == {"geometry": geometry.to_dict(), "arm_offset_deg": offset}
     assert provenance.read_pose() == {"geometry": geometry.to_dict(), "arm_offset_deg": None}
+
+
+def test_an_unreadable_rig_is_named_in_the_pose_and_its_mismatch(monkeypatch):
+    """Declared but unreadable is not "nothing declared", so the anchor never reads it as unknown (ADR-0388)."""
+    from jasper.active_speaker import anchor_provenance as provenance
+    from jasper.audio_measurement import measurement_geometry
+
+    def unreadable():
+        raise measurement_geometry.GeometryFieldError("front_wall_m", "front_wall_m is no longer read")
+
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", unreadable)
+    pose = provenance.read_pose(arm_offset_deg=12.5)
+    assert pose == {"geometry": None, "geometry_unreadable": "front_wall_m", "arm_offset_deg": 12.5}
+    banked = {"pose": {"geometry": {"distance_m": 2.0}, "arm_offset_deg": 12.5}}
+    assert provenance.provenance_mismatches(banked, graph=None, pose=pose)["anchor_pose_mismatch"] == (
+        "geometry unreadable: front_wall_m")

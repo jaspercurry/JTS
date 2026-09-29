@@ -43,6 +43,7 @@ from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import GATE_SWEEP_REFERENCE_BAND_HZ
 from jasper.audio_measurement.calibration import CalibrationCurve, apply_calibration_curve
 from jasper.audio_measurement.deconv import cap_capture_length
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
 from jasper.audio_measurement.gating import (
     PHASE_GATE_LEAD_MS,
@@ -67,11 +68,10 @@ from .feature_optics import (
     detrend,
     feature_q,
 )
-from .round_captures import PoseCapture, RoundCapturesRefused, discover_captures, document_capture_id, played_graph_fingerprint
+from .round_captures import PoseCapture, discover_captures, document_capture_id, played_graph_fingerprint
 from .record_index import reopen_measurement_capture
 from .position_cycle import take_artifact_path
 
-SCHEMA_VERSION = 1
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
 
 #: The ladder, shortest first. It reaches 20 ms because the contested
@@ -311,7 +311,7 @@ def _read_curves(
     for capture in captures:
         reference_band = intersect_bands(REFERENCE_BAND_HZ, capture.radiated_band_hz)
         if reference_band is None:
-            raise RoundCapturesRefused(
+            raise EvidenceUnavailable(
                 REFUSE_REFERENCE_BAND_EMPTY,
                 {
                     "capture": capture.capture_id,
@@ -1064,12 +1064,12 @@ def _prepare(
     """
     identities = {(cap.candidate_id, cap.graph_fingerprint) for cap in captures}
     if len(identities) > 1:
-        raise RoundCapturesRefused("gate_sweep_mixed_graphs", {
+        raise EvidenceUnavailable("gate_sweep_mixed_graphs", {
             "graphs": sorted(identities),
             "action": "Select one candidate/graph, or use windows with an exact capture ID.",
         })
     if len(captures) < 2:
-        raise RoundCapturesRefused(
+        raise EvidenceUnavailable(
             REFUSE_SINGLE_POSE,
             {
                 "captures": [cap.capture_id for cap in captures],
@@ -1103,7 +1103,7 @@ def sweep_features(
     a caller with none passes ``None``. Numbers banked from here need
     :func:`frame_descriptor`'s block beside them.
 
-    Raises :class:`~.round_captures.RoundCapturesRefused` on fewer than two
+    Raises :class:`EvidenceUnavailable` on fewer than two
     poses, :exc:`ValueError` on an unusable ladder or an off-grid bin.
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
@@ -1133,7 +1133,7 @@ def sweep_round(
     included, and reported under ``features``. A selected capture that fails
     its binding is left out and named under ``omitted``.
 
-    Raises :class:`RoundCapturesRefused` naming the missing input.
+    Raises :class:`EvidenceUnavailable` naming the missing input.
     """
     rungs, wanted = _validated(rungs_ms, at_hz)
     omitted: list[dict[str, str]] = []
@@ -1144,12 +1144,11 @@ def sweep_round(
     ), role=role, omitted=omitted)
     try:
         grid, reads, sigma, axes = _prepare(captures, rungs)
-    except RoundCapturesRefused as exc:
+    except EvidenceUnavailable as exc:
         exc.detail["omitted"] = omitted
         raise
     cache: HostCurves = {}
     return {
-        "schema_version": SCHEMA_VERSION,
         "generated_by": GENERATED_BY,
         "round_dir": str(Path(round_dir)),
         "frame": frame_descriptor(rungs, grid),

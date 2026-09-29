@@ -5,7 +5,7 @@
 """Calendar voice tools — read-only views of a household member's
 Google Calendar.
 
-Backed by `jasper.google_creds.GoogleClients`; each tool resolves the
+Backed by `jasper.service_state.google_creds.GoogleClients`; each tool resolves the
 model's `account` arg ("" → default registered account, or a named
 member like "brittany"), refreshes that account's OAuth token, builds
 a `calendar` v3 service, and returns a flat dict the model can read
@@ -26,7 +26,7 @@ from . import fence_untrusted, tool
 from .google_errors import api_error, no_account_error, no_credentials_error
 
 if TYPE_CHECKING:
-    from ..google_creds import GoogleClients
+    from jasper.service_state.google_creds import GoogleClients
 
 
 # Cap on items per response. Voice output is slow (~3 words/second) and

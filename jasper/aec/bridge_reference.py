@@ -24,7 +24,7 @@ import time
 
 import numpy as np
 
-from jasper.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
+from jasper.playback_state.dsp_numpy import butter2_highpass_sos, resample_poly, sosfilt
 from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.aec.bridge_telemetry import (
     DropLogDebouncer,

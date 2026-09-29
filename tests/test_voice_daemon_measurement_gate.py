@@ -32,10 +32,10 @@ import numpy as np
 import pytest
 
 from jasper.tts_playout import TtsPlayout
-from jasper.audio_buffer import InputFrame
+from jasper.audio_control.audio_buffer import InputFrame
 from jasper.cues.manager import AudioCueManager
-from jasper.mic_mute_persistence import read_mic_muted, write_mic_muted
-from jasper.timers import Timer
+from jasper.service_state.mic_mute_persistence import read_mic_muted, write_mic_muted
+from jasper.service_state.timers import Timer
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.voice.turn_lifecycle import InputAdmissionClosed
 from tests._async_wait import wait_signalled

@@ -8,8 +8,8 @@ import dataclasses
 
 import pytest
 
-import jasper.output_hardware as output_hardware
-from jasper.output_hardware import (
+import jasper.audio_routes.output_hardware as output_hardware
+from jasper.audio_routes.output_hardware import (
     active_dac_profile_id,
     load_state,
     published_dac_id,
@@ -18,7 +18,7 @@ from jasper.output_hardware import (
 
 from jasper.audio_hardware import dac
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputCardFact,

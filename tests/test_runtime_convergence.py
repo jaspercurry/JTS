@@ -25,9 +25,9 @@ from tests.active_speaker_fixtures import (
 )
 
 from jasper.active_speaker import runtime_convergence
-from jasper.active_speaker.runtime_contract import parked_safe_graph_decision
-from jasper.output_topology import OutputTopology
-from jasper.output_topology_store import (
+from jasper.active_speaker.graph_selector import parked_safe_graph_decision
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.audio_routes.output_topology_store import (
     read_topology_fingerprint_stamp,
     statefile_topology_stamp_path,
     statefile_unproved_stamp_path,
@@ -217,7 +217,7 @@ def test_post_publication_fsync_failure_does_not_restore_old_graph(
 def test_graph_writer_cannot_enter_between_park_and_commit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from jasper.dsp_apply import camilla_graph_mutation
+    from jasper.dsp_control.dsp_apply import camilla_graph_mutation
 
     topology = _topology([])
     lock_path = tmp_path / "graph.lock"

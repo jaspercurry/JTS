@@ -43,7 +43,7 @@ from pathlib import Path
 class LegReviewSpec:
     """Review metadata for one wake-event leg.
 
-    Tokens match jasper.wake_legs' frozen on-disk vocabulary and the
+    Tokens match jasper.playback_state.wake_legs' frozen on-disk vocabulary and the
     fired_legs CSV. Score/audio column names are explicit because the
     original on/off/dtln columns predate the regular chip column shape.
     """

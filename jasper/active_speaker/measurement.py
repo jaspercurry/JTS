@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputTopology,
     canonical_fingerprint,
     main_speaker_groups,

@@ -94,7 +94,7 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
     conductor = _conductor(FakeSeams(check=lambda _: _analysis(locations=(), pilot_snr_ok=False)),
                            index_phase_map={1: "check"})
     manifest = RunManifest("check", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
-    manifest.begin({"index": 1, "candidate_id": "base", "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}},
+    manifest.begin({"index": 1, "candidate_id": "base", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}},
                    attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
@@ -102,8 +102,7 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
     program = compose_plan_program(conductor, spec, None, context=plan_context())
     record = {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "check", "program": program.to_dict()}
     records.enrich(WiredCaptureAnswer(wav=b"", program=program.to_dict()), record)
-    records.after_bank(record, record["take_id"])
-    verdict = assessor(analyze(record, record["take_id"]), phase="check", program=program)
+    verdict = assessor(analyze(record), phase="check", program=program)
     read.assert_called_once_with()
     assert (verdict.fault, verdict.next) == (
         ("measurement_output_muted", "stop") if muted else ("locate_failed", "fix_and_retake"))
@@ -274,7 +273,7 @@ def test_a_round_banks_the_branch_diagnostic_its_analysis_carried(diagnostic):
     manifest = RunManifest("branches", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
     records = SimpleNamespace(enrich=None, after_bank=None)
     bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
-    manifest.begin({"index": 1, "candidate_id": "candidate",
+    manifest.begin({"index": 1, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"],
                     "pose": {"kind": "bearing", "deg": -20, "elevation_deg": 0}},
                    attempt=1, pose_index=0)
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
@@ -449,7 +448,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
     rung = None
     for attempt in (1, 2):
-        manifest.begin({"index": 1, "candidate_id": "candidate", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
+        manifest.begin({"index": 1, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
         program = compose_plan_program(conductor, spec, rung, context=plan_context())
         gain = program.segment("sweep_w").gain_db
@@ -461,8 +460,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
         record = {"take_id": f"take-{attempt}", "index": 1, "attempt": attempt,
                   "phase": "measure", "program": program.to_dict()}
         records.enrich(capture, record)
-        records.after_bank(record, record["take_id"])
-        analysis = analyze(record, record["take_id"])
+        analysis = analyze(record)
         verdict = assessor(analysis, phase="measure", program=program)
         assert verdict.next == ("retake_louder" if attempt == 1 else "accept")
         assert verdict.ok and verdict.fault is None

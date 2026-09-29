@@ -13,9 +13,9 @@ from typing import Any, AsyncIterator, Callable, Mapping, cast
 
 from jasper.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
-from jasper.camilla import CamillaUnavailable
-from jasper.dsp_apply import dsp_writer_lock
-from jasper.volume_owner import volume_owner
+from jasper.audio_control.camilla import CamillaUnavailable
+from jasper.dsp_control.dsp_apply import dsp_writer_lock
+from jasper.audio_resources.volume_owner import volume_owner
 
 from ..candidate_bank import CandidateBankRefusal, find_banked_candidate
 from ..design_draft import load_design_draft

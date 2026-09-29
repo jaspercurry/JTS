@@ -13,9 +13,9 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
-from jasper.music_sources import Source
-from jasper import source_events
-from jasper.source_events import classify_source_signal, inotify_changed_names
+from jasper.playback_state.music_sources import Source
+from jasper.service_state import source_events
+from jasper.service_state.source_events import classify_source_signal, inotify_changed_names
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields

@@ -35,7 +35,7 @@ from jasper.biquad import (
     filter_response_complex,
     filter_response_db,
 )
-from jasper.camilla_stereo_prefix import emit_filter_spec as _emit_filter_spec
+from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec as _emit_filter_spec
 import numpy as np
 import pytest
 

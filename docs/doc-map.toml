@@ -71,7 +71,7 @@ code = [
   "jasper/tools/packs.py",
   "jasper/tools/__init__.py",
   "jasper/transit/__init__.py",
-  "jasper/music_sources.py",
+  "jasper/playback_state/music_sources.py",
   "jasper/voice/catalog.py",
   "jasper/audio_hardware/dac.py",
 ]
@@ -133,17 +133,16 @@ docs = [
 id = "audio-routing-and-renderers"
 safety = "audio-output-risk"
 code = [
-  "jasper/music_sources.py",
+  "jasper/playback_state/music_sources.py",
   "jasper/busctl.py",
   "jasper/local_sources/**",
   "jasper/mux.py",
-  "jasper/renderer.py",
-  "jasper/source_[es]*.py",
-  "jasper/camilla.py",
-  "jasper/camilla_config_contract.py",
-  "jasper/camilla_latency.py",
-  "jasper/output_hardware.py",
-  "jasper/output_topology.py",
+  "jasper/audio_control/renderer.py",
+  "jasper/audio_control/camilla.py",
+  "jasper/dsp_control/camilla_config_contract.py",
+  "jasper/dsp_control/camilla_latency.py",
+  "jasper/audio_routes/output_hardware.py",
+  "jasper/audio_routes/output_topology.py",
   "jasper/speaker_layout.py",
   "deploy/alsa/**",
   "deploy/lib/jasper-asound-render.sh",
@@ -167,6 +166,8 @@ code = [
   "jasper/fanin/**",
   "c/jts-ring-ioplug/**",
   "jasper/bluetooth/**",
+  "jasper/playback_state/source_state.py",
+  "jasper/service_state/source_events.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -194,10 +195,10 @@ safety = "voice-runtime"
 code = [
   "jasper/mic_capture.py",
   "jasper/tts_playout.py",
-  "jasper/tts_routing.py",
+  "jasper/service_state/tts_routing.py",
   "jasper/voice/**",
   "jasper/voice_daemon.py",
-  "jasper/vad.py",
+  "jasper/service_state/vad.py",
   "jasper/tools/**",
   "jasper/tools/tool_state.py",
   "jasper/tools/tool_catalog_view.py",
@@ -227,11 +228,11 @@ code = [
   # high-churn, so this intentionally accepts false positives on non-wake
   # edits (the lookup is advisory — see header).
   "jasper/voice_daemon.py",
-  "jasper/wake.py",
-  "jasper/openwakeword_guard.py",
-  "jasper/wake_models.py",
-  "jasper/wake_events.py",
-  "jasper/wake_ports.py",
+  "jasper/service_state/wake.py",
+  "jasper/service_state/openwakeword_guard.py",
+  "jasper/service_state/wake_models.py",
+  "jasper/service_state/wake_events.py",
+  "jasper/service_state/wake_ports.py",
   "wake_training/**",
   "jasper/web/wake_setup.py",
   "jasper/web/wake_corpus_setup.py",
@@ -251,11 +252,11 @@ code = [
   "jasper/cli/aec_*.py",
   "jasper/aec/**",
   "jasper/cli/enhanced_aec_install.py",
-  "jasper/enhanced_aec.py",
+  "jasper/audio_routes/enhanced_aec.py",
   "jasper_aec3/**",
   "jasper/cli/xvf_firmware_update.py",
   "jasper/aec_engines/**",
-  "jasper/audio_profile_state.py",
+  "jasper/runtime_config/audio_profile_state.py",
   "jasper/audio_validation*.py",
   "jasper/cli/audio_hw_validate.py",
   "jasper/audio_input_view.py",
@@ -275,6 +276,11 @@ code = [
   "deploy/systemd/jts-mic.slice",
   "deploy/udev/99-jasper-aec-reconcile.rules",
   "scripts/xvf-interrogate.sh",
+  "jasper/audio_resources/audio_validation_artifacts.py",
+  "jasper/audio_control/audio_validation_hardware_checks.py",
+  "jasper/audio_control/audio_validation_probes.py",
+  "jasper/audio_control/audio_validation_readiness.py",
+  "jasper/audio_routes/audio_validation_route.py",
 ]
 docs = [
   # Current truth for this subsystem: the reference/transport contract and the
@@ -322,27 +328,41 @@ safety = "audio-output-risk"
 code = [
   "jasper/control/state_aggregate.py",
   "jasper/volume_*.py",
-  "jasper/volume_coordinator.py",
+  "jasper/audio_control/volume_coordinator.py",
   "jasper/tools/audio.py",
   "jasper/sound/**",
-  "jasper/camilla_stereo_prefix.py",
+  "jasper/audio_routes/camilla_stereo_prefix.py",
   # The FilterSpec/PeqFilter/boost-headroom contract and the biquad evaluator
   # that preference EQ, headroom and the tuning fits all predict with.
   "jasper/biquad.py",
   # Shared with audio-routing-and-renderers: it owns the device defaults and
   # the volume_limit door.
-  "jasper/camilla_config_contract.py",
+  "jasper/dsp_control/camilla_config_contract.py",
   # Renders the one devices block; volume_limit is 0.0 by construction.
-  "jasper/camilla_emit.py",
-  "jasper/camilla_latency.py",
+  "jasper/audio_routes/camilla_emit.py",
+  "jasper/dsp_control/camilla_latency.py",
   "jasper/web/sound_setup.py",
   "jasper/web/sound_profile_apply.py",
-  "jasper/dsp_apply.py",
+  "jasper/dsp_control/dsp_apply.py",
   # The BlueALSA probe backs the Bluetooth source's volume carrier:
   # volume_coordinator.py and volume_observers.py both import
   # `active_transport_path` from it, so a change to the probe's shape or its
   # negative-cache behaviour reaches the volume path directly.
-  "jasper/bluealsa_probe.py",
+  "jasper/device_probe/bluealsa_probe.py",
+  "jasper/audio_resources/volume_owner.py",
+  "jasper/service_state/volume_persistence.py",
+  "jasper/audio_control/volume_carrier.py",
+  "jasper/audio_control/volume_echo.py",
+  "jasper/audio_control/volume_handoff.py",
+  "jasper/audio_control/volume_measurement_gate.py",
+  "jasper/audio_control/volume_observers.py",
+  "jasper/audio_control/volume_process.py",
+  "jasper/audio_control/volume_push_sources.py",
+  "jasper/audio_control/volume_reconcile.py",
+  "jasper/audio_control/volume_scales.py",
+  "jasper/audio_control/volume_state.py",
+  "jasper/audio_routes/volume_curve.py",
+  "jasper/audio_routes/volume_diagnostics.py",
 ]
 docs = [
   "docs/audio-paths.md",
@@ -352,9 +372,8 @@ docs = [
 id = "spotify-and-music-accounts"
 safety = "safe-ci"
 code = [
-  "jasper/spotify*.py",
-  "jasper/accounts.py",
-  "jasper/librespot_state.py",
+  "jasper/service_state/accounts.py",
+  "jasper/playback_state/librespot_state.py",
   "jasper/tools/spotify.py",
   "jasper/web/spotify_setup.py",
   "deploy/bin/jasper-librespot-event",
@@ -363,6 +382,10 @@ code = [
   "scripts/claim-librespot.sh",
   "tests/test_spotify*.py",
   "tests/voice_eval/regression/test_spotify.py",
+  "jasper/playback_state/spotify_uri.py",
+  "jasper/service_state/spotify_oauth.py",
+  "jasper/service_state/spotify_router.py",
+  "jasper/service_state/spotify_routing.py",
 ]
 docs = [
   "docs/multi-user-spotify.md",
@@ -372,7 +395,7 @@ docs = [
 id = "local-source-lifecycle"
 safety = "boot-risk"
 code = [
-  "jasper/source_intent.py", "jasper/local_sources/reconcile.py",
+  "jasper/audio_routes/source_intent.py", "jasper/local_sources/reconcile.py",
   "jasper/bluetooth/availability.py",
   "jasper/local_sources/registry.py",
   "jasper/local_sources/markers.py",
@@ -436,7 +459,7 @@ code = [
   "jasper/audio_hardware/config_txt.py",
   "jasper/audio_hardware/i2s_hat.py",
   "jasper/cli/usb_port_role.py",
-  "jasper/output_hardware.py",
+  "jasper/audio_routes/output_hardware.py",
   "jasper/usbsink/**",
   "jasper/*usb*.py",
   "jasper/cli/usb*.py",
@@ -464,7 +487,7 @@ code = [
   "jasper/audio_hardware/config_txt.py",
   "jasper/audio_hardware/i2s_hat.py",
   "jasper/cli/usb_port_role.py",
-  "jasper/output_hardware.py",
+  "jasper/audio_routes/output_hardware.py",
   "deploy/bin/jasper-audio-hardware-reconcile",
   "deploy/lib/install/renderers.sh",
   "deploy/usbsink/jasper-usbgadget-*",
@@ -472,7 +495,7 @@ code = [
   "deploy/systemd/jasper-usbnet-dhcp.service",
   "deploy/systemd/jasper-usb*.service",
   "deploy/usb-network/**",
-  "jasper/usbgadget.py",
+  "jasper/device_probe/usb*.py",
   "jasper/usb*.py",
   "jasper/cli/doctor/usbsink.py",
   "jasper/cli/doctor/network.py",
@@ -483,6 +506,7 @@ code = [
   # every unrelated /state change; a real usb-network change still routes
   # here via the gadget scripts/units/doctor globs above.
   # Pinned by tests/test_docs_impact.py::test_state_aggregate_routes_to_state_surface_docs.
+  "jasper/audio_routes/usb_mic.py",
 ]
 docs = [
   "AGENTS.md",
@@ -492,12 +516,12 @@ docs = [
 id = "audio-latency-lean-lane"
 safety = "boot-risk"
 code = [
-  "jasper/audio_runtime_plan.py",
-  "jasper/audio_runtime_settings.py",
-  "jasper/transport_coherence.py",
+  "jasper/audio_control/audio_runtime_plan.py",
+  "jasper/service_state/audio_runtime_settings.py",
+  "jasper/audio_control/transport_coherence.py",
   "jasper/mux.py",
-  "jasper/camilla_config_contract.py",
-  "jasper/camilla_latency.py",
+  "jasper/dsp_control/camilla_config_contract.py",
+  "jasper/dsp_control/camilla_latency.py",
   "jasper/sound/camilla_yaml.py",
   "jasper/active_speaker/camilla_yaml/__init__.py",
   "jasper/cli/route_latency_harness.py",
@@ -592,7 +616,7 @@ docs = [
 id = "home-assistant"
 safety = "safe-ci"
 code = [
-  "jasper/home_assistant.py",
+  "jasper/service_state/home_assistant.py",
   "jasper/control/ha_probe_child.py",
   "jasper/control/ha_status_cache.py",
   "jasper/tools/home_assistant.py",
@@ -628,8 +652,8 @@ safety = "hardware-risk"
 code = [
   "jasper/multiroom/**",
   "jasper/local_sources/**",
-  "jasper/install_profile.py",
-  "jasper/tts_routing.py",
+  "jasper/playback_state/install_profile.py",
+  "jasper/service_state/tts_routing.py",
   "jasper/web/rooms_setup.py",
   "jasper/web/rooms_peers.py",
   "jasper/control/grouping_supervisor.py",
@@ -726,7 +750,7 @@ safety = "boot-risk"
 code = [
   "jasper/_oom_adj.py",
   "jasper/watchdog.py",
-  "jasper/debug_mode.py",
+  "jasper/audio_control/debug_mode.py",
   "jasper/flight_recorder.py",
   "jasper/control/debug_control.py",
   "jasper/control/state_aggregate.py",

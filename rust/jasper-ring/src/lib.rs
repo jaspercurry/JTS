@@ -231,7 +231,7 @@ const OPEN_LOCK_SUFFIX: &str = ".open.lock";
 /// Adjacent lock file whose EXCLUSIVE flock a C writer holds for the life of
 /// its mapping. A Rust `RingWriter` does not take it (fan-in owns Ring A by
 /// construction), so nothing in this crate opens the path — but the C ioplug
-/// and `jasper.ring_assets` both spell it, so the declaration lives here with
+/// and `jasper.audio_control.ring_assets` both spell it, so the declaration lives here with
 /// the rest of the ring ABI and reaches them through [`layout::layout_json`].
 pub const WRITER_LOCK_SUFFIX: &str = ".writer.lock";
 const OPEN_LOCK_MODE: u32 = 0o660;

@@ -13,18 +13,18 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ...camilla import CamillaController, CamillaUnavailable, primary_controller
-from ...camilla_config_contract import (
+from jasper.audio_control.camilla import CamillaController, CamillaUnavailable, primary_controller
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_PIPE_SINK_FORMAT,
     VolumeLimitViolation,
     check_volume_limit,
     parse_camilla_devices_config,
     read_camilla_devices_config,
 )
-from ...camilla_emit import DEFAULT_VOLUME_LIMIT_DB
+from jasper.audio_routes.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
-from ...fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
+from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
 from ...service_units import CAMILLA_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -249,7 +249,7 @@ def _expected_playback_format(
     in every reachable config (a ``File`` sink carries no ``device`` key), so
     their order is not load-bearing.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_PLAYBACK_FORMAT,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
@@ -522,7 +522,7 @@ def check_camilla_ring_chunk_fits() -> CheckResult:
 def check_audio_runtime_plan() -> CheckResult:
     """Explainable SSOT check for audio latency/coupling knobs."""
 
-    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
+    from jasper.audio_control.audio_runtime_plan import build_audio_runtime_plan_from_system
 
     plan = build_audio_runtime_plan_from_system()
     # Policy vs observation: see AudioRuntimePlan.camilla_emitted. Reported, not
@@ -731,7 +731,7 @@ def _topology_gate_allowed_result(label: str) -> CheckResult:
     (see `deploy/bin/jasper-camilla-topology-gate`). The next convergence that
     writes a statefile clears either.
     """
-    from ...output_topology_store import (
+    from jasper.audio_routes.output_topology_store import (
         read_topology_fingerprint_stamp,
         statefile_topology_stamp_path,
         statefile_unproved_stamp_path,

@@ -6,7 +6,7 @@
 
 Shells out to `jasper.xvf.xvf_host` for chip parameter readback and
 convergence polling, and sleeps for a bounded observation window before
-building evidence for `jasper.audio_validation_artifacts`.
+building evidence for `jasper.audio_resources.audio_validation_artifacts`.
 """
 from __future__ import annotations
 
@@ -22,26 +22,30 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from .. import audio_validation_artifacts as artifacts
-from ..audio_profile_state import probe_xvf_mic
-from ..audio_validation import (
+from jasper.audio_resources import audio_validation_artifacts as artifacts
+from jasper.runtime_config.audio_profile_state import probe_xvf_mic
+from jasper.audio_control.audio_validation_hardware_checks import (
     CHIP_AEC_CONVERGENCE_COMMAND,
-    CHIP_AEC_PROFILE,
     CHIP_AEC_PROFILE_READBACK_COMMANDS,
+)
+from ..audio_validation import (
+    CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
     DEFAULT_HARDWARE_OBSERVE_SECONDS,
     build_chip_aec_hardware_validation_artifact,
     build_chip_aec_readiness_artifact,
     build_outputd_stability_hardware_validation_artifact,
+)
+from jasper.audio_control.audio_validation_probes import (
     outputd_socket_path,
-    profile_runtime_ready,
     query_outputd_status,
-    read_bridge_stats,
     read_mode_env,
     read_system_env,
     read_voice_wake_legs,
     service_state,
 )
+from jasper.audio_control.audio_validation_readiness import profile_runtime_ready
+from ..aec.bridge_telemetry import read_bridge_stats
 from ..log_event import log_event
 from ..logging_setup import configure_logging
 from ..service_units import (

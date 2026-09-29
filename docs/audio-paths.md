@@ -64,7 +64,7 @@ process — it is the readiness marker the coordinator drives.
 
 The lane labels, and which label carries which source, are owned in two places
 and mirrored nowhere: `INPUT_LANES` in `rust/jasper-fanin/src/config.rs`
-and `MUSIC_SOURCE_SPECS` in `jasper/music_sources.py`. The ALSA
+and `MUSIC_SOURCE_SPECS` in `jasper/playback_state/music_sources.py`. The ALSA
 substream-pair allocation behind the aloop lanes is owned by
 `deploy/modprobe.d/snd-aloop.conf`. Room-correction and test playback have
 their own `correction` lane, always mixed; fan-in sums the lanes, writes Ring A
@@ -79,12 +79,9 @@ that speaker's own assistant audio into its local post-round-trip content lane,
 so replies do not ride the shared sync buffer.
 
 The SHM slot ring is the only transport between fan-in, CamillaDSP and outputd.
-The program wire is `S32_LE` and nothing else: fan-in publishes it
-unconditionally, and a `JASPER_FANIN_RING_WIRE_FORMAT` naming any other format
-— `S16_LE` above all — is refused as a config-class fault (exit 78, the unit
-parks) rather than served, because the Python side still renders the ioplug
-conf.d from that key and a narrower declaration would shear against the ring
-header. CamillaDSP writes the post-DSP stereo program to `jts_ring_playback` and outputd consumes
+The program wire is fixed `S32_LE`: fan-in publishes it unconditionally, and
+the Python renderer gives the ioplug conf.d and CamillaDSP the same format.
+CamillaDSP writes the post-DSP stereo program to `jts_ring_playback` and outputd consumes
 Ring B one DAC-sized slot at a time. A roleful (active-crossover) box has a
 ring of its own, carrying POST-crossover per-driver channels rather than a
 full-range stereo program. That role rides the device NAME because it cannot
@@ -128,7 +125,7 @@ Ownership is deliberately split:
   process-local, so sources first observed active in one snapshot fall back to
   `MUSIC_SOURCES` registry order. Manual mode persistently pins the
   user-selected source; `/sources/` disables sources entirely. Native producer
-  events are wake hints only — `jasper/source_events.py` translates librespot
+  events are wake hints only — `jasper/service_state/source_events.py` translates librespot
   inotify and AirPlay/Bluetooth D-Bus signals, fan-in sends USB frame-flow
   edges over mux's UDS — and every hint plus the fixed 1 Hz lost-alert patrol
   enters the same reconciler, which re-reads source state before applying
@@ -136,7 +133,7 @@ Ownership is deliberately split:
   probes — AirPlay over `busctl`, Bluetooth over BlueZ `MediaTransport1` — are
   re-read on that patrol once per `EVENT_BACKED_PROBE_SEC` instead of every
   tick; an alert naming either source still probes it at once. Source metadata
-  (fan-in lane label, volume carrier) lives in `jasper/music_sources.py`;
+  (fan-in lane label, volume carrier) lives in `jasper/playback_state/music_sources.py`;
   operational lifecycle resources — the units that run, advertise, park while
   paired as a follower, restore on unpair and refresh after audio-graph
   changes, plus the `health_units` subset whose failure means the source is
@@ -225,17 +222,17 @@ introduces no second mixer, second output device or new volume model.
    the existing sources' hardening/resource patterns. An optional source
    defaults off and costs zero resident RAM while disabled.
 4. **Expose fail-soft playing state.** Add one probe in
-   `jasper/source_state.py` and surface it through
+   `jasper/playback_state/source_state.py` and surface it through
    `RendererClient.active_renderers()`, preserving the public bool contract
    (`False` plus debug logging on failure). If mux needs it for arbitration,
    also expose a tri-state observation where `None` means unknown, so one
    failed read is a bounded grace rather than a stop/start flap. This state
    feeds mux, volume, dashboards and voice tools — do not duplicate the probe
    per caller. If the renderer has a native event surface, add a wake adapter
-   in `jasper/source_events.py`; it marks the source dirty and must never
+   in `jasper/service_state/source_events.py`; it marks the source dirty and must never
    choose a winner or command fan-in.
 5. **Declare source metadata.** One `Source` enum member and one
-   `MusicSourceSpec` in `jasper/music_sources.py`: public ID, fan-in label,
+   `MusicSourceSpec` in `jasper/playback_state/music_sources.py`: public ID, fan-in label,
    renderer active key, `/sources/` wizard key, display name, `volume_mode`.
    `VolumeMode.PUSH` means the source's own API carries `listening_level` and
    CamillaDSP returns to 0 dB; `VolumeMode.CAMILLA_MASTER` means CamillaDSP
@@ -259,7 +256,7 @@ introduces no second mixer, second output device or new volume model.
    AirPlay is exposed that way (see below), so do not assume a new source earns
    a `PREEMPT` verb.
 8. **Wire manual source selection.** The mux/control allow-lists derive from
-   `jasper/music_sources.py`; add the landing-page button in
+   `jasper/playback_state/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.
 9. **Teach the coordinator source-specific volume I/O.** Handoff safety policy
    comes from `volume_mode`, but a push-mode source still needs one

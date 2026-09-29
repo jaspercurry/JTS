@@ -788,39 +788,13 @@ def _looks_like_ssid_lookup_failure(message: str) -> bool:
     )
 
 
-def _resolve_key_mgmt(profile_name: str) -> str:
-    """Look up `802-11-wireless-security.key-mgmt` for an existing
-    NM connection profile. Returns one of:
-      - ``wpa-psk`` / ``sae`` / ``wpa-eap`` — exact NM value, lower-case
-      - ``none`` — open network OR the field is missing/empty
-
-    Used to populate the guardian stash's ``key_mgmt`` field after a
-    successful connect so the boot-time recreate knows whether to feed
-    nmcli a PSK. ``wpa-eap`` triggers the wizard to
-    skip the stash entirely (enterprise is out of scope)."""
-    proc = _run_nmcli(
-        ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt",
-         "connection", "show", profile_name],
-        timeout=5, log_argv=False,
-    )
-    if proc.returncode != 0:
-        return "none"
-    for line in proc.stdout.splitlines():
-        fields = _parse_terse(line)
-        if (len(fields) >= 2
-                and fields[0] == "802-11-wireless-security.key-mgmt"
-                and fields[1]):
-            return fields[1].lower()
-    return "none"
-
-
 def _read_profile_secrets(profile_name: str) -> tuple[str, str, str] | None:
     """Pull ``(ssid, psk, key_mgmt)`` for a saved NM profile by name.
 
-    Uses ``nmcli -s`` (show secrets — requires root) to read the PSK
-    out of NetworkManager's own keyfile. The caller (``_stash_after_saved``)
-    only invokes this after a successful ``connection up``, so the
-    profile is known to exist.
+    Uses ``nmcli -s`` (show secrets — root, or jasper-web through its
+    polkit grant) to read the PSK out of NetworkManager's own keyfile.
+    The caller (``_stash_after_saved``) only invokes this after a
+    successful connect.
 
     Returns None on any nmcli failure — the stash refresh skips
     silently rather than the connect failing."""
@@ -854,11 +828,14 @@ def _read_profile_secrets(profile_name: str) -> tuple[str, str, str] | None:
 
 
 def _stash_after_saved(profile_name: str) -> None:
-    """Refresh the stash from an existing NM profile after a successful
-    ``connection up <name>``. Symmetric with ``_stash_after_connect`` but
-    pulls the PSK out of NM's own keyfile rather than from the wizard
-    request body (the saved-network flow never sees the user's PSK on
-    the wire)."""
+    """Refresh the guardian stash from the NM profile a successful connect
+    just activated: SSID, PSK and key-mgmt as NetworkManager saved them,
+    never the password from the request body.
+
+    Best-effort: failure here MUST NOT fail the connect (the user's WiFi
+    just came up; the stash is a recovery aid, not a blocker). Skips
+    WPA-Enterprise — the guardian can't recreate it (no cert/identity in
+    the stash)."""
     try:
         secrets = _read_profile_secrets(profile_name)
         if secrets is None:
@@ -892,50 +869,6 @@ def _stash_after_saved(profile_name: str) -> None:
             logger,
             "wifi_guardian.stash_write_failed",
             profile=profile_name,
-            err=repr(e),
-            level=logging.WARNING,
-        )
-
-
-def _stash_after_connect(ssid: str, password: str | None) -> None:
-    """Update the guardian stash to reflect a just-successful connect.
-
-    Best-effort: failure here MUST NOT fail the connect (the user's WiFi
-    just came up; the stash is a recovery aid, not a blocker). We log a
-    warning and rely on doctor to surface the drift on the next check.
-
-    Skips silently for WPA-Enterprise — the wizard doesn't support it,
-    the guardian can't recreate it (no cert/identity in our stash),
-    and writing a stash we'd refuse to act on is just confusing."""
-    try:
-        key_mgmt = _resolve_key_mgmt(ssid)
-        if key_mgmt == "wpa-eap":
-            log_event(
-                logger,
-                "wifi_guardian.stash_skip",
-                ssid=ssid,
-                reason="enterprise",
-            )
-            return
-        wifi_guardian_persistence.write_stash(
-            _STASH_PATH, ssid, password or "", key_mgmt,
-        )
-        # PSK never appears in the log line — only the SSID and key_mgmt.
-        log_event(
-            logger,
-            "wifi_guardian.stash_written",
-            ssid=ssid,
-            key_mgmt=key_mgmt,
-        )
-    except Exception as e:  # noqa: BLE001
-        # Wrap-all because this is a recovery aid path. Anything that
-        # raises here (full disk, permission flip, nmcli timeout in
-        # _resolve_key_mgmt) should not block the user's successful
-        # connect from returning.
-        log_event(
-            logger,
-            "wifi_guardian.stash_write_failed",
-            ssid=ssid,
             err=repr(e),
             level=logging.WARNING,
         )
@@ -1011,12 +944,13 @@ def connect_new(
             err = _readable_nmcli_error(hidden_proc, password)
 
     if proc.returncode == 0:
-        _harden_wifi_profile(ssid)
-        # Guardian stash refresh — best-effort, never blocks the
-        # connect success. Sees the PSK on the wire here; this is
-        # the canonical point to capture it. See `_stash_after_connect`
-        # for the failure-mode contract.
-        _stash_after_connect(ssid, password)
+        # NetworkManager may satisfy the connect with a saved profile under
+        # another name (the OS imager's `netplan-wlan0-<SSID>`), so harden
+        # and stash the profile it activated, not the SSID.
+        current = _current_wifi()
+        profile = current["profileName"] if current else ssid
+        _harden_wifi_profile(profile)
+        _stash_after_saved(profile)
         return True, f"Connected to {ssid}"
 
     # Clean up the broken NEW profile so it doesn't sit in saved networks.

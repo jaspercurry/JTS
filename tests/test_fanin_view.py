@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from jasper.control.fanin_view import FaninView
-from jasper.music_sources import MUSIC_SOURCE_SPECS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from tests.test_airplay_health import _fanin_status, _ring, _sampler
 
 

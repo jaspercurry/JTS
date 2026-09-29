@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from . import config
 from .config import GroupingConfig
 

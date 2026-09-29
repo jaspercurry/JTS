@@ -15,7 +15,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from jasper import wake_models
+from jasper.service_state import wake_models
 from jasper.cli import _refusal, settings
 from jasper.env_file import parse_env_mapping
 from jasper.voice import model_discovery, provider_state

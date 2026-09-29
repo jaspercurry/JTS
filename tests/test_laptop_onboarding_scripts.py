@@ -142,7 +142,7 @@ case "$cmd" in
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_PI_MODEL:-Raspberry Pi 5 Model B Rev 1.0}"
     ;;
-  *jasper.output_hardware*load_state*)
+  *jasper.audio_routes.output_hardware*load_state*)
     [[ "${FAKE_METADATA_PROBES_FAIL:-0}" == "1" ]] && exit 1
     printf '%s\n' "${FAKE_OUTPUT_STATUS:-ready}"
     ;;
@@ -258,7 +258,7 @@ exit 0
 # laptop's mDNS happens to answer. Shadow only that stdin script — exit 0
 # with no output, the "address unknown, skip the advisory" path CI takes —
 # and exec the real interpreter for everything else, so _lib.sh's
-# `python3 jasper/usb_network.py advisory-cidrs` keeps working. Mirrors
+# `python3 jasper/device_probe/usb_network.py advisory-cidrs` keeps working. Mirrors
 # test_lib_deploy_direction.py's `_git_shim_dir`: shadow one binary, pass
 # the rest through.
 FAKE_PYTHON3 = r"""#!/usr/bin/env bash
@@ -533,7 +533,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, combined)
         self.assertIn("cat\\ /var/lib/jasper/install_profile", calls)
         self.assertIn("/proc/device-tree/model", calls)
-        self.assertIn("jasper.output_hardware", calls)
+        self.assertIn("jasper.audio_routes.output_hardware", calls)
         self.assertIn("Install profile:   unknown", result.stdout)
         self.assertIn(
             "Raspberry Pi:      unknown Raspberry Pi model",

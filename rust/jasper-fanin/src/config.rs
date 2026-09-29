@@ -375,19 +375,6 @@ fn parse_capture_geometry() -> Result<(u32, u32, u32)> {
 }
 
 fn parse_ring(period_frames: u32) -> Result<(String, u32)> {
-    let ring_wire_format = std::env::var("JASPER_FANIN_RING_WIRE_FORMAT").ok();
-    match ring_wire_format.as_deref().map(str::trim) {
-        None | Some("") | Some("S32_LE") => {}
-        Some(other) => {
-            return Err(anyhow::anyhow!(
-                "JASPER_FANIN_RING_WIRE_FORMAT={other} unsupported (S32_LE) — \
-                 fan-in publishes the program wire S32_LE unconditionally, so \
-                 a narrower declaration would shear against the ring header \
-                 rather than narrow the program",
-            ));
-        }
-    }
-
     let ring_path = env_str("JASPER_FANIN_RING_PATH", "/dev/shm/jts-ring/program.ring");
     let ring_slots = env_u32("JASPER_FANIN_RING_SLOTS", 4)?;
     if !(RING_SLOTS_MIN..=RING_SLOTS_MAX).contains(&ring_slots) {
@@ -704,7 +691,6 @@ mod tests {
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", None),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
                 ("JASPER_FANIN_TTS_SOCKET", None),
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
@@ -1405,38 +1391,6 @@ mod tests {
         );
     }
 
-    /// Which `JASPER_FANIN_RING_WIRE_FORMAT` declarations this daemon will
-    /// serve, now that fan-in creates the ring S32_LE unconditionally.
-    ///
-    /// The REFUSAL is the load-bearing half: the Python reconciler still reads
-    /// this key to render the ioplug conf.d, so a box still carrying `S16_LE`
-    /// must PARK — exit 78 via [`crate::ConfigClassError`] — rather than let the
-    /// two halves of the box describe different wires.
-    #[test]
-    fn only_an_s32_wire_declaration_or_none_is_served() {
-        for (raw, served) in [
-            (None, true),
-            (Some(""), true),
-            (Some(" S32_LE "), true),
-            (Some("S16_LE"), false),
-            (Some("s32_le"), false),
-        ] {
-            with_env(
-                &[("JASPER_FANIN_RING_WIRE_FORMAT", raw)],
-                || match Config::from_env() {
-                    Ok(_) => assert!(served, "{raw:?} must be refused"),
-                    Err(err) => {
-                        assert!(!served, "{raw:?} must be served: {err:#}");
-                        assert!(
-                            parks_the_unit(&err),
-                            "{raw:?} must park the unit (exit 78), not restart-loop it",
-                        );
-                    }
-                },
-            );
-        }
-    }
-
     #[test]
     fn ring_defaults_parse() {
         with_env(
@@ -1523,7 +1477,6 @@ mod tests {
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("512")),
             ],
-            vec![("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE"))],
             vec![("JASPER_FANIN_RING_SLOTS", Some("1"))],
         ] {
             with_env(&vars, || {

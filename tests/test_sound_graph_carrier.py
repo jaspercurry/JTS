@@ -32,15 +32,17 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
 from jasper.active_speaker import baseline_apply
-from jasper.active_speaker.runtime_contract import (
-    FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
+from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER
+from jasper.active_speaker.graph_types import (
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     GRAPH_FLAT_FULL_RANGE,
+)
+from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )
 from jasper.biquad import PeqFilter
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     RING_CAPTURE_DEVICE,
     RING_PLAYBACK_DEVICE,
     capture_kwargs_for_coupling,
@@ -65,8 +67,8 @@ from tests.test_active_speaker_runtime_contract import (
     _flat_yaml,
     _full_range_stereo,
 )
-from jasper.output_topology_store import save_output_topology
-from jasper.output_topology_store import new_topology_draft
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import new_topology_draft
 
 _STEREO_HOST_KINDS = {"base_flat", "sound_or_correction"}
 
@@ -391,7 +393,7 @@ def test_stereo_host_dispatches_refusal_by_contract_code_not_prose(tmp_path):
     from jasper.sound.profile import SoundProfile
 
     with mock.patch(
-        "jasper.active_speaker.runtime_contract.flat_program_graph_block",
+        "jasper.sound.flat_verifier.flat_program_graph_block",
         return_value=(FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER, "opaque detail"),
     ):
         carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
@@ -434,7 +436,7 @@ def test_stereo_host_reemit_folds_mono_program_onto_the_declared_output(
     cutover the statefile guard just approved.
     """
     from jasper.active_speaker.camilla_names import output_commission_mute_name
-    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB
     from tests.test_active_speaker_runtime_contract import _full_range_mono_on
 
     _persist_topology(_full_range_mono_on(assigned), tmp_path, monkeypatch)
@@ -857,7 +859,7 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     # to the Ring A ioplug device and playback to the Ring B ioplug device.
     # No member kwargs — the SOLO shape member_camilla_kwargs() returns — so
     # the rate-adjust answer below is the one a solo box actually emits.
-    from jasper.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
 
     carrier = carrier_for_loaded_config(str(BASE_CONFIG_PATH), config_dir=tmp_path)
     cfg = carrier.reemit(
@@ -884,8 +886,8 @@ def test_solo_reemit_carries_the_ring_geometry(tmp_path, wire):
     coupling cross on a solo box, so the emitted formats follow the declared
     wire — the narrow rollback pin included — never the emitter's own default.
     """
-    from jasper.camilla_config_contract import parse_camilla_devices_config
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
+    from jasper.dsp_control.fanin_coupling import (
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
@@ -1233,7 +1235,7 @@ async def test_eq_state_reads_only_the_selected_tune_without_writes(tmp_path, mo
         raw["fingerprint"] = "0" * 64
         selected.write_text(json.dumps(raw))
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    monkeypatch.setattr("jasper.camilla.primary_controller", lambda: cam)
+    monkeypatch.setattr("jasper.audio_control.camilla.primary_controller", lambda: cam)
     with mock.patch.object(candidate_bank, "_iter_candidate_paths", side_effect=AssertionError("bank scan")), \
          mock.patch.object(candidate_bank, "publish_authored_candidate", side_effect=AssertionError("bank write")), \
          mock.patch.object(candidate_bank, "load_candidate_artifact", wraps=candidate_bank.load_candidate_artifact) as read, \
@@ -1341,7 +1343,7 @@ async def test_active_neutral_to_touched_edit_updates_in_place(tmp_path, monkeyp
 
 @pytest.mark.parametrize("failure", ["compile", "carrier_changed"])
 async def test_active_prepare_failure_in_the_lock_is_recorded(tmp_path, monkeypatch, active_sound_box, failure):
-    from jasper.dsp_apply import DspApplyError, last_dsp_apply_state
+    from jasper.dsp_control.dsp_apply import DspApplyError, last_dsp_apply_state
     from jasper.sound import graph_carrier
     from jasper.sound.runtime import load_profile_config
 
@@ -1388,7 +1390,7 @@ async def test_active_sound_save_records_the_live_protection(tmp_path, active_so
 @pytest.mark.parametrize("missing", ["source", "recomposition_snapshot"])
 async def test_partial_applied_record_refuses_sound_save(tmp_path, monkeypatch, active_sound_box, missing):
     from jasper.active_speaker import baseline_profile
-    from jasper.dsp_apply import DspApplyError
+    from jasper.dsp_control.dsp_apply import DspApplyError
 
     _, _, cam, config_dir = active_sound_box
     applied = baseline_profile.load_applied_baseline_profile_state()

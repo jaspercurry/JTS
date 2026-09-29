@@ -14,7 +14,7 @@ import pytest
 
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_SCHEMA_VERSION
 from jasper.chip_aec import health as chip_aec_health
-from jasper.audio_profile_state import MicProbe, RuntimeAecEnv, intent_from_env
+from jasper.runtime_config.audio_profile_state import MicProbe, RuntimeAecEnv, intent_from_env
 from jasper.cli.doctor import _evidence, aec
 from jasper.control import aec_endpoints
 

@@ -131,7 +131,7 @@ def test_open_wired_capture_mints_identity_and_validates_the_spec():
 def test_open_wired_capture_refuses_an_invalid_spec():
     import dataclasses
 
-    from jasper.capture_protocol import CaptureSpecError
+    from jasper.playback_state.capture_protocol import CaptureSpecError
 
     bad = dataclasses.replace(_inline_spec(), sample_rate_hz=44_100)
     with pytest.raises(CaptureSpecError):
@@ -545,16 +545,11 @@ async def test_cancelling_recorder_start_drains_and_aborts_before_return(tmp_pat
     assert half.take_answer() is None
 
 
-def test_state_save_refreshes_activity_and_keeps_cleanup_beside_verification(tmp_path, monkeypatch):
+def test_state_save_refreshes_activity(tmp_path, monkeypatch):
     monkeypatch.setattr(v2state, "_state_path", lambda: tmp_path / "state.json")
     monkeypatch.setattr(v2state.time, "time", lambda: 200.0)
-    v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0,
-                          "verify": {"outcome": "pass", "code": "verified"}})
+    v2state.save_v2_state({"session_id": "s1", "updated_at": 1.0})
     assert v2state.load_v2_state()["updated_at"] == 200.0
-    assert v2state.persist_terminal_failure(SimpleNamespace(session_id="s1"), "internal_error")
-    state = v2state.load_v2_state()
-    assert state["verify"] == {"outcome": "pass", "code": "verified"}
-    assert state["execution"]["cleanup_fault_code"] == "internal_error"
 
 
 def _run_door(tmp_path, box, fakes, manifest, records=None):
@@ -615,7 +610,7 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 
-    import jasper.dsp_apply as dsp_apply
+    import jasper.dsp_control.dsp_apply as dsp_apply
 
     apply_route, apply_dsp = Mock(), AsyncMock()
     monkeypatch.setattr("jasper.web.correction_crossover_v2_apply.handle_v2_apply", apply_route)
@@ -760,7 +755,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     checks = iter([False, False, False, check_passes])
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
-    request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver"),), repeats=repeats,
+    request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver", purpose="speaker"),), repeats=repeats,
                                   level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
@@ -933,10 +928,11 @@ async def test_executor_retains_summed_reference_before_measure(
     production = v2evidence.bind_production_analyze(resolve_calibration=None)
     conductor._seams = replace(conductor._seams, analyze=production,
         summed_alignment_reference=lambda b, p: summed_alignment.session_reference(Path("bundle"), b, p))
-    saved = []
+    saved, analyses = [], []
 
     async def bank(record):
         saved.append(record)
+        analyses.append(analyze(record))
         return record["take_id"] + ".json"
 
     records = core_capture.CapturedRecordStore(SimpleNamespace(bank=bank), None)
@@ -955,8 +951,8 @@ async def test_executor_retains_summed_reference_before_measure(
         record = {"take_id": f"wired-take-{index}", "index": index, "attempt": 1, "phase": phase,
                   "program_phase": phase, "position_deg": position, "vertical_deg": vertical,
                   "graph_scope": scope, "graph_fingerprint": "played-graph"}
-        record_id = await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
-        analysis = analyze(saved[-1], record_id)
+        await records.bank_answer(record, WiredCaptureAnswer(wav=wav, program=program.to_dict()))
+        analysis = analyses[-1]
     available = banked and position == vertical == 0 and scope == "timing"
     assert conductor.measure_priors().summed_alignment is (
         reference if available else None
@@ -1025,8 +1021,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
             assert peak == pytest.approx(gain)
         record = {"take_id": "engine", "index": 1, "attempt": attempt, "program": program.to_dict()}
         records.enrich(None, record)
-        records.after_bank(record, "take")
-        analysis = await asyncio.to_thread(analyze, record, "take")
+        analysis = await asyncio.to_thread(analyze, record)
         verdict = await asyncio.to_thread(assessor, analysis, phase=phase, program=program, gain_ceiling_db=ceilings)
         if clipped_take:
             assert verdict.fault == "clipped"
@@ -1081,8 +1076,7 @@ def test_host_binds_session_level_only_to_check_priors(
             for attempt in (1, 2):
                 record = {"take_id": "engine", "index": index, "attempt": attempt, "program": program.to_dict()}
                 records.enrich(None, record)
-                records.after_bank(record, "take")
-                analyze(record, "take")
+                analyze(record)
                 assert fakes.analyzed[-1][3].target_capture_dbfs == pytest.approx(expected.target_capture_dbfs)
     resolve.assert_called_once_with(_device())
     assert door.sensitivity is sensitivity
@@ -1149,7 +1143,7 @@ def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(m
     correction_run_host.bind_plan_analysis(conductor, records, evidence={},
                                            manifest=SimpleNamespace(calibration={}, capture_record=dict))
 
-    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
+    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1, "measurement_purpose": "speaker",
                           "program": conductor.program_for_phase("verify").to_dict(), **pose})
 
     assert fakes.analyzed[-1][4].declared_first_bounce_s == (room.first_bounce_s(distance_m) if declared else None)
@@ -1243,10 +1237,38 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]
 
 
+async def test_a_rung_asking_louder_rearms_only_once_its_capture_has_played(monkeypatch, tmp_path, box):
+    """A rung that grades retake_louder rearms the gain plan after its capture's
+    later rung is composed, so that rung plays the levels the capture began with
+    (ADR-0383)."""
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "measure"}, gain_plan_db={"woofer": -20.0, "tweeter": -26.0},
+                           driver_caps_dbfs={"woofer": 0.0, "tweeter": 0.0})
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure", level_ladder_dbfs=(-24.0, -18.0))
+    declared = [compose_plan_program(conductor, spec, rung, context=plan_context()).to_dict()
+                for rung in spec.level_ladder_dbfs]
+    fakes, played = EngineSeams(), []
+    manifest = RunManifest("louder", _Store(fakes.records))
+
+    def answer():
+        program = compose_plan_program(conductor, spec, fakes.play.calls[-1]["stimulus_dbfs"], context=plan_context())
+        played.append(program.to_dict())
+        return WiredCaptureAnswer(wav=b"", program=program.to_dict())
+    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
+    analyze, assessor = correction_run_host.bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    graded = iter([refusal_copy.TakeVerdict(True, next="retake_louder", charge="speaker", next_gain_db=-20.0,
+                                            evidence={"next_gain_db.tweeter": -20.0})])
+    monkeypatch.setattr(correction_run_host, "assess", lambda *_a, **_k: next(graded, refusal_copy.TakeVerdict(True)))
+    request = replace(_walk([0]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    result = await plan_run.run_plan(request, door=_run_door(tmp_path, box, fakes, manifest, records), manifest=manifest,
+                                     analyze=analyze, assessor=assessor, aborts={},
+                                     captures=(plan_run.PlanCapture(request.stops[0], spec),))
+    assert (result.status, played[:2], conductor.gain_plan_db["tweeter"]) == ("complete", declared, -20.0)
+
+
 @pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
 @pytest.mark.parametrize("pose,distance", [
     ({}, 1.0), ({"distance_m": 1.25}, 1.25),
-    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1)}, None),
+    ({"kind": "seat", "seat_offset_m": (0.2, 0.0, 0.1), "purpose": "room"}, None),
 ])
 def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error, pose, distance):
     record = bank_executor_take(tmp_path, monkeypatch, analysis_error=analysis_error, pose=pose)
@@ -1305,12 +1327,12 @@ _TAKE_RECORD_KEYS = frozenset({
     "analysis", "attempt", "baseline_record_id", "branch_diagnostic", "candidate_id", "capture_calibration",
     "capture_device", "capture_index", "capture_integrity", "capture_session_id", "capture_setup", "captured_at",
     "cleared_layers", "curves", "diagnostic", "gating_applied", "graph_fingerprint", "graph_scope", "impulses",
-    "incident", "index", "inverted_role", "kind", "layout", "level_db", "level_match_trims_db", "level_matched",
+    "incident", "index", "inverted_role", "kind", "layout", "level", "level_db", "level_match_trims_db", "level_matched",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
     "pose", "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program", "program_phase",
-    "prompt", "provenance", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
-    "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "vertical_deg",
-    "wav_bytes", "wav_path", "wav_sha256",
+    "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
+    "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "verdict",
+    "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
 })
 
 
@@ -1324,8 +1346,9 @@ _TAKE_RECORD_KEYS = frozenset({
 ], ids=["speaker", "reference", "room", "bass", "rear", "check"])
 def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, layout, candidates, phase, kind, targets):
     """A take of every purpose banks the same keys, naming its run, preset,
-    layout, pose and targets; a CHECK take banks no curves (ADR-0383). A preset
-    with a level ladder banks one take per rung, each on its own child run."""
+    layout, pose, targets and its stop's purpose, a CHECK take its speaker
+    program's; a CHECK take banks no curves (ADR-0383, #2902). A preset with a
+    level ladder banks one take per rung, each on its own child run."""
     preset = run_preset(name, layout)
     request = request_for_preset(preset, mover=preset.mover or "human", candidates=candidates)
     ladder = preflight_levels(request, ready_facts(request), preset.levels) if preset.levels else None
@@ -1347,8 +1370,8 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
         assert set(pose) == {"kind", "deg", "elevation_deg", "distance_m", "seat_offset_m", "driver"}
         assert (pose["kind"], pose["distance_m"], pose["seat_offset_m"], pose["driver"]) == (
             record["pose_kind"], record["mark_distance_m"], record["seat_offset_m"], record["pose_driver"])
-        assert (record["preset"], record["layout"], record["targets"], pose["kind"], pose["driver"]) == (
-            preset.preset, preset.layout, targets, kind, driver)
+        assert (record["preset"], record["layout"], record["targets"], pose["kind"], pose["driver"],
+                record["measurement_purpose"]) == (preset.preset, preset.layout, targets, kind, driver, preset.purpose)
         assert (record["curves"] == []) is (phase == "check")
 
 
@@ -1365,14 +1388,13 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     consume = Mock(side_effect=AssertionError("drifting take consumed"))
     monkeypatch.setattr(conductor, "check_verdict", consume)
     manifest = RunManifest("drift", _Store(EngineSeams().records))
-    manifest.begin({"index": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())
     record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
     records.enrich(None, record)
-    records.after_bank(record, "take")
-    analysis = await asyncio.to_thread(analyze, record, "take")
+    analysis = await asyncio.to_thread(analyze, record)
     level = level_drift_verdict(loudest_half_second_db_spl=73, level_reference_db_spl=70, same_pose=True)
     verdict = await asyncio.to_thread(assessor, analysis, phase="verify", program=program, level_verdict=level)
     await manifest.append(record, "take", verdict, complete=True, started_s=0, ended_s=1, level_observation=level.evidence)

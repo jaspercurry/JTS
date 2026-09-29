@@ -11,8 +11,9 @@ from datetime import timedelta
 
 import pytest
 
-from jasper import audio_validation, audio_validation_artifacts as artifacts
-from jasper.audio_validation_artifacts import (
+from jasper import audio_validation
+from jasper.audio_resources import audio_validation_artifacts as artifacts
+from jasper.audio_resources.audio_validation_artifacts import (
     ArtifactLoadResult,
     ValidationArtifact,
     ValidationArtifactError,

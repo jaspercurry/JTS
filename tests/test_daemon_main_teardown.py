@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import wake_legs
+from jasper.playback_state import wake_legs
 from jasper.mic_capture import InputDeviceUnavailable
 from jasper.voice import daemon_main
 
@@ -193,7 +193,7 @@ def teardown_trace(monkeypatch, tmp_path) -> _Trace:
     )
     monkeypatch.setattr("jasper.tools.catalog.write_catalog", lambda *a, **k: None)
     monkeypatch.setattr(
-        "jasper.assistant_volume.volume_context_publisher_for_runtime",
+        "jasper.audio_control.assistant_volume.volume_context_publisher_for_runtime",
         lambda _env: None,
     )
 

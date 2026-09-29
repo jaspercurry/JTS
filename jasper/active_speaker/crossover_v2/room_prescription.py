@@ -341,7 +341,7 @@ class RoomPrescription:
     cut_beyond_spread_db: Mapping[tuple[str, int], float] = field(default_factory=dict)
     #: The prescriber's own words. NEVER parsed for behaviour.
     rationale: str = ""
-    rationale_dropped_chars: int | None = None
+    rationale_dropped_chars: int = 0
     coverage_hz: tuple[float, float] | None = None
     measured_basis: Mapping[str, Any] | None = None
     answers_median: bool | None = None

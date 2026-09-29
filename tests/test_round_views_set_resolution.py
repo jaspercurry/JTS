@@ -140,10 +140,10 @@ def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, firs
 
 @pytest.mark.parametrize("program,excluded", [
     ("speaker", {"bass", "bass-compare", "bass-fit-table"}),
-    ("room", {"entry", "directivity", "delay-landscape",
+    ("room", {"directivity", "delay-landscape",
               "distortion", "classify-features",
               "bass", "bass-compare", "bass-fit-table"}),
-    ("bass", {"entry", "directivity", "delay-landscape",
+    ("bass", {"directivity", "delay-landscape",
               "distortion", "classify-features", "room", "room-grade"}),
 ])
 def test_inventory_excludes_views_for_other_programs(tmp_path, capsys, program, excluded):
@@ -207,7 +207,7 @@ def test_retired_verbs_and_selectors_are_unknown(argv):
 
 
 @pytest.mark.parametrize("argv", [
-    ["entry", "round"], ["directivity", "round"],
+    ["directivity", "round"],
     ["repeat", "a", "b"], ["delay-landscape", "bundle", "--fc-hz", "1800"],
     ["dsp-replay", "graph", "stimulus", "--main-db", "-30"],
     ["dsp-levels", "manifest.json", "--raw", "output.f64le", "--window-s", "0", "1"],

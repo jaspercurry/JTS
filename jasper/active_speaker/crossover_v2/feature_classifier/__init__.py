@@ -45,6 +45,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement.deconv import regularized_deconvolution_full
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import (
     COMPLEX_SMOOTH_OCT,
     MAGNITUDE_SMOOTH_FRACTION,
@@ -90,7 +91,6 @@ from .captures import (
     NO_FEATURES_DETECTED as NO_FEATURES_DETECTED,
     PROGRAM_MISSING as PROGRAM_MISSING,
     ROUND_SHAPE_INADMISSIBLE as ROUND_SHAPE_INADMISSIBLE,
-    FeatureClassificationRefused as FeatureClassificationRefused,
     RoundCapture as RoundCapture,
     RoundPoseCurve as RoundPoseCurve,
     _read_wav,
@@ -147,7 +147,6 @@ __all__ = [
     "NO_FEATURES_DETECTED",
     "PROGRAM_MISSING",
     "ROUND_SHAPE_INADMISSIBLE",
-    "FeatureClassificationRefused",
     "RoundCapture",
     "RoundPoseCurve",
     "classify_round",
@@ -207,12 +206,12 @@ def classify_round(
     phase class, and ``controls_disclosure`` at the top of the artifact says
     so in words.
 
-    Raises :class:`FeatureClassificationRefused` with
+    Raises :class:`EvidenceUnavailable` with
     :data:`NO_FEATURES_DETECTED` when nothing stood above the round's own
     scatter.
     """
     if not captures:
-        raise FeatureClassificationRefused(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
+        raise EvidenceUnavailable(NO_ADMISSIBLE_CAPTURES, {"n_captures": 0})
     ladder = tuple(sorted(float(g) for g in (gates_ms or DEFAULT_RUNGS_MS)))
     primary = float(gate_ms)
     trusted_band_hz = (f_trusted_floor_hz(primary * 1e-3), TRUSTED_CEILING_HZ)
@@ -262,7 +261,7 @@ def classify_round(
             float(fc) for fc in at if band_hz[0] <= float(fc) <= band_hz[1]
         )
     if not features:
-        raise FeatureClassificationRefused(
+        raise EvidenceUnavailable(
             NO_FEATURES_DETECTED,
             {
                 "n_captures": len(captures),

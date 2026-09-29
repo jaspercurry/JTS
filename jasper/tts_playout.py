@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .assistant_loudness import (
+from jasper.runtime_config.assistant_loudness import (
     AssistantSourceMeter,
     DEFAULT_PROFILE_PATH as ASSISTANT_LOUDNESS_PROFILE_PATH,
     INPUT_RATE as ASSISTANT_INPUT_RATE,
@@ -28,10 +28,10 @@ from .assistant_loudness import (
     update_profile_from_measurement,
     upsample_2x,
 )
-from .assistant_volume import EffectiveVolumeContext
+from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 from .log_event import log_event
 from .platform import wire
-from .tts_routing import FANIN_TTS_SOCKET
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET
 
 logger = logging.getLogger(__name__)
 

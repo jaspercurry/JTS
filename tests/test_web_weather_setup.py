@@ -28,7 +28,7 @@ import urllib.parse
 
 import pytest
 
-import jasper.location_state as ls
+import jasper.service_state.location_state as ls
 from jasper import atomic_io, env_file
 from jasper.web import _common, weather_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome

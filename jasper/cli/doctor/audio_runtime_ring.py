@@ -17,10 +17,12 @@ import subprocess
 import time
 from typing import Any
 
-from ... import ring_assets, ring_conf, ring_header
+from jasper.audio_control import ring_assets
+from jasper.dsp_control import ring_conf
+from ... import ring_header
 from ...audio_hardware.dac import latency_floor_for
-from ...fanin_coupling import RING_SLOT_FRAMES
-from ...output_hardware import active_dac_profile_id
+from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
+from jasper.audio_routes.output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, PROBE_FRAMES, run
@@ -115,7 +117,7 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     block, or a torn declaration — nothing safe to ask ALSA for).
 
     From the conf.d block itself, NOT from
-    :func:`~jasper.fanin_coupling.resolve_ring_wire`: the ioplug advertises
+    :func:`~jasper.dsp_control.fanin_coupling.resolve_ring_wire`: the ioplug advertises
     exactly what the file on disk declares as its hw_params constraint, and conf
     rendering and ring coupling are independently gated, so a box can carry a
     per-box-rendered conf.d while sitting coupling-inert (or the reverse). An
@@ -281,10 +283,10 @@ def check_content_transport_coherence() -> CheckResult:
     legitimately reads crossed; :func:`_crossed_transport_pair` tells that
     window from a wedge by the reconcile entry lock.
     """
-    from jasper.audio_runtime_plan import output_endpoint_evidence_from_statefiles
+    from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
     from jasper.paths import crossover_statefile
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -393,7 +395,7 @@ def check_ring_platform_assets() -> CheckResult:
     """Verify the jts_ring transport platform assets are present.
 
     Three assets: the compiled ioplug .so, the conf.d PCM definitions
-    (jasper.ring_conf.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
+    (jasper.dsp_control.ring_conf.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
     Since ADR-0100 they are load-bearing on every box.
 
     Statuses:
@@ -469,17 +471,11 @@ def check_ring_platform_assets() -> CheckResult:
 
 
 def _resolved_ring_wire():
-    """The ring wire an arm would render into the conf.d, or ``None``.
-
-    The same two calls the arm's own capability gate makes
-    (:func:`jasper.fanin.ring_readiness.ring_wire_caps_ready`). ``None`` when
-    the box declares a wire neither language recognizes; that refusal is
-    ``resolve_wire_for_gate``'s to report.
-    """
+    """The ring wire an arm would render, or None when evidence is unavailable."""
     try:
-        from ...fanin.ring_readiness import resolve_wire_for_gate
+        from jasper.dsp_control.fanin_coupling import resolve_ring_wire
 
-        wire, _problem = resolve_wire_for_gate(evidence.saved_topology_for_wire())
+        wire = resolve_ring_wire(evidence.saved_topology_for_wire())
     except (ImportError, OSError):
         return None
     return wire
@@ -487,34 +483,11 @@ def _resolved_ring_wire():
 
 @doctor_check()
 def check_ring_ioplug_provenance() -> CheckResult:
-    """Is the INSTALLED ioplug the one the installer built, and what can it parse?
+    """Prove that the installed plugin supports the fixed program wire.
 
-    ``check_ring_platform_assets`` reports presence and its open-probe passes on
-    any structurally-valid plugin, so a STALE ``.so`` (the ioplug build degrades
-    to a WARN and leaves the previous one installed) reads ``ok`` there. The
-    installer records the sha and conf.d fields of the plugin it installed, and
-    revokes that record on every path where it did NOT produce the installed
-    file.
-
-    THE VERDICT IS WEIGHED BY THE BOX'S OWN WIRE, because that decides whether an
-    unvouched plugin costs anything:
-
-    * a wire that renders no conf.d field beyond the ioplug's own defaults needs
-      nothing from any installed plugin, so "cannot vouch" and "stale" are
-      informational ``ok`` rows carrying their reason;
-    * a wire that declares a non-default sample FORMAT is refused at the arm by
-      ``ring_wire_caps_ready``, which is a ``fail``: a stale/mismatched ioplug
-      otherwise presents as CamillaDSP crash-looping on ``-EINVAL`` at ``open()``
-      against the ring, and the manual
-      ``jasper-fanin-coupling-reconcile shm_ring`` remedy skips that gate.
-
-    SCOPE: ``ring_wire_capabilities`` answers which keys the WIRE forces onto the
-    conf.d, not which keys the conf.d on disk declares, so a box pinned narrow
-    resolves an empty capability set while its rendered conf.d still carries a
-    ``format`` line (#2597).
-
-    Skips when the ``.so`` is absent: that is ``check_ring_platform_assets``'s
-    missing-asset verdict.
+    A missing/stale record or missing format capability refuses the arm.
+    If topology evidence cannot be read, report the record alone without
+    claiming wire support. Missing plugins belong to the asset check.
     """
     label = "ring ioplug provenance"
     so_path = ring_assets.ring_ioplug_so_path(plugin_dir=_JTS_RING_ALSA_PLUGIN_DIR)
@@ -813,7 +786,7 @@ def check_ring_reader_stall() -> CheckResult:
         reader resumes, and the household's remedy is the same either way.
     """
     from jasper.multiroom.grouping_ring import GROUPING_RING_FILE
-    from jasper.ring_assets import (
+    from jasper.audio_control.ring_assets import (
         RING_A_PROGRAM_FILE,
         RING_ACTIVE_CONTENT_FILE,
         RING_B_CONTENT_FILE,
@@ -914,7 +887,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     label = "ring geometry"
     try:
         from jasper.fanin.ring_readiness import resolve_effective_fanin_ring_slots
-        from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
+        from jasper.dsp_control.fanin_coupling import RING_SLOTS_ENV_VAR
     except ImportError as e:  # pragma: no cover - always importable in prod
         return CheckResult(
             label,
@@ -1046,7 +1019,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     applies through ``outputd.env``. Known limit, issue #2147, so ok not warn.
     """
     label = "ring conf floor"
-    from ...audio_runtime_settings import DEFAULT_OUTPUTD_PERIOD_FRAMES
+    from jasper.service_state.audio_runtime_settings import DEFAULT_OUTPUTD_PERIOD_FRAMES
 
     dac_id = active_dac_profile_id()
     if dac_id is None:

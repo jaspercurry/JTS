@@ -64,8 +64,8 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.biquad import FilterSpec
-from jasper.camilla_emit import emit_gain_filter
-from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.audio_routes.camilla_emit import emit_gain_filter
+from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec
 from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
 from jasper.sound.profile import (
     CURVE_PRESETS,
@@ -552,15 +552,15 @@ def test_banked_applied_candidate_does_not_read_the_retired_snapshot(tuning_prof
 
 
 @pytest.mark.parametrize("delay_us, polarity", [(0, "keep"), (22, "invert")])
-@pytest.mark.parametrize("output_trim_db", [0, 6])
-def test_timing_projection_keeps_only_declared_alignment_and_trims(tuning_profile, delay_us, polarity, output_trim_db):
+@pytest.mark.parametrize("headroom_db", [0, 6])
+def test_timing_projection_keeps_only_declared_alignment_and_trims(tuning_profile, delay_us, polarity, headroom_db):
     candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
                         alignment=MeasuredCrossoverAlignment(delay_us, "woofer", polarity))
     before = candidate.to_dict()
-    projected = timing_candidate(candidate, output_trim_db=output_trim_db)
+    projected = timing_candidate(candidate, headroom_db=headroom_db)
     assert projected.to_dict() == {**before, "fingerprint": projected.fingerprint, "linearization": {}, "room_correction": {},
                                   "blend_correction": [], "bass_extension": {},
-                                  "role_attenuations_db": {role: gain - output_trim_db for role, gain in candidate.role_attenuations_db.items()}}
+                                  "role_attenuations_db": {role: gain - headroom_db for role, gain in candidate.role_attenuations_db.items()}}
     assert projected.fingerprint != candidate.fingerprint
     assert effective_preset(projected) == effective_preset(candidate)
     assert candidate.to_dict() == before
@@ -584,8 +584,8 @@ def test_timing_graph_matches_its_model_and_passes_candidate_proof(tuning_profil
     assert graph["devices"]["volume_limit"] == 0.0
     candidate_graph = yaml.safe_load(compile_tuning_graph(profile, candidate, output_trim_db=6))
     attenuation = candidate_graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
-    assert attenuation == pytest.approx(-17, abs=.001)
-    for role, expected_db in (("woofer", -17), ("tweeter", -20)):
+    assert attenuation == pytest.approx(-13.0846, abs=.001)
+    for role, expected_db in (("woofer", -13.0846), ("tweeter", -16.0846)):
         name = driver_baseline_gain_name(role)
         total = graph["filters"][name]["parameters"]["gain"] + graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
         assert total == pytest.approx(candidate_graph["filters"][name]["parameters"]["gain"] + attenuation)

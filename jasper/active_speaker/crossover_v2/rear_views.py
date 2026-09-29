@@ -10,9 +10,9 @@ variants that each change one control family. This module selects those takes,
 freezes the batch's comparison band and per-position reference curve ONCE, and
 hands :mod:`jasper.audio_measurement.seat_figures` the arrays.
 
-A PAIR batch plays ONE candidate the run composed itself — the applied tune
-with its rear calibration cleared, so the two woofers are raw — and banks each
-woofer alone beside their sum at every bearing. It carries no candidate
+A PAIR batch plays ONE candidate, its parent with the rear calibration
+cleared so the two woofers are raw (ADR-0386), and banks each woofer alone
+beside their sum at every bearing. It carries no candidate
 comparison because there is only one played candidate: it says what the two
 woofers do separately and how far their superposition may be trusted, which is
 what the no-sound preview predicts from.
@@ -41,6 +41,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REFUSE_NO_BRANCH_DIAGNOSTIC,
     REFUSE_NO_INCUMBENT,
     REFUSE_NO_REAR_TAKES,
+    EvidenceUnavailable,
 )
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import (
@@ -65,7 +66,7 @@ from .measurement_context import capture_basis
 from .position_cycle import curves_for_take, parse_curve_complex
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
-from .round_captures import RoundCapturesRefused, doc_pose_key
+from .round_captures import doc_pose_key
 from .round_inputs import RoundInputs, banked_round_of
 
 
@@ -246,12 +247,12 @@ def rear_document(
                 and (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING):
             on_axis.add(take.pose_key)
     if not batch:
-        raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
+        raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
     sets = {_candidate_key(row["capture_basis"].get("candidate_id")): row
             for row in view_sets(manifest)}
     incumbent_id = next((name for name, row in sets.items() if row.get("base")), None)
     if incumbent_id not in batch:
-        raise RoundCapturesRefused(REFUSE_NO_INCUMBENT, {"candidates": sorted(batch)})
+        raise EvidenceUnavailable(REFUSE_NO_INCUMBENT, {"candidates": sorted(batch)})
     for poses in batch.values():
         for takes in poses.values():
             takes.sort(key=lambda take: take.take_id)
@@ -512,21 +513,6 @@ def _pair_position(
     }, grid
 
 
-def _composed_source(inputs: RoundInputs, candidate: str) -> dict[str, Any]:
-    """Where the played candidate came from: the applied fingerprint the run
-    recorded when it composed the cleared tune, and which section it cleared.
-    A candidate the bank cannot answer carries that refusal code instead."""
-    bank = banked_round_of(inputs.session_dir)
-    try:
-        found = find_banked_candidate(candidate, root=bank.parent if bank else None)
-    except CandidateBankRefusal as exc:
-        return {"candidate_id": None, "resolution": None, "reason": exc.code}
-    analysis = found.candidate.analysis
-    return {"candidate_id": (analysis.get("base") or {}).get("fingerprint"),
-            "resolution": (analysis.get("resolution") or {}).get("rear_calibration"),
-            "reason": ""}
-
-
 def _pair_document(
     inputs: RoundInputs, *, manifest: Mapping[str, Any], pair_set: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -548,11 +534,11 @@ def _pair_document(
         records.setdefault(doc_pose_key(record), []).append(record)
         observed.append(capture_basis(record))
     if not records:
-        raise RoundCapturesRefused(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
+        raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
     every = [record for rows in records.values() for record in rows]
     candidate = _shared([_candidate_key(record.get("candidate_id")) for record in every]) or ""
     if not any(record.get("branch_diagnostic") for record in every):
-        raise RoundCapturesRefused(REFUSE_NO_BRANCH_DIAGNOSTIC, {
+        raise EvidenceUnavailable(REFUSE_NO_BRANCH_DIAGNOSTIC, {
             "candidates": sorted({_candidate_key(record.get("candidate_id"))
                                   for record in every}),
             "takes": len(every),
@@ -608,7 +594,8 @@ def _pair_document(
                               "candidate_id": candidate, "position": None},
         },
         "candidates": [],
-        "pair": {"candidate_id": candidate, "source": _composed_source(inputs, candidate),
+        "pair": {"candidate_id": candidate,
+                 "cleared_layers": _shared([record.get("cleared_layers") for record in every]),
                  "positions": positions},
         "stage": {
             **stage,

@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal, Mapping
 
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.dsp_apply import DspApplyError, DspApplyState, apply_dsp_config, dsp_writer_lock
+from jasper.dsp_control.dsp_apply import DspApplyError, DspApplyState, apply_dsp_config, dsp_writer_lock
 from jasper.json_fields import issue as _issue, sha256_text, utc_now_iso as _utc_now
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology, canonical_fingerprint as _fingerprint
+from jasper.audio_routes.output_topology import OutputTopology, canonical_fingerprint as _fingerprint
 
 from .baseline_profile import applied_profile_anchor, baseline_candidate_fingerprint, load_baseline_profile_state
 from .baseline_record import protection_projection

@@ -141,7 +141,7 @@ async def test_public_play_cue_reports_busy_when_output_active() -> None:
 
 
 async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None:
-    from jasper.assistant_loudness import tts_envelope_lufs_for_level
+    from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
 
     events: list[str] = []
     tts = FakeTts(on_call=events.append)
@@ -187,7 +187,7 @@ async def test_play_cue_prepares_loudness_context_before_duck_and_play() -> None
 
 
 async def test_dynamic_text_prepares_loudness_context_before_duck_and_speak() -> None:
-    from jasper.assistant_loudness import tts_envelope_lufs_for_level
+    from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
     from jasper.voice_daemon import FanInDucker
 
     events: list[str] = []
@@ -272,7 +272,7 @@ async def test_dynamic_text_prerender_does_not_block_turn_claim() -> None:
 
 
 async def test_mute_click_prepares_loudness_context_before_write() -> None:
-    from jasper.assistant_loudness import tts_envelope_lufs_for_level
+    from jasper.runtime_config.assistant_loudness import tts_envelope_lufs_for_level
 
     class _Volume:
         def get_listening_level(self) -> int:
@@ -305,7 +305,7 @@ async def test_mute_click_prepares_loudness_context_before_write() -> None:
 
 
 async def test_fanin_prepare_carries_absolute_volume_context() -> None:
-    from jasper.assistant_volume import EffectiveVolumeContext
+    from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 
     tts = FakeTts()
 
@@ -332,7 +332,7 @@ async def test_post_dsp_prepare_attaches_volume_context(monkeypatch) -> None:
     # member attaches the SAME absolute context to PREPARE_ASSISTANT — the
     # post-DSP consumer owns the downstream-is-zero fact; Python does not mutate
     # downstream_db to 0.
-    from jasper.assistant_volume import EffectiveVolumeContext
+    from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 
     tts = FakeTts()
 

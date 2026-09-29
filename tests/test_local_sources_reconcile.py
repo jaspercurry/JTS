@@ -16,12 +16,13 @@ import threading
 import pytest
 
 from jasper.bluetooth.rfkill import BluetoothRfkillState
-from jasper import source_intent, source_intent_units as units
+from jasper.audio_routes import source_intent
+from jasper import source_intent_units as units
 from jasper.json_fields import sha256_text
 from jasper.local_sources import reconcile
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.multiroom import reconcile as reconcile_mod
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 from tests._log_events import event_field_maps, event_fields
 from tests.test_source_intent_reconcile import _key, _write, _write_target_status
 

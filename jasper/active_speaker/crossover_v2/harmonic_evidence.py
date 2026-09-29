@@ -54,6 +54,7 @@ from jasper.audio_measurement.calibration import (
     parse_calibration_text,
 )
 from jasper.audio_measurement.distortion import read_segment_distortion, worst_clear_of_floor
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.program_analysis import (
     CAPTURE_BOUND_MARGIN_S,
     MeasurementGeometry,
@@ -84,7 +85,6 @@ __all__ = [
     "FIDELITY_TOLERANCE",
     "HARMONICS_ARTIFACT",
     "HARMONICS_ARTIFACT_KIND",
-    "HARMONICS_SCHEMA_VERSION",
     "HARMONIC_ORDERS",
     "NO_ADMISSIBLE_CAPTURES",
     "NO_CAPTURE_PASSED_THE_GATES",
@@ -92,18 +92,12 @@ __all__ = [
     "PROGRAM_NOT_REPRODUCIBLE",
     "RING_NOT_SCOPED_TO_ONE_SESSION",
     "STATE_UNREADABLE",
-    "HarmonicEvidenceRefused",
     "banked_roles",
     "read_bundle_harmonics",
     "read_round_harmonics",
     "rebuild_measure_program",
     "round_bands_hz",
 ]
-
-#: Bumped when a field changes MEANING, never for an additive widening — the
-#: rule :data:`~.evidence_packet.PACKET_SCHEMA_VERSION` keeps: a reader that
-#: ignores what it does not know is not misled by a new key.
-HARMONICS_SCHEMA_VERSION = 3
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
@@ -192,15 +186,6 @@ NO_CAPTURE_PASSED_THE_GATES = "no_capture_passed_the_gates"
 #: cannot attribute to one session. See :func:`_scope_captures` for what
 #: reading them together would silently publish.
 RING_NOT_SCOPED_TO_ONE_SESSION = "ring_not_scoped_to_one_session"
-
-
-class HarmonicEvidenceRefused(Exception):
-    """No valid reading is available; per-take failures remain in evidence."""
-
-    def __init__(self, reason: str, evidence: Mapping[str, Any] | None = None):
-        super().__init__(reason)
-        self.reason = reason
-        self.evidence = dict(evidence or {})
 
 
 def _read_mono(path: Path, *, sample_rate_hz: int | None = None) -> np.ndarray:
@@ -302,7 +287,7 @@ def round_bands_hz(
     roles = banked_roles(state)
     if not roles or not overrides.keys() >= set(roles):
         gains = state.get("gain_plan_db")
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             STATE_UNREADABLE,
             {
                 "missing": "a band for every role this round's gain plan names",
@@ -346,7 +331,7 @@ def rebuild_measure_program(
     gains = raw_gains if isinstance(raw_gains, Mapping) else {}
     prefixes = sorted(stimulus_id[:12] for stimulus_id in stimulus_ids)
     if not roles or set(bands) != set(roles):
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             STATE_UNREADABLE,
             {
                 "missing": "a gain plan naming one shape's roles, and a band each",
@@ -403,7 +388,7 @@ def rebuild_measure_program(
             "replayed against a byte-identical band, could still leave the "
             "banked figure wrong for this program"
         )
-    raise HarmonicEvidenceRefused(
+    raise EvidenceUnavailable(
         PROGRAM_NOT_REPRODUCIBLE,
         {
             "stimulus_ids": prefixes,
@@ -463,7 +448,7 @@ def _crossover_fc_hz(
     first = regions[0] if isinstance(regions, list) and regions else None
     value = first.get("fc_hz") if isinstance(first, Mapping) else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             STATE_UNREADABLE,
             {
                 "missing": (
@@ -481,7 +466,7 @@ def _crossover_fc_hz(
         )
     fc = float(value)
     if not math.isfinite(fc) or fc <= 0.0:
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             STATE_UNREADABLE,
             {"field": "crossover_regions[0].fc_hz", "value": value},
         )
@@ -539,7 +524,7 @@ def _scope_captures(
         )
     identities = {capture["session_id"] for capture in banked}
     if len(identities) > 1 or (identities and None in identities):
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             RING_NOT_SCOPED_TO_ONE_SESSION,
             {
                 "n_ring_captures": len(banked),
@@ -962,11 +947,11 @@ def read_round_harmonics(
                  "unscoped_omissions": unscoped_omissions}
     try:
         captures, scope = _scope_captures(banked, session_id)
-    except HarmonicEvidenceRefused as exc:
-        exc.evidence.update(omissions)
+    except EvidenceUnavailable as exc:
+        exc.detail.update(omissions)
         raise
     if not captures:
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             NO_ADMISSIBLE_CAPTURES,
             {
                 "phase": PHASE_MEASURE,
@@ -1109,7 +1094,7 @@ def read_round_harmonics(
             blocks.append(block)
 
     if not blocks:
-        raise HarmonicEvidenceRefused(
+        raise EvidenceUnavailable(
             NO_CAPTURE_PASSED_THE_GATES,
             {
                 "n_captures": len(captures),
@@ -1125,7 +1110,6 @@ def read_round_harmonics(
 
     return {
         "artifact_kind": HARMONICS_ARTIFACT_KIND,
-        "artifact_schema_version": HARMONICS_SCHEMA_VERSION,
         "round_dir": round_dir.name,
         "orders": list(orders),
         "program": {
@@ -1164,10 +1148,10 @@ def read_bundle_harmonics(
     if round_dir is None:
         raise ValueError(why)
     if inputs.state_path is None:
-        raise HarmonicEvidenceRefused(STATE_UNREADABLE, {"reason": inputs.state_reason})
+        raise EvidenceUnavailable(STATE_UNREADABLE, {"reason": inputs.state_reason})
     state = json.loads(inputs.state_path.read_text())
     if not isinstance(state, dict):
-        raise HarmonicEvidenceRefused(STATE_UNREADABLE, {})
+        raise EvidenceUnavailable(STATE_UNREADABLE, {})
     return read_round_harmonics(
         round_dir, bundle_dir / CAPTURE_RING_DIR, state,
         band_overrides,

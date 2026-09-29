@@ -42,7 +42,7 @@ from jasper.active_speaker.rear_calibration import (
     compile_rear_stage,
     read_rear_calibration,
 )
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 FIT_BAND_HZ = (40.0, 800.0)
 FIT_POINTS = 160

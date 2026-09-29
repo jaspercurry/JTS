@@ -59,11 +59,10 @@ from jasper.active_speaker.graph_safety import (
     unprotected_tweeter_outputs,
     view_from_emitted_text,
 )
-from jasper.active_speaker.runtime_contract import (
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
-    classify_bass_extension_graph,
-)
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 
+from tests._log_events import event_fields
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
 from tests.test_rear_output_foundation import _rear_pair
@@ -384,8 +383,8 @@ def test_emit_gate_logs_before_raising(monkeypatch, caplog) -> None:
             emit_active_speaker_baseline_config(
                 _preset("mono", 2), playback_device=ACTIVE_PCM
             )
-    assert "event=active_speaker.emit_gate" in caplog.text
-    assert "blocked_unprotected_tweeter" in caplog.text
+    fields = event_fields(caplog, "active_speaker.emit_gate")
+    assert fields["result"] == "blocked_unprotected_tweeter"
 
 
 @pytest.mark.parametrize("layout", ["mono", "stereo"])
@@ -575,19 +574,19 @@ def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None
     -trip the emitted program YAML through CamillaDSP's OWN validator.
 
     The task asked for a round-trip through "the camilladsp python lib's
-    validate_config". That pip package (jasper.camilla lazily imports it as
+    validate_config". That pip package (jasper.audio_control.camilla lazily imports it as
     `camilladsp`) only exposes RPC-style config validation
     (Config.validate/validate_yaml/validate_json) that proxies a live
     websocket connection to an already-running CamillaDSP daemon -- there is
     no purely offline validator in that package to call standalone. The
     closest hardware-free equivalent already established in this codebase is
-    jasper.dsp_apply.validate_camilla_config, which shells out to the REAL
+    jasper.dsp_control.dsp_apply.validate_camilla_config, which shells out to the REAL
     Rust camilladsp binary's own `--check` flag (the same validation SetConfig
     runs, just without a live daemon connection) -- so it is used here
     instead. Skips (matching validate_camilla_config's own MISSING
     classification) when that binary is not installed, which is every
     developer machine and CI runner today (the binary is Pi-only)."""
-    from jasper.dsp_apply import ValidationStatus, validate_camilla_config
+    from jasper.dsp_control.dsp_apply import ValidationStatus, validate_camilla_config
 
     yaml_text = emit_active_speaker_program_config(
         _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM

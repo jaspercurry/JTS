@@ -15,7 +15,7 @@ from typing import Any
 
 from ..aec import bridge_reference
 from ..mic_capture import MicCapture
-from ..aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AGC1_ENABLED_ENV,
     AGC1_MAX_GAIN_DB_ENV,
     AGC1_TARGET_DBFS_ENV,
@@ -23,8 +23,8 @@ from ..aec_sweep import (
     NS_LEVEL_ENV,
     knob_default,
 )
-from ..wake_condition_context import ConditionContext
-from ..wake_events import (
+from jasper.playback_state.wake_condition_context import ConditionContext
+from jasper.service_state.wake_events import (
     CAPTURE_POST_SEC,
     CAPTURE_PRE_SEC,
     WakeEventStore,

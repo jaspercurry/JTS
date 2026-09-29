@@ -113,10 +113,10 @@ def test_registry_stimulus_reaches_the_capture_spec():
 @pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", False), ("branches", False), ("per_driver", False), ("reference_axis", False)])
 def test_bass_capture_regimes(regime, allowed):
     if allowed:
-        assert validated_capture_purpose("bass", "close", regime) == "bass"
+        assert validated_capture_purpose("bass", regime) == "bass"
     else:
         with pytest.raises(ValueError):
-            validated_capture_purpose("bass", "close", regime)
+            validated_capture_purpose("bass", regime)
 
 
 @pytest.mark.parametrize("floor", [20, 30])

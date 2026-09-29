@@ -4,7 +4,7 @@ After=jasper-fanin.service jasper-camilla.service jasper-outputd.service jasper-
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
 # playback working through a 2 s camilla outage (camilla calls go
-# through best_effort=True paths in jasper/camilla.py). After= still
+# through best_effort=True paths in jasper/audio_control/camilla.py). After= still
 # orders us behind camilla on cold boot.
 # jasper-aec-bridge is a soft dependency ONLY on the reconciler-managed
 # `udp:9876` local-mic path, where it is the UDP producer: if it was
@@ -119,7 +119,7 @@ EnvironmentFile=-/var/lib/jasper-secrets/google_routes.env
 # to point at /var/lib/jasper/wake/jarvis_v2.onnx. Sourced AFTER
 # /etc/jasper/jasper.env so wizard-written values win. Optional via
 # the leading `-` — daemon falls back to bundled "hey_jarvis" when
-# the file is missing. See jasper/wake_models.py for the registry.
+# the file is missing. See jasper/service_state/wake_models.py for the registry.
 EnvironmentFile=-/var/lib/jasper/wake_model.env
 # Weather default location + units written by the wizard at
 # http://jts.local/assistant/weather/. Sourced AFTER /etc/jasper/jasper.env so

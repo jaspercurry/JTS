@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from jasper.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
-from jasper.fanin_coupling import RING_A_CHANNELS
+from jasper.audio_routes.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
+from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS
 from jasper.speaker_layout import measurement_target_id
 
 from ..camilla_names import (
@@ -119,7 +119,7 @@ def _emit_split_mixer(
 
 
 # The inter-speaker channel-select mixer name, owned by the shared leaf
-# (jasper.camilla_emit) and re-exported so the active-speaker verifier has one
+# (jasper.audio_routes.camilla_emit) and re-exported so the active-speaker verifier has one
 # import point.
 channel_select_mixer_name = CHANNEL_SELECT_MIXER
 
@@ -238,8 +238,8 @@ def _emit_baseline_pipeline(
 ) -> str:
     lines: list[str] = []
     # Room PEQs (Layer B) run on the stereo program bus before the common
-    # active_baseline_headroom gain. The gain absorbs their positive-boost
-    # headroom so the active path stays one-preamp-shaped.
+    # active_baseline_headroom gain, where the charge nets them with every
+    # later stage (ADR-0385) and the active path stays one-preamp-shaped.
     if room_peq_names:
         names = ", ".join(room_peq_names)
         lines.extend([
@@ -260,9 +260,8 @@ def _emit_baseline_pipeline(
     #     crossover high-pass IS its protection; a pre-split filter cannot push
     #     energy past it.
     #
-    # BEFORE active_baseline_headroom so the stage sits where a boost WOULD be
-    # absorbable — necessary but not sufficient, since absorption needs a TERM in
-    # ``total_headroom_db`` and this stage deliberately has none.
+    # BEFORE active_baseline_headroom, where the charge reads every stage; the
+    # verifier refuses room and blend filters behind it.
     if blend_correction_names:
         names = ", ".join(blend_correction_names)
         lines.extend([

@@ -19,23 +19,23 @@ from unittest.mock import ANY, DEFAULT, AsyncMock, MagicMock, call
 
 import pytest
 
-import jasper.airplay_session as airplay_session
+import jasper.playback_state.airplay_session as airplay_session
 import jasper.mux as mux_module
-from jasper.accounts import Account
+from jasper.service_state.accounts import Account
 from jasper.busctl import BusctlResult
-from jasper.music_sources import MUSIC_SOURCES, VolumeMode
+from jasper.playback_state.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
-from jasper.spotify_router import (
+from jasper.service_state.spotify_router import (
     ACCOUNT_OK,
     AccountClient,
     AccountStatus,
     BuildResult,
     Router,
 )
-from jasper.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
-from jasper.volume_handoff import SourceHandoff
-from jasper.volume_persistence import VolumePersistence
+from jasper.audio_control.volume_coordinator import VolumeCoordinator
+from jasper.audio_routes.volume_curve import percent_to_db
+from jasper.audio_control.volume_handoff import SourceHandoff
+from jasper.service_state.volume_persistence import VolumePersistence
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields, event_records
@@ -585,7 +585,7 @@ def test_spotify_router_carries_the_household_accounts(mux, tmp_path, monkeypatc
         account=Account(name="jasper", cache_path="/nope"), sp=MagicMock(),
     )
     monkeypatch.setattr(
-        "jasper.spotify_router.build_clients",
+        "jasper.service_state.spotify_router.build_clients",
         lambda _registry, **_: BuildResult(
             clients={"jasper": client},
             statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
@@ -1298,17 +1298,23 @@ async def test_paused_airplay_session_is_released_on_takeover(
         ([BusctlResult(1, b"", b'Call failed: Name "org.gnome.ShairportSync" does not exist')], ["DropSession"], "ok", "receiver_absent"),
     ],
 )
+@pytest.mark.parametrize("preempt", [False, True])
 async def test_airplay_cleanup_outcome_keeps_new_source_authoritative(
-    mux, probes, monkeypatch, responses, methods, status, reason,
+    mux, probes, monkeypatch, responses, methods, status, reason, preempt,
 ):
     drop = AsyncMock(side_effect=responses)
     monkeypatch.setattr(airplay_session, "run_busctl", drop)
     probes.play(A)
     await mux._tick()
     assert mux._status_payload()["airplay_session_cleanup"]["status"] == "unobserved"
-    probes.play(U)
-    await mux._tick()
-    assert mux._winner is U
+    if preempt:
+        response = await _control(mux, "PREEMPT airplay")
+        assert response["airplay_session_cleanup"] == mux._status_payload()["airplay_session_cleanup"]
+        assert mux._winner is A
+    else:
+        probes.play(U)
+        await mux._tick()
+        assert mux._winner is U
     assert [c.args[-1] for c in drop.await_args_list] == methods
     fact = mux._status_payload()["airplay_session_cleanup"]
     assert (fact["status"], fact["reason"], fact["attempts"]) == (status, reason, 1)
@@ -1345,7 +1351,8 @@ async def test_airplay_cleanup_finishes_before_a_new_selection(
     finish.set()
     result, _ = await asyncio.gather(takeover, newer_selection)
     if preempt:
-        assert result == {"preempted": "airplay"}
+        assert result["preempted"] == "airplay"
+        assert result["airplay_session_cleanup"]["reason"] == "drop_acknowledged"
     assert mux._status_payload()["airplay_session_cleanup"]["reason"] == "drop_acknowledged"
     assert mux._manual_source is A
 

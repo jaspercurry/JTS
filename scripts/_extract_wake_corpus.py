@@ -94,7 +94,7 @@ QUADRANTS = (
 
 
 # Schema-canonical leg names. Match the `audio_<leg>_path` columns + the
-# `.aec-<leg>.wav` filename suffix convention from jasper/wake_events.py.
+# `.aec-<leg>.wav` filename suffix convention from jasper/service_state/wake_events.py.
 # (The bridge env vars use "raw" for the "off" leg — JTS schema sticks
 # with "off" for column-name continuity, so this script does too.)
 LEGS = ("on", "off", "dtln")

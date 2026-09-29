@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from . import location_state
+from jasper.service_state import location_state
 from .identity.reader import DEFAULT_HOSTNAME, resolve_hostname
 from .log_event import log_event
 from .tools import fence_untrusted
@@ -28,7 +28,6 @@ from .tools import fence_untrusted
 logger = logging.getLogger(__name__)
 
 GOOGLE_ROUTES_ENDPOINT = "https://routes.googleapis.com/directions/v2:computeRoutes"
-GOOGLE_ROUTES_SECRET_FILE = "/var/lib/jasper-secrets/google_routes.env"
 GOOGLE_ROUTES_API_KEY_ENV = "GOOGLE_ROUTES_API_KEY"
 TRAVEL_DEFAULT_MODE_ENV = "JASPER_TRAVEL_DEFAULT_MODE"
 DEFAULT_TRAVEL_MODE = "transit"

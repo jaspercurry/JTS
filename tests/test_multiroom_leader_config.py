@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.camilla_config_contract import playback_is_pipe
+from jasper.dsp_control.camilla_config_contract import playback_is_pipe
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.multiroom.leader_config import (
     BONDED_CONFIG_PATH,
@@ -251,7 +251,7 @@ async def _run_solo_restore(tmp_path, monkeypatch) -> Path:
         if prepare is not None:
             prepare()
 
-    monkeypatch.setattr("jasper.dsp_apply.apply_dsp_config", fake_apply_dsp_config)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply.apply_dsp_config", fake_apply_dsp_config)
 
     class _Cam:
         async def get_config_file_path(self, *, best_effort=True):

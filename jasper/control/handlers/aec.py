@@ -12,8 +12,9 @@ import threading
 import time
 from typing import Any, cast
 
-from ... import enhanced_aec, wake_models
-from ...audio_profile_state import (
+from jasper.audio_routes import enhanced_aec
+from jasper.service_state import wake_models
+from jasper.runtime_config.audio_profile_state import (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
     WAKE_LEG_DEFAULTS,
@@ -23,7 +24,7 @@ from ...audio_profile_state import (
 from ...atomic_io import locked_update_env_file
 from ...log_event import log_event
 from ...service_units import JASPER_VOICE_SERVICE
-from ...usb_mic import (
+from jasper.audio_routes.usb_mic import (
     read_usb_mic_leg,
     usb_mic_leg_choices,
     write_usb_mic_enabled,
@@ -182,7 +183,7 @@ _aec_commission_start_lock = threading.Lock()
 
 
 _AEC_MODE_ENV_OWNER = "JTS /aec mode control"
-# Operator-facing wake-leg toggle name -> jasper.wake_legs token(s). The
+# Operator-facing wake-leg toggle name -> jasper.playback_state.wake_legs token(s). The
 # chip-direct / AEC-OFF leg is exposed as "raw", but its frozen wire token is
 # "off". Do NOT confuse "raw" with the "raw0" corpus-only leg. Chip-AEC
 # production mode is selected by the profile (`JASPER_WAKE_LEG_CHIP_AEC`);

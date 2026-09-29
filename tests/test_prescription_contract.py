@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from jasper.active_speaker import rear_calibration as rear_cal
 from jasper.active_speaker.crossover_v2 import alignment_prescription as alignment
@@ -19,26 +22,30 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
-from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, build_crossover_evidence_packet
+from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, EVIDENCE_KEY, build_crossover_evidence_packet
 from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import (
-    CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
+    BASE_NOT_BANKED, CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    contract_sources, default_out, read_run_manifest, round_inputs, set_artifact_name,
+    contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs, set_artifact_name,
 )
+from jasper.active_speaker import candidate_bank, candidate_parts, program_headroom
+from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
+from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config
+from jasper.active_speaker.speaker_fit import SpeakerFitUnreadable, _fit_vocabularies
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.measurement_programs import programs_for_topology
-from jasper.active_speaker.round_packet import store_banked_evidence
+from jasper.active_speaker.round_packet import banked_evidence, store_banked_evidence
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.cli import crossover_prescriber as cli
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -49,22 +56,24 @@ from tests.test_crossover_v2_room_prescription import _room_median
 from tests.test_crossover_v2_harmonic_evidence import _artifact, _bundle as harmonic_bundle
 from tests.run_manifest_fixture import write_manifest
 from tests.active_speaker_fixtures import bind_role_rows, mono_output_topology
-from tests.test_rear_output_foundation import _rear_pair
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.crossover_v2_fixtures import _one_way_preset
 from tests.test_active_speaker_runtime_contract import _active_topology
 
 PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "8427e6327e42dfa7e2e30ed50f1bb38c0674ad52bc7eac5967393d948f39dbde"),
-    ("mono", True, "c493b1cc37933cdbcac24b058b775ad331573ce1a3742b0eddaf7a4b81ef80a3"),
-    ("stereo", False, "1938cbaf5571c2f51ebdb29f8a55bed4dc8cd9dd9308d1ad5fdce4059e33bb5b"),
-    ("stereo", True, "bb001d1fc7e92e6727d0cbe887d9b3732d6f5e2dcce203d21805f0d4ae5313bd"),
+    ("mono", False, "715aff882d4eda2521b463a50c61e8a96ac425043ef1522a4eecf82b5687be51"),
+    ("mono", True, "46ebf20ed8f20dc64ade00c5cc6f2fe4d1c31395b96f615885356479749ffb33"),
+    ("stereo", False, "32b09b8edf3a5f440653f2d1e4cc3a1a1a0e9645f73b747c32fb80fe2a2dcf41"),
+    ("stereo", True, "a514c1cec032ebf4a405444a8db44026b8541a531e55122cbc8e7372ba50caec"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
     box = _rear_pair(layout)[1] if rear else _active_topology(layout, "active_2_way")
-    candidate = {"source_preset": preset}
+    candidate = _candidate(preset=ActiveSpeakerPreset.from_mapping(preset)).to_dict()
     programs = programs_for_topology(box)
     for sources in ({"draft": {"topology": box.to_dict()}}, {"candidate": candidate},
                     {"applied_profile": applied_profile(preset=preset)}):
@@ -82,7 +91,7 @@ def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, caps
     monkeypatch.setattr(cli, "load_output_topology", lambda: box)
     for args in ([], ["--round", str(bank)]):
         assert cli.main(["contract", *args]) == cli.EXIT_OK
-        assert set(json.loads(capsys.readouterr().out)) == set(programs)
+        assert set(json.loads(capsys.readouterr().out)["sections"]) == set(programs)
         assert cli.main(["contract", "--section", "rear", *args]) == (cli.EXIT_OK if rear else cli.EXIT_REFUSED)
         answer = json.loads(capsys.readouterr().out)
         assert answer.get("reason") == (None if rear else "prescription_section_unavailable")
@@ -118,7 +127,7 @@ def round_bank(tmp_path, request):
         rear_preset, box = _rear_pair("mono")
         preset = rear_preset.to_dict()
         draft["topology"] = box.to_dict()
-    (artifact / "candidate.json").write_text(json.dumps({"source_preset": preset}))
+    (artifact / "candidate.json").write_text(json.dumps(_candidate(preset=ActiveSpeakerPreset.from_mapping(preset)).to_dict()))
     draft["manual_settings"]["drivers"][1].update(
         recommended_highpass_hz=1000.0, recommended_highpass_slope_db_per_octave=12.0,
     )
@@ -205,7 +214,6 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     assert speaker["driver"]["bounds"]["passbands_hz"] == {role: list(band) for role, band in expected.items()}
     bounds = speaker["driver"]["bounds"]
     assert set(bounds["boost_headroom"]) == set(expected)
-    assert all(row["program_headroom_remaining_db"] == 40.0 for row in bounds["boost_headroom"].values())
     assert speaker["blend"]["bounds"]["boost_route"]["available"] is False
     assert speaker["blend"]["bounds"]["boost_route"]["reason"] == blend.BOOST_ROUTE_UNAVAILABLE
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
@@ -250,7 +258,7 @@ def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
     monkeypatch.setattr(Path, "open", counted_open)
     if surface == "contract":
         assert cli.main(["contract", "--round", str(bank)]) == 0
-        assert set(json.loads(capsys.readouterr().out)) == set(PLAIN_PROGRAMS)
+        assert set(json.loads(capsys.readouterr().out)["sections"]) == set(PLAIN_PROGRAMS)
     else:
         packet = build_crossover_evidence_packet(
             session, driver_draft_path=bank / "design-draft.json", applied_profile_path=profile,
@@ -267,10 +275,11 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
     bank, session = round_bank
     output = tmp_path / f"{section}.json"
     assert cli.main(["contract", "--round", str(bank), "--section", section, "--out", str(output)]) == 0
-    served = capsys.readouterr().out.rstrip("\n").encode()
-    assert output.read_bytes() == served
+    answer = json.loads(capsys.readouterr().out)
+    served = output.read_bytes()
+    assert (answer["out"], answer["bytes"], "sections" in answer) == (str(output), len(served), False)
     packet = build_crossover_evidence_packet(session, driver_draft_path=bank / "design-draft.json")
-    assert packet["contracts"][section] == hashlib.sha256(served).hexdigest()
+    assert packet["contracts"][section] == answer["sha256"] == hashlib.sha256(served).hexdigest()
     assert packet["contracts"] == contract_digests(_contracts(*round_bank))
     assert {"response_format", "driver_response_format"}.isdisjoint(packet)
     assert packet["capture_snr"]["uncertainty"] == CONTRACT_COMMAND
@@ -281,7 +290,11 @@ def test_served_bytes_digest_matches_packet_and_status(round_bank, tmp_path, cap
 
 def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(capsys):
     assert cli.main(["contract"]) == 0
-    contracts = json.loads(capsys.readouterr().out)
+    printed = capsys.readouterr().out
+    answer = json.loads(printed)
+    # Served in the contracts' own compact serialization, so the envelope costs bytes, not a multiple.
+    assert printed == contract_json(answer) + "\n"
+    contracts = answer["sections"]
     assert set(contracts) == set(PLAIN_PROGRAMS)
     assert contracts["room"]["evidence_status"] == room.ROOM_MEDIAN_UNAVAILABLE
     assert contracts["room"]["bounds"]["cut_floor_db"] is None
@@ -296,7 +309,20 @@ def test_contract_without_round_discloses_missing_evidence_and_bass_defaults(cap
     assert {name: contract["schema"]["properties"][name]["default"] for name in dynamic.OPTIONAL_FIELDS} == {
         "compressor_factor": 10.0, "compressor_attack_s": 0.01, "compressor_release_s": 0.25}
     assert contract["evidence_status"] == bass.BASS_EVIDENCE_UNAVAILABLE
-    assert contract["shared_headroom"]["adr"] == "ADR-0257"
+
+
+def test_the_layers_the_bass_contract_calls_uncharged_leave_the_charge_unmoved():
+    """ADR-0385, ADR-0359: the block names the one charge and the bass reserve, and a bass
+    boost leaves the emitted graph's charge where it was."""
+    block = prescription_contracts(programs=("bass",))["bass"]["shared_headroom"]
+    named = [getattr(importlib.import_module(module), name) for module, _, name in
+             (block[field].rpartition(".") for field in ("charge_function", "bass_reserve_function"))]
+    assert named == [program_headroom.charge_db, dynamic.dynamic_bass_gain_reserve_db]
+    assert "bass_extension" in set(block["uncharged_layers"]) - set(block["charged_layers"])
+    candidate = _candidate(linearization={"woofer": {"filters": [
+        {"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 4.0}]}})
+    boosted = replace(candidate, bass_extension=_descriptor().payload())
+    assert candidate_parts.program_charge_db(boosted) == candidate_parts.program_charge_db(candidate) > 0.0
 
 
 def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, bass_packet, capsys):
@@ -307,7 +333,7 @@ def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, 
                      records=["/tmp/record.json"], compression_includes=["compressor", "driver"], harmonics_delta_db=[])
     (bank / "packet.json").write_text(json.dumps(bass_packet))
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
-    contract = json.loads(capsys.readouterr().out)
+    contract = json.loads(capsys.readouterr().out)["sections"]["bass"]
     assert contract["evidence_status"] == "evaluated"
     assert set(contract["refusal_codes"]) == dynamic.DYNAMIC_BASS_REFUSAL_REASONS
     levels = contract["evidence_status_detail"]["levels"]
@@ -384,9 +410,21 @@ def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, name
     view.write_text(json.dumps({}))
     assert cli.main(["contract", "--round", str(bank), "--section", "room",
                      *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK
-    served = json.loads(capsys.readouterr().out)
+    served = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert served["evidence_status"] == "evaluated"
     assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
+
+
+@pytest.mark.parametrize("section,code", [("speaker", cli.EXIT_UNREADABLE), ("room", cli.EXIT_OK)])
+def test_a_named_section_is_built_alone(round_bank, capsys, section, code):
+    """A declared woofer diameter of 0 cannot be built into the speaker section; a room request
+    never builds that section, so it still answers."""
+    bank, _ = round_bank
+    draft = json.loads((bank / "design-draft.json").read_text())
+    next(row for row in draft["manual_settings"]["drivers"] if row["role"] == "woofer")["radiating_diameter_mm"] = 0.0
+    (bank / "design-draft.json").write_text(json.dumps(draft))
+    assert cli.main(["contract", "--round", str(bank), "--section", section]) == code
+    assert set(json.loads(capsys.readouterr().out).get("sections", ())) == ({section} if code == cli.EXIT_OK else set())
 
 
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):
@@ -395,12 +433,11 @@ def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys
     output = default_out(round_inputs(session), session, "room.json")
     output.write_text(json.dumps({"median": _room_median()}))
     assert cli.main(["contract", "--round", str(session), "--section", "room"]) == 0
-    payload = capsys.readouterr().out.rstrip("\n")
-    served = json.loads(payload)
-    assert served["evidence_status"] == "evaluated"
-    assert served["bounds"]["freqs_hz"] == _room_median()["freqs_hz"]
+    served = json.loads(capsys.readouterr().out)["sections"]
+    assert served["room"]["evidence_status"] == "evaluated"
+    assert served["room"]["bounds"]["freqs_hz"] == _room_median()["freqs_hz"]
     packet = build_crossover_evidence_packet(session)
-    assert packet["contracts"]["room"] == hashlib.sha256(payload.encode()).hexdigest()
+    assert packet["contracts"]["room"] == contract_digests(served)["room"]
 
 
 def test_harmonic_templates_cover_the_published_rows(tmp_path):
@@ -428,7 +465,7 @@ def test_applied_preset_fallback_matches_the_packets_reader(round_bank, capsys, 
     path = bank / "applied-profile.json"
     path.write_text(json.dumps(profile))
     assert cli.main(["contract", "--round", str(bank)]) == 0
-    contracts = json.loads(capsys.readouterr().out)
+    contracts = json.loads(capsys.readouterr().out)["sections"]
     packet = build_crossover_evidence_packet(
         session, driver_draft_path=bank / "design-draft.json", applied_profile_path=path,
     )
@@ -444,10 +481,11 @@ def test_applied_preset_fallback_matches_the_packets_reader(round_bank, capsys, 
 def test_speaker_contract_publishes_playback_cost_with_unreadable_measurements(round_bank, manifest):
     bank, session = round_bank
     sources = contract_sources(session)
-    sources["candidate"]["role_attenuations_db"] = {"woofer": 0.0, "tweeter": -9.52}
-    sources["candidate"]["linearization"] = {"tweeter": {"filters": [
-        {"biquad_type": "Peaking", "freq": 12000.0, "gain": 6.0, "q": 1.0},
-    ]}}
+    sources["candidate"] = _candidate(
+        preset=ActiveSpeakerPreset.from_mapping(sources["candidate"]["source_preset"]),
+        trims={"woofer": 0.0, "tweeter": -9.52},
+        linearization={"tweeter": {"filters": [{"biquad_type": "Peaking", "freq": 12000.0, "gain": 6.0, "q": 1.0}]}},
+    ).to_dict()
     sources["manifest"] = manifest
     draft = json.loads((bank / "design-draft.json").read_text())
     for target in draft["driver_safety_profile"]["targets"]:
@@ -462,6 +500,88 @@ def test_speaker_contract_publishes_playback_cost_with_unreadable_measurements(r
         assert row["binding"] is None
         assert row["session_volume_db"] == (-21.09 if manifest.get("sets") and manifest["sets"][0] else None)
         assert row["spl_headroom_db"] == (42.0 if row["session_volume_db"] is not None else None)
+
+
+@pytest.mark.parametrize("rear", [False, True])
+def test_the_contract_spends_what_the_emitted_graph_attenuates(rear):
+    """#5909 D2: the base's spend is its emitted charge, rear stage included."""
+    candidate = _candidate(
+        preset=_rear_pair("mono")[0] if rear else None, rear_calibration=_rear_document() if rear else None,
+        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 100.0, "q": 1.0, "gain": 4.0}]}},
+    )
+    graph = yaml.safe_load(compile_candidate_config(candidate, playback_device="null"))
+    charge = -graph["filters"]["active_baseline_headroom"]["parameters"]["gain"]
+    rows = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]
+    assert [row["program_headroom_spent_db"] for row in rows.values()] == [pytest.approx(charge)] * 2
+    assert [row["program_headroom_remaining_db"] for row in rows.values()] == [pytest.approx(40.0 - charge)] * 2
+
+
+@pytest.mark.parametrize("trim_db, charge_db", [(0.0, 5.0), (-2.0, 3.0), (-6.0, 0.0)])
+def test_a_one_way_trim_nets_the_boost_it_follows(trim_db, charge_db):
+    """#5909: a one-way +4 dB boost charges 5.0 / 3.0 / 0.0 dB at trims 0 / -2 / -6 dB in the
+    emitted graph, in the contract and in composition's judgment (ADR-0385)."""
+    candidate = _candidate(preset=_one_way_preset(), trims={"full_range": trim_db}, linearization={
+        "full_range": {"filters": [{"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": 4.0}]}})
+    graph = yaml.safe_load(compile_candidate_config(candidate, playback_device="null"))
+    row = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]["full_range"]
+    assert (-graph["filters"]["active_baseline_headroom"]["parameters"]["gain"], row["program_headroom_spent_db"],
+            candidate_parts.program_charge_db(candidate)) == pytest.approx((charge_db,) * 3, abs=1e-4)
+
+
+def test_an_exhausted_base_spends_the_charge_the_emitter_refused():
+    """#5909: past the ceiling, the contract and the fit read the charge the emitter refused."""
+    candidate = _candidate(linearization={"woofer": {"filters": [
+        {"biquad_type": "Peaking", "freq": 900.0, "q": 1.0, "gain": 45.0}]}})
+    with pytest.raises(ProgramHeadroomExhausted) as refused:
+        compile_candidate_config(candidate, playback_device="null")
+    rows = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]
+    assert {role: (row["program_headroom_spent_db"], row["program_headroom_remaining_db"], row["binding"], row["reason"])
+            for role, row in rows.items()} == {role: (refused.value.charge_db, 0.0, "program_headroom", None)
+                                               for role in ("woofer", "tweeter")}
+    caps = _fit_vocabularies(candidate, {"woofer": {}, "tweeter": {}})
+    assert {role: vocabulary.composed_boost_cap_db for role, vocabulary in caps.items()} == {
+        "woofer": 40.0, "tweeter": 0.0}
+
+
+def test_a_round_without_a_candidate_charges_no_base_and_never_touches_the_bank(round_bank, monkeypatch):
+    """#5909: the packet is built from the round's banked inputs alone (ADR-0371), even when
+    the applied tune names a banked candidate."""
+    bank, session = round_bank
+    (session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/candidate.json").unlink()
+    (bank / "applied-profile.json").write_text(json.dumps({
+        **applied_profile(preset=_two_way_preset()), "candidate_artifact_path": str(bank / "elsewhere.json"),
+        "source": {"measured_candidate_fingerprint": "f" * 64},
+    }))
+
+    def touched(*args, **kwargs):
+        raise AssertionError("the candidate bank was touched")
+
+    for module in (candidate_bank, candidate_parts):
+        for name in ("find_banked_candidate", "load_applied_candidate", "publish_authored_candidate"):
+            monkeypatch.setattr(module, name, touched)
+    stored, error = banked_evidence(round_inputs(bank))
+    assert error is None and stored[EVIDENCE_KEY] is not None
+    rows = prescription_contracts(**prescription_sources(round_inputs(bank)))["speaker"]["driver"]["bounds"]
+    assert {role: (row["program_headroom_spent_db"], row["reason"]) for role, row in rows["boost_headroom"].items()} == {
+        role: (None, BASE_NOT_BANKED) for role in ("woofer", "tweeter")}
+
+
+def test_a_base_the_emitter_refuses_names_its_code_and_the_packet_still_builds(round_bank):
+    """#5909: the contract publishes no charge for a base the emitter refuses, with the refusal's
+    code, and the round's packet builds; the fit refuses with that code."""
+    bank, session = round_bank
+    cut = {"biquad_type": "Peaking", "freq": 1000.0, "q": 1.0, "gain": -1.0}
+    candidate = replace(_candidate(), blend_correction=[cut] * 3)
+    (session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/candidate.json").write_text(
+        json.dumps(candidate.to_dict()))
+    stored, error = banked_evidence(round_inputs(bank))
+    assert error is None and stored[EVIDENCE_KEY] is not None
+    rows = prescription_contracts(candidate=candidate.to_dict())["speaker"]["driver"]["bounds"]["boost_headroom"]
+    assert {role: (row["program_headroom_spent_db"], row["reason"]) for role, row in rows.items()} == {
+        role: (None, candidate_parts.COMPOSITION_INVALID) for role in ("woofer", "tweeter")}
+    with pytest.raises(SpeakerFitUnreadable) as refused:
+        _fit_vocabularies(candidate, {"woofer": {}})
+    assert refused.value.code == candidate_parts.COMPOSITION_INVALID
 
 
 def test_rear_contract_bounds_equal_the_rear_calibration_constants():
@@ -631,9 +751,9 @@ def test_rear_document_agrees_with_the_validator_at_each_bound_edge(mutate, expe
 def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
     monkeypatch.setattr(cli, "load_output_topology", lambda: _rear_pair("mono")[1])
     assert cli.main(["contract", "--section", "rear"]) == 0
-    rear = json.loads(capsys.readouterr().out)
+    rear = json.loads(capsys.readouterr().out)["sections"]["rear"]
     assert cli.main(["contract", "--section", "room"]) == 0
-    room_contract = json.loads(capsys.readouterr().out)
+    room_contract = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert {"schema", "bounds"} <= set(rear) & set(room_contract)
     # The starting document the rear door admits as written: untuned and muted.
     seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)

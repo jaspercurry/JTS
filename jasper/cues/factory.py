@@ -40,6 +40,7 @@ from .generator import (
     TTSBackend,
 )
 from .manager import AudioCueManager
+from jasper.paths import SOUNDS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ def build_env_cue_manager(
         backend = ChimeTTSGenerator()
         voice = CHIME_VOICE_LABEL
         sounds_dir = os.environ.get(
-            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+            "JASPER_SOUNDS_DIR", SOUNDS_DIR,
         )
         management_url = os.environ.get(
             "JASPER_MANAGEMENT_URL", "https://jts.local",
@@ -224,7 +225,7 @@ def build_env_cue_manager(
         backend = None
         voice = ""
         sounds_dir = os.environ.get(
-            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+            "JASPER_SOUNDS_DIR", SOUNDS_DIR,
         )
         management_url = os.environ.get(
             "JASPER_MANAGEMENT_URL", "https://jts.local",

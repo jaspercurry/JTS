@@ -34,7 +34,7 @@ _IMPORTED_FIXTURES = (
 
 # ---------------------------------------------------------------------------
 # Mic mute — the recorder must honor the household privacy switch
-# (jasper/mic_mute_persistence.py) because it records the bridge's UDP
+# (jasper/service_state/mic_mute_persistence.py) because it records the bridge's UDP
 # legs while jasper-voice (the usual mute enforcer) is stopped.
 # ---------------------------------------------------------------------------
 

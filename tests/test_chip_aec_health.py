@@ -5,7 +5,7 @@
 import pytest
 
 from jasper.chip_aec import health as health
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AecIntent, MicProbe, build_audio_profile_status, runtime_env_from_mapping,
 )
 

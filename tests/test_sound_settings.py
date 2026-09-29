@@ -15,6 +15,8 @@ from jasper.sound.settings import (
     load_sound_settings,
     output_trim_db,
     save_sound_settings,
+    resolve_settings_path,
+    SETTINGS_PATH,
 )
 from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_FLOOR_MAX_DB, VOLUME_FLOOR_MIN_DB
 
@@ -113,3 +115,9 @@ def test_output_trim_db_combines_headroom_and_match_loudness():
     )
     # A flat profile has nothing to compensate, even with match-loudness on.
     assert output_trim_db(SoundProfile(), SoundSettings(match_loudness=True)) == 0.0
+
+
+@pytest.mark.parametrize("env_value,expected", [("", Path(SETTINGS_PATH)), (".", Path("."))])
+def test_settings_path_distinguishes_empty_override_from_dot(monkeypatch, env_value, expected):
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", env_value)
+    assert resolve_settings_path(None) == expected

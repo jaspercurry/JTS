@@ -8,8 +8,8 @@ import pytest
 
 from jasper.control import audio_health_sampler, audio_signal_path
 from jasper.control.audio_health_sampler import AudioHealthSampler
-from jasper.output_hardware import OutputHardwareState
-from jasper.output_topology_store import OutputTopologySnapshot
+from jasper.audio_routes.output_hardware import OutputHardwareState
+from jasper.audio_routes.output_topology_store import OutputTopologySnapshot
 
 from .audio_health_fixtures import (
     _FakeAirPlay,

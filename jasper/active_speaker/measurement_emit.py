@@ -12,8 +12,8 @@ from typing import Any, Literal, Mapping, Sequence
 import yaml
 
 from jasper.biquad import FilterSpec
-from jasper.output_topology_store import load_output_topology_strict
-from jasper.active_speaker.branch_chain import confirmed_protection_sections, rear_branch_sum_headroom_db
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker._common import MeasurementGraphRefused
 from jasper.active_speaker.playback_route import resolve_active_playback_device
 from jasper.active_speaker import camilla_yaml, candidate_bank
@@ -24,13 +24,15 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate,
     candidate_room_peqs, candidate_on_declaration,
-    compile_candidate_config, driver_corrections, effective_preset,
+    compile_candidate_config,
     prove_candidate_config,
 )
+from jasper.active_speaker.graph_safety import view_from_emitted_text
 from jasper.active_speaker.measurement_programs import GRAPH_LAYERS
 from jasper.active_speaker.profile import (
     ActiveSpeakerPreset, required_driver_roles,
 )
+from jasper.active_speaker.program_headroom import graph_headroom_db
 
 __all__ = [
     "MeasurementGraphProfile",
@@ -135,20 +137,14 @@ def _front_drivers(candidate: MeasuredCrossoverCandidate) -> MeasuredCrossoverCa
     return replace(candidate, bass_extension={}, rear_calibration={**rear, "rear_muted": True} if rear else {})
 
 
-def timing_candidate(candidate: MeasuredCrossoverCandidate, *, output_trim_db: float = 0.0) -> MeasuredCrossoverCandidate:
-    from .linearization_fit import linearization_filters_by_role  # lazy: NumPy cost belongs to graph compilation
-
+def timing_candidate(candidate: MeasuredCrossoverCandidate, *, headroom_db: float) -> MeasuredCrossoverCandidate:
+    """The front drivers at the candidate's level: its whole charge, ``headroom_db``, moves into the
+    trims, and the timing graph charges only what still peaks, so the take never plays louder than
+    the candidate. The dropped layers' cuts do not move, so at a cut it plays louder by that cut's
+    depth. See ADR-0345 and ADR-0385."""
     front = _front_drivers(candidate)
-    # Headroom this graph no longer charges, the muted rear's included, moves into the trims. The dropped
-    # layers' cuts do not, so at a cut the take plays louder than the candidate. See ADR-0345.
-    headroom = camilla_yaml.program_headroom_db(
-        linearization_filters_by_role(candidate.linearization),
-        branch_context=camilla_yaml._branch_context(effective_preset(candidate), driver_corrections(candidate)),
-        room_peqs=candidate_room_peqs(candidate), output_trim_db=output_trim_db,
-        rear_calibration=candidate.rear_calibration,
-    ) - rear_branch_sum_headroom_db(front.rear_calibration)
     return replace(front, linearization={}, room_correction={}, blend_correction=(),
-                   role_attenuations_db={role: gain - headroom for role, gain in candidate.role_attenuations_db.items()})
+                   role_attenuations_db={role: gain - headroom_db for role, gain in candidate.role_attenuations_db.items()})
 
 
 def compile_tuning_graph(
@@ -178,7 +174,9 @@ def compile_tuning_graph(
     require_candidate_speaker_identity(candidate, profile.preset)
     candidate = played_candidate(candidate_on_declaration(candidate, profile.preset), cleared_layers)
     if scope == "timing":
-        candidate = timing_candidate(candidate, output_trim_db=output_trim_db)
+        charged = compile_tuning_graph(profile, candidate, preference_filters=preference_filters,
+                                       output_trim_db=output_trim_db)
+        candidate = timing_candidate(candidate, headroom_db=graph_headroom_db(view_from_emitted_text(charged)))
         preference_filters, output_trim_db = (), 0.0
     # The shared reducer skips malformed records; refuse before it loses identity.
     if set(candidate.linearization) - set(required_driver_roles(candidate.source_preset.way_count)) or any(
@@ -217,6 +215,23 @@ def compile_tuning_graph(
         )))
         return prefix + "\n" + yaml.safe_dump({"mixers": mixers}, sort_keys=False) + "\npipeline:\n" + pipeline
     return candidate_text
+
+
+def room_layer_charge_db(profile: MeasurementGraphProfile, candidate: MeasuredCrossoverCandidate) -> float:
+    """What ``candidate``'s room layer adds to the charge of the graph it plays on ``profile``, dB:
+    that graph's charge less the room-cleared take's. Negative where its cuts net a boost elsewhere
+    (ADR-0385)."""
+    if not candidate_room_peqs(candidate):
+        return 0.0
+
+    def charge(cleared_layers: tuple[str, ...]) -> float:
+        try:
+            return graph_headroom_db(view_from_emitted_text(
+                compile_tuning_graph(profile, candidate, cleared_layers=cleared_layers)))
+        except camilla_yaml.ProgramHeadroomExhausted as exc:
+            return exc.charge_db
+
+    return charge(()) - charge(("room_correction",))
 
 
 def emit_measurement_graph(

@@ -16,8 +16,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper import audio_validation, audio_validation_artifacts as artifacts, wake_legs
-from jasper.aec_sweep import (
+from jasper.audio_control import audio_validation_probes
+from jasper.audio_resources import audio_validation_artifacts as artifacts
+from jasper.playback_state import wake_legs
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
     AEC3_SWEEP_SOURCE_USB,
@@ -27,10 +29,9 @@ from jasper.aec_sweep import (
     USB_AEC3_CORPUS_LABEL,
     normalize_aec3_sweep_source,
 )
-from jasper.audio_profile_state import (
+from jasper.runtime_config.audio_profile_state import (
     AEC_MODE_ENV,
     AEC_MODE_FILE_ENV,
-    DEFAULT_AEC_MODE_PATH,
     AecIntent,
     MicProbe,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -58,7 +59,12 @@ from jasper.mics.xvf3800 import (
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
 from jasper.env_file import read_env_file
-from jasper.env_load import BASE_ENV_PATH, parse_bool_value
+from jasper.env_load import (
+    BASE_ENV_PATH,
+    parse_bool_value,
+    DEFAULT_AEC_MODE_PATH,
+    WAKE_CORPUS_BRIDGE_ENV_PATH,
+)
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 from jasper.service_units import AEC_BRIDGE_SERVICE
 from jasper.systemd_probe import unit_query, unit_state
@@ -154,7 +160,7 @@ AEC_MODE_PATH = Path(os.environ.get(
 ))
 BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
-    "/var/lib/jasper/wake_corpus_bridge.env",
+    WAKE_CORPUS_BRIDGE_ENV_PATH,
 ))
 AUDIO_VALIDATION_ARTIFACT_PATH = Path(os.environ.get(
     "JASPER_AUDIO_VALIDATION_ARTIFACT",
@@ -531,7 +537,7 @@ def validation_artifact_summary(
     unknown/missing shape instead of making session creation depend on it.
     """
     path = path or AUDIO_VALIDATION_ARTIFACT_PATH
-    filters: dict[str, Any] = audio_validation.current_artifact_filter_kwargs(
+    filters: dict[str, Any] = audio_validation_probes.current_artifact_filter_kwargs(
         requested_profile=requested_profile,
         system_env=system_env,
         mic_probe=mic_probe,

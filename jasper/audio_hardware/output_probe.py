@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     APPLE_USB_VENDOR_ID,
     APPLE_USB_PRODUCT_ID,
@@ -22,7 +22,7 @@ from jasper.output_hardware import (
     load_state,
     write_state,
 )
-from jasper.output_topology_observation import apply_saved_topology_policy
+from jasper.dsp_control.output_topology_observation import apply_saved_topology_policy
 from .dac import APPLE_USB_C_DONGLE, profile_for_card_label as _dac_profile_for_card_label
 from .hat_eeprom import HatEeprom, read_hat_eeprom
 from .usb_port_role import resolve_system_usb_port_role

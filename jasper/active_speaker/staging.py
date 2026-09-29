@@ -20,11 +20,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.camilla_config_contract import read_camilla_devices_config
-from jasper.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
+from jasper.dsp_control.camilla_config_contract import read_camilla_devices_config
+from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputTopology,
     SpeakerGroup,
     subwoofer_speaker_groups,
@@ -42,7 +42,7 @@ from .camilla_yaml import (
     emit_active_speaker_commissioning_config,
 )
 from .camilla_names import STARTUP_MUTE_GAIN_DB
-from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
+from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .environment import classify_camilla_config_text
 from .graph_evidence import (
     all_commission_mutes_engaged as _all_commission_mutes_engaged,
@@ -90,7 +90,7 @@ STAGED_METADATA_PATH_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"
 # Bounded, never open-ended: this wait sits on a /sound/ web request and on the
 # `baseline-reemit` CLI that deploys and operator ladder steps invoke.
 # It exceeds the holder's longest bounded step -- one `camilladsp --check`
-# inside :func:`~jasper.dsp_apply.validate_camilla_config`, which caps itself --
+# inside :func:`~jasper.dsp_control.dsp_apply.validate_camilla_config`, which caps itself --
 # so an ordinary overlap waits its turn instead of refusing, and a refusal
 # means something genuinely abnormal is holding the pair.
 STAGED_ANCHOR_LOCK_TIMEOUT_SEC = 15.0
@@ -179,7 +179,7 @@ def staged_anchor_lock(
     respect to the other's.
 
     LOCK ORDERING: innermost, always. The driver-capture route already holds
-    :func:`~jasper.dsp_apply.dsp_writer_lock` when it reaches the stager, so
+    :func:`~jasper.dsp_control.dsp_apply.dsp_writer_lock` when it reaches the stager, so
     the only nesting is ``dsp writer -> staged anchor``. Nothing may acquire
     the DSP writer lock while holding this one, and nothing may re-enter this
     lock: ``flock`` is per open file description, so a second acquisition in
@@ -688,20 +688,7 @@ def _stage_protected_startup_config_locked(
 
     devices = None
     if blocker_count == 0 and bound_preset and resolved_playback_device:
-        # A ring wire token neither jasper-fanin nor JTS can resolve must reach
-        # the operator as this function's ordinary blocker, not as a traceback
-        # out of a wizard or the CLI. Mirrors the applied path's refusal, code
-        # included, so one bad token reads the same wherever it surfaces.
-        try:
-            devices = active_emit_devices(resolved_playback_device, topology=topology)
-        except ValueError as exc:
-            issues.append(_issue(
-                "blocker",
-                "ring_wire_declaration_invalid",
-                f"this box declares a ring wire neither jasper-fanin nor JTS can "
-                f"resolve, so there is no wire to emit against: {exc}",
-            ))
-            blocker_count += 1
+        devices = active_emit_devices(resolved_playback_device, topology=topology)
 
     if (
         blocker_count == 0
@@ -1011,20 +998,7 @@ def prepare_driver_commissioning_config(
     devices = None
     emitted_config: str | None = None
     if blocker_count == 0 and bound_preset is not None and resolved_playback_device:
-        # A ring wire token neither jasper-fanin nor JTS can resolve must reach
-        # the operator as this function's ordinary blocker, not as a traceback
-        # out of a wizard or the CLI. Mirrors the anchor's refusal, code
-        # included, so one bad token reads the same wherever it surfaces.
-        try:
-            devices = active_emit_devices(resolved_playback_device, topology=topology)
-        except ValueError as exc:
-            issues.append(_issue(
-                "blocker",
-                "ring_wire_declaration_invalid",
-                f"this box declares a ring wire neither jasper-fanin nor JTS can "
-                f"resolve, so there is no wire to emit against: {exc}",
-            ))
-            blocker_count += 1
+        devices = active_emit_devices(resolved_playback_device, topology=topology)
 
     if (
         blocker_count == 0
@@ -1196,10 +1170,7 @@ def prepare_driver_commissioning_config(
     # here — role, outputs — cover a ring-sink/snd-aloop-source mismatch with
     # one grep, and the commissioning vocabulary stays stable. See #2412.
     #
-    # `wire` is read off the emitted block rather than re-derived via
-    # `resolve_ring_wire(topology)`: identical by construction (both come
-    # from the same `active_emit_devices` call), but re-deriving could raise
-    # `ValueError` on a bad wire token, which this logging line must not do.
+    # `wire` comes from the emitted block, so the event reports that artifact.
     # The literal `-` (never empty, which would read as "unknown") covers a
     # non-ring emit (no ring wire) and a blocked prepare (no emitted block).
     transport_is_ring = resolved_playback_device in RING_PCM_DEVICES

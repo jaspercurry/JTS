@@ -10,7 +10,7 @@ the unbond restore (which must always restore an ACTIVE graph, never passive).
 """
 from __future__ import annotations
 
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 import ast
 import asyncio
 import logging
@@ -30,9 +30,10 @@ from jasper.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod
-import jasper.active_speaker.runtime_contract as runtime_contract_mod
-import jasper.dsp_apply as dsp_apply_mod
-import jasper.output_topology_store as output_topology_mod
+from jasper.active_speaker.graph import bass_extension
+from jasper.active_speaker import graph_selector, graph_types
+import jasper.dsp_control.dsp_apply as dsp_apply_mod
+import jasper.audio_routes.output_topology_store as output_topology_mod
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
@@ -54,8 +55,8 @@ from jasper.active_speaker import (
     ActiveSpeakerPreset,
 )
 from jasper.active_speaker.camilla_yaml import active_emit_devices
-from jasper.camilla_config_contract import DEFAULT_CHUNKSIZE
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CHUNKSIZE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.multiroom.grouping_ring import (
     GROUPING_RING_FORMAT,
     GROUPING_RING_PCM,
@@ -79,10 +80,10 @@ def _stable_live_graph_authority(monkeypatch):
         assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         assert await cam.get_config_file_path() == str(expected_config_path)
         assert expected_classification in {
-            runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE,
-            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            graph_types.GRAPH_DRIVER_DOMAIN_BASELINE,
+            graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
         }
-        return runtime_contract_mod.GraphSafety(
+        return graph_types.GraphSafety(
             classification=expected_classification,
             allowed=True,
             config_path=str(expected_config_path),
@@ -205,7 +206,7 @@ def test_apply_live_proof_failure_rolls_back_before_unlock(
         assert expected_config_path == fc.FOLLOWER_CONFIG_PATH
         assert (
             expected_classification
-            == runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+            == graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
         )
         assert await cam.get_config_file_path() == fc.FOLLOWER_CONFIG_PATH
         raise RuntimeError("candidate proof refused")
@@ -304,38 +305,6 @@ def test_apply_emit_gate_refusal_surfaces_as_follower_error(
     assert cam.loaded == []  # no unprotected-tweeter emit reached CamillaDSP
 
 
-def test_typod_ring_wire_refusal_surfaces_as_follower_error(
-    monkeypatch, tmp_path
-) -> None:
-    """See #2338: invalid wire declarations must reach the follower fallback."""
-    from jasper.fanin_coupling import (
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-        RING_WIRE_FORMAT_ENV_VAR,
-    )
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview)
-    monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())
-
-    # ARM the box — the endpoint marker is the whole difference between this
-    # test and the solo boxes every other case here drives — then typo its wire.
-    outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text(
-        f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
-    )
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s32le\n", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
-
-    with pytest.raises(fc.ActiveFollowerError) as exc:
-        asyncio.run(fc.precheck_active_follower(_cfg("left"), validate=_valid_config))
-    assert exc.value.reason == "driver_domain_emit_refused"
-    assert isinstance(exc.value, RuntimeError)  # the type the reconciler catches
-
-
 def _patch_restore_reproof(monkeypatch, *, allowed: bool):
     """Stub the topology load + the graph re-proof for restore tests."""
     monkeypatch.setattr(
@@ -355,18 +324,18 @@ def _patch_restore_reproof(monkeypatch, *, allowed: bool):
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod, "safe_graph_for_current_topology", decide
+        graph_selector, "safe_graph_for_current_topology", decide
     )
 
 
 @pytest.mark.parametrize(
     ("actual_path", "actual_classification"),
     [
-        ("/tmp/wrong.yml", runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE),
-        (None, runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE),
+        ("/tmp/wrong.yml", graph_types.GRAPH_DRIVER_DOMAIN_BASELINE),
+        (None, graph_types.GRAPH_DRIVER_DOMAIN_BASELINE),
         (
             "/tmp/expected.yml",
-            runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+            graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
         ),
     ],
     ids=["wrong-path", "missing-path", "wrong-classification"],
@@ -383,14 +352,14 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
     )
 
     async def classify(*_args, **_kwargs):
-        return runtime_contract_mod.GraphSafety(
+        return graph_types.GraphSafety(
             classification=actual_classification,
             allowed=True,
             config_path=actual_path,
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod,
+        bass_extension,
         "classify_active_bass_extension_graph",
         classify,
     )
@@ -401,7 +370,7 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
                 _FakeCamilla(current="/tmp/expected.yml"),
                 expected_config_path="/tmp/expected.yml",
                 expected_classification=(
-                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                    graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
                 ),
                 settle_timeout_s=0.0,
             )
@@ -410,17 +379,17 @@ def test_live_proof_requires_exact_candidate_path_and_classification(
 
 def test_live_proof_waits_for_reload_to_replace_the_previous_graph(monkeypatch):
     monkeypatch.setattr(output_topology_mod, "load_output_topology_strict", lambda: object())
-    expected = runtime_contract_mod.GraphSafety(
-        classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+    expected = graph_types.GraphSafety(
+        classification=graph_types.GRAPH_PROGRAM_BAKE_PIPE,
         allowed=True, config_path="/tmp/paired.yml",
     )
     proofs = iter([
-        runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME,
+        graph_types.GraphSafety(
+            classification=graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME,
             allowed=True, config_path="/tmp/solo.yml",
         ),
-        runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_UNSAFE, allowed=False,
+        graph_types.GraphSafety(
+            classification=graph_types.GRAPH_UNSAFE, allowed=False,
             issues=({"code": "bass_extension_active_snapshot_unstable"},),
         ),
         expected,
@@ -429,11 +398,11 @@ def test_live_proof_waits_for_reload_to_replace_the_previous_graph(monkeypatch):
     async def classify(*_args, **_kwargs):
         return next(proofs)
 
-    monkeypatch.setattr(runtime_contract_mod, "classify_active_bass_extension_graph", classify)
+    monkeypatch.setattr(bass_extension, "classify_active_bass_extension_graph", classify)
     result = asyncio.run(_REAL_PROVE_LIVE_BASS_EXTENSION_GRAPH(
         _FakeCamilla(current="/tmp/paired.yml"),
         expected_config_path="/tmp/paired.yml",
-        expected_classification=runtime_contract_mod.GRAPH_PROGRAM_BAKE_PIPE,
+        expected_classification=graph_types.GRAPH_PROGRAM_BAKE_PIPE,
     ))
     assert result == expected
 
@@ -455,8 +424,8 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
     )
 
     async def classify(*_args, **_kwargs):
-        return runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_UNSAFE,
+        return graph_types.GraphSafety(
+            classification=graph_types.GRAPH_UNSAFE,
             allowed=False,
             issues=(
                 {
@@ -468,7 +437,7 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod,
+        bass_extension,
         "classify_active_bass_extension_graph",
         classify,
     )
@@ -479,7 +448,7 @@ def test_live_proof_failure_carries_the_boundary_message(monkeypatch) -> None:
                 _FakeCamilla(current="/tmp/expected.yml"),
                 expected_config_path="/tmp/expected.yml",
                 expected_classification=(
-                    runtime_contract_mod.GRAPH_DRIVER_DOMAIN_BASELINE
+                    graph_types.GRAPH_DRIVER_DOMAIN_BASELINE
                 ),
             )
         )
@@ -525,8 +494,8 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
     reason = "the running CamillaDSP graph does not match the statefile-selected config"
 
     async def classify(*_args, **_kwargs):
-        return runtime_contract_mod.GraphSafety(
-            classification=runtime_contract_mod.GRAPH_UNSAFE,
+        return graph_types.GraphSafety(
+            classification=graph_types.GRAPH_UNSAFE,
             allowed=False,
             issues=(
                 {
@@ -538,7 +507,7 @@ def test_reconcile_logs_the_boundary_reason_not_just_the_code(
         )
 
     monkeypatch.setattr(
-        runtime_contract_mod,
+        bass_extension,
         "classify_active_bass_extension_graph",
         classify,
     )
@@ -691,7 +660,7 @@ def test_restore_live_proof_failure_rolls_back_and_keeps_stash(
         assert expected_config_path == str(solo)
         assert (
             expected_classification
-            == runtime_contract_mod.GRAPH_APPROVED_ACTIVE_RUNTIME
+            == graph_types.GRAPH_APPROVED_ACTIVE_RUNTIME
         )
         assert await cam.get_config_file_path() == str(solo)
         raise RuntimeError("restore proof refused")
@@ -749,7 +718,7 @@ def test_restore_refuses_candidate_when_reproof_has_no_graph(
     )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_CONFIG_PATH", str(tmp_path / "no_baseline.yml"))
     monkeypatch.setattr(
-        runtime_contract_mod,
+        graph_selector,
         "safe_graph_for_current_topology",
         lambda *_a, **_k: SimpleNamespace(
             current_graph=None,
@@ -855,7 +824,7 @@ def test_restore_noop_when_solo_box(monkeypatch, tmp_path) -> None:
 #
 # THE RING BRANCH IS THE ONLY PRODUCTION ONE. `resolve_output_layout` returns
 # RING_ACTIVE_PLAYBACK_DEVICE unconditionally for any profile with an active
-# outputd lane (jasper/output_topology.py — "the ACTIVE ring, unconditionally
+# outputd lane (jasper/audio_routes/output_topology.py — "the ACTIVE ring, unconditionally
 # … OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member"), so a bonded active endpoint
 # plays into the active ring whatever its coupling says. The DAC branch is
 # reached only by the explicit lab/CI override (the `playback_device` argument

@@ -111,7 +111,7 @@ def test_commissioning_config_path_is_not_the_boot_config_path():
 
 def _two_active_group_topology():
     """A topology with two active groups — invalid for the single-speaker model."""
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
     raw = _topology().to_dict()
     raw["speaker_groups"].append({
@@ -153,7 +153,7 @@ def test_multi_group_topology_fails_closed(tmp_path: Path):
 def test_build_active_commissioning_context_resolves_single_group():
     # N1: direct coverage of the helper both staging entry points share.
     from jasper.active_speaker.staging import _build_active_commissioning_context
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     ctx = _build_active_commissioning_context(
         _topology(), preset=None, crossover_preview=None, playback_device=None

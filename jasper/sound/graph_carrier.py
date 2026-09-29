@@ -13,11 +13,6 @@ Rather than hard-coding "the loaded graph is a stereo ``emit_sound_config``"
 at the call site, resolve the loaded graph to a *carrier* that knows how to
 re-emit itself — or fail CLOSED with a typed, honest reason. Graph kinds that
 can safely host EQ do so; the rest raise :class:`CarrierCannotHostEq`.
-
-Layering: this module is the one place allowed to bridge the sound and
-active-speaker subsystems. It depends on :mod:`jasper.sound.camilla_yaml` and
-(lazily) :mod:`jasper.active_speaker.environment` (the safety classifier);
-neither depends back.
 """
 from __future__ import annotations
 
@@ -29,8 +24,8 @@ from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path
 from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
-from jasper.audio_runtime_plan import apply_capture_precedence
-from jasper.audio_runtime_settings import EmitSoundConfigKwargs
+from jasper.audio_control.audio_runtime_plan import apply_capture_precedence
+from jasper.service_state.audio_runtime_settings import EmitSoundConfigKwargs
 from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
@@ -124,9 +119,7 @@ class _StereoHostCarrier:
         # contract owns that judgement; read it once here so the existing
         # `can_host_eq` pre-check refuses early (no spurious prepare_failed), and
         # re-assert in reemit() for the live-draft path that skips the pre-check.
-        # Lazy import keeps the base wizard path light (the one allowed
-        # sound->active_speaker bridge, like _classify_loaded_config below).
-        from jasper.active_speaker.runtime_contract import flat_program_graph_block
+        from jasper.sound.flat_verifier import flat_program_graph_block  # lazy: test_sound_graph_carrier patches the topology refusal
 
         self._eq_block = flat_program_graph_block() if guard_flat_topology else None
         self.can_host_eq = self._eq_block is None
@@ -197,7 +190,7 @@ class _StereoHostCarrier:
 
     def prepare_eq(self, *, member_kwargs: dict | None = None) -> dict:
         if self._eq_block is not None:
-            from jasper.active_speaker.runtime_contract import (
+            from jasper.sound.flat_verifier import (  # lazy: keep graph verification off the base emitter import path
                 FLAT_PROGRAM_GRAPH_NOT_AUTHORIZED,
                 FLAT_PROGRAM_GRAPH_PROTECTED_TWEETER,
                 FLAT_PROGRAM_GRAPH_UNCONFIGURED,
@@ -497,7 +490,7 @@ def _classify_loaded_config(current_path: str | Path) -> dict | None:
 
 
 def _loaded_config_is_program_bake_pipe(current_path: str | Path) -> bool:
-    from jasper.camilla_config_contract import (
+    from jasper.dsp_control.camilla_config_contract import (
         devices_playback_is_pipe,
         read_camilla_devices_config,
     )
@@ -516,9 +509,9 @@ def _loaded_config_is_stale_program_bake_pipe(current_path: str | Path) -> bool:
     """
     if Path(current_path).name != _CURRENT_SOUND_CONFIG:
         return False
-    from jasper.active_speaker.runtime_contract import flat_program_graph_blocked_reason
-    from jasper.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
+    from jasper.sound.flat_verifier import flat_program_graph_blocked_reason  # lazy: keep topology off the base emitter path
+    from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
 
     try:
         topology = load_output_topology_strict()

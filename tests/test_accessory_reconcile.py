@@ -13,7 +13,7 @@ from jasper.accessories import status as accessory_status
 from jasper.accessories.mic_env import ADAPTER_PLAN_HEADER, adapter_plan_path
 from tests.systemd_unit_helpers import value_for as _value_for
 from tests._log_events import event_field_maps, event_fields
-from jasper.music_sources import Source
+from jasper.playback_state.music_sources import Source
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST = "jasper-input.service"

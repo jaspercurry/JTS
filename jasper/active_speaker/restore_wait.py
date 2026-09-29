@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar
 
-from jasper.camilla import CamillaUnavailable
+from jasper.audio_control.camilla import CamillaUnavailable
 
 __all__ = [
     "attempt_graph_restore",

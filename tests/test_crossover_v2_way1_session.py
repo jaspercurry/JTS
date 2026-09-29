@@ -16,7 +16,6 @@ from __future__ import annotations
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 import shlex
-from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +31,6 @@ from jasper.active_speaker import (
     commission_wiring,
     crossover_v2_flow,
 )
-from jasper.active_speaker.branch_chain import branch_headroom_db
-from jasper.active_speaker.crossover_v2 import capture_plan as _plan
 from jasper.active_speaker.crossover_v2.intervention import DriverEvidence, fit_branches
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.linearization_fit import FitVocabulary
@@ -62,22 +59,13 @@ from tests.crossover_v2_fixtures import (
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 
-def _way1_index_phase_map() -> dict[int, str]:
-    return _plan.build_v2_cloud_index_phase_map(
-        include_entry_baseline=True,
-    )
+_WAY1_INDEX_PHASE_MAP = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_ENTRY_BASELINE}
 
 
-def test_the_way1_stage_one_walk_names_one_role_and_ends_on_the_entry_baseline():
-    conductor = _way1_conductor(FakeSeams(), index_phase_map=_way1_index_phase_map())
+def test_the_way1_stage_one_walk_names_one_role():
+    conductor = _way1_conductor(FakeSeams(), index_phase_map=_WAY1_INDEX_PHASE_MAP)
 
-    assert _way1_index_phase_map() == {
-        1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_ENTRY_BASELINE,
-    }
-    phases = conductor.snapshot().session_phases
-    assert phases == (PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE)
-    # The "before" is taken once, and immediately before apply.
-    assert phases.count(PHASE_ENTRY_BASELINE) == 1
+    assert conductor.snapshot().session_phases == (PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE)
     # The missing upper driver is absent, never aliased onto the lone branch.
     assert conductor._tweeter is None
     assert conductor.roles_bands[0].role == "full_range"
@@ -112,7 +100,7 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
 
     conductor = _way1_conductor(
         FakeSeams(),
-        index_phase_map=_way1_index_phase_map(),
+        index_phase_map=_WAY1_INDEX_PHASE_MAP,
         gain_plan_db={"full_range": -11.0},
     )
     program = conductor.program_for_phase(PHASE_MEASURE)
@@ -194,7 +182,7 @@ def _way1_ready_to_apply_payload(tmp_path):
     topology = passive_stereo_output_topology()
     conductor = _way1_conductor(
         FakeSeams(),
-        index_phase_map=_way1_index_phase_map(),
+        index_phase_map=_WAY1_INDEX_PHASE_MAP,
         gain_plan_db={"full_range": -11.0},
         source_preset=commission_wiring.resolve_capture_preset(topology),
     )
@@ -283,8 +271,7 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
 
 
 def _way1_candidate(conductor, analysis):
-    """The solo's fit, charged into its own chain, at a fixed 0 dB: a lone
-    branch has no pair to trim."""
+    """The solo's fit at a fixed 0 dB: a lone branch has no pair to trim."""
     (response,) = analysis.driver_responses
     sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
     fit = fit_branches(
@@ -292,12 +279,11 @@ def _way1_candidate(conductor, analysis):
         mic_tiers={"full_range": str(analysis.mic_tier)},
         vocabulary=FitVocabulary(allow_boost=True), sections={},
     ).fits["full_range"]
-    charge_db = branch_headroom_db([f.to_dict() for f in fit.filters])
     return MeasuredCrossoverCandidate(
         program_id=analysis.stimulus_id,
         analysis=analysis_json(analysis),
         source_preset=conductor.source_preset,
         role_attenuations_db={"full_range": 0.0},
-        linearization={"full_range": replace(fit, headroom_cost_db=charge_db).to_dict()},
+        linearization={"full_range": fit.to_dict()},
         linearization_outcome=LINEARIZATION_OUTCOME_SINGLE_BRANCH,
     )

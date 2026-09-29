@@ -66,7 +66,7 @@ def test_persisted_candidate_source_is_owned_only_by_safe_graph_host() -> None:
 
     assert owners == {
         (
-            "jasper/active_speaker/runtime_contract.py",
+            "jasper/active_speaker/graph_selector.py",
             "safe_graph_for_current_topology",
         )
     }
@@ -177,7 +177,7 @@ def test_startup_template_cli_reports_missing_validator(
 ):
     preset = _write_preset(tmp_path / "preset.json")
     out = tmp_path / "active.yml"
-    monkeypatch.setattr("jasper.dsp_apply._camilladsp_binary", lambda: None)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply._camilladsp_binary", lambda: None)
 
     code = main([
         "startup-template",
@@ -393,8 +393,8 @@ from tests.active_speaker_fixtures import (
 from tests.test_active_speaker_startup_load import (
     _staged,
 )
-from jasper.output_topology_store import save_output_topology
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
 class _FakeController:
@@ -1075,7 +1075,7 @@ def test_runtime_safe_graph_cli_parks_and_exits_success(
     # #2135: the install step invokes this CLI and fails the deploy on a nonzero
     # exit. A parked box must exit 0 so the deploy completes and the manifest
     # advances, and the transcript must print the two exits, not a blocker wall.
-    from jasper.active_speaker.runtime_contract import PARKED_MUTED_EXITS
+    from jasper.active_speaker.graph_selector import PARKED_MUTED_EXITS
     from tests.test_active_speaker_runtime_contract import (
         _active_topology,
         _flat_yaml,
@@ -1127,7 +1127,7 @@ def test_runtime_safe_graph_cli_parks_a_blocker_bearing_draft_and_prints_it(
     # refusal that used to carry it.
     from dataclasses import replace
 
-    from jasper.active_speaker.runtime_contract import PARKED_MUTED_EXITS
+    from jasper.active_speaker.graph_selector import PARKED_MUTED_EXITS
     from tests.test_active_speaker_runtime_contract import (
         _active_topology,
         _flat_yaml,
@@ -1198,7 +1198,7 @@ def test_runtime_safe_graph_cli_names_capability_aware_exits(
     DAC, only a passive-only profile can tell the two apart. That is what this
     fixture is for; without it a revert to the constant passes silently.
     """
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_selector import (
         PARKED_MUTED_EXITS,
         parked_muted_exits,
     )

@@ -10,16 +10,16 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_runtime_settings as audio_settings
-from jasper import audio_runtime_plan as audio_plan
-from jasper import transport_coherence
+from jasper.service_state import audio_runtime_settings as audio_settings
+from jasper.audio_control import audio_runtime_plan as audio_plan
+from jasper.audio_control import transport_coherence
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     HIFIBERRY_DAC8X_ID,
     HIFIBERRY_DAC8X_STUDIO_ID,
     latency_floor_for,
 )
-from jasper.audio_runtime_settings import (
+from jasper.service_state.audio_runtime_settings import (
     AUDIO_ROUTE_PROFILE_KEY,
     FANIN_USB_DIRECT_PERIOD_KEY,
     OUTPUTD_DAC_BUFFER_KEY,
@@ -27,7 +27,7 @@ from jasper.audio_runtime_settings import (
     ROUTE_CORRECTED_48K,
     ROUTE_USB_LOW_LATENCY_48K,
 )
-from jasper.audio_runtime_plan import (
+from jasper.audio_control.audio_runtime_plan import (
     ROUTE_POLICY_OUTPUTD_OFF_RING,
     apply_capture_precedence,
     build_audio_runtime_plan,
@@ -39,12 +39,12 @@ from jasper.audio_runtime_plan import (
     route_owned_env_actions,
     validate_outputd_env,
 )
-from jasper.transport_coherence import (
+from jasper.audio_control.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
 )
 from jasper.env_load import EnvFileState
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     TRANSPORT_DAC_CONTENT_RING,
@@ -169,12 +169,12 @@ def test_audio_runtime_plan_import_does_not_load_runtime_contract():
     import subprocess
     import sys
 
-    heavy = ("jasper.active_speaker.runtime_contract", "jasper.output_topology")
+    heavy = ("jasper.active_speaker.runtime_contract", "jasper.audio_routes.output_topology")
     result = subprocess.run(
         [
             sys.executable,
             "-c",
-            "import sys, jasper.audio_runtime_plan; "
+            "import sys, jasper.audio_control.audio_runtime_plan; "
             f"print([m for m in {heavy!r} if m in sys.modules])",
         ],
         capture_output=True,
@@ -539,7 +539,7 @@ def test_capture_half_is_one_owner_shared_by_both_sink_owning_callers():
     the active leader's program bake — and a second hand-rolled key list is
     exactly how they would drift apart.
     """
-    from jasper.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
+    from jasper.dsp_control.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
 
     full = capture_kwargs_for_coupling()
     assert set(CAPTURE_HALF_KEYS) == {"capture_device", "capture_format"}
@@ -686,7 +686,7 @@ def test_the_lane_arms_on_exactly_the_dumb_member_cells():
     must emit the marker on exactly the cells the rule admits, or the two have
     drifted apart.
     """
-    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.dsp_control.fanin_coupling import dac_content_lane_marker_armed
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_PERIOD_FRAMES
     from jasper.multiroom.grouping_env import outputd_grouping_env
 
@@ -1015,30 +1015,7 @@ def test_transport_topology_for_shm_ring_names_both_ring_devices():
 
 
 def test_transport_coherence_shm_ring_format_axis_is_quiet_with_no_outputd_evidence():
-    """RENAMED (was ..._accepts_the_narrow_ring_on_a_wide_box) and RE-POINTED.
-
-    Discovered while fixing this file's ring-default-flip fallout: the old
-    docstring claimed this proved "the shm_ring coupling forces the emitted
-    lane to RING_WIRE_FORMAT [narrow], so a coherent ring pair produces NO
-    format-axis error [against the box-wide S32_LE default]." That was never
-    actually exercised by the body below — ``outputd_env`` declares no
-    ``JASPER_OUTPUTD_CONTENT_FORMAT`` at all, so the missing-evidence doctrine
-    ("an end this function cannot see is not a contradiction",
-    ``transport_coherence_report``'s own docstring) is what silences the format
-    axis here, on every box, narrow-pinned or not — true both before and after
-    ``resolve_ring_wire_format``'s default flipped WIDE (PR #2601). This is
-    now the SAME scenario as
-    ``test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing`` above;
-    kept as its own case rather than merged, since nothing here is actually
-    broken — flagged as a near-duplicate rather than restructured, per the
-    surgical-changes rule. The genuine "an armed ring tolerates a differing
-    box-wide default" case this docstring meant to describe is now pinned by
-    ``test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees`` above
-    (an explicit operator narrow pin against a wide box's own declaration).
-    """
-    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT
-
-    assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
+    """An end with no format evidence is not a contradiction."""
     errors = transport_coherence_report(
         outputd_env={OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring"},
         camilla_devices={
@@ -1060,7 +1037,7 @@ def test_transport_coherence_shm_ring_flags_a_ring_end_that_declares_another_wir
     is now reachable from real per-box state, and the wire-side half of the
     mutation is pinned here — move the resolver and the axis follows it.
     """
-    import jasper.fanin_coupling as coupling
+    import jasper.dsp_control.fanin_coupling as coupling
 
     monkeypatch.setattr(
         coupling,
@@ -1142,14 +1119,13 @@ def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch)
 
     Both channel counts and the format come from the one resolver every
     declaring end reads. Patching it must move the reported transport; a literal
-    would keep reporting stereo/S16 for a ring built otherwise, which is exactly
+    would keep reporting stereo for a ring built otherwise, which is exactly
     the kind of observability that confirms a shear instead of catching it.
     """
-    import jasper.fanin_coupling as fc
+    import jasper.dsp_control.fanin_coupling as fc
 
     monkeypatch.setattr(
-        fc,
-        "resolve_ring_wire",
+        "jasper.audio_control.transport_coherence.resolve_ring_wire",
         lambda topology=None: fc.RingWire(
             sample_format="S32_LE",
             ring_a_channels=2,
@@ -1164,41 +1140,12 @@ def test_shm_ring_transport_reports_the_resolved_wire_not_a_literal(monkeypatch)
     assert topo["camilla_to_outputd"]["channels"] == 6
 
 
-def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration(monkeypatch):
-    """The format axis compares the wire against OUTPUTD'S OWN declaration.
+def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration():
 
-    It used to compare two derivations of one constant, so it could not fail:
-    both sides moved together by construction. outputd's
-    JASPER_OUTPUTD_CONTENT_FORMAT is a per-box env value that decides which
-    sample_format its attach demands, so a box where it drifted is a real,
-    detectable shear.
-
-    The resolved wire is PINNED via monkeypatch rather than left to
-    resolve_ring_wire()'s ambient file-fresh read: since the resolver's default
-    flipped WIDE (PR #2601), an unpinned box's resolved format now equals
-    S32_LE too, which would make outputd's OWN 'S32_LE' declaration agree rather
-    than shear — the opposite of what this test demonstrates. Pinning the
-    resolved wire narrow (S16_LE, the ioplug's own compiled-in default) keeps
-    this test's shape — and its exact original assertions — unchanged, matching
-    test_shm_ring_transport_reports_the_resolved_wire_not_a_literal's existing
-    pattern above.
-    """
-    import jasper.fanin_coupling as fc
-
-    monkeypatch.setattr(
-        fc,
-        "resolve_ring_wire",
-        lambda topology=None: fc.RingWire(
-            sample_format="S16_LE",
-            ring_a_channels=2,
-            ring_b_channels=2,
-            period_frames=fc.RING_SLOT_FRAMES,
-        ),
-    )
     errors = transport_coherence_report(
         outputd_env={
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
-            "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
+            "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
         },
         camilla_devices={
             "capture_device": "jts_ring_capture",
@@ -1206,30 +1153,17 @@ def test_shm_ring_format_axis_fails_on_a_sheared_outputd_declaration(monkeypatch
         },
     ).errors
     assert len(errors) == 1
-    assert "JASPER_OUTPUTD_CONTENT_FORMAT='S32_LE'" in errors[0]
-    assert "S16_LE" in errors[0]
+    assert "JASPER_OUTPUTD_CONTENT_FORMAT='S16_LE'" in errors[0]
+    assert "S32_LE" in errors[0]
 
 
-def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees(monkeypatch):
-    """Sibling of the shear test above: same pinned wire, an outputd declaration
-    that agrees with it instead of shearing."""
-    import jasper.fanin_coupling as fc
+def test_shm_ring_format_axis_is_quiet_when_the_declaration_agrees():
 
-    monkeypatch.setattr(
-        fc,
-        "resolve_ring_wire",
-        lambda topology=None: fc.RingWire(
-            sample_format="S16_LE",
-            ring_a_channels=2,
-            ring_b_channels=2,
-            period_frames=fc.RING_SLOT_FRAMES,
-        ),
-    )
     assert (
         transport_coherence_report(
             outputd_env={
                 OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
-                "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+                "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
             },
             camilla_devices={
                 "capture_device": "jts_ring_capture",
@@ -1255,31 +1189,13 @@ def test_shm_ring_format_axis_is_quiet_when_outputd_declares_nothing():
     )
 
 
-def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
+def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config():
     # The ring header's channel count is compared field-by-field at attach, so a
     # Camilla config declaring another width fails the ioplug open.
-    #
-    # The resolved wire is PINNED (same technique and reason as the format-axis
-    # tests above) so the FORMAT axis stays quiet here — this test's subject is
-    # the channel axis alone, and an unpinned resolve_ring_wire() would now
-    # ALSO shear on format (its default flipped WIDE in PR #2601), reporting two
-    # errors instead of the one this test means to isolate.
-    import jasper.fanin_coupling as fc
-
-    monkeypatch.setattr(
-        fc,
-        "resolve_ring_wire",
-        lambda topology=None: fc.RingWire(
-            sample_format="S16_LE",
-            ring_a_channels=2,
-            ring_b_channels=2,
-            period_frames=fc.RING_SLOT_FRAMES,
-        ),
-    )
     errors = transport_coherence_report(
         outputd_env={
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
-            "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+            "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
         },
         camilla_devices={
             "capture_device": "jts_ring_capture",
@@ -1293,26 +1209,12 @@ def test_shm_ring_channel_axis_fails_on_a_sheared_camilla_config(monkeypatch):
     assert "declares 6" in errors[0]
 
 
-def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
-    # Same pinned-wire reasoning as the sheared-config test above: keep the
-    # format axis quiet so this proves the channel axis alone is quiet too.
-    import jasper.fanin_coupling as fc
-
-    monkeypatch.setattr(
-        fc,
-        "resolve_ring_wire",
-        lambda topology=None: fc.RingWire(
-            sample_format="S16_LE",
-            ring_a_channels=2,
-            ring_b_channels=2,
-            period_frames=fc.RING_SLOT_FRAMES,
-        ),
-    )
+def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees():
     assert (
         transport_coherence_report(
             outputd_env={
                 OUTPUTD_CONTENT_BRIDGE_ENV_VAR: "shm_ring",
-                "JASPER_OUTPUTD_CONTENT_FORMAT": "S16_LE",
+                "JASPER_OUTPUTD_CONTENT_FORMAT": "S32_LE",
             },
             camilla_devices={
                 "capture_device": "jts_ring_capture",
@@ -1371,7 +1273,7 @@ def test_a_bonded_member_keeps_ring_a_checked_and_claims_no_post_dsp_pair():
     still fire here, while the bridge and post-DSP ones must NOT: a marker-armed
     box declares no bridge by construction.
     """
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_CAPTURE_DEVICE
 
     healthy = transport_coherence.transport_coherence_report(
         outputd_env=_MARKER_ARMED_ENV,

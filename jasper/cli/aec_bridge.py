@@ -49,7 +49,7 @@ Topology:
                                                           for dual-stream wake-word
                                                           detection.
 
-Every leg's token and UDP port is owned by `jasper.wake_legs`. Why UDP
+Every leg's token and UDP port is owned by `jasper.playback_state.wake_legs`. Why UDP
 rather than an snd-aloop card: see `UdpMicCapture` in jasper/mic_capture.py.
 
 Reference and mic run on independent clock domains — outputd's DAC-paced
@@ -75,7 +75,7 @@ from typing import Optional
 
 import numpy as np
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
 )
@@ -133,7 +133,7 @@ from jasper.aec.bridge_telemetry import (
     logger,
 )
 from jasper.aec.bridge_corpus_lanes import CorpusLanes, build_corpus_lanes
-from jasper.usb_mic import USB_MIC_RAW_XVF_LEG
+from jasper.audio_routes.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
 from ..logging_setup import configure_logging
 

@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from jasper.dsp_numpy import resample_poly
+from jasper.playback_state.dsp_numpy import resample_poly
 from jasper.log_event import log_event
 from jasper.aec.bridge_engines import FRAME_SAMPLES, SAMPLE_RATE
 from jasper.aec.bridge_telemetry import (
@@ -37,7 +37,7 @@ from ..mics import xvf3800 as _mic_profile
 # `sounddevice` is imported where a capture device is opened, not here, so
 # importing this module costs no PortAudio. tests/test_lazy_imports.py pins it.
 
-# Above this, `jasper.dsp_numpy.resample_poly` runs one Python-level polyphase
+# Above this, `jasper.playback_state.dsp_numpy.resample_poly` runs one Python-level polyphase
 # branch per unit of `max(up, down)` and stops fitting a capture callback: a
 # 44.1 kHz card reduces to 160/441 and costs ~2 ms per block on a laptop
 # against a 20 ms budget, where scipy's C `upfirdn` costs 0.7 ms. Every

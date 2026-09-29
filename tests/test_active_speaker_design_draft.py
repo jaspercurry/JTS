@@ -31,7 +31,7 @@ from jasper.active_speaker.declaration_vocabulary import (
 )
 from jasper.json_fields import CodedFieldError
 from jasper.active_speaker.driver_pad import DriverPadError
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from jasper.active_speaker.installation import installation_evidence, normalise_installation
 from tests.active_speaker_fixtures import current_research, mono_output_topology, research_design_draft
 

@@ -12,7 +12,7 @@ from functools import partial
 from typing import Any, Mapping, Sequence
 
 from jasper.json_fields import CodedFieldError, finite_float, issue
-from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
+from jasper.audio_routes.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 
 from ._common import (
     DriverFields,

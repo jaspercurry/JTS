@@ -29,7 +29,7 @@ from jasper.active_speaker.path_safety import (
 )
 from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.active_speaker.startup_load import build_startup_load_preflight
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,
@@ -427,7 +427,7 @@ def test_parked_config_format_stays_pinned_after_the_default_rebinds(
     ``DEFAULT_PLAYBACK_FORMAT``, even if the latter is rebound."""
     import jasper.active_speaker.camilla_yaml as camilla_yaml
 
-    monkeypatch.setattr("jasper.fanin_coupling.DEFAULT_PLAYBACK_FORMAT", "S32_LE")
+    monkeypatch.setattr("jasper.dsp_control.fanin_coupling.DEFAULT_PLAYBACK_FORMAT", "S32_LE")
     yaml = camilla_yaml.emit_active_speaker_parked_config(output_count=2)
     playback_block = yaml.split("playback:", 1)[1]
     assert "format: S16_LE" in playback_block  # DEFAULT_PIPE_SINK_FORMAT, untouched

@@ -81,7 +81,7 @@ class ManualMicSourcesError(ValueError):
     """The published file exists and was read, but its content is not parsable.
 
     A ``ValueError`` subclass on purpose: display surfaces
-    (``jasper.mic_presence``) already degrade the whole "I could not determine
+    (``jasper.audio_control.mic_presence``) already degrade the whole "I could not determine
     the accessory half" family to "no accessory" behind one
     ``except (OSError, UnicodeDecodeError, ValueError)``, so they need no edit
     to keep never raising. The gate writer, which must tell the two apart, does
@@ -183,7 +183,7 @@ def read_accessory_mic_sources(path: str | None = None) -> tuple[str, ...]:
       that collapse is the one that told an operator no remote was paired while
       a file naming their remote sat on disk.
 
-    Display surfaces that must never raise (``jasper.mic_presence``) catch all
+    Display surfaces that must never raise (``jasper.audio_control.mic_presence``) catch all
     three themselves and degrade to ``()``.
     """
     target = path or accessory_mic_env_path()

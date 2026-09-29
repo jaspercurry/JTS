@@ -6,13 +6,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.camilla_config_contract import (
+from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
     DEFAULT_SAMPLE_RATE,
 )
-from jasper.camilla_emit import emit_devices_block, emit_gain_filter, emit_mixer
+from jasper.audio_routes.camilla_emit import emit_devices_block, emit_gain_filter, emit_mixer
 
 from ..camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
 from .devices import _camilla_latency, _positive_int, _yaml_string

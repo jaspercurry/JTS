@@ -1,0 +1,23 @@
+/* SPDX-FileCopyrightText: 2026 Jasper Curry
+ * SPDX-License-Identifier: Apache-2.0 */
+
+.sources { display: flex; flex-direction: column; }
+.source-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  gap: 1rem; padding: 0.9rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.source-row:last-child { border-bottom: none; }
+.source-text { min-width: 0; }
+.source-name { display: flex; align-items: center; gap: 0.75rem; font-weight: 600; color: var(--text); }
+.source-note { color: var(--muted); font-size: 14px; margin-top: 0.2rem; }
+.source-note.warn { color: var(--status-warn); }
+.source-note code {
+  font-size: 0.95em; padding: 1px 5px;
+  border-radius: var(--radius-sm); background: var(--foreground-005);
+}
+.source-reset {
+  position: relative; height: 28px; min-width: 48px; padding: 0 8px;
+  text-transform: none;
+}
+.source-reset::after { content: ""; position: absolute; inset: -8px 0; }

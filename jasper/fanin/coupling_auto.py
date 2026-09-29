@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.audio_runtime_settings import RuntimeEnvAction
+from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import env_value
 from jasper.env_load import FANIN_ENV_PATH
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
@@ -21,8 +21,8 @@ from jasper.fanin.latency_mode import (
     read_requested_mode as read_usb_latency_mode,
 )
 from jasper.log_event import log_event
-from jasper.music_sources import Source
-from jasper.output_hardware import current_usb_data_role
+from jasper.playback_state.music_sources import Source
+from jasper.audio_routes.output_hardware import current_usb_data_role
 from jasper.systemd_probe import unit_state
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,7 @@ def usbsink_effectively_enabled() -> bool:
     function. A malformed or unreadable intent raises visibly.
     """
     from jasper.local_sources.markers import local_sources_allowed  # lazy: test patch boundary (tests/test_fanin_coupling_auto.py)
-    from jasper.source_intent import source_intent_enabled  # lazy: test patch boundary (tests/test_fanin_coupling_auto.py)
+    from jasper.audio_routes.source_intent import source_intent_enabled  # lazy: test patch boundary (tests/test_fanin_coupling_auto.py)
 
     if not source_intent_enabled(Source.USBSINK):
         return False

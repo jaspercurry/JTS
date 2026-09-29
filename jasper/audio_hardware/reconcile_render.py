@@ -123,7 +123,7 @@ def render_ring_conf_if_needed(run: Pass) -> None:
     Triggers NO restart and feeds no restart flag: ALSA reads the conf.d at
     the next PCM open, and arming is owned by the coupling reconciler.
     """
-    from jasper.ring_assets import ring_conf_wire_report  # lazy: --print-env skips it (ADR-0226)
+    from jasper.audio_control.ring_assets import ring_conf_wire_report  # lazy: --print-env skips it (ADR-0226)
 
     if not run.output_dac_recognized:
         run.log("ring_conf", result="skipped", reason="dac_unrecognized")
@@ -173,7 +173,7 @@ def render_flat_cutover_if_needed(run: Pass) -> None:
     """
     # lazy: import cost — the YAML emitters are the pass's second heaviest
     # import and the --print-env path never reaches them (ADR-0226).
-    from jasper.output_topology import OutputTopologyError
+    from jasper.audio_routes.output_topology import OutputTopologyError
     from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
     try:
@@ -213,7 +213,7 @@ def open_runtime_graph_attempt(run: Pass) -> None:
         return
     # lazy: import cost — the stamp writers live beside the topology, and
     # the --print-env path returns before this point (ADR-0226).
-    from jasper.output_topology_store import stamp_statefile_convergence  # lazy: --print-env skips topology imports
+    from jasper.audio_routes.output_topology_store import stamp_statefile_convergence  # lazy: --print-env skips topology imports
 
     stamp_statefile_convergence(run.camilla_statefile, topology, proved=False)
 

@@ -19,17 +19,12 @@ import yaml
 
 from jasper.active_speaker.camilla_names import driver_baseline_limiter_name
 from jasper.active_speaker.graph_safety import view_from_emitted_text
+from jasper.active_speaker.program_headroom import written_headroom_db
 from jasper.json_fields import require_finite
 
 ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
     {"Biquad", "BiquadCombo", "Conv", "Delay", "Gain", "Limiter"}
 )
-
-#: The program-domain gain the emitter folds baseline headroom, room-correction
-#: boost, and linearization boost into. Read (never written) here so the loop
-#: can account for the level move a boosting linearization causes between the
-#: two arms of its A/B.
-PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
 
 
 class EmitDerivationError(ValueError):
@@ -103,7 +98,7 @@ class DerivedRenderConfig:
     branches: tuple[BranchStep, ...]
     playback_channels: int
     sample_rate_hz: int
-    program_headroom_db: float
+    headroom_gain_db: float
     receipt: dict[str, Any]
 
     def branch(self, role: str) -> BranchStep:
@@ -294,28 +289,6 @@ def _nonnegative_int(value: Any, what: str) -> int:
     if type(value) is not int or value < 0:
         raise EmitDerivationError(f"{what} is not a non-negative integer")
     return value
-
-
-def _program_headroom_db(text: str) -> float:
-    """The emitted ``active_baseline_headroom`` gain, dB (``0.0`` when absent).
-
-    Absent is legitimate — the driver-domain (follower) graph carries no
-    program-domain headroom at all — and ``0.0`` is the correct reading of that
-    absence, since there is then no pre-split attenuation for the A/B's two
-    arms to differ by.
-    """
-
-    view = view_from_emitted_text(text)
-    definition = view.filters.get(PROGRAM_HEADROOM_FILTER)
-    if definition is None:
-        return 0.0
-    if definition.type != "Gain":
-        raise EmitDerivationError(
-            f"{PROGRAM_HEADROOM_FILTER!r} is not a Gain in the emitted graph"
-        )
-    return _finite_float(
-        definition.params.get("gain"), f"{PROGRAM_HEADROOM_FILTER}.gain"
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,20 +485,19 @@ def derive_offline_render_config(
         "device_diff": device_diff,
         "processing_precision": processing_precision,
         "sample_rate_hz": sample_rate,
-        "program_headroom_db": _program_headroom_db(emitted_text),
+        "headroom_gain_db": 0.0 - written_headroom_db(emitted_text),
     }
     return DerivedRenderConfig(
         yaml_text=yaml_text,
         branches=branches,
         playback_channels=playback_channels,
         sample_rate_hz=sample_rate,
-        program_headroom_db=float(receipt["program_headroom_db"]),
+        headroom_gain_db=float(receipt["headroom_gain_db"]),
         receipt=receipt,
     )
 
 
 __all__ = [
-    "PROGRAM_HEADROOM_FILTER",
     "BranchStep",
     "DeviceGeometry",
     "DerivedRenderConfig",

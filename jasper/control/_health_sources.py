@@ -12,7 +12,7 @@ import another to get it.
 from __future__ import annotations
 
 from ..local_sources.registry import local_source_lifecycles
-from ..music_sources import MUSIC_SOURCE_SPECS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from ._health_fields import DIAGNOSTICS_REMEDY, RESTART_REMEDY
 
 SOURCE_LABELS = {

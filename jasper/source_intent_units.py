@@ -355,7 +355,7 @@ _MAX_ENSURE_ACTIVE_TRANSITIONS = len(_WORST_CASE_ORDINARY_START_ACTIONS)
 # len(lifecycle.runtime_units) for lifecycle in local_source_lifecycles())
 # over the fixed 4-source registry (airplay 2, spotify 1, bluetooth 3, usbsink
 # 1) — frozen rather than computed so this leaf stays near-stdlib (no
-# jasper.local_sources/jasper.music_sources import). A registry change that
+# jasper.local_sources/jasper.playback_state.music_sources import). A registry change that
 # moves this number is caught by
 # test_source_intent_systemd.py::test_max_failed_reset_transitions_matches_local_source_registry.
 _MAX_FAILED_RESET_TRANSITIONS = 7

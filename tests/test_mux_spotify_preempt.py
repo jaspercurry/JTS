@@ -20,9 +20,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from jasper import spotify_router
+from jasper.service_state import spotify_router
 from jasper.mux import Mux, Source
-from jasper.spotify_router import Router
+from jasper.service_state.spotify_router import Router
 
 
 @pytest.fixture

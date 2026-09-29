@@ -5,7 +5,7 @@
 
 from typing import Any, Mapping
 
-from jasper.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
 from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, OUTPUT_VARIANT_SCHEMA_VERSION, PASSIVE_MAIN_MODE, physical_target_id
 
 from .profile import SIDES_BY_LAYOUT, SUPPORTED_LAYOUTS

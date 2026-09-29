@@ -151,7 +151,7 @@ runpy.run_path(script, run_name="__main__")
 
 # Scripts whose `--help` must not need `jasper` importable.
 #
-# Takes a function-local `from jasper.openwakeword_guard import ...` for
+# Takes a function-local `from jasper.service_state.openwakeword_guard import ...` for
 # this reason: argparse exits before the guard call, so usage text stays
 # available on an interpreter that has numpy/openwakeword but not the project.
 #   _offline_wake_count.py    — wake-rate-test.sh scp's it to a Pi's /tmp.
@@ -173,7 +173,7 @@ def test_script_help_does_not_require_jasper(script_name: str) -> None:
 
     assert result.returncode == 0, (
         f"scripts/{script_name} --help needs `jasper` importable.\n"
-        "Keep the `from jasper.openwakeword_guard import ...` inside the "
+        "Keep the `from jasper.service_state.openwakeword_guard import ...` inside the "
         "function that calls it, next to the openwakeword import it guards.\n"
         f"{result.stderr}"
     )

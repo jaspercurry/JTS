@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.log_event import log_event
-from jasper.camilla import CamillaConfigRejected
+from jasper.audio_control.camilla import CamillaConfigRejected
 
 from .._common import MeasurementGraphRefused
 from .journey import PHASE_CHECK
@@ -127,7 +127,7 @@ def bind_program_playback_seams(
     the measurement graph mid-capture; ``readmit`` re-reads the WAV bytes fresh
     rather than trusting the composed program.
     """
-    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_crossover_v2_program_transaction patches dsp_apply.dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import dsp_writer_lock  # lazy: test_crossover_v2_program_transaction patches dsp_apply.dsp_writer_lock
 
     from ..program_admission import (  # lazy: test_crossover_v2_program_transaction patches program_admission
         readmit_program_from_wav,

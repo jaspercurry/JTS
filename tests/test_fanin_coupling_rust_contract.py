@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
     RING_A_CHANNELS,
@@ -24,13 +24,10 @@ from jasper.fanin_coupling import (
     RING_SLOTS_ENV_VAR,
     RING_SLOTS_MAX,
     RING_SLOTS_MIN,
-    RING_WIRE_FORMAT,
-    RING_WIRE_FORMAT_ENV_VAR,
-    RING_WIRE_FORMAT_WIDE,
     resolve_ring_slots,
 )
-from jasper.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
-from jasper.ring_conf import RING_CONF_DEFAULT_CHANNELS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS, SOURCE_TO_FANIN_LABEL
+from jasper.dsp_control.ring_conf import RING_CONF_DEFAULT_CHANNELS
 from tests.ring_abi import ring_abi
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -117,33 +114,6 @@ def test_shm_ring_env_var_names_and_defaults_agree():
     )
 
 
-def test_rust_refuses_the_narrow_ring_wire_format_token():
-    """Rust's accept-set for the wire-format key is ``None`` | ``""`` | S32_LE.
-
-    The two vocabularies diverge here on purpose:
-    :func:`jasper.fanin_coupling.resolve_ring_wire_format` still normalizes
-    ``S16_LE``, because the Python reconciler renders the ioplug conf.d and the
-    C plugin still parses that token. fan-in does not — it creates Ring A
-    S32_LE unconditionally, so a declaration it cannot honour is a config-class
-    park (exit 78) rather than a narrowed program. Nothing else holds the two
-    ends of that divergence together, so a Rust accept arm that grew ``S16_LE``
-    back would resolve a wire no writer produces with no test failing.
-    """
-    text = _config_rs_text()
-    _, sep, after = text.partition(f'std::env::var("{RING_WIRE_FORMAT_ENV_VAR}")')
-    assert sep, f"Rust must read the Ring-A wire format from {RING_WIRE_FORMAT_ENV_VAR}"
-    accept_block, sep, _ = after.partition("\n\n")
-    assert sep, "could not delimit the wire-format match block"
-    assert f'None | Some("") | Some("{RING_WIRE_FORMAT_WIDE}") => {{}}' in accept_block, (
-        "the Rust accept arm must serve the undeclared key (None), a cleared "
-        f"key (empty) and {RING_WIRE_FORMAT_WIDE} — and nothing else"
-    )
-    assert RING_WIRE_FORMAT not in accept_block, (
-        f"{RING_WIRE_FORMAT} must stay REFUSED by fan-in; Python accepts the "
-        "token only to render the ioplug conf.d"
-    )
-
-
 _CHANNEL_DECLARATIONS = (
     (
         "rust/jasper-fanin/src/mixer.rs (CHANNELS)",
@@ -195,8 +165,8 @@ def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
     """
     assert RING_A_CHANNELS == RING_CONF_DEFAULT_CHANNELS, (
         "the two Python spellings of the stereo width disagree: "
-        f"jasper.fanin_coupling.RING_A_CHANNELS={RING_A_CHANNELS}, "
-        f"jasper.ring_conf.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
+        f"jasper.dsp_control.fanin_coupling.RING_A_CHANNELS={RING_A_CHANNELS}, "
+        f"jasper.dsp_control.ring_conf.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
     )
     for label, path, pattern in _CHANNEL_DECLARATIONS:
         found = re.findall(pattern, _source_text(path), re.MULTILINE)

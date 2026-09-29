@@ -18,7 +18,7 @@ instead of an unbounded hang.
 
 These tests pin the pure classification helpers in _lib.sh:
 
-* ``usb_gadget_management_cidrs`` — asks ``jasper.usb_network``, the address
+* ``usb_gadget_management_cidrs`` — asks ``jasper.device_probe.usb_network``, the address
   plan owner, for both the derived allocation range and legacy migration
   subnet. A varied fake module proves the shell helper has no copied range;
 * ``ipv4_in_cidr`` — pure IPv4 subnet-membership arithmetic, including its
@@ -47,7 +47,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from jasper.usb_network import ALLOCATION_SUPERNET, LEGACY_MANAGEMENT_CIDR
+from jasper.device_probe.usb_network import ALLOCATION_SUPERNET, LEGACY_MANAGEMENT_CIDR
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "scripts" / "_lib.sh"
@@ -77,8 +77,8 @@ def test_management_cidrs_match_the_plan_owner():
 
 
 def test_management_cidrs_follow_the_module_rather_than_hardcoded_copies(tmp_path):
-    package = tmp_path / "jasper"
-    package.mkdir()
+    package = tmp_path / "jasper" / "device_probe"
+    package.mkdir(parents=True)
     (package / "usb_network.py").write_text(
         'print("10.99.0.0/16")\nprint("10.98.7.1/25")\n'
     )

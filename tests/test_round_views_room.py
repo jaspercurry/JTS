@@ -22,10 +22,9 @@ from jasper.active_speaker.crossover_v2.prescription_contract import prescriptio
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
-from jasper.active_speaker.measurement_analysis import MeasurementAnalysisRefused
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
-from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, EvidenceUnavailable
 from jasper.audio_measurement.room_boundary import (
     ROOM_BOUNDARY_DEFAULT_HZ,
     ROOM_BOUNDARY_MAX_HZ,
@@ -284,18 +283,18 @@ def test_room_views_analyze_wired_takes_without_banked_curves(tmp_path, capsys, 
     "measurement_capture_identity_mismatch", "measurement_program_manifest_missing",
     "measurement_analysis_program_unsupported",
 ])
-def test_room_analysis_refusals_are_unreadable(tmp_path, capsys, analyzed_room_documents, view, code):
+def test_room_analysis_refusals_name_their_code(tmp_path, capsys, analyzed_room_documents, view, code):
     root = bank_seat_round(tmp_path)
-    analyzed_room_documents.side_effect = MeasurementAnalysisRefused(code)
+    analyzed_room_documents.side_effect = EvidenceUnavailable(code, {})
     if view == "bookkeeping":
-        # run_bookkeeping names the analyzer's own code; the CLI verb below
-        # still buckets it under the generic unreadable-round reason.
         result = round_views.run_bookkeeping("room", root)
         assert (result["status"], result["reason"]) == ("unavailable", code)
+    elif view == "room":
+        assert round_views.main([view, str(root)]) == round_views.EXIT_REFUSED
+        assert json.loads(capsys.readouterr().out)["reason"] == code
     else:
-        if view == "room-grade":
-            round_views.main(["room", str(root)])  # the room view refuses, so no document is written to grade
-            capsys.readouterr()
+        round_views.main(["room", str(root)])  # the room view refuses, so no document is written to grade
+        capsys.readouterr()
         assert round_views.main([view, str(root)]) == round_views.EXIT_UNREADABLE
         result = json.loads(capsys.readouterr().out)
         assert (result["status"], result["reason"]) == ("unreadable", round_views.REASON_UNREADABLE)
@@ -305,7 +304,6 @@ def test_room_analysis_refusals_are_unreadable(tmp_path, capsys, analyzed_room_d
 @pytest.mark.parametrize("geometry,walls,boundary_reason", [
     (None, {}, "geometry_undeclared"),
     ({}, {}, "walls_undeclared"),
-    ({"front_wall_m": 0.85}, {"front": 0.85}, ""),
     ({"cabinet_back_wall_m": 0.2}, {}, "front_baffle_geometry_undeclared"),
     ({"cabinet_back_wall_m": 0.2, "side_wall_m": 1.4}, {"side": 1.4}, "front_baffle_geometry_undeclared"),
     ({"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3, "toe_in_degrees": 0}, {"front": 0.5}, ""),

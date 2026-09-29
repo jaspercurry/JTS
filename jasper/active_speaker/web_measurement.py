@@ -13,7 +13,7 @@ from jasper.active_speaker.measurement import (
     active_summed_targets,
 )
 from jasper.json_fields import utc_now_iso as _utc_now
-from jasper.output_topology_store import load_output_topology
+from jasper.audio_routes.output_topology_store import load_output_topology
 
 
 def status_payload() -> dict[str, Any]:

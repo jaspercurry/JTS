@@ -240,7 +240,7 @@ def test_probe_all_health_no_client_id_returns_empty_without_calling_build():
 def test_health_badge_renders_per_state():
     """The badge string differs by state so it's instantly visible whether
     an account is healthy, expired, or unauthed."""
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_NEEDS_OAUTH, ACCOUNT_OK, ACCOUNT_REVOKED, AccountStatus,
     )
     from jasper.web.spotify_setup import _health_badge_html
@@ -268,7 +268,7 @@ def test_health_badge_renders_per_state():
 def test_relink_notice_only_shown_for_revoked():
     """The "Re-link" CTA must appear only when the token is revoked —
     not on healthy or not-yet-OAuthed accounts (different action)."""
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_NEEDS_OAUTH, ACCOUNT_OK, ACCOUNT_REVOKED, AccountStatus,
     )
     from jasper.web.spotify_setup import _relink_notice_html
@@ -363,7 +363,7 @@ def test_relink_notice_html_escapes_name():
     validated against `ACCOUNT_NAME_PATTERN`, `_relink_notice_html` must
     escape its own input so a future caller bypassing the upstream
     safeguards doesn't open an XSS hole."""
-    from jasper.spotify_router import ACCOUNT_REVOKED, AccountStatus
+    from jasper.service_state.spotify_router import ACCOUNT_REVOKED, AccountStatus
     from jasper.web.spotify_setup import _relink_notice_html
     status = AccountStatus(name="x", state=ACCOUNT_REVOKED)
     html_out = _relink_notice_html(status, '<script>alert("xss")</script>')
@@ -376,7 +376,7 @@ def test_status_by_name_returns_none_for_unknown_account():
     probe ran against a stale registry snapshot) gets None — and the
     badge renderer collapses that to no badge at all, which is the
     intended "we couldn't determine" UX."""
-    from jasper.spotify_router import (
+    from jasper.service_state.spotify_router import (
         ACCOUNT_OK, AccountStatus, BuildResult,
     )
     from jasper.web.spotify_setup import _status_by_name, _health_badge_html

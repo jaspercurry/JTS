@@ -38,9 +38,9 @@ from jasper.active_speaker.audition import (
 )
 from jasper.active_speaker.audition_claim import graph_replaced
 from jasper.active_speaker.state_paths import audition_state_path
-from jasper.output_topology import topology_config_fingerprint
+from jasper.audio_routes.output_topology import topology_config_fingerprint
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.active_speaker.runtime_contract import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.sound.profile import SimpleEq
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -213,33 +213,41 @@ def test_the_household_layers_survive_the_reduction(
     assert all(filters[name] == full[name] for name in bass_names)
 
 
-def test_the_level_disclosure_counts_the_cuts_it_gives_back() -> None:
-    """The A/B is not level-matched, and the number that says so must be the
-    LEVEL one, not just the headroom charge.
+def _charged(text: str, charge_db: float) -> str:
+    """``text`` with its written headroom charge moved from 0 dB to ``charge_db``."""
+    headroom = "  active_baseline_headroom:\n    type: Gain\n    parameters: { gain: "
+    return text.replace(f"{headroom}0.0000,", f"{headroom}{0.0 - charge_db:.4f},")
 
-    Removing a cut filter hands its depth back in that filter's own band, and
-    the headroom charge is separately ``0.0`` whenever the branch's crossover
-    and trim already swallowed the linearization's boost — which is the common
-    case. A disclosure built only from the headroom would read ``0.0`` for a
-    profile whose deepest cut is 4 dB, and tell the owner the two layers play
-    at the same level when they do not.
+
+@pytest.mark.parametrize(("anchor_db", "reduced_db", "louder_db", "quieter_db"), [
+    pytest.param(0.0, 0.0, 4.0, 0.0, id="deepest-cut"),
+    pytest.param(3.0, 0.0, 7.0, 0.0, id="older-anchor-charge"),
+    pytest.param(0.0, 4.0, 0.0, 4.0, id="dropped-cut-netted-a-boost"),
+])
+def test_the_level_disclosure_names_both_directions(
+    audition_box, monkeypatch: pytest.MonkeyPatch,
+    anchor_db: float, reduced_db: float, louder_db: float, quieter_db: float,
+) -> None:
+    """The A/B is not level-matched, and the record says by how much, both ways.
+
+    The deepest cut the reduction drops, 4 dB here, comes back in its band, and
+    the move of the written charge comes back broadband. The move is read off
+    the anchor that plays, which keeps an older charge until it is re-emitted
+    (ADR-0385). It is negative when the reduced graph charges a boost that a
+    dropped cut netted, and summed into one number it would cancel the cut.
     """
+    from jasper.active_speaker import audition as audition_module
 
-    from jasper.active_speaker.audition import level_give_back_db
-    from jasper.active_speaker.baseline_profile import profile_program_headroom_db
+    cam, anchor, full_text, _state = audition_box
+    anchor.write_text(_charged(full_text, anchor_db), encoding="utf-8")
+    reduced_yaml = audition_module.build_reduced_yaml
+    monkeypatch.setattr(audition_module, "build_reduced_yaml", lambda topology, *, applied_profile: (
+        _charged(reduced_yaml(topology, applied_profile=applied_profile)[0], reduced_db), []))
 
-    applied = _applied_profile(_active_topology("mono", "active_2_way"))
-    deepest_cut = max(
-        -f["gain"]
-        for filters in LINEARIZATION.values()
-        for f in filters
-        if f["gain"] < 0
-    )
+    started = _arm(cam, full_text)
 
-    assert profile_program_headroom_db(applied) == 0.0
-    assert level_give_back_db(applied) == pytest.approx(deepest_cut)
-    # A speaker carrying neither stage gives nothing back.
-    assert level_give_back_db({"recomposition_snapshot": {}}) == 0.0
+    assert (started["louder_than_full_db"], started["quieter_than_full_db"]) == pytest.approx(
+        (louder_db, quieter_db), abs=1e-4)
 
 
 def test_the_audition_asks_for_a_reduced_graph_and_never_a_written_one(
@@ -345,9 +353,9 @@ def audition_box(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "jasper.active_speaker.baseline_profile.applied_profile_displacement",
         lambda *_a, **_k: "",
     )
-    monkeypatch.setattr("jasper.output_topology_store.load_output_topology", lambda: topology)
+    monkeypatch.setattr("jasper.audio_routes.output_topology_store.load_output_topology", lambda: topology)
     monkeypatch.setattr(
-        "jasper.active_speaker.runtime_contract.classify_bass_extension_graph",
+        "jasper.active_speaker.graph.bass_extension.classify_bass_extension_graph",
         lambda *_a, **_k: _ApprovedGraph(),
     )
     monkeypatch.setattr(
@@ -764,7 +772,7 @@ def compare_box(audition_box, monkeypatch):
     _, topology, applied = _cardioid_baseline()
     anchor.write_text(applied)
     cam.running = applied
-    monkeypatch.setattr("jasper.output_topology_store.load_output_topology", lambda: topology)
+    monkeypatch.setattr("jasper.audio_routes.output_topology_store.load_output_topology", lambda: topology)
     return cam, anchor, applied, state
 
 
@@ -843,7 +851,7 @@ def test_displaced_token_is_checked_after_writer_lock(compare_box, monkeypatch):
     async def overtaken(*args, **kwargs):
         path.write_text(json.dumps({**state, "token": "new-owner"}))
         yield
-    monkeypatch.setattr("jasper.dsp_apply.dsp_writer_lock", overtaken)
+    monkeypatch.setattr("jasper.dsp_control.dsp_apply.dsp_writer_lock", overtaken)
     verdict = asyncio.run(stop_audition(cam=cam, expect_token=state["token"]))
     assert verdict["status"] == "superseded"
     assert cam.ducked == [False]
@@ -930,7 +938,7 @@ def test_web_holder_ends_and_releases_idle_hold(compare_box, monkeypatch, cause)
 @pytest.mark.parametrize("failure,code", [("no_anchor", "audition_no_durable_anchor"), ("load", "audition_load_refused"), ("transport", "audition_load_refused"), ("restore", "audition_restore_failed")])
 def test_compare_failure_codes_and_restore_record(compare_box, monkeypatch, failure, code):
     from jasper.active_speaker import audition
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
 
     cam, _, _, path = compare_box
     if failure == "restore":

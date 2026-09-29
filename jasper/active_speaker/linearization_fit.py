@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.peq import design_peq, predicted_response
-from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import SHELF_Q
 
 from .branch_chain import chain_response, branch_headroom_db
@@ -403,11 +403,6 @@ class LinearizationFit:
     # ``branch_level_bands_hz`` instead — using this one shipped the jts3
     # horn tweeter 3.67 dB hot). 0.0 when no filters emitted.
     correction_giveback_db: float = 0.0
-    # #1808 charge: realized peak of the branch chain this
-    # fit is emitted into, plus ``branch_chain.HEADROOM_MARGIN_DB`` — exactly
-    # what the emitter CHARGES to ``active_baseline_headroom``. Stamped by
-    # the composer, not computed here (this core does not know its chain).
-    headroom_cost_db: float = 0.0
     # Lift the boost vocabulary was asked for and delivered, dB, over the
     # fit band. ``lift_from_reduced_cuts_db`` is the share bought by
     # SHRINKING this fit's own cuts (free).
@@ -461,7 +456,6 @@ class LinearizationFit:
             "hf_continuation_suppressed_reason": self.hf_continuation_suppressed_reason,
             "measured_deficit_at_ceiling_db": self.measured_deficit_at_ceiling_db,
             "correction_giveback_db": self.correction_giveback_db,
-            "headroom_cost_db": self.headroom_cost_db,
             "lift_requested_db": self.lift_requested_db,
             "lift_from_reduced_cuts_db": self.lift_from_reduced_cuts_db,
             "lift_from_boost_db": self.lift_from_boost_db,
@@ -518,39 +512,6 @@ def linearization_filters_by_role(
             dict(entry) for entry in filters if isinstance(entry, Mapping)
         ]
     return out
-
-
-# What a stored ``headroom_cost_db`` MEANS, per era (#1808). The charge's
-# derivation changed twice and is NOT re-derived on load
-# (docs/historical/linearization-campaign-2026-07.md, "Cross-era
-# disclosure") — the era must travel WITH the number, recorded never
-# inferred. Era 1: SUM of positive filter gains (a loose upper bound). Era
-# 2: the realized peak. Era 3 (#2758): the peak's grid now spans the whole
-# domain, so an old stamp can read smaller than re-emitting today charges.
-# Absent means UNKNOWN, never a default.
-HEADROOM_COST_BASIS_REALIZED_PEAK = "realized_peak"
-HEADROOM_COST_BASIS_REALIZED_PEAK_FULL_DOMAIN = "realized_peak_full_domain"
-HEADROOM_COST_BASIS_UNKNOWN = "unknown"
-
-
-def worst_headroom_cost_db(linearization_mapping: Mapping[str, Any]) -> float:
-    """The max-level cost of a whole correction, dB — the WORST branch's
-    :attr:`LinearizationFit.headroom_cost_db`.
-
-    Worst branch and not the sum, matching
-    ``camilla_yaml.linearization_headroom_db``: driver chains run in
-    PARALLEL after the split, so no sample path sees two branches' boosts.
-    Defensive like :func:`linearization_filters_by_role`: a malformed or
-    era-older entry is skipped rather than raising.
-    """
-    worst = 0.0
-    for fit in (linearization_mapping or {}).values():
-        if not isinstance(fit, Mapping):
-            continue
-        cost = fit.get("headroom_cost_db")
-        if isinstance(cost, (int, float)) and math.isfinite(float(cost)):
-            worst = max(worst, float(cost))
-    return worst
 
 
 def _power_band_average_db(magnitude_db: np.ndarray, mask: np.ndarray) -> float:
@@ -1996,8 +1957,6 @@ def fit_driver_linearization(
         hf_continuation_suppressed_reason=hf.suppressed_reason,
         measured_deficit_at_ceiling_db=hf.measured_deficit_at_ceiling_db,
         correction_giveback_db=correction_giveback_db,
-        # headroom_cost_db is deliberately left at its 0.0 default: the charge is
-        # a property of the emitted branch chain, which this core does not know.
         lift_requested_db=lift.requested_db,
         lift_from_reduced_cuts_db=lift.from_reduced_cuts_db,
         lift_from_boost_db=lift.from_boost_db,

@@ -516,7 +516,7 @@ def check_tool_packs() -> CheckResult:
 def check_spend_cap(cfg: Config) -> CheckResult:
     """Gated statically — see ``_registry.STREAMBOX_OMITTED_DOCTOR_CHECKS``."""
     try:
-        from ...usage import (
+        from jasper.service_state.usage import (
             SpendCap,
             household_usage_reader,
             tuning_usage_db_path,
@@ -578,7 +578,7 @@ def check_pricing() -> CheckResult:
     if (skip := _voice_gated_skip("voice model pricing")) is not None:
         return skip
     try:
-        from ...usage import (
+        from jasper.service_state.usage import (
             load_default_pricing,
             load_pricing_overrides,
             pricing_for_model,
@@ -710,7 +710,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
             reason=REASON_GOOGLE_TOKENS_NOT_CONFIGURED,
         )
     try:
-        from ...google_creds import GoogleRegistry, valid_access_token
+        from jasper.service_state.google_creds import GoogleRegistry, valid_access_token
     except ImportError as e:
         return CheckResult(
             label, "warn",
@@ -816,7 +816,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
             reason=REASON_HOME_ASSISTANT_NOT_CONFIGURED,
         )
     try:
-        from ...home_assistant import probe_status
+        from jasper.service_state.home_assistant import probe_status
     except ImportError as e:
         return CheckResult(
             label, "warn", f"home_assistant import failed: {e}",

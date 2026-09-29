@@ -15,7 +15,7 @@ import pytest
 from jasper.voice.session import AudioOutChunk
 from jasper.voice.turn_playback import play_responses
 from jasper.voice.turn_lifecycle import State
-from jasper.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
 from tests._async_wait import wait_signalled, wait_until
 from tests._live_turn_fake import FakeLiveTurn as _FakeTurn, silent_frame
 from tests._log_events import event_fields

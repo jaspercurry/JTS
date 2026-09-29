@@ -8,12 +8,13 @@ from dataclasses import asdict, dataclass, field, replace
 from itertools import product
 from typing import Any, Callable, Mapping, Sequence
 
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program_analysis.check import ambient_rows_in_band, clears_snr_floor
 from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.biquad import PeqFilter
-from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
+from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.json_fields import finite_float
 
 from .capture_schedule import walk_price
@@ -86,6 +87,8 @@ class PreflightFacts:
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     #: ``None`` when an applied profile's room layer could not be read.
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
+    #: What that layer adds to the applied program charge (ADR-0385); ``None`` when unknown.
+    applied_room_charge_db: float | None = None
     stimulus_ids_for: Callable[[AngleCaptureRequest], tuple[str, ...]] | None = None
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
@@ -143,17 +146,20 @@ class PreflightReport:
         }
 
 
-def _room_off_rise_db(plan: AngleCaptureRequest, room_peqs: Sequence[PeqFilter] | None) -> float | None:
+def _room_off_rise_db(plan: AngleCaptureRequest, room_peqs: Sequence[PeqFilter] | None,
+                      room_charge_db: float | None) -> float | None:
     """The largest rise a summed take clearing the room layer plays over the
-    anchor's graph, across a band holding its stimulus's (ADR-0370); ``None``
-    when no take clears it. Raises ``ValueError`` when one does and the applied
-    room layer could not be read."""
+    anchor's graph, across a band holding its stimulus's (ADR-0370, ADR-0385);
+    ``None`` when no take clears it. Raises ``ValueError`` when one does and the
+    applied room layer or its charge could not be read."""
     bands = [(ROOM_FLOOR_HZ, float((stop.stimulus or {}).get("ceiling_hz") or MEASURE_SWEEP_F_HI_HZ))
              for stop in plan.stops
-             if stop.plays_summed and "room_correction" in cleared_layers(stop.purpose, base=not stop.candidate_id)]
-    if bands and room_peqs is None:
+             if stop.plays_summed
+             and "room_correction" in cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime)]
+    if bands and (room_peqs is None or (room_peqs and room_charge_db is None)):
         raise ValueError("the applied room layer could not be read, so a take clearing it has no known rise")
-    return max((rise_without_room_db(room_peqs or (), band) for band in bands), default=None)
+    return max((rise_without_room_db(room_peqs or (), band, charge_db=room_charge_db or 0.0) for band in bands),
+               default=None)
 
 
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: bool = False,
@@ -250,6 +256,11 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         add("measurement_mic_unidentified", "The measurement microphone has no known identity")
     if facts.anchor.sensitivity is None:
         add("measure_spl_calibration_required", "Microphone sensitivity cannot be resolved")
+    # Every take gates to the declared room and banks its band from it, so an unreadable one refuses the run (ADR-0388).
+    if unreadable := (facts.anchor.pose or {}).get("geometry_unreadable"):
+        issues.append(replace(PreflightIssue.from_code(
+            DECLARED_GEOMETRY_UNREADABLE, REASON_REGISTRY[DECLARED_GEOMETRY_UNREADABLE].message),
+            evidence={"field": unreadable}))
     stop = finite_float(facts.commissioning_stop_db_spl)
     ceiling = None
     if stop is None or stop <= 0:
@@ -319,7 +330,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                     try:
                         admission.update(predicted_rung_admission(fader, anchor, bass_extensions,
                             applied=facts.applied_bass_extension, ceiling_db_spl=stop, tolerance_db=tolerance,
-                            room_off_rise_db=_room_off_rise_db(plan, facts.applied_room_peqs)))
+                            room_off_rise_db=_room_off_rise_db(plan, facts.applied_room_peqs, facts.applied_room_charge_db)))
                     except (TypeError, ValueError) as exc:
                         admission.update(status="blocked", admitted_db_spl=None)
                         add(WALK_LEVEL_POLICY_INVALID, str(exc))

@@ -33,9 +33,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from jasper.fanin_coupling import resolve_ring_wire
-from jasper.ring_assets import ring_conf_wire_report
-from jasper.ring_conf import (
+from jasper.dsp_control.fanin_coupling import resolve_ring_wire
+from jasper.audio_control.ring_assets import ring_conf_wire_report
+from jasper.dsp_control.ring_conf import (
     RING_ACTIVE_CONF_PCM,
     render_ring_conf_wire,
     ring_conf_channels,
@@ -49,8 +49,9 @@ from jasper.active_speaker.output_contract import (
     topology_sink_is_composite,
 )
 from jasper.active_speaker.output_contract import flat_graph_program_dest_map
-from jasper.active_speaker.runtime_contract import _flat_hard_muted_outputs, classify_camilla_graph
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.active_speaker.runtime_contract import classify_camilla_graph
+from jasper.sound.flat_verifier import _flat_hard_muted_outputs
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import (
     FlatChannelPlan,
     emit_flat_outputd_cutover_config,
@@ -329,7 +330,7 @@ def test_composite_floor_period_equals_ring_slot_with_its_reason():
     while this test stayed green.
     """
     from jasper.audio_hardware.dac import latency_floor_for
-    from jasper.fanin_coupling import RING_SLOT_FRAMES
+    from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 
     floor = latency_floor_for("dual_apple_usb_c_dac_4ch")
     assert floor is not None, "the composite must DECLARE a floor or nothing renders"
@@ -429,7 +430,7 @@ def test_active_emit_devices_needs_no_composite_change():
     from jasper.active_speaker.camilla_yaml import ActiveEmitDevices, active_emit_devices
 
     assert "channels" not in {f.name for f in dataclasses.fields(ActiveEmitDevices)}
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     for device in (RING_ACTIVE_PLAYBACK_DEVICE, "hw:CARD=Lab,DEV=0"):
         assert active_emit_devices(
@@ -463,7 +464,7 @@ def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
     )
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     monkeypatch.setattr(
-        "jasper.output_topology_store.load_output_topology_strict", _composite_active_2way
+        "jasper.audio_routes.output_topology_store.load_output_topology_strict", _composite_active_2way
     )
     ok, detail = ring_readiness.ring_roleful_unattended_ready()
     assert ok is False

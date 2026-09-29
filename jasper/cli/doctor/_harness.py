@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from ...config import Config
-from ...install_profile import (
+from jasper.playback_state.install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )

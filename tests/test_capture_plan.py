@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.wake_corpus import capture_plan, runtime_probe
-from jasper.wake_ports import build_ports
+from jasper.service_state.wake_ports import build_ports
 
 
 def test_capture_plan_describes_chip_profile_layers() -> None:

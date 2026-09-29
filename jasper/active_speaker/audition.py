@@ -27,9 +27,10 @@ from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.restore_wait import attempt_graph_restore, resilient_restore
 from jasper.atomic_io import atomic_write_json
-from jasper.camilla import CamillaUnavailable
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.log_event import log_event
 from jasper.sound.settings import saved_sound_layers
 from jasper.sound.live_edit import dump_graph_yaml, load_graph_yaml, plan_live_edit_for
@@ -210,34 +211,40 @@ def build_reduced_yaml(
         return None, [{"severity": "blocker", "code": getattr(exc, "code", "audition_compile_failed"), "message": str(exc)}]
 
 
-def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
-    """How much LOUDER the baseline layer can play than the full graph, dB.
+def level_give_back_db(
+    full_text: str, reduced_text: str, applied_profile: Mapping[str, Any],
+) -> tuple[float, float]:
+    """How much LOUDER the baseline layer can play than the full graph, and how
+    much QUIETER it plays elsewhere, dB, each floored at 0.
 
-    Two terms, and both are read off the profile's own emitter inputs rather
-    than modelled:
+    Two terms, and neither is modelled:
 
-    * the pre-split attenuation the linearization stage charged
-      (:func:`~.baseline_profile.profile_program_headroom_db`), which comes
-      back broadband when the stage goes — often ``0.0``, because a boost the
-      branch's own crossover and trim already swallow is charged nothing; and
-    * the DEEPEST single cut the two dropped stages carry, which comes back in
-      that filter's own band. This is the larger term in practice, and the one
-      a "give back the headroom" reading of this reduction would miss.
+    * the full graph's written charge less the reduced graph's, which comes
+      back broadband when the stages go — often ``0.0``, because a boost the
+      rest of the graph already nets is charged nothing (ADR-0385), and
+      negative when a dropped cut netted a boost the reduced graph charges; and
+    * the DEEPEST single cut the two dropped stages carry, read off the
+      profile, which comes back in that filter's own band. This is the larger
+      term in practice, and the one a "give back the headroom" reading of this
+      reduction would miss.
+
+    Two numbers, because summed into one a negative first term cancels the cut
+    and hides a layer that plays quieter everywhere else.
 
     Not a bound on the sum: two cuts overlapping in one band give back more
     than the deeper of them. It does not need to be a bound — the ceiling is
     structural rather than arithmetic. The reduced graph IS the speaker's
     pre-linearization baseline, the graph it was commissioned and measured
     through, and this reduction changes no trim, no crossover, no protection
-    filter, no limiter and not the 0 dB ``volume_limit``. This number is a
+    filter, no limiter and not the 0 dB ``volume_limit``. These numbers are a
     disclosure so the owner knows the A/B is not level-matched.
     """
 
     from jasper.active_speaker.baseline_profile import (  # lazy: import cost — jasper-control and jasper-web load this module
         profile_blend_correction,
         profile_linearization,
-        profile_program_headroom_db,
     )
+    from jasper.active_speaker.program_headroom import written_headroom_db  # lazy: import cost — jasper-control and jasper-web load this module
 
     dropped: list[Any] = []
     for filters in profile_linearization(applied_profile).values():
@@ -251,7 +258,8 @@ def level_give_back_db(applied_profile: Mapping[str, Any]) -> float:
         and isinstance(entry.get("gain"), (int, float))
         and float(entry["gain"]) < 0.0
     ]
-    return profile_program_headroom_db(applied_profile) + max(cuts, default=0.0)
+    broadband_db = written_headroom_db(full_text) - written_headroom_db(reduced_text)
+    return max(0.0, broadband_db + max(cuts, default=0.0)), max(0.0, -broadband_db)
 
 
 async def _swap_running_graph(cam: Any, yaml_text: str, *, refusal: str) -> None:
@@ -374,13 +382,12 @@ async def start_audition(
         applied_profile_displacement,
         load_applied_baseline_profile_state,
     )
-    from jasper.active_speaker.runtime_contract import (  # lazy: import cost — jasper-control and jasper-web load this module
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
+    from jasper.active_speaker.graph.bass_extension import (  # lazy: import cost — jasper-control and jasper-web load this module
         desired_graph_approved,
         prove_desired_graph,
     )
-    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
-    from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
+    from jasper.dsp_control.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
+    from jasper.audio_routes.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
 
     _refuse_if_graph_is_claimed()
     applied = load_applied_baseline_profile_state()
@@ -406,7 +413,7 @@ async def start_audition(
     ):
         _refuse_if_graph_is_claimed()
         anchor = await _durable_anchor(cam)
-        anchor_text = Path(anchor).read_text(encoding="utf-8") if compare else ""
+        anchor_text = Path(anchor).read_text(encoding="utf-8")
         live = read_audition_state(state_path)
         if compare and (not live or live["layer"] != AUDITION_LAYER_REAR_COMPARE):
             if (await plan_live_edit_for(cam, anchor_text)).method != "unchanged":
@@ -434,6 +441,7 @@ async def start_audition(
                 f"the reduced graph did not re-prove as "
                 f"{GRAPH_APPROVED_ACTIVE_RUNTIME} (got {graph.classification})",
             )
+        louder_db, quieter_db = (None, None) if compare else level_give_back_db(anchor_text, yaml_text, applied)
         # A swap that TOOK but was never recorded is the one state nothing
         # would put back: no record means no owner, no deadline, and
         # `jasper-audition status` has nothing to disclose. Undoing it here
@@ -460,7 +468,8 @@ async def start_audition(
                 "entry_config_path": anchor,
                 # Disclosed, never compensated: compensating would move a trim,
                 # and identical trims are what makes the A/B mean anything.
-                "louder_than_full_db": None if compare else level_give_back_db(applied),
+                "louder_than_full_db": louder_db,
+                "quieter_than_full_db": quieter_db,
             }
             atomic_write_json(audition_state_path(state_path), state)
             armed = True
@@ -476,6 +485,7 @@ async def start_audition(
         layer=layer,
         deadline_at=f"{state['deadline_at']:.0f}",
         louder_than_full_db=state["louder_than_full_db"],
+        quieter_than_full_db=state["quieter_than_full_db"],
         entry_config_path=anchor,
     )
     _send_cue(play_cue, AUDITION_REDUCED_CUE_SLUG)
@@ -510,7 +520,7 @@ async def stop_audition(
     worst possible reading of a corrupt byte.
     """
 
-    from jasper.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
+    from jasper.dsp_control.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
 
     if not audition_state_path(state_path).exists():
         return {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}

@@ -9,10 +9,10 @@ import asyncio
 
 import pytest
 
-from jasper import bluealsa_probe
-from jasper import volume_observers as observer_mod
-from jasper.music_sources import Source
-from jasper.volume_observers import VolumeObserver
+from jasper.device_probe import bluealsa_probe
+from jasper.audio_control import volume_observers as observer_mod
+from jasper.playback_state.music_sources import Source
+from jasper.audio_control.volume_observers import VolumeObserver
 
 from tests._async_wait import wait_signalled
 from tests._librespot_state import write_librespot_state
@@ -136,7 +136,7 @@ async def test_read_bluetooth_returns_none_when_no_transport(monkeypatch):
         return None
 
     monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+        "jasper.audio_control.volume_observers._bluez_alsa_active_transport_path", fake_path,
     )
     assert await obs._read_bluetooth_volume() is None
 
@@ -151,7 +151,7 @@ async def test_read_bluetooth_parses_uint16(monkeypatch):
         return "v q 95"
 
     monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+        "jasper.audio_control.volume_observers._bluez_alsa_active_transport_path", fake_path,
     )
     monkeypatch.setattr(
         "jasper.busctl.get_property", fake_busctl,
@@ -270,7 +270,7 @@ class _ProbeSpy:
             "jasper.busctl.get_property", fake_busctl,
         )
         monkeypatch.setattr(
-            "jasper.volume_observers._bluez_alsa_active_transport_path",
+            "jasper.audio_control.volume_observers._bluez_alsa_active_transport_path",
             fake_path,
         )
         monkeypatch.setattr(
@@ -333,7 +333,7 @@ async def test_tick_forwards_same_value_on_source_activation(
         "jasper.busctl.get_property", fake_busctl,
     )
     monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+        "jasper.audio_control.volume_observers._bluez_alsa_active_transport_path", fake_path,
     )
 
     await obs._tick()
@@ -365,7 +365,7 @@ async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
         "jasper.busctl.get_property", fake_busctl,
     )
     monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+        "jasper.audio_control.volume_observers._bluez_alsa_active_transport_path", fake_path,
     )
 
     await obs._tick()
@@ -401,7 +401,7 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
         "jasper.busctl.get_property", fake_busctl,
     )
     monkeypatch.setattr(
-        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+        "jasper.audio_control.volume_observers._bluez_alsa_active_transport_path", fake_path,
     )
     caplog.set_level(logging.WARNING, logger="jasper.volume_observers")
     # Must not raise out of _tick.

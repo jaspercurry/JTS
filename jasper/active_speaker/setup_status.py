@@ -15,17 +15,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
+from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.json_fields import as_mapping
-from jasper.output_topology import OutputTopologyError
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 from jasper.multiroom.config import is_active_member, load_config
 
 from .candidate_bank import load_applied_candidate
-from .crossover_contract import (
-    crossover_snapshot_state,
-    legacy_manual_preservation_state,
-)
+from .crossover_contract import crossover_snapshot_state
 from . import web_measurement
 from .environment import read_camilla_statefile_config_path
 from .graph_evidence import active_layer_a_fingerprint, active_layer_a_projection
@@ -78,8 +75,8 @@ def _commissioning_transport(topology: Any) -> str | None:
     """Which transport this box's commissioning would emit on, or ``None``.
 
     ONE token with the two ``driver_commission_*`` journal lines
-    (:data:`jasper.fanin_coupling.TRANSPORT_RING`), keyed on the same
-    :data:`~jasper.fanin_coupling.RING_PCM_DEVICES` membership and reading the
+    (:data:`jasper.dsp_control.fanin_coupling.TRANSPORT_RING`), keyed on the same
+    :data:`~jasper.dsp_control.fanin_coupling.RING_PCM_DEVICES` membership and reading the
     same chooser (``resolve_active_playback_device``). The shared thing is the
     DERIVATION, not the input: ``prepare`` accepts a caller-supplied
     ``playback_device=`` override, so the agreement is a convention this API
@@ -240,7 +237,7 @@ def _applied_layer_a_binding(
 ) -> dict[str, Any]:
     """Compare the compiled applied candidate with the loaded graph."""
 
-    from jasper.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
+    from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config  # lazy: binding reads the loaded graph
     from .candidate_bank import CandidateBankRefusal  # lazy: candidate lookup boundary
     from .candidate_parts import candidate_from_applied_profile  # lazy: baseline readers import setup status
     from .measurement_emit import compile_tuning_graph, load_tuning_declaration  # lazy: graph compilation imports NumPy
@@ -378,9 +375,6 @@ def read_active_speaker_setup_status(
         status["applied_crossover"] = crossover_snapshot_state(
             applied_profile, expected_topology_id=topology.topology_id,
             expected_topology_fingerprint=str(source.get("topology_fingerprint") or "") or None,
-        )
-        status["manual_preservation"] = legacy_manual_preservation_state(
-            applied_profile, current_source_fingerprint=str(source.get("fingerprint") or "") or None,
         )
     status["commissioning"] = commissioning_summary(
         topology, profile=profile, applied_profile=applied_profile,

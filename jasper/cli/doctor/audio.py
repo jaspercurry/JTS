@@ -15,15 +15,15 @@ from ...audio_hardware.dac import (
 )
 from ...config import Config
 from ...mics import xvf3800
-from ...output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputHardwareState,
     mixer_index_for_db as _mixer_index_for_db,
     mixer_pins_for_state as _mixer_pins_for_state,
 )
-from ...mic_presence import MicPresence
-from ...wake_ports import parse_udp_device
+from jasper.audio_control.mic_presence import MicPresence
+from jasper.service_state.wake_ports import parse_udp_device
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -188,7 +188,7 @@ def check_microphone() -> CheckResult:
     """Single headline for microphone presence.
 
     Reads the reconciler's one canonical record
-    (``jasper.mic_presence.read_mic_presence``); the ``mic ALSA card`` / ``mic
+    (``jasper.audio_control.mic_presence.read_mic_presence``); the ``mic ALSA card`` / ``mic
     capture`` checks defer to the same verdict rather than re-probing ALSA.
     Absent is ``warn``, never ``fail``: voice is parked and auto-starts when a
     mic returns.
@@ -217,7 +217,7 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     # No usable mic: the reconciler's single source of truth already classified
     # this and parked voice, so defer to the `microphone` headline rather than
     # re-probing `arecord -L` for a red FAILURE on an expected, auto-recovering
-    # state. See jasper/mic_presence.py.
+    # state. See jasper/audio_control/mic_presence.py.
     presence = evidence.mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
@@ -308,7 +308,7 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     # confirms no usable mic and parked jasper-voice, so defer to the
     # `microphone` headline. A genuine open failure (no absent verdict but the
     # device won't open — custom or busy mic) still falls through to the probe
-    # and its fail below. See jasper/mic_presence.py.
+    # and its fail below. See jasper/audio_control/mic_presence.py.
     presence = evidence.mic_presence()
     if presence.absent_confirmed:
         return CheckResult(
@@ -510,8 +510,8 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
     """Keep saved active-speaker topology mismatch out of basic playback health."""
 
     from jasper.active_speaker.output_contract import classify_output_contract
-    from jasper.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
-    from jasper.output_topology_observation import clock_domain_report  # lazy: doctor per-check import budget (ADR-0233)
+    from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
+    from jasper.dsp_control.output_topology_observation import clock_domain_report  # lazy: doctor per-check import budget (ADR-0233)
 
     try:
         topology = evidence.output_topology_strict()

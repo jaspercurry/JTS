@@ -2,17 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One summed capture reduced for comparison, and the entry baseline a round
-records (#2291 Phase 3c).
-
-These tests pin three things:
-
-1. the reduction is the SHIPPED owners' arithmetic, not a second copy;
-2. an entry baseline rehydrates only from a record this build wrote;
-3. :data:`~jasper.active_speaker.crossover_v2.round_evidence.MEASURED_BENEFIT_MARGIN_DB`
-   is a FORK of ``material_improvement_db``, not an alias — the whole point of
-   #2291's ledger item N8 is that the two must be free to move apart.
-"""
+"""One summed capture reduced: the reduction is the SHIPPED owners'
+arithmetic, not a second copy."""
 
 from __future__ import annotations
 
@@ -24,7 +15,6 @@ import pytest
 from jasper.active_speaker.crossover_v2 import round_evidence
 from jasper.active_speaker.crossover_v2.round_evidence import (
     BENEFIT_CURVE_MAX_BINS,
-    EntryBaseline,
     measured_response_from_analysis,
 )
 
@@ -236,163 +226,3 @@ def test_a_floor_that_is_not_a_finite_number_screens_nothing(floor):
 
     assert reduced is not None
     assert not any(reduced.excluded)
-
-
-# --------------------------------------------------------------------------- #
-# 4. the persisted entry baseline
-# --------------------------------------------------------------------------- #
-
-
-def _complete_record(**overrides) -> dict:
-    """A record that rehydrates, so a rejection test can vary ONE thing.
-
-    Every negative case below starts from a record that would otherwise
-    SUCCEED. Without that, a case meant to pin the mask-length check passes
-    for the wrong reason — because it also happened to be missing
-    ``stimulus_id`` — and the check it names is not covered at all. (Measured:
-    an earlier form of this test survived deleting the length check outright.)
-    """
-    record = {
-        "freqs_hz": [100.0, 200.0],
-        "magnitude_db": [0.0, 1.0],
-        "excluded": [False, True],
-        "stimulus_id": "p",
-        "reference_mark": "m",
-        "graph_fingerprint": "g",
-        "captured_at": "t",
-    }
-    record.update(overrides)
-    return record
-
-
-def test_the_complete_record_control_rehydrates():
-    """The control the rejection cases below are one field away from.
-
-    Without it, every "returns None" assertion could be passing because the
-    fixture never rehydrated at all.
-    """
-    assert EntryBaseline.from_dict(_complete_record()) is not None
-
-
-@pytest.mark.parametrize(
-    "record",
-    [
-        None,
-        {},
-        "not a mapping",
-        _complete_record(excluded=[False]),
-        _complete_record(excluded=[False, True, False]),
-        _complete_record(excluded=None),
-        _complete_record(freqs_hz=None),
-        _complete_record(magnitude_db=None),
-        _complete_record(magnitude_db=[0.0, float("nan")]),
-        _complete_record(stimulus_id=""),
-        _complete_record(graph_fingerprint=""),
-    ],
-    ids=[
-        "none",
-        "empty",
-        "not_a_mapping",
-        "mask_too_short",
-        "mask_too_long",
-        "no_mask",
-        "no_freqs",
-        "no_levels",
-        "non_finite_level",
-        "empty_stimulus_id",
-        "empty_graph_fingerprint",
-    ],
-)
-def test_anything_this_build_did_not_write_rehydrates_as_no_baseline(record):
-    """``None``, never a partially-trusted record and never a raise.
-
-    A state file from before this key shipped, a truncated write, and a
-    hand-edited file all mean one thing to the round — there is no comparable
-    baseline — and that already has an honest verdict.
-    """
-    assert EntryBaseline.from_dict(record) is None
-
-
-def test_the_entry_baseline_round_trips_through_the_durable_shape():
-    """It crosses the stage bridge as JSON; nothing may be lost on the way.
-
-    Every field, exhaustively — a partial round-trip is how a curve arrives in
-    stage 2 with its mask silently reset to all-false, which would grade the
-    two captures over different bins while looking comparable.
-    """
-    reduced = measured_response_from_analysis(
-        _analysis(validity_floor_hz=300.0), reference_mark=_MARK
-    )
-    assert reduced is not None
-    original = EntryBaseline.from_measurement(
-        reduced,
-        graph_fingerprint="graph-fp",
-        captured_at="2026-08-11T00:00:00Z",
-        artifact_ref="entry_baseline_a01",
-    )
-
-    rehydrated = EntryBaseline.from_dict(original.to_dict())
-
-    assert rehydrated == original
-    assert rehydrated is not None
-
-
-# --------------------------------------------------------------------------- #
-# 5. the margin is a fork, not an alias (#2291 ledger item N8)
-# --------------------------------------------------------------------------- #
-
-
-def test_the_benefit_margin_is_a_literal_this_module_owns_not_a_borrowed_one():
-    """The fork, pinned structurally — the only way it CAN be pinned.
-
-    ``material_improvement_db()`` bounds model-vs-hardware error; this bounds
-    capture repeatability. They agree today, which is exactly why an equality
-    assertion would be worthless: it would pass just as happily if someone
-    "simplified" this constant into an alias of that one, and #2291's ledger
-    item N8 exists because that simplification is the tempting edit.
-
-    A *behavioural* pin cannot see it either — measured: monkeypatching
-    ``PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`` and asserting this constant did
-    not follow SURVIVED a mutation that rebound it to
-    ``material_improvement_db()`` at import time, because a module constant is
-    bound once and the later patch cannot reach it. So the pin is on the
-    module's own syntax: this name is assigned a plain numeric literal, and
-    neither borrowed name is imported anywhere in the module.
-    """
-    import ast
-    import inspect
-
-    source = inspect.getsource(round_evidence)
-    tree = ast.parse(source)
-
-    assignments = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "MEASURED_BENEFIT_MARGIN_DB"
-            for t in node.targets
-        )
-    ]
-    assert len(assignments) == 1, "one owner, one assignment"
-    value = assignments[0].value
-    assert isinstance(value, ast.Constant) and isinstance(
-        value.value, float
-    ), "the margin must be a literal this module owns, not a borrowed call"
-
-    borrowed = {"material_improvement_db", "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB"}
-    imported = {
-        alias.asname or alias.name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names
-    } | {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    assert not (borrowed & imported), (
-        f"the margin's module must not import {borrowed & imported} — "
-        "the two constants have to stay free to move apart"
-    )

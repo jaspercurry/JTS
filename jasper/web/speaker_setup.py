@@ -44,7 +44,7 @@ from ..control.restart_broker import manage_units
 from ..net import control_advert
 from ..log_event import log_event
 from ..identity.speaker_name_discovery import NameConflict, find_name_conflicts
-from ..source_intent import kick_source_reconcile
+from jasper.audio_routes.source_intent import kick_source_reconcile
 from ._common import (
     begin_request,
     csrf_field_html,

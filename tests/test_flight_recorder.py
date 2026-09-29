@@ -16,7 +16,7 @@ import logging
 
 import pytest
 
-from jasper import debug_mode
+from jasper.audio_control import debug_mode
 from jasper import flight_recorder as fr
 from jasper.conversation_history import ConversationStore
 from jasper.log_event import log_event

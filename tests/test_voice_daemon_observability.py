@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.tts_routing import FANIN_TTS_SOCKET
+from jasper.service_state.tts_routing import FANIN_TTS_SOCKET
 from tests._live_turn_fake import silent_frame
 from tests._wake_loop import wake_loop_for_tests
 from jasper.voice.daemon_main import _tts_ready_detail
@@ -380,7 +380,7 @@ def _wake_loop_with_legs(*tokens):
     from unittest.mock import MagicMock
 
     from jasper.voice.wake_detect import LegRuntime
-    from jasper.wake_legs import by_token
+    from jasper.playback_state.wake_legs import by_token
 
     return wake_loop_for_tests(legs=[
         LegRuntime(by_token(token), MagicMock(), MagicMock(), None)
@@ -390,7 +390,7 @@ def _wake_loop_with_legs(*tokens):
 
 def test_session_status_reports_armed_legs_triple():
     """session_status surfaces the actually-armed leg tokens (runtime
-    truth, in jasper.wake_legs order) so a startup leg-skip is visible in
+    truth, in jasper.playback_state.wake_legs order) so a startup leg-skip is visible in
     /state.voice — /aec only shows configured intent from aec_mode.env."""
     wl = _wake_loop_with_legs("on", "off", "dtln")
     assert wl.session_status()["wake_legs"] == ["on", "off", "dtln"]

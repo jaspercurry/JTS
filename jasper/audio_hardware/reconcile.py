@@ -56,7 +56,7 @@ from jasper.audio_hardware.reconcile_common import (
 )
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
-from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
+from jasper.device_probe.usbgadget import DEFAULT_UDC_CLASS_DIR
 from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.log_event import log_event
 from jasper.logging_setup import configure_logging
@@ -65,12 +65,13 @@ from jasper.paths import (
     camilla_statefile,
     crossover_statefile,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     ObservedOutput,
     degraded_marker_path,
     state_path,
 )
 from jasper.shell_env import render_shell_assignments
+from jasper.playback_state.install_profile import INSTALL_PROFILE_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,7 @@ class Pass:
             or "/run/jasper-output-hardware/i2s-hat-reboot-required"
         )
         self.install_profile_file = (
-            env.get("JASPER_INSTALL_PROFILE_FILE") or "/var/lib/jasper/install_profile"
+            env.get("JASPER_INSTALL_PROFILE_FILE") or str(INSTALL_PROFILE_FILE)
         )
         self.output_topology_path = (
             env.get("JASPER_OUTPUT_TOPOLOGY_PATH") or DEFAULT_TOPOLOGY_PATH
@@ -267,7 +268,7 @@ class Pass:
             try:
                 # lazy: import cost — 2k lines a single-DAC install pass
                 # never needs (ADR-0226).
-                from jasper.output_topology_store import load_output_topology_strict  # lazy: topology parse cost on composite paths
+                from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: topology parse cost on composite paths
 
                 self._topology = load_output_topology_strict(
                     self.output_topology_path
@@ -290,7 +291,7 @@ class Pass:
         ``(False, reason)`` and every caller fails closed.
         """
         try:
-            from jasper.outputd_active_lane import (  # lazy: graph proof import cost on active-endpoint paths
+            from jasper.dsp_control.outputd_active_lane import (  # lazy: graph proof import cost on active-endpoint paths
                 outputd_active_lane_decision,
             )
 

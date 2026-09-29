@@ -27,7 +27,6 @@ from ._shared import (
 )
 from ...identity import identity_state
 from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
-from ...active_speaker.crossover_contract import REASON_APPLIED_GRADE_MARK_ONLY
 from ...active_speaker.environment import (
     classify_camilla_config_text,
     read_camilla_statefile_config_path,
@@ -75,17 +74,6 @@ REASON_CERT_IDENTITY_ABSENT = "cert_identity_absent"
 REASON_CERT_HOSTNAME_UNKNOWN = "cert_hostname_unknown"
 REASON_CERT_SAN_UNREADABLE = "cert_san_unreadable"
 REASON_CERT_SAN_MISMATCH = "cert_san_mismatch"
-
-REASON_CLOUD_NOT_RUN = "cloud_pipeline_not_run"
-REASON_CLOUD_NO_CLOSED_GROUPS = "cloud_pipeline_no_closed_groups"
-REASON_CLOUD_VERIFY_SPEC_FAILED = "cloud_verify_spec_failed"
-
-REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED = "applied_grade_spatial_unrecognized"
-REASON_APPLIED_GRADE_SPATIAL_FAILED = "applied_grade_spatial_failed"
-REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE = "applied_grade_spatial_unmeasurable"
-REASON_APPLIED_GRADE_VERIFY_FAILED = "applied_grade_verify_failed"
-REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE = "applied_grade_verify_inconclusive"
-REASON_APPLIED_GRADE_NEVER_GRADED = "applied_grade_never_graded"
 
 REASON_SEAT_LEVEL_NOT_MEASURED = "seat_level_not_measured"
 REASON_SEAT_LEVEL_UNUSABLE = "seat_level_unusable"
@@ -567,183 +555,6 @@ def check_correction_cert_hostname() -> CheckResult:
         "the leaf cert after converging the hostname.",
         reason=REASON_CERT_SAN_MISMATCH,
     )
-
-
-def _crossover_v2_status_block() -> dict | None:
-    """Kept beside the web import the boundary allowlist admits only here."""
-    from jasper.web.correction_crossover_v2_status import crossover_v2_status_block
-
-    return crossover_v2_status_block()
-
-
-def _applied_grade_finding(block: dict) -> tuple[str, str]:
-    """Read plan-derived coverage from the status owner."""
-    grade = block.get("post_apply_grade")
-    grade = grade if isinstance(grade, dict) else {}
-    from jasper.web.correction_crossover_v2_grade import (
-        GRADE_FAILED, GRADE_GRADED, GRADE_INCONCLUSIVE, GRADE_MARK_VERIFIED,
-        GRADE_NOT_APPLIED, GRADE_SPATIAL_ABSENT,
-        GRADE_SPATIAL_FAILED, GRADE_SPATIAL_PASSED, GRADE_SPATIAL_UNMEASURABLE,
-    )
-    # `.get` with a default rather than a lookup: a durable state written by a
-    # future build could carry a state name this one has never heard of, and
-    # inventing a warning about it would be worse than saying what it said.
-    state = str(grade.get("state") or "")
-    # ``capture`` qualifies the outcome at every site: ``state`` is the union of
-    # the instruments, ``verify_outcome`` is capture and tracking health alone,
-    # and the two may honestly disagree (a failed crossover-region claim caps a
-    # capture whose own outcome is ``pass``). ``result`` is absent whenever the
-    # producer recorded no result evidence — never a fabricated code.
-    verify_text = (
-        f"capture verify={grade.get('verify_outcome') or 'n/a'}"
-        + (f", result={grade.get('outcome')}" if grade.get("outcome") else "")
-    )
-    if state == GRADE_NOT_APPLIED:
-        return "no applied measured crossover", ""
-    if state in {GRADE_GRADED, GRADE_MARK_VERIFIED}:
-        spatial = str(grade.get("spatial") or "")
-        # A non-empty word this build does not recognize is a later build's
-        # vocabulary. The empty string is a durable state written before
-        # ``spatial`` existed and keeps the fallthrough below.
-        if spatial and spatial not in {
-            GRADE_SPATIAL_ABSENT,
-            GRADE_SPATIAL_PASSED,
-            GRADE_SPATIAL_FAILED,
-            GRADE_SPATIAL_UNMEASURABLE,
-        }:
-            return (
-                f"applied and graded, but the spatial grade word {spatial!r} "
-                "is not one this build recognizes — treating it as unproven "
-                f"rather than guessing ({verify_text}); check for a "
-                "jasper-doctor update, or re-measure at /sound/speaker/crossover/",
-                REASON_APPLIED_GRADE_SPATIAL_UNRECOGNIZED,
-            )
-        if spatial == GRADE_SPATIAL_FAILED:
-            worst = grade.get("spatial_worst_db")
-            at = grade.get("spatial_worst_hz")
-            # The number rides the verdict from the same gauge the cloud line
-            # prints, so "the grade failed" and "by how much" cannot drift.
-            # Absent when the gauge recorded none — never a fabricated 0.
-            worst_text = ""
-            if isinstance(worst, (int, float)):
-                where = f" @ {at:.0f}Hz" if isinstance(at, (int, float)) else ""
-                worst_text = f" ({worst:+.2f}dB{where})"
-            return (
-                f"applied and graded, and the spatial grade missed the "
-                f"target{worst_text} — the tune stays on the speaker "
-                f"({verify_text}); re-measure at /sound/speaker/crossover/ or undo to "
-                "restore the previous sound",
-                REASON_APPLIED_GRADE_SPATIAL_FAILED,
-            )
-        if spatial == GRADE_SPATIAL_UNMEASURABLE:
-            return (
-                f"applied; the post-apply group closed but its spatial grade "
-                f"could not be measured ({verify_text}) — re-measure at "
-                "/sound/speaker/crossover/ in a quieter room, or undo",
-                REASON_APPLIED_GRADE_SPATIAL_UNMEASURABLE,
-            )
-        if grade.get("complete") is False:
-            return (
-                f"applied and verified at the mark, but no "
-                f"spatial grade covers the poses this run asked for, "
-                f"so it is unproven away from the mark "
-                f"({verify_text}) — finish the measurement at /sound/speaker/crossover/, "
-                "or undo",
-                REASON_APPLIED_GRADE_MARK_ONLY,
-            )
-        return (
-            f"applied and graded (state={state}, scope="
-            f"{grade.get('scope') or 'n/a'}, {verify_text})",
-            "",
-        )
-    if state in {GRADE_INCONCLUSIVE, GRADE_FAILED}:
-        detail = (
-            f"applied but the post-apply check came back {state} "
-            f"({verify_text}) — re-verify at /sound/speaker/crossover/ or undo to restore "
-            "the previous sound"
-        )
-        if state == GRADE_INCONCLUSIVE:
-            return detail, REASON_APPLIED_GRADE_VERIFY_INCONCLUSIVE
-        return detail, REASON_APPLIED_GRADE_VERIFY_FAILED
-    return (
-        "applied but trial advice unavailable: no post-apply check completed for this "
-        "correction — re-verify at /sound/speaker/crossover/ to confirm it, or undo",
-        REASON_APPLIED_GRADE_NEVER_GRADED,
-    )
-
-
-@doctor_check()
-def check_crossover_v2_cloud_pipeline() -> CheckResult:
-    """The last session's honest-instrument cloud verdict — per group, the spec
-    pass/fail, the excluded-interval count, and whether the geometry locked —
-    plus whether the applied correction (if any) was ever graded after it
-    landed (:func:`_applied_grade_finding`).
-
-    Only ``PHASE_CLOUD_VERIFY``'s spec verdict gates the warn.
-    ``PHASE_CLOUD_MEASURE`` is the PRE-APPLY cloud — the uncorrected baseline
-    that exists in order to be out of spec — so gating on any phase warns
-    forever on a perfectly corrected speaker. MEASURE's verdict is still
-    reported, it just does not drive the status. A failed spec is a WARN: an
-    out-of-spec speaker is a measurement finding, not a broken daemon.
-
-    On an ``ok`` row the grade finding takes the reason when it has one — an
-    un-warned cloud spec cannot see a correction that never got graded. On a
-    ``warn`` row the cloud reason wins instead: the cloud spec failure is why
-    the row warned, and a grade reason must not hide that cause.
-    """
-    from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
-
-    label = "crossover v2 cloud pipeline"
-    block = evidence.get("crossover_v2_status", _crossover_v2_status_block) or {}
-    grade_detail, grade_reason = _applied_grade_finding(block)
-
-    def _result(status: str, cloud_detail: str, cloud_reason: str) -> CheckResult:
-        reason = (
-            (cloud_reason or grade_reason)
-            if status == "warn"
-            else (grade_reason or cloud_reason)
-        )
-        if grade_reason == REASON_APPLIED_GRADE_VERIFY_FAILED:
-            status = "warn"
-        return CheckResult(label, status, f"{cloud_detail}; {grade_detail}", reason=reason)
-
-    cloud = block.get("cloud")
-    if not isinstance(cloud, dict) or not cloud:
-        return _result(
-            "ok", "no cloud-measurement session recorded yet", REASON_CLOUD_NOT_RUN,
-        )
-    parts: list[str] = []
-    any_fail = False
-    for phase in sorted(cloud):
-        entry = cloud[phase]
-        if not isinstance(entry, dict):
-            continue
-        overall = entry.get("overall_within_target")
-        spec_text = "pass" if overall is True else "fail" if overall is False else "n/a"
-        if phase == PHASE_CLOUD_VERIFY and overall is False:
-            any_fail = True
-        excluded = entry.get("excluded_interval_count")
-        excluded_text = "n/a" if excluded is None else str(excluded)
-        # The worst deviation, read from the same spec report ``overall`` came
-        # from, never re-derived: "spec=fail" alone cannot tell a speaker 0.1 dB
-        # over its tolerance from one 9 dB over.
-        flatness = entry.get("flatness")
-        worst = flatness.get("max_db") if isinstance(flatness, dict) else None
-        worst_text = (
-            f" worst={worst:+.2f}dB" if isinstance(worst, (int, float)) else ""
-        )
-        parts.append(
-            f"{phase}: spec={spec_text}{worst_text} "
-            f"excluded_intervals={excluded_text} "
-            f"geometry_locked={bool(entry.get('geometry_locked'))}"
-        )
-    if not parts:
-        return _result(
-            "ok", "no closed cloud groups recorded yet", REASON_CLOUD_NO_CLOSED_GROUPS,
-        )
-    if any_fail:
-        return _result("warn", "; ".join(parts), REASON_CLOUD_VERIFY_SPEC_FAILED)
-    return _result("ok", "; ".join(parts), "")
 
 
 def _classify_seat_level_reference(path: Path) -> CheckResult:

@@ -36,7 +36,7 @@ from jasper.log_event import log_event
 from jasper.multiroom import config as grouping_config
 from jasper.multiroom.effective_role import effective_local_sources_park_reason
 from jasper.service_units import SHAIRPORT_SYNC_SERVICE
-from jasper.source_state import airplay_playbackstatus_observed
+from jasper.playback_state.source_state import airplay_playbackstatus_observed
 from jasper.systemd_probe import async_unit_probe
 
 from . import restart_broker

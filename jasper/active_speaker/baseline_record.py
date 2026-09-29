@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.json_fields import utc_now_iso as _utc_now
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputTopology,
     canonical_fingerprint as _fingerprint,
     topology_config_fingerprint,

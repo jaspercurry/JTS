@@ -17,6 +17,7 @@ import yaml
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2 import record_index, round_captures
 from jasper.active_speaker.crossover_v2.capture_prediction import (
     capture_prediction,
@@ -32,10 +33,7 @@ from jasper.active_speaker.crossover_v2.forward_model import (
     predicted_minus_measured_db,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import parse_curve_complex
-from jasper.active_speaker.crossover_v2.round_captures import (
-    REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
-    RoundCapturesRefused,
-)
+from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CLOSE_REFERENCE_NO_CAPTURE
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import build_verify_program
 from jasper.audio_measurement.program_analysis import (
@@ -373,11 +371,11 @@ def test_phase_error_excludes_the_same_recordings_weak_cancellations(
 @pytest.mark.parametrize(
     "capture_id, window_ms, error",
     [
-        pytest.param("missing", 7.0, RoundCapturesRefused, id="wrong-take"),
+        pytest.param("missing", 7.0, EvidenceUnavailable, id="wrong-take"),
         pytest.param("old", 0.0, ForwardModelError, id="zero-window"),
         pytest.param("old", float("nan"), ForwardModelError, id="nan-window"),
         pytest.param("old", 100.0, ForwardModelError, id="overlong-window"),
-        pytest.param("missing-clock", 7.0, RoundCapturesRefused, id="incomplete-clock"),
+        pytest.param("missing-clock", 7.0, EvidenceUnavailable, id="incomplete-clock"),
     ],
 )
 def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
@@ -391,7 +389,7 @@ def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
         capture_id = "old"
     with pytest.raises(error) as excinfo:
         read_diagnostic(diagnostic_round, capture_id, window_ms)
-    if error is RoundCapturesRefused and capture_id == "old":
+    if error is EvidenceUnavailable and capture_id == "old":
         assert excinfo.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
         assert excinfo.value.detail["role"] == "woofer"
     if capture_id == "missing":
@@ -456,7 +454,7 @@ def test_prediction_reconstructs_selected_physical_branches(diagnostic_round):
     for response in document["branch_diagnostic"]["responses"]:
         response["role"] = identities[response["role"]]
     path.write_text(json.dumps(document))
-    with pytest.raises(RoundCapturesRefused) as caught:
+    with pytest.raises(EvidenceUnavailable) as caught:
         read_diagnostic(diagnostic_round, "old", 7.0)
     assert caught.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
     basis = read_diagnostic(diagnostic_round, "old", 7.0,
@@ -619,18 +617,22 @@ def test_judge_previews_the_composed_emitted_graph(emitted_preview, capsys, sect
     Path(args.document).write_text(json.dumps(doc))
     assert crossover_prescriber.main(argv) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"section", "sections", "preview", "adopted", "banked"}
+    assert answer.keys() == {"view", "schema", "subject", "parameters", "section", "sections", "preview", "adopted", "banked"}
     assert answer["section"] == "emitted_graph" and answer["sections"] == sorted(sections)
     assert "status" not in answer and answer["adopted"] is False and answer["banked"] is False
     assert answer["preview"]["kind"] == "jts_capture_prediction"
     assert all(answer["preview"]["relative_graph"]["usable_bins_by_role"][role] > 0 for role in ("woofer", "tweeter"))
+    summary = answer["preview"]["summary"]
+    assert answer["parameters"] == {"window_ms": summary["window"]["window_ms"],
+                                    "band_hz": summary["reconstruction"]["compared_band_hz"]}
 
 
 def test_preview_matches_the_old_forward_model_exactly(emitted_preview, capsys):
     """Composition adds provenance and filter metadata to identity; compare both paths in-process to avoid platform-dependent float hashes."""
     source, target, doc, argv, args = emitted_preview
     base = find_banked_candidate(source.fingerprint, root=Path(args.root))
-    composed = judge_prescription_document(doc, base=base, evidence=crossover_prescriber._document_evidence(args, doc))
+    evidence = crossover_prescriber._document_evidence(args, doc, round_inputs(Path(args.round)))
+    composed = judge_prescription_document(doc, base=base, evidence=evidence)
     assert composed.fingerprint != target.fingerprint
     golden = capture_prediction(Path(args.round), capture_id="old", candidate=target, basis_candidate=source)
     assert crossover_prescriber.main(argv) == 0
@@ -685,8 +687,10 @@ def test_a_preview_written_to_a_file_is_one_side_of_compare(emitted_preview, tmp
     out = tmp_path / "preview.json"
     assert crossover_prescriber.main([*argv, "--out", str(out)]) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer.keys() == {"section", "sections", "out", "bytes", "summary", "adopted", "banked"}
+    assert answer.keys() == {"view", "schema", "subject", "parameters", "section", "sections", "out", "bytes", "summary",
+                             "adopted", "banked"}
     assert (answer["out"], answer["bytes"]) == (str(out), out.stat().st_size)
+    assert json.loads(out.read_text())["schema"] == answer["schema"]
 
     assert cli_main(["compare", "--a-preview", str(out), args.round, "--b-set", "old", "--b-take", "old",
                              "--out", str(tmp_path / "compare.json")]) == 0
@@ -737,6 +741,7 @@ def test_preview_resolves_an_exact_take_from_the_set(emitted_preview, capsys, ta
     if take or azimuth:
         assert status == 0
         assert answer["preview"]["summary"]["basis"]["capture_id"] == (take or "old")
+        assert (answer["subject"]["set_id"], answer["subject"]["take_ids"]) == ("old", [take or "old"])
     else:
         assert status == 1
         assert (answer["code"], answer["detail"]["section"]) == ("round_take_selection_required", "driver")

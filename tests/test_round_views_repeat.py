@@ -104,7 +104,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
             return await super().bank(record)
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(True))
     expected = []
-    def analyze(record, record_id):
+    def analyze(record):
         analysis = stand_in(record)
         expected.append(analysis_json(analysis))
         return analysis

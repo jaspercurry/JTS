@@ -20,8 +20,8 @@ from jasper.multiroom.active_leader_config import CROSSOVER_CONFIG_PATH, LEADER_
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
 from .test_doctor_audio_runtime_camilla import _point_at_config
-from jasper.output_topology_store import save_output_topology
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.profile import SimpleEq
 
 
@@ -90,7 +90,7 @@ def _incomplete_passive_topology():
 
 def _stage_parked(monkeypatch, tmp_path, topology):
     """Point the box at the independently PROVED parked graph for ``topology``."""
-    from jasper.active_speaker.runtime_contract import build_parked_muted_graph
+    from jasper.active_speaker.graph_selector import build_parked_muted_graph
 
     text, graph = build_parked_muted_graph(topology)
     assert graph.allowed, "fixture must stage a proved parked graph"
@@ -281,7 +281,7 @@ def test_active_speaker_runtime_graph_exits_are_capability_aware(monkeypatch, tm
     separates them — there "finish crossover preview" can never succeed, so the
     helper drops it and the bare constant still offers it.
     """
-    from jasper.active_speaker.runtime_contract import (
+    from jasper.active_speaker.graph_selector import (
         PARKED_MUTED_EXITS,
         parked_muted_exits,
     )

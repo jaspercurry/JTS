@@ -20,7 +20,7 @@ from jasper.conversation_history import ConversationStore
 from jasper.voice.catalog import InterruptReconcile
 from jasper.voice.wake_detect import CAPTURE_RING_FRAMES, LegRuntime
 from jasper.voice_daemon import WakeEventStore, WakeLoop
-from jasper.wake_legs import by_token
+from jasper.playback_state.wake_legs import by_token
 from tests._playout import FakeTts
 
 # Sentinel for `wake_loop_for_tests` constructor-time knobs, so a test can

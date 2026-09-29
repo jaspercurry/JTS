@@ -64,7 +64,7 @@ def voice_input_absent_marker_lines() -> list[str]:
 
     The single read of the file. What the body *means* — the ``reason=`` code
     vocabulary, its ``detail=`` prose, and which codes are transient parks —
-    belongs to ``jasper.mic_presence``, which cannot be imported from here
+    belongs to ``jasper.audio_control.mic_presence``, which cannot be imported from here
     (it imports this module).
     """
     try:

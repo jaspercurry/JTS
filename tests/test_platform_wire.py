@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.assistant_volume import EffectiveVolumeContext
+from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 from jasper.platform import wire
 from jasper.mux import _CONTROL_VERBS
 

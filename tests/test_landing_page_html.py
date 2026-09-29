@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.install_profile import system_capabilities_for_profile
+from jasper.playback_state.install_profile import system_capabilities_for_profile
 from jasper.web import wifi_setup
 from jasper.web.landing import render_landing
 from jasper.web.nav import hub_paths, render_hub

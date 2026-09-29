@@ -5,7 +5,7 @@
 """Tests for the wake-word picker wizard at /assistant/wake/.
 
 Two layers:
-  1. `jasper.wake_models` — registry sanity. Entries can't all be
+  1. `jasper.service_state.wake_models` — registry sanity. Entries can't all be
      bundled (we need at least one downloadable to install), the
      default has to be in the registry, lookup helpers behave, and
      availability tracks the staged model file.
@@ -32,7 +32,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io, wake_models
+from jasper import atomic_io
+from jasper.service_state import wake_models
 from jasper.web import _common, wake_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 

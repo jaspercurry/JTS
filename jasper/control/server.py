@@ -42,12 +42,12 @@ from .. import flight_recorder
 from ..logging_setup import configure_logging
 
 if TYPE_CHECKING:
-    from ..volume_state import VolumeState
+    from jasper.audio_control.volume_state import VolumeState
 
-from ..camilla_config_contract import DEFAULT_CAMILLA_PORT
+from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from ..env_load import bounded_env_int
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
-from ..music_sources import Source
+from jasper.playback_state.music_sources import Source
 from ..platform.control_client import CONTROL_PORT
 from ..platform.status_socket import VOICE_CONTROL_SOCKET_PATH
 from . import (
@@ -57,7 +57,7 @@ from . import (
     shairport_supervisor,
     system_supervisor,
 )
-from ..install_profile import (
+from jasper.playback_state.install_profile import (
     STREAMBOX_INSTALL_PROFILE,
     Capability,
     install_profile_has_capability,
@@ -68,8 +68,8 @@ from . import household_credential
 from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
-from ..volume_curve import percent_to_db
-from ..volume_process import install_env_canonical_target_provider
+from jasper.audio_routes.volume_curve import percent_to_db
+from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from ..watchdog import Heartbeat
 from .audio_incidents import IncidentStore
 from .ha_status_cache import HomeAssistantStatusCache

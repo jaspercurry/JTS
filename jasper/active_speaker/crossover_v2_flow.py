@@ -51,7 +51,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
     PHASE_CHECK,
     PHASE_CLOUD_VERIFY,
-    PHASE_ENTRY_BASELINE,
     PHASE_LATERAL,
     PHASE_VERIFY,
     CommissionJourney,
@@ -90,7 +89,7 @@ from jasper.log_event import log_event
 from .crossover_v2.alignment_prescription import (
     alignment_delay_search_bounds_us,
 )
-from .measurement_programs import gate_exemption, resolved_measurement_purpose
+from .measurement_programs import gate_exemption
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.active_speaker.crossover_v2.round_evidence import (
@@ -98,10 +97,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     )
 
 logger = logging.getLogger(__name__)
-
-# dB of pooled spec residual; the model's measured tracking error (ADR-0227).
-PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
-
 
 MEASUREMENT_DISTANCE_M = 1.0
 
@@ -426,7 +421,7 @@ class CrossoverV2Session:
 
     @property
     def measure_entry_baseline(self) -> "EntryBaseline | None":
-        """#2291's pre-apply side of this round, or ``None``."""
+        """The session's timing take, the prior MEASURE reads (ADR-0319), or ``None``."""
         return self._measure_entry_baseline
 
     @property
@@ -623,20 +618,6 @@ class CrossoverV2Session:
         except _programs.NoProgramForPhaseError as exc:
             raise CrossoverV2FlowError(str(exc)) from exc
 
-    def _capture_purpose(self, phase: str, index: int) -> str | None:
-        prompt = (
-            self._cloud_prompt(phase, index)
-            if phase in GROUP_PHASES
-            else self._lateral_prompts[0]
-            if phase == PHASE_ENTRY_BASELINE and self._lateral_prompts
-            else None
-        )
-        return (
-            resolved_measurement_purpose(prompt.purpose, prompt.kind)
-            if prompt
-            else None
-        )
-
     def capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
         """Apply the plan's analysis purpose to this capture."""
         spec = self._measure_specs_by_index.get(index)
@@ -651,7 +632,7 @@ class CrossoverV2Session:
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
             )
-            exemption = gate_exemption(self._capture_purpose(phase, index), driver=prompt.driver, distance_m=prompt.distance_m)
+            exemption = gate_exemption(prompt.purpose, driver=prompt.driver, distance_m=prompt.distance_m)
         return replace(
             self._geometry,
             gate_exempt_reason=exemption,

@@ -12,9 +12,9 @@ import subprocess
 from pathlib import Path
 
 from jasper.identity.reader import resolve_hostname
-from jasper.output_hardware import current_usb_data_role
-from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR, network_wanted
-from jasper.usb_network import (
+from jasper.audio_routes.output_hardware import current_usb_data_role
+from jasper.device_probe.usbgadget import DEFAULT_UDC_CLASS_DIR, network_wanted
+from jasper.device_probe.usb_network import (
     DEFAULT_DNSMASQ_PATH,
     DEFAULT_NM_PATH,
     DEFAULT_PENDING_PATH,

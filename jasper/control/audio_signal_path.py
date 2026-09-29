@@ -27,10 +27,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ..output_hardware import detected_hardware_adoption_precondition
-from ..output_topology_observation import declared_hardware_mismatch
+from jasper.audio_routes.output_hardware import detected_hardware_adoption_precondition
+from jasper.dsp_control.output_topology_observation import declared_hardware_mismatch
 from ..fanin.status import DIRECT_HEALTH_BROKEN
-from ..music_sources import MUSIC_SOURCE_SPECS
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
 from ..service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (
@@ -563,20 +563,20 @@ def undeclared_hardware_signal(
     """Return the "ready hardware is waiting to be declared" signal, or None.
 
     ``output_hardware`` is the reconciler-published
-    :class:`~jasper.output_hardware.OutputHardwareState` (or ``None`` when
+    :class:`~jasper.audio_routes.output_hardware.OutputHardwareState` (or ``None`` when
     unreadable); ``output_topology_snapshot`` is a
-    :class:`~jasper.output_topology_store.OutputTopologySnapshot` (or ``None``
+    :class:`~jasper.audio_routes.output_topology_store.OutputTopologySnapshot` (or ``None``
     before the sampler's first read) — the bare topology is not enough, see
     below.
 
     Two conjuncts, mirroring the wizard's own "Use detected hardware"
     affordance (#2812 B1); neither is re-derived here, both call the owners
     the browser's mismatch card and adoption button read.
-    :func:`~jasper.output_hardware.detected_hardware_adoption_precondition`
+    :func:`~jasper.audio_routes.output_hardware.detected_hardware_adoption_precondition`
     (INNER) says the detected hardware is usable at all — known profile, no
     blocking issue, at least one output — and says nothing about whether the
     household already declared it.
-    :func:`~jasper.output_topology_observation.declared_hardware_mismatch` (OUTER) says
+    :func:`~jasper.dsp_control.output_topology_observation.declared_hardware_mismatch` (OUTER) says
     the DECLARED topology does not already match what is attached; skipping it
     told an already-armed box hitting an ordinary outputd hiccup to "finish
     setup" for a setup that already happened.

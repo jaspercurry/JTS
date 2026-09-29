@@ -17,7 +17,7 @@ from typing import Any
 
 from ..fanin.latency_mode import MODE_LABELS, classify_runtime
 from ..local_sources.registry import local_source_lifecycles
-from ..music_sources import MUSIC_SOURCE_SPECS, Source
+from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS, Source
 from ..service_units import unit_failed
 from ._health_fields import as_int, mapping
 from ._health_sources import (

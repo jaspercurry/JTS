@@ -65,7 +65,7 @@ from typing import Any
 
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
-from .. import home_assistant as _ha_mod
+from jasper.service_state import home_assistant as _ha_mod
 from ..net import mdns
 from ..log_event import log_event
 from ..atomic_io import write_env_file
@@ -125,7 +125,7 @@ DISCOVERY_TIMEOUT_SEC = 4.0
 # household ("home", "office", "parents' house") without UI clutter.
 RECENT_URLS_MAX = 3
 
-# Env keys — re-exported from jasper.home_assistant so the wizard's
+# Env keys — re-exported from jasper.service_state.home_assistant so the wizard's
 # state-file shape stays in sync with the daemon's config loader.
 ENV_URL = _ha_mod.ENV_URL
 ENV_TOKEN = _ha_mod.ENV_TOKEN

@@ -18,7 +18,7 @@ SHIPPED_RING_CONF_D = (
 )
 
 from jasper import source_intent_units as units
-from jasper.audio_runtime_settings import RuntimeEnvAction
+from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _write_env_actions,
@@ -26,7 +26,7 @@ from jasper.fanin.coupling_reconcile import (
 )
 from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import ring_edge_width_ready
-from jasper.fanin_coupling import (
+from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -34,8 +34,8 @@ from jasper.fanin_coupling import (
 )
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import event_field_maps, event_fields, event_records
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 @pytest.fixture(autouse=True)
@@ -458,7 +458,7 @@ def test_the_camilla_rung_answers_a_down_daemon_the_same_way_it_used_to(
     and only the wording differs.
     """
 
-    from jasper.camilla import CamillaUnavailable
+    from jasper.audio_control.camilla import CamillaUnavailable
     from jasper.fanin import coupling_reconcile as cr
     from jasper.sound import runtime
 
@@ -797,7 +797,7 @@ def force_ring_gates_pass(monkeypatch):
     ``ring_wire_caps_ready`` itself, so the gate still resolves the box's wire
     and still refuses an illegal declaration inside these tests.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
     import jasper.fanin.coupling_reconcile as cr
 
     monkeypatch.setattr(
@@ -833,7 +833,7 @@ def _stub_ring_ioplug_wire_supported(monkeypatch) -> None:
     are actually isolating. Vouching for whatever wire is asked keeps that gate
     out of their way, same as it is for the spine tests above.
     """
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra,
@@ -843,25 +843,6 @@ def _stub_ring_ioplug_wire_supported(monkeypatch) -> None:
             needed=ra.ring_wire_capabilities(wire),
             detail="stubbed: the installed ioplug vouches for this wire",
         ),
-    )
-
-
-def _pin_narrow_ring_wire() -> None:
-    """Declare this box's ring wire NARROW via the isolated FANIN_ENV_PATH.
-
-    :data:`~jasper.fanin_coupling.RING_WIRE_FORMAT_ENV_VAR` is the operator's
-    rollback lever — nothing in the repo writes it in production (see its module
-    docstring in ``jasper/fanin_coupling.py``); the only way a box carries it is
-    a human decision. Writing it here reproduces exactly that decision for a test
-    whose SUBJECT is the resolved wire itself, called with no fanin.env of its
-    own to declare it in. Mirrors ``_declared_wire`` in
-    ``tests/test_ring_ioplug_provenance.py``.
-    """
-    import jasper.env_load as env_load
-    from jasper.fanin_coupling import RING_WIRE_FORMAT, RING_WIRE_FORMAT_ENV_VAR
-
-    Path(env_load.FANIN_ENV_PATH).write_text(
-        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
     )
 
 
@@ -887,13 +868,8 @@ def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_pr
 
 
 def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
-    """Simulate the shm_ring coupling losing its narrow-lane override.
-
-    ``playback_format=None`` drops the key entirely (someone deleted the
-    override, so the emitter falls back to the box-wide default); a string sets
-    it to a width the ring cannot carry. Patches the module attribute
-    ``content_lane_format_for_coupling`` actually calls."""
-    import jasper.fanin_coupling as coupling
+    """Simulate an emitted format that differs from the program wire."""
+    import jasper.dsp_control.fanin_coupling as coupling
 
     real = coupling.capture_kwargs_for_coupling
 
@@ -910,52 +886,20 @@ def _break_ring_kwargs_override(monkeypatch, *, playback_format: str | None):
     monkeypatch.setattr(coupling, "capture_kwargs_for_coupling", broken)
 
 
-def test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box_because_the_coupling_narrows():
-    """THE RULING (wide-output-path PR-6), re-pointed at its post-flip subject.
+def test_ring_edge_width_ready_passes_on_the_fixed_wide_wire():
+    """The fixed program wire agrees at every declaring end."""
+    from jasper.dsp_control.fanin_coupling import RING_WIRE_FORMAT_WIDE
 
-    A ring-coupled box can keep its ring at coherent S16 even though the box-wide
-    program lane is S32, because the shm_ring coupling's kwargs FORCE the emitted
-    lane to whatever :func:`resolve_ring_wire` resolves. That resolver's DEFAULT
-    went wide too (PR #2601), so an UNDECLARED box no longer demonstrates the
-    ruling — its ring resolves S32_LE right along with the box-wide lane, and
-    nothing narrows. The one shape left where the two constants are genuinely
-    different is an operator's narrow pin
-    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`` — the rollback lever; nothing in
-    the repo writes it). Pinning it here is what still exercises the ruling: the
-    gate must PASS with ``DEFAULT_PLAYBACK_FORMAT`` and the pinned wire genuinely
-    different, the state the pre-PR-6 constant comparison would have refused on
-    every ring-eligible box, including jts.local and its certified USB-route
-    latency artifact."""
-    from jasper.fanin_coupling import DEFAULT_PLAYBACK_FORMAT, RING_WIRE_FORMAT
-
-    _pin_narrow_ring_wire()
-    assert DEFAULT_PLAYBACK_FORMAT == "S32_LE"
-    assert RING_WIRE_FORMAT == "S16_LE"
-    assert DEFAULT_PLAYBACK_FORMAT != RING_WIRE_FORMAT
     ok, detail = ring_edge_width_ready()
     assert ok is True
-    assert "S16_LE" in detail
+    assert RING_WIRE_FORMAT_WIDE in detail
 
 
-@pytest.mark.parametrize("broken_format", [None, "S32_LE"])
-def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
-    monkeypatch, broken_format
+def test_ring_edge_width_ready_refuses_a_narrow_emitted_stanza(
+    monkeypatch
 ):
-    """The invariant the gate now guards: if the coupling ever stops forcing the
-    ring's own wire format — the key dropped, or repointed at a wider one —
-    arming would mis-transcode every sample, so refuse with a reason naming both
-    widths AND the function that must do the forcing.
-
-    Pinned NARROW first (see
-    ``test_ring_edge_width_ready_passes_on_an_operator_narrow_pinned_box...``):
-    on an undeclared box the coupling's kwargs override and the box-wide default
-    it falls back to are the SAME wide token now, so breaking the override would
-    leave every declaring end agreeing by accident and this test would prove
-    nothing. The pin is what makes "the override stopped forcing narrow" and
-    "the box is wide anyway" two different, distinguishable states again.
-    """
-    _pin_narrow_ring_wire()
-    _break_ring_kwargs_override(monkeypatch, playback_format=broken_format)
+    """An emitted format differing from the fixed wire must refuse arming."""
+    _break_ring_kwargs_override(monkeypatch, playback_format="S16_LE")
     ok, detail = ring_edge_width_ready()
     assert ok is False
     assert "S32_LE" in detail
@@ -966,7 +910,7 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
     assert "ADR-0100" in detail
 
 
-# --- defect A: Ring-A slot-count coherence + stale-file guard + migration -----
+# --- Ring-A slot settings and stale-file repair ----------------------------
 
 
 def _ring_conf(
@@ -976,23 +920,7 @@ def _ring_conf(
     period_frames: int = 128,
     sample_format: str = "S32_LE",
 ):
-    """Write a ring conf.d with a configurable jts_ring_capture n_slots.
-
-    period_frames stays 128 (the Apple-dongle floor) so the SEPARATE period gate
-    passes when outputd's env carries JASPER_OUTPUTD_PERIOD_FRAMES=128; these tests
-    isolate the slot axis.
-
-    ``sample_format`` defaults to ``S32_LE`` — the token the SHIPPED conf.d now
-    spells explicitly in every block (``deploy/alsa/conf.d/60-jts-ring.conf``).
-    Without a ``format`` line here, an UNDECLARED box's ground-truth wire
-    (``resolve_ring_wire_format``, wide by default) would disagree with this
-    hand-rolled conf.d's implicit ioplug-default declaration — an omitted
-    ``format`` key still declares a wire, just the narrow one
-    (``jasper.ring_conf.ring_conf_format``'s absent-means-default contract) —
-    tripping ``ring_edge_width_ready`` for a reason unrelated to whatever axis
-    (slots/period) the calling test actually isolates. Pass ``"S16_LE"`` for a
-    test that means to reproduce an operator's narrow-pinned box instead.
-    """
+    """Render isolated conf.d geometry; omitted format uses the shipped S32 wire."""
     conf = tmp_path / "60-jts-ring.conf"
     conf.write_text(
         f"pcm.jts_ring_capture {{\n    period_frames {period_frames}\n"
@@ -1078,25 +1006,17 @@ def test_converge_refuses_the_spine_when_the_content_format_converge_fails(
     assert calls == []
 
 
-def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypatch):
-    # Default migration: a stale JASPER_FANIN_RING_SLOTS=8 old-default line that
-    # disagrees with the conf.d's pinned 4 is overridden in fanin.env at arm time
-    # (self-heals to the coherent default) so the arm proceeds instead of being
-    # blocked forever.
-    import jasper.ring_assets as ra
+@pytest.mark.parametrize("slot_source", ["base", "fanin"])
+def test_convergence_preserves_slot_settings(tmp_path, monkeypatch, _ring_assets_present, slot_source):
+    import os
 
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
-    # No on-disk stale ring in this test (macOS has no /dev/shm; the guard no-ops on
-    # an absent file). The migration is the axis under test.
-    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
-    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
-    _stub_ring_ioplug_wire_supported(monkeypatch)
-
-    fanin_env = _write(tmp_path / "fanin.env", "JASPER_FANIN_RING_SLOTS=8\n")
-    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
+    key = "JASPER_FANIN_RING_SLOTS"
+    base_text = "# base config\n" + (f"{key}=8\n" if slot_source == "base" else "")
+    fanin_text = "# fan-in config\n" + (f"{key}=8\n" if slot_source == "fanin" else "")
+    base_env = _write(tmp_path / "jasper.env", base_text)
+    fanin_env = _write(tmp_path / "fanin.env", fanin_text)
+    outputd_env = _write(tmp_path / "outputd.env", _coherent_shm_ring_outputd_text())
+    monkeypatch.setenv(key, "8")
     calls, ro, rf, rc = _recorder()
 
     result = _reconcile(
@@ -1108,53 +1028,15 @@ def test_convergence_migrates_stale_ring_slots_then_converges(tmp_path, monkeypa
     )
 
     assert result.ok is True, result.detail
-    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    # The stale =8 line was overridden in fanin.env (the later systemd env file).
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
-
-
-def test_convergence_overrides_stale_base_ring_slots_then_converges(tmp_path, monkeypatch):
-    # Regression for the real systemd env chain: jasper-fanin.service loads
-    # /etc/jasper/jasper.env first and fanin.env last. A stale base-env =8 is
-    # still live when fanin.env has no slot override, so migration must write an
-    # explicit coherent =4 into fanin.env rather than merely relying on defaults.
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path, capture_n_slots=4)))
-    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
-    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
-    _stub_ring_ioplug_wire_supported(monkeypatch)
-    jasper_env = _write(tmp_path / "jasper.env", "JASPER_FANIN_RING_SLOTS=8\n")
-    monkeypatch.setattr(
-        "jasper.env_load.BASE_ENV_PATH", str(jasper_env)
-    )
-    monkeypatch.setattr("jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env))
-
-    fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
-    calls, ro, rf, rc = _recorder()
-
-    result = _reconcile(
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert result.ok is True, result.detail
-    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert read_value(fanin_env.read_text(), "JASPER_FANIN_RING_SLOTS") == "4"
+    assert result.changed is False
+    assert calls == ["camilla:shm_ring"]
+    assert base_env.read_text(encoding="utf-8") == base_text
+    assert fanin_env.read_text(encoding="utf-8") == fanin_text
+    assert os.environ[key] == "8"
 
 
 def test_convergence_keeps_matching_operator_ring_slots(tmp_path, monkeypatch):
-    # A JASPER_FANIN_RING_SLOTS that MATCHES the conf.d is a coherent operator
-    # override — the migration must NOT strip it (it only strips shear-prone
-    # residue). conf.d pins 4, env sets 4 → kept, arm proceeds.
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
@@ -1189,7 +1071,7 @@ def test_convergence_deletes_a_stale_on_disk_ring_before_the_spine(tmp_path, mon
     # file is left untouched.
     import struct
 
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
@@ -1256,7 +1138,7 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     resolved wire's wide default and refuses every CONFIRM-path test here for a
     reason unrelated to whatever axis (slots/period) it is isolating.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
@@ -1276,7 +1158,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # must NOT bounce fan-in/outputd on every reconcile tick — only re-load camilla.
     # This pins that the escalation is gated on POSITIVE incoherence evidence, so a
     # healthy box keeps the cheap confirm rather than always running _converge_ring.
-    import jasper.ring_assets as ra
+    import jasper.audio_control.ring_assets as ra
 
     monkeypatch.setattr(
         ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
@@ -1988,7 +1870,7 @@ def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
     The heal is logged rather than silent: a box that had been refusing outputd's
     attach has just stopped, and the journal has to say when.
     """
-    from jasper.fanin_coupling import (
+    from jasper.dsp_control.fanin_coupling import (
         DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,

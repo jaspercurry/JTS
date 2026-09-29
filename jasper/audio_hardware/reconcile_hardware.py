@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 
 from jasper.audio_hardware.output_probe import observe
 from jasper.audio_hardware.reconcile_common import _ensure_dir, _log_token
-from jasper.output_hardware import ObservedOutput
-from jasper.output_topology_observation import observed_output
+from jasper.audio_routes.output_hardware import ObservedOutput
+from jasper.dsp_control.output_topology_observation import observed_output
 
 if TYPE_CHECKING:
     from jasper.audio_hardware.reconcile import Pass

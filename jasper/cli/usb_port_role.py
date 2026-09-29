@@ -24,7 +24,7 @@ from jasper.audio_hardware.usb_port_role import (
     resolve_system_usb_port_role,
 )
 from jasper.log_event import render_logfmt
-from jasper.usbgadget import DEFAULT_UDC_CLASS_DIR
+from jasper.device_probe.usbgadget import DEFAULT_UDC_CLASS_DIR
 
 
 

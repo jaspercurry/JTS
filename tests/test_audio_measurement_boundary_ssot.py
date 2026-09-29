@@ -55,18 +55,7 @@ def _imported_module(path: Path, node: ast.ImportFrom) -> str:
 #: Keyed by package, then by the importing file; an entry is a promise that the
 #: symbol genuinely belongs to the front end it is reached in, not a parking
 #: space. Removing one is the work; adding one owes the row's own argument.
-BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {
-    "jasper/cli": {
-        # `crossover_v2_status_block` is the web ADAPTER over the engine's
-        # status projection — the loaded state, volume plan, review decision
-        # and republish admission it supplies are the host's. The `GRADE_*`
-        # vocabulary is declared beside the producer that selects it.
-        "jasper/cli/doctor/correction.py": frozenset({
-            "jasper.web.correction_crossover_v2_grade",
-            "jasper.web.correction_crossover_v2_status",
-        }),
-    },
-}
+BOUNDARY_ALLOWLIST: dict[str, dict[str, frozenset[str]]] = {}
 
 
 def _upward_imports(

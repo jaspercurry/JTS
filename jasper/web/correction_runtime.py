@@ -211,5 +211,5 @@ def camilla_controller() -> "Any":
 
     Never memoized: concurrent requests each own their own controller.
     """
-    from jasper.camilla import primary_controller
+    from jasper.audio_control.camilla import primary_controller
     return primary_controller()

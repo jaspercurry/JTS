@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.spotify_routing import (
+from jasper.service_state.spotify_routing import (
     _find_librespot_id,
     _match_track,
     normalise,
@@ -97,7 +97,7 @@ def test_find_librespot_id_empty_list():
 
 
 
-from jasper.spotify_routing import resolve_target
+from jasper.service_state.spotify_routing import resolve_target
 
 
 class _FakeSp:
@@ -230,9 +230,9 @@ async def test_stop_renderers_dispatches_per_source(
         mux_calls.append(cmd)
         return {"preempted": "airplay"}
 
-    monkeypatch.setattr("jasper.spotify_routing.bluetooth_avrcp_call", fake_avrcp)
-    monkeypatch.setattr("jasper.spotify_routing.mux_socket_command", fake_mux)
-    monkeypatch.setattr("jasper.spotify_routing.asyncio.sleep", _no_sleep)
+    monkeypatch.setattr("jasper.service_state.spotify_routing.bluetooth_avrcp_call", fake_avrcp)
+    monkeypatch.setattr("jasper.service_state.spotify_routing.mux_socket_command", fake_mux)
+    monkeypatch.setattr("jasper.service_state.spotify_routing.asyncio.sleep", _no_sleep)
 
     await stop_renderers(names)
 

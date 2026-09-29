@@ -89,13 +89,13 @@ from typing import Any, Callable, NamedTuple, Optional
 
 from jasper.log_event import log_event
 
-from . import librespot_state, mux_mode_persistence
-from .airplay_session import AirplaySessionCleanup
+from jasper.playback_state import librespot_state, mux_mode_persistence
+from jasper.playback_state.airplay_session import AirplaySessionCleanup
 from .bluetooth.avrcp import bluetooth_avrcp_call
-from .camilla import primary_controller
+from jasper.audio_control.camilla import primary_controller
 from .control import restart_broker
 from .identity.speaker_name import runtime_name as speaker_runtime_name
-from .music_sources import (
+from jasper.playback_state.music_sources import (
     MUSIC_SOURCE_VALUES,
     MUSIC_SOURCES,
     SOURCE_TO_FANIN_LABEL,
@@ -107,18 +107,18 @@ from .platform.status_socket import (
     MUX_CONTROL_SOCKET_PATH,
 )
 from .platform.uds import fanin_command, local_status_json
-from .renderer import RendererClient
+from jasper.audio_control.renderer import RendererClient
 from .service_units import LIBRESPOT_SERVICE
-from .source_events import start_source_event_tasks
-from .source_state import (
+from jasper.service_state.source_events import start_source_event_tasks
+from jasper.playback_state.source_state import (
     airplay_playing_observed as airplay_playing,
     bluetooth_playing_observed as bluetooth_playing,
     spotify_playing_observed as spotify_playing,
     usbsink_direct_streaming,
 )
-from .spotify_oauth import resolved_spotify_redirect_uri
-from .spotify_router import build_router
-from .volume_coordinator import build_volume_coordinator
+from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
+from jasper.service_state.spotify_router import build_router
+from jasper.audio_control.volume_coordinator import build_volume_coordinator
 from .logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ def event_backed_probes() -> dict[Source, Callable[[], Any]]:
 
     AirPlay forks busctl for the MPRIS properties; Bluetooth reads BlueZ
     `MediaTransport1` over dbus_next. Both sources also have a signal adapter
-    in jasper.source_events, so for them the patrol probe is a lost-signal
+    in jasper.service_state.source_events, so for them the patrol probe is a lost-signal
     repair rather than the detection path. Resolved per call so the probes
     stay patchable by name.
     """
@@ -1406,7 +1406,10 @@ class Mux:
             return {"error": f"not a preemptable source {source_name!r}"}
         async with self._transition_lock:
             await self._airplay_session.release()
-        return {"preempted": Source.AIRPLAY.value}
+            return {
+                "preempted": Source.AIRPLAY.value,
+                "airplay_session_cleanup": self._airplay_session.snapshot(),
+            }
 
     async def _control_select(self, source_name: str) -> dict[str, Any]:
         source = _music_source(source_name)

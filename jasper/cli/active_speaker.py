@@ -15,12 +15,16 @@ from collections.abc import Coroutine, Iterable, Mapping
 from pathlib import Path
 from typing import Any, assert_never
 
-from jasper import camilla, volume_process
+from jasper.active_speaker.graph_types import (
+    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
+    GRAPH_APPROVED_ACTIVE_RUNTIME,
+)
+from jasper.audio_control import camilla, volume_process
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.playback_route import resolve_active_playback_device
-from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
@@ -39,10 +43,8 @@ from jasper.active_speaker.path_safety import (
     write_path_safety_evidence,
 )
 from jasper.active_speaker.calibration_level import load_calibration_level_state
-from jasper.active_speaker.runtime_contract import (
+from jasper.active_speaker.graph_selector import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
-    GRAPH_ALL_MUTED_ACTIVE_STARTUP,
-    GRAPH_APPROVED_ACTIVE_RUNTIME,
     PARKED_MUTED_STATUS,
     parked_muted_exits,
     safe_graph_for_current_topology,
@@ -85,9 +87,9 @@ from jasper.active_speaker.safe_playback import (
     load_safe_playback_state,
     stop_safe_playback_session,
 )
-from jasper.dsp_apply import validate_camilla_config
-from jasper.output_topology import OutputTopology, OutputTopologyError
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.dsp_control.dsp_apply import validate_camilla_config
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 from jasper.paths import camilla_statefile
 
 

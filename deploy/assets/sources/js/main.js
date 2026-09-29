@@ -2,28 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// main.js — /sources/ playback-source on/off toggles.
-//
-// The page server-renders four toggles (AirPlay, Bluetooth, Spotify Connect,
-// USB Audio Input) with ids t-<source>. This module wires each toggle:
-//
-//   * Optimistic UI — flip the checkbox immediately, POST ./set {source,
-//     enabled}, then reconcile from desired + effective state. If persistence
-//     succeeds but runtime convergence fails, desired stays checked and the
-//     degraded reason is shown; only a failed write rolls the choice back.
-//   * Poll ./state every 4 s, so an external `systemctl stop shairport-sync`
-//     from SSH shows up without a reload. A short ignore-window after a POST
-//     keeps a racing poll from reverting the value we just set.
-//   * Bluetooth guard — before turning BT off while a wireless remote (volume
-//     knob, etc.) is paired, confirm via the shared <dialog> helper. The
-//     remote silently stops working until BT is back on, so this is a
-//     destructive action (danger:true).
-//
-// CSRF rides in the <meta name="jts-csrf"> tag; jsonHeaders() (shared
-// /assets/shared/js/http.js) reads it lazily so this cached module carries no
-// secret. Confirm uses jtsConfirm (shared /assets/shared/js/dialog.js), never
-// the native popup, which the browser can suppress.
-
 import { jsonHeaders, startPolling } from "/assets/shared/js/http.js";
 import { jtsAlert, jtsConfirm } from "/assets/shared/js/dialog.js";
 
@@ -74,6 +52,9 @@ function applyState(state) {
       }
     }
   }
+  const airplay = state.airplay || {};
+  el("airplay-reset").disabled = postInFlight || parked ||
+    !airplay.enabled || airplay.available === false;
   const bt = state.bluetooth || {};
   const btUnavailable = bt.available === false;
   const btDegraded =
@@ -117,16 +98,21 @@ function applyState(state) {
   }
 }
 
+function disableControls() {
+  for (const name of SOURCES) {
+    const input = el("t-" + name);
+    if (input) input.disabled = true;
+  }
+  el("airplay-reset").disabled = true;
+}
+
 function showStateError(message) {
   const error = el("sources-state-error");
   if (error) {
     error.textContent = message;
     error.hidden = false;
   }
-  for (const name of SOURCES) {
-    const input = el("t-" + name);
-    if (input) input.disabled = true;
-  }
+  disableControls();
 }
 
 async function fetchState() {
@@ -188,10 +174,7 @@ async function postToggle(name, want) {
   dirty[name] = true;
   postInFlight = true;
   ignorePollUntil = Date.now() + 1500;
-  for (const source of SOURCES) {
-    const control = el("t-" + source);
-    if (control) control.disabled = true;
-  }
+  disableControls();
   try {
     const resp = await fetch("./set", {
       method: "POST",
@@ -235,6 +218,29 @@ async function postToggle(name, want) {
     await refreshAfterMutation();
   }
 }
+
+el("airplay-reset").addEventListener("click", async () => {
+  if (postInFlight) return;
+  postInFlight = true;
+  disableControls();
+  const button = el("airplay-reset");
+  button.textContent = "Resetting…";
+  try {
+    const resp = await fetch("./airplay/reset", {
+      method: "POST", headers: jsonHeaders(), body: "{}",
+    });
+    const payload = await resp.json();
+    if (!resp.ok) throw new Error(payload.error || "AirPlay reset failed. Try again.");
+    await jtsAlert(payload.airplay_session_cleanup.reason === "receiver_absent"
+      ? "AirPlay is not running. Turn AirPlay off and on, then connect again."
+      : "AirPlay connection reset. Select this speaker again on your device.");
+  } catch (error) {
+    await jtsAlert(error.message || "Could not reset AirPlay. Check the speaker connection and try again.");
+  } finally {
+    button.textContent = "Reset";
+    await refreshAfterMutation();
+  }
+});
 
 for (const name of SOURCES) {
   const input = el("t-" + name);

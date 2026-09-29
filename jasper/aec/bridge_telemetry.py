@@ -22,11 +22,11 @@ import threading
 import time
 from typing import Any
 
-from jasper.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
+from jasper.audio_routes.aec_sweep import Aec3SweepVariant, DEFAULT_AEC3_SWEEP_VARIANTS
 from jasper.atomic_io import atomic_write_text, read_json_mapping
 from jasper.log_event import log_event
-from jasper import wake_legs
-from jasper.usb_mic import (
+from jasper.playback_state import wake_legs
+from jasper.audio_routes.usb_mic import (
     USB_MIC_HEADER_STRUCT,
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
@@ -85,7 +85,7 @@ def _zero_leg_counters(
     ),
 ) -> dict[str, int]:
     """A fresh per-leg counter dict zeroed for every emit leg: each
-    jasper.wake_legs token plus the dynamic AEC3-sweep variant legs.
+    jasper.playback_state.wake_legs token plus the dynamic AEC3-sweep variant legs.
 
     Keyed off the registry so the bridge's UDP emit tokens and the wake-event
     corpus columns stay in lockstep.

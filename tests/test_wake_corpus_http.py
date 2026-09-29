@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import aec_sweep
+from jasper.audio_routes import aec_sweep
 from jasper.cli import wake_enroll
 from jasper.env_file import read_env_file
 from jasper.wake_corpus import active_session, bridge_session, runtime_probe
