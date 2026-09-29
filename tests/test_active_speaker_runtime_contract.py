@@ -2571,7 +2571,6 @@ def test_baseline_commissioning_refuses_nonadjacent_or_cross_group_pair(
     ],
 )
 def test_a_tampered_baseline_is_blocked(old: str, new: str, code: str) -> None:
-    """A baseline graph with one protection stage removed or loosened is refused by name."""
     base = _active_baseline_yaml("mono", 2)
     tampered = base.replace(old, new)
     assert tampered != base
