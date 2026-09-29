@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import argparse
 import sys
-import textwrap
 from functools import partial
 from importlib import import_module
-from typing import Mapping, Sequence
+from typing import Sequence
 
-from jasper.active_speaker.round_view_artifacts import CatalogRow
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli._report import output_path
 from jasper.cli._refusal import (
@@ -24,6 +22,7 @@ from jasper.cli._refusal import (
     StageFailed,
     exit_codes_help,
     failed,
+    help_from_rows,
 )
 
 from ._common import (
@@ -69,26 +68,6 @@ _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
     "delay", "room", "room_grade", "bass", "inventory", "speaker_fit", "nearfield",
 ))
 
-#: argparse wraps its own help at 78 columns on an 80-column terminal; a view's rendered text matches it.
-_HELP_WIDTH = 78
-
-
-def _view_help(parser: argparse.ArgumentParser, rows: Mapping[str, CatalogRow]) -> None:
-    """A view's ``--help`` from its rows: each mode's question and when not to use it, its example, its exit codes."""
-    modes = []
-    for command, row in rows.items():
-        mode = " ".join(command.split()[2:])
-        modes.append(textwrap.fill(f"{mode}: {row.question}" if mode else row.question, _HELP_WIDTH) + "\n"
-                     + textwrap.fill(f"Not for {row.avoid}.", _HELP_WIDTH, initial_indent="  ", subsequent_indent="  "))
-    examples = [f"  {' '.join((command, *row.argv))}" for command, row in rows.items()]
-    writes = any(row.artifact for row in rows.values())
-    parser.formatter_class = argparse.RawDescriptionHelpFormatter
-    parser.description = "\n\n".join(modes)
-    parser.epilog = "\n\n".join((
-        "\n".join(("EXAMPLES" if len(examples) > 1 else "EXAMPLE", *examples)),
-        exit_codes_help((EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, *((EXIT_WRITE_FAILED,) if writes else ()))),
-    ))
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -131,7 +110,9 @@ def build_parser() -> argparse.ArgumentParser:
             every = any(not row.programs for row in rows.values())
             programs = "all" if every else "/".join(dict.fromkeys(p for row in rows.values() for p in row.programs))
             choice.help = f"[{programs}] {choice.help}"
-            _view_help(sub.choices[choice.dest], rows)
+            writes = any(row.artifact for row in rows.values())
+            help_from_rows(sub.choices[choice.dest], rows,
+                           codes=(EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, *((EXIT_WRITE_FAILED,) if writes else ())))
 
     for child in sub.choices.values():
         child.allow_abbrev = False

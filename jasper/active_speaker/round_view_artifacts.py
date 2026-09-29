@@ -50,9 +50,10 @@ class CatalogRow(NamedTuple):
     regime, take kind), what it ``reads`` (:data:`READS`), the ``programs``
     whose rounds it reads (empty: every program), its ``argv`` after the
     command, and the ``answer_fields`` its answer carries beside the envelope
-    (ADR-0387). A view's row also says what not to use it for (``avoid``), as
-    its ``--help`` renders from the row. ``schema`` names the shape of that
-    answer and of the ``artifact`` it files; a script that prints text has none.
+    (ADR-0387). A view's or a prescriber verb's row also says what not to use it
+    for (``avoid``), as its ``--help`` renders from the row. ``schema`` names the
+    shape of that answer and of the ``artifact`` it files; a script that prints
+    text has none.
     ``in_artifact_dir`` marks an artifact the round's own evidence holds; every
     view files beside the round instead, never inside its evidence.
     ``producer`` names the command that makes an artifact no tool row answers for.
@@ -259,21 +260,25 @@ CATALOG: dict[str, CatalogRow] = {
                                                  schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} judge --preview"],
         question="What would a prescription document's sections do, predicted from a round without playing?",
         needs="a document and its round: branches/express for driver or blend, room/seat for room, rear/pair for rear",
+        avoid="checking a document's gates, or a bass document, which has no preview; judge without --preview does both",
         answer_fields=("adopted", "banked", "compiled_stage", "preview", "section", "sections")),
     f"{_PRESCRIBER} judge --preview --vary": CatalogRow(
         argv=("<path=value,value>", "<document.json>", "--round", TAKES_THIS_ROUND, "--set", "<set-id>", "--out-dir", "<dir>"),
         programs=_PREVIEW_PROGRAMS, reads=READS_RECORDING, schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} judge --preview --vary"],
         question="How does a preview change over a grid of a document's values, without playing?",
         needs="what judge --preview needs, one --vary axis per parameter, and a directory for the variants",
+        avoid="one document's preview; judge --preview answers that",
         answer_fields=("adopted", "banked", "section", "variants")),
     f"{_PRESCRIBER} contract": CatalogRow(argv=("--round", TAKES_THIS_ROUND, "--section", "<program>"),
                                           programs=RUNNABLE_PROGRAMS, schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} contract"],
         question="What may a prescription document write for a program: its schema and bounds, evaluated on a round?",
         needs="nothing; --round evaluates the bounds on that round",
+        avoid="grading a document; judge checks it against these bounds",
         answer_fields=("sections",)),
     f"{_PRESCRIBER} status": CatalogRow(argv=(), schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} status"],
         question="Where does tuning stand: applied layers, the last banked rounds and the next program?",
         needs="nothing; a round directory adds its evidence packet",
+        avoid="a round's measured results; jasper-round-views catalog lists the tools that read them",
         answer_fields=("applied", "banked", "context_error", "contracts", "declared", "driver_caps_live", "last_banked",
                        "latest_agent_note", "next", "next_commands", "packet_contracts", "packet_error",
                        "packet_fingerprint", "reading_order", "recent_rounds", "seat_level_reference_volume_db",
@@ -310,9 +315,9 @@ CATALOG: dict[str, CatalogRow] = {
 INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
 
 
-def view_rows(view: str) -> dict[str, CatalogRow]:
-    """The catalog rows of one ``jasper-round-views`` subcommand, by command, one per mode it answers in."""
-    return {command: row for command, row in CATALOG.items() if command.split()[:2] == [PROG, view]}
+def view_rows(view: str, prog: str = PROG) -> dict[str, CatalogRow]:
+    """The catalog rows of one subcommand of ``prog`` (``jasper-round-views`` unless named), by command, one per mode it answers in."""
+    return {command: row for command, row in CATALOG.items() if command.split()[:2] == [prog, view]}
 
 
 def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
