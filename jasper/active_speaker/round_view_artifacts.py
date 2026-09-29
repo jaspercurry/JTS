@@ -280,7 +280,7 @@ CATALOG: dict[str, CatalogRow] = {
         needs="nothing; a round directory adds its evidence packet",
         avoid="a round's measured results; jasper-round-views catalog lists the tools that read them",
         answer_fields=("applied", "banked", "context_error", "contracts", "declared", "driver_caps_live", "last_banked",
-                       "latest_agent_note", "next", "next_commands", "packet_contracts", "packet_error",
+                       "latest_agent_note", "next", "next_commands", "packet_contracts",
                        "packet_fingerprint", "reading_order", "recent_rounds", "seat_level_reference_volume_db",
                        "selected_round", "speaker")),
     f"{_ROUND} list": CatalogRow(argv=("--program", "<program>"), programs=RUNNABLE_PROGRAMS,

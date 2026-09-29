@@ -10,6 +10,7 @@ import json
 import shlex
 from collections.abc import Mapping
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,9 @@ from ._refusal import (
     EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, envelope, failed, help_from_rows,
     read_source_bytes,
 )
-from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
+from .round_views._common import (
+    _ROUND_DIR_HELP, RoundSetRefused, add_set_argument, context_artifacts, round_ref,
+)
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG, TAKES_THIS_ROUND, CatalogRow, view_rows
@@ -190,6 +193,11 @@ def _preview_out(args: argparse.Namespace, result: Mapping[str, Any], read: Mapp
     )
 
 
+def _evidence_code(exc: Exception) -> str:
+    """The code an evidence error carries, else ``evidence_unreadable``."""
+    return str(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE))
+
+
 def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
     if exit_code is None:
         exit_code = {REASON_EVIDENCE_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
@@ -236,7 +244,7 @@ def _cmd_document(args: argparse.Namespace) -> int:
     except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
         return _document_failure(PrescriptionDocumentRefused(exc.code, None, exc.detail))
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        refusal = PrescriptionDocumentRefused(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE), None, str(exc))
+        refusal = PrescriptionDocumentRefused(_evidence_code(exc), None, str(exc))
         return _document_failure(refusal, EXIT_UNREADABLE)
     return _answer(args, args.command, subject(inputs, selected), **fields)
 
@@ -274,8 +282,7 @@ def _cmd_contract(args: argparse.Namespace) -> int:
     except RoundSetRefused as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail)
     except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        code = getattr(exc, "code", REASON_EVIDENCE_UNREADABLE)
-        return failed(EXIT_UNREADABLE, code, str(exc))
+        return failed(EXIT_UNREADABLE, _evidence_code(exc), str(exc))
     read, parameters = subject(inputs, selected), {"section": args.section}
     if not args.out:
         # The contracts' own compact serialization keeps the answer the size of what it serves.
@@ -309,21 +316,20 @@ def _block(packet: dict[str, Any] | None, name: str) -> dict[str, Any]:
 
 
 
-def _reason(block: dict[str, Any], packet_error: str) -> str:
-    """Why a section has nothing to report, from whichever layer knows.
+def _gap(block: dict[str, Any], packet_gap: dict[str, Any] | None) -> dict[str, Any]:
+    """Why a section has nothing to report, as the one gap shape (#5928 TB2), from whichever layer knows.
 
-    The packet builder's failure wins when there is one; below that, the
-    block's own ``absence`` reason, passed through untranslated. "not
-    reported" only when a block says unavailable and names no reason.
+    The packet builder's failure wins when there is one, its code and its
+    sentence; below that, the block's own ``absence`` code and detail, passed
+    through untranslated. A block that names no code was never supplied.
     """
-    if packet_error:
-        return packet_error
-    reason = block.get("reason")
-    return str(reason) if reason else "not reported"
+    if packet_gap:
+        return dict(packet_gap)
+    return unavailable(str(block.get("reason") or "source_absent"), block.get("detail"))
 
 
 
-def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
+def _incumbent_record(value: Any, packet_gap: dict[str, Any] | None) -> dict[str, Any]:
     """The packet's applied incumbent, classified.
 
     An empty list is ``available`` with zero filters: "the profile applied an
@@ -333,12 +339,12 @@ def _incumbent_record(value: Any, packet_error: str) -> dict[str, Any]:
     """
     if isinstance(value, list):
         return {"status": "available", "n_filters": len(value)}
-    return unavailable(_reason(value if isinstance(value, dict) else {}, packet_error))
+    return _gap(value if isinstance(value, dict) else {}, packet_gap)
 
 
 
 def _declared_section(
-    packet: dict[str, Any] | None, packet_error: str
+    packet: dict[str, Any] | None, packet_gap: dict[str, Any] | None
 ) -> dict[str, Any]:
     """What this speaker says its drivers are, through the per-driver gate's reader.
 
@@ -347,9 +353,9 @@ def _declared_section(
     """
     passbands = packet_driver_passbands_hz(packet)
     roles = sorted(passbands)
-    reason = "" if passbands else _reason(_block(packet, "drivers"), packet_error)
+    gap = {} if passbands else _gap(_block(packet, "drivers"), packet_gap)
     return {
-        **(unavailable(reason) if reason else {"status": "available"}),
+        **(gap or {"status": "available"}),
         "roles": roles,
         "passbands_hz": {
             role: [lo, hi] for role, (lo, hi) in sorted(passbands.items())
@@ -357,7 +363,7 @@ def _declared_section(
         "summary": (
             ", ".join(_passband_phrase(role, *passbands[role]) for role in roles)
             if passbands
-            else f"no declared driver band ({reason})"
+            else f"no declared driver band ({gap['reason']})"
         ),
     }
 
@@ -415,21 +421,21 @@ def _degree_list(block: dict[str, Any], key: str) -> list[int]:
 
 
 def _banked_section(
-    packet: dict[str, Any] | None, packet_error: str
+    packet: dict[str, Any] | None, packet_gap: dict[str, Any] | None
 ) -> dict[str, Any]:
     """The round, its classified features (the classification view filed
     beside it) and its walk (the ACCEPTED lateral takes)."""
     verdicts = packet_feature_classifications(packet)
     candidates = _candidate_records()
     classification = {
-        **({"status": "available"} if verdicts else unavailable(
-            _reason(_block(_block(packet, DERIVED_VIEWS), "feature_classification"), packet_error))),
+        **({"status": "available"} if verdicts else _gap(
+            _block(_block(packet, DERIVED_VIEWS), "feature_classification"), packet_gap)),
         "n_verdicts": len(verdicts) if verdicts else 0,
     }
     lateral = _block(packet, "lateral_poses")
     walked = lateral.get("status") == "available"
     walk: dict[str, Any] = {
-        **({"status": "available"} if walked else unavailable(_reason(lateral, packet_error))),
+        **({"status": "available"} if walked else _gap(lateral, packet_gap)),
         "n_takes": lateral.get("n_takes") or 0,
         "angles_deg": _degree_list(lateral, "angles_deg"),
         "elevations_deg": _degree_list(lateral, "elevations_deg"),
@@ -437,7 +443,7 @@ def _banked_section(
     # "0 deg" is not a raise worth a clause.
     raised = [deg for deg in walk["elevations_deg"] if deg]
     session = _block(packet, "session")
-    reason = "" if session else _reason(session, packet_error)
+    gap = {} if session else _gap(session, packet_gap)
     summary = (
         (
             f"round in session {session.get('bundle_session_id')}"
@@ -448,7 +454,7 @@ def _banked_section(
             )
         )
         if session
-        else f"no round ({reason})"
+        else f"no round ({gap['reason']})"
     ) + (
         f"; {walk['n_takes']} walk take(s) at "
         f"{', '.join(str(deg) for deg in walk['angles_deg'])} deg"
@@ -466,7 +472,7 @@ def _banked_section(
         else "; no banked candidate"
     )
     return {
-        **(unavailable(reason) if reason else {"status": "available"}),
+        **(gap or {"status": "available"}),
         "bundle_session_id": session.get("bundle_session_id"),
         "classification": classification,
         "walk": walk,
@@ -477,20 +483,20 @@ def _banked_section(
 
 
 def _applied_section(
-    packet: dict[str, Any] | None, packet_error: str
+    packet: dict[str, Any] | None, packet_gap: dict[str, Any] | None
 ) -> dict[str, Any]:
     block = _block(packet, "incumbent")
-    return {"from_applied_profile": _incumbent_record(block.get("from_applied_profile"), packet_error)}
+    return {"from_applied_profile": _incumbent_record(block.get("from_applied_profile"), packet_gap)}
 
 
 
 def _status_sections(
-    packet: dict[str, Any] | None, packet_error: str
+    packet: dict[str, Any] | None, packet_gap: dict[str, Any] | None
 ) -> dict[str, Any]:
     return {
-        "declared": _declared_section(packet, packet_error),
-        "banked": _banked_section(packet, packet_error),
-        "applied": _applied_section(packet, packet_error),
+        "declared": _declared_section(packet, packet_gap),
+        "banked": _banked_section(packet, packet_gap),
+        "applied": _applied_section(packet, packet_gap),
     }
 
 
@@ -498,7 +504,7 @@ def _status_sections(
 def _next_commands(
     sections: dict[str, Any],
     *,
-    packet_error: str,
+    packet_gap: dict[str, Any] | None,
     seat_level_db: float | None,
     session_dir: str | None,
 ) -> list[str]:
@@ -513,7 +519,7 @@ def _next_commands(
     commands: list[str] = []
     # Nothing that would fail for the reason already reported: these two read
     # the same evidence this verb just could not.
-    if session_dir and not packet_error:
+    if session_dir and not packet_gap:
         commands.append(shlex.join([ROUND_VIEWS_PROG, "inventory", session_dir]))
         commands.append(shlex.join([
             PROG, "contract", "--round", session_dir,
@@ -530,14 +536,18 @@ def _next_commands(
 
 def status_document(
     packet: dict[str, Any] | None,
-    packet_error: str,
+    packet_gap: dict[str, Any] | None,
     *,
     session_dir: str | None,
     inputs: RoundInputs | None = None,
     applied_profile_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read retained evidence and candidate status; ``inputs`` is ``session_dir`` already read."""
-    sections = _status_sections(packet, packet_error)
+    """Read retained evidence and candidate status; ``inputs`` is ``session_dir`` already read.
+
+    ``packet_gap`` is why the packet did not build, as a gap: every section it
+    feeds reads it.
+    """
+    sections = _status_sections(packet, packet_gap)
     context: dict[str, Any] = {
         "latest_agent_note": None, "context_error": None,
     }
@@ -587,7 +597,6 @@ def status_document(
         "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
         "contracts": (packet or {}).get("contracts"),
         "packet_contracts": currency,
-        "packet_error": packet_error or None,
         "selected_round": session_dir,
         "recent_rounds": recent,
         **sections,
@@ -601,7 +610,7 @@ def status_document(
         "next": {"program": None if action["reason_code"] == "complete" else action["program"],
                  "reason_code": action["reason_code"]},
         "next_commands": _next_commands(
-            sections, packet_error=packet_error, seat_level_db=seat_level_db,
+            sections, packet_gap=packet_gap, seat_level_db=seat_level_db,
             session_dir=session_dir,
         ),
     }
@@ -613,30 +622,30 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
     Exit 0 whatever it found: this verb accepts nothing and refuses nothing, so
     an unreadable bundle is a FACT it reports — ``packet_fingerprint: null``
-    beside the sentence in ``packet_error`` — rather than a failure that would
-    have to publish a refusal record instead of the orientation the caller ran
-    it for.
+    beside a gap in each section the packet feeds, its code in ``reason`` and
+    its sentence in ``detail`` — rather than a failure that would have to
+    publish a refusal record instead of the orientation the caller ran it for.
     """
     inputs: RoundInputs | None = None
     packet: dict[str, Any] | None = None
-    packet_error = ""
+    packet_gap: dict[str, Any] | None = None
     if args.session_dir is not None:
         try:
             inputs = round_inputs(Path(args.session_dir))
             packet = _load_packet(args, inputs=inputs)
         except (CrossoverEvidencePacketError, OSError) as exc:
-            packet_error = str(exc)
+            packet_gap = unavailable(_evidence_code(exc), str(exc))
 
     return _answer(args, "status", subject(inputs), **status_document(
-        packet, packet_error,
+        packet, packet_gap,
         session_dir=args.session_dir, inputs=inputs,
         applied_profile_path=Path(args.applied_profile) if args.applied_profile else None,
     ))
 
 
 
-#: What a round argument takes here; unlike a view, a verb of this tool takes no banked round id.
-_ROUND_HELP = "a banked round directory or a live session bundle"
+#: A round argument takes an id as a view's does; round_ref swaps it for the banked round's directory.
+_ROUND = partial(round_ref, str)
 
 #: The modes no catalog row covers: judge and compose answer no analysis question (ADR-0393), so their
 #: help rows live with the verbs.
@@ -656,7 +665,8 @@ _DOCUMENT_EXITS: dict[str, Any] = {"note": "A document that is not valid JSON, o
                                             "as a refusal. Code 2 means the document file or the round cannot be read."}
 _EXITS: dict[str, dict[str, Any]] = {
     "judge": _DOCUMENT_EXITS, "compose": _DOCUMENT_EXITS,
-    "status": {"codes": (EXIT_OK,), "note": "It refuses nothing. A round it cannot read shows in the answer as packet_error."},
+    "status": {"codes": (EXIT_OK,), "note": "It refuses nothing. A round it cannot read shows as an unavailable gap, "
+                                            "with a reason code and its detail, in each section it feeds."},
 }
 
 
@@ -664,7 +674,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
-    contract.add_argument("--round", metavar="DIR", help=f"evaluate the bounds on this round: {_ROUND_HELP}")
+    contract.add_argument("--round", metavar="DIR", type=_ROUND, help=f"evaluate the bounds on this round: {_ROUND_DIR_HELP}")
     add_set_argument(contract)
     contract.add_argument("--section", choices=(*SECTIONS, "all"), default="all",
                           help="the program whose contract to serve, or all (default: %(default)s)")
@@ -676,7 +686,8 @@ def build_parser() -> argparse.ArgumentParser:
             f'a file, or - for stdin: {{"kind": "{DOCUMENT_KIND}", "schema": 1, "base": "saved" or a banked '
             f'fingerprint, "sections": {{name: {{...}} or null}}, "rationale": text}}; a section left out '
             f'keeps the base\'s, null or {{}} clears it; sections: {", ".join(SECTION_KINDS)}'))
-        command.add_argument("--round", dest="round", metavar="DIR", help=f"the round the document reads its evidence from: {_ROUND_HELP}")
+        command.add_argument("--round", dest="round", metavar="DIR", type=_ROUND,
+                             help=f"the round the document reads its evidence from: {_ROUND_DIR_HELP}")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
@@ -687,8 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read applied layers, last banked rounds and the next program; optionally inspect a round")
-    status.add_argument("session_dir", nargs="?", metavar="DIR",
-                        help=f"read this round's evidence packet: {_ROUND_HELP}; without one, list the recent rounds")
+    status.add_argument("session_dir", nargs="?", metavar="DIR", type=_ROUND,
+                        help=f"read this round's evidence packet: {_ROUND_DIR_HELP}; without one, list the recent rounds")
     for name, help_text in (
         ("state", "with a round, read this flow state file in place of the round's own"),
         ("drivers", "with a round, read this driver declaration (design draft) in place of the round's own"),
