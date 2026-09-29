@@ -28,7 +28,7 @@ from jasper.active_speaker.crossover_v2.record_index import reopen_measurement_r
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
-from jasper.active_speaker.measurement_analysis import analyze_measurement_bundle, analyzed_measurements
+from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA, bass_evidence
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
 from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
@@ -737,12 +737,13 @@ def test_frequency_reads_recorded_program_and_calibration_without_changing_level
 ):
     bundle, calibration_root, program, bank = summed_capture_bundle
     first = asyncio.run(bank("baseline"))
-    asyncio.run(bank("bass", scope="candidate", candidate="bass-6db", setup={
+    second = asyncio.run(bank("bass", scope="candidate", candidate="bass-6db", setup={
         "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
     }))
     write_manifest(bundle, program="bass", groups=[
-        {"set_id": "base", "base": True, "takes": [{"take_id": "baseline"}]},
-        {"set_id": "trial", "base": False, "takes": [{"take_id": "bass"}]},
+        {"set_id": set_id, "base": set_id == "base", "capture_basis": {},
+         "takes": [{"take_id": take_id, "artifacts": {"record_id": path}}]}
+        for set_id, take_id, path in (("base", "baseline", first), ("trial", "bass", second))
     ])
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
@@ -788,36 +789,10 @@ def test_frequency_reads_recorded_program_and_calibration_without_changing_level
 @pytest.mark.parametrize("reference_db", [float("nan"), float("inf"), float("-inf")])
 def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_db):
     with pytest.raises(ValueError):
-        analyze_measurement_bundle(tmp_path, run_reference_db=reference_db)
+        analyzed_frequency_run(tmp_path, run_reference_db=reference_db)
     assert round_views_main([
         "frequency", str(tmp_path), "--analyze-wavs", f"--reference-db={reference_db}",
     ]) == EXIT_UNREADABLE
-
-
-@pytest.mark.parametrize("fault,code", [
-    ("scope", "measurement_analysis_program_unsupported"),
-    ("program", "measurement_program_manifest_missing"),
-    ("wav_hash", "measurement_capture_identity_mismatch"),
-    ("dependency", "measurement_capture_identity_mismatch"),
-])
-def test_frequency_wav_analysis_refuses_unreplayable_takes(summed_capture_bundle, fault, code, tmp_path):
-    bundle, _, _, bank = summed_capture_bundle
-    asyncio.run(bank(
-        "take", scope="drivers" if fault == "scope" else "candidate",
-        retain_program=fault != "program", wav_hash="0" * 64 if fault == "wav_hash" else None,
-    ))
-    if fault == "dependency":
-        manifest = bundle / "artifact_manifest.json"
-        document = json.loads(manifest.read_text())
-        for row in document["artifacts"]:
-            row["dependencies"] = []
-        manifest.write_text(json.dumps(document))
-    with pytest.raises(EvidenceUnavailable) as caught:
-        analyze_measurement_bundle(bundle)
-    assert caught.value.reason == code
-    assert round_views_main([
-        "frequency", str(bundle), "--analyze-wavs", "--out", str(tmp_path / "refused.json"),
-    ]) == EXIT_REFUSED
 
 
 @pytest.mark.parametrize("by_take_ids", [False, True])
@@ -828,6 +803,7 @@ def test_room_selection_analyzes_only_selected_takes_and_discloses_its_own_omiss
     asyncio.run(bank("skipped", measurement_status="incomplete", **fields))
     asyncio.run(bank("outside", candidate="another-set", **fields, **(
         {"wav_hash": "0" * 64} if by_take_ids else {"measurement_status": "incomplete"})))
+    write_manifest(bundle, program="room")
     selection = select_seat_takes(bundle, capture_id="good", take_ids=("good", "skipped") if by_take_ids else None)
     assert [take.take_id for take in selection.takes] == ["good"]
     assert [(row["take_id"], row["reason"]) for row in selection.evidence["omitted_takes"]] == [

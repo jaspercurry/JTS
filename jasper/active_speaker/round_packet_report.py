@@ -15,6 +15,7 @@ from jasper.platform.json_fields import finite_float
 from jasper.platform.speaker_layout import measurement_target_id
 
 from .bass_table_report import bass_table_markdown, bass_table_rows
+from .crossover_v2.position_cycle import take_curve
 from .crossover_v2.round_frequency_view import position_label
 from .crossover_v2.round_inputs import PACKET_FILENAME, PICTURE_FILENAME, SetTakes
 from .measurement_programs import POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE
@@ -22,8 +23,8 @@ from .round_copy import pose_name
 from .round_view_artifacts import PROG
 
 
-def gate_fields(take: Mapping[str, Any]) -> dict[str, Any]:
-    curve = take.get("curve") or {}
+def gate_fields(curve: Mapping[str, Any] | None) -> dict[str, Any]:
+    curve = curve or {}
     window = finite_float(curve.get("gate_window_ms"))
     return {**{key: curve.get(key) for key in ("gate_window_ms", "validity_floor_hz", "floor_source")},
             "trusted_floor_hz": finite_float(f_trusted_floor_hz(window / 1000)) if window is not None else None}
@@ -146,7 +147,7 @@ def packet_index(
         # take plays pilots only) has no band to read.
         firsts: dict[Any, Mapping[str, Any]] = {}
         for take in (*set_takes.on_axis, *set_takes.takes):
-            if take["selected"] and take.get("curve"):
+            if take["selected"] and take_curve(take, role):
                 firsts.setdefault(take["pose"].get("kind"), take)
         for take in firsts.values():
             commands += [shlex.join([PROG, view, str(target), "--set", set_id,
@@ -206,7 +207,8 @@ def packet_index(
     lines.append("## Decisions")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
-    takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"] for take in group["takes"]}
+    takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"]
+             for take in group["takes"] if take["selected"]}
     by_role: dict[str, list[Mapping[str, Any]]] = {}
     for (_set_id, _take_id, role), take in takes.items():
         by_role.setdefault(role, []).append(take)
@@ -216,7 +218,7 @@ def packet_index(
                 ("window ms", "gate_window_ms"), ("validity floor Hz", "validity_floor_hz"),
                 ("trusted floor Hz", "trusted_floor_hz"), ("source", "floor_source")))
             + f" ({len(rows)} takes)")
-    for series in packet["series"]:
+    for series in (series for series in packet["series"] if series["selected"]):
         stats = []
         for name, rows in series["stats"].items():
             for label, row in ([(name, rows)] if "value" in rows else [(f"{name}[{key}]", value) for key, value in rows.items()]):

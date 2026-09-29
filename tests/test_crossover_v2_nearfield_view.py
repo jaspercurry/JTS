@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import nearfield_view as nv, round_inputs
-from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
@@ -35,11 +34,11 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
     curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz), **gates[0],
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist(), **gate}
                                for sweep, gate in zip(sweeps[1:], gates[1:])]}
-    return {"take_id": take_id, "selected": selected, "purpose": "reference",
+    evidence = {"evidence": {"level_db_spl": 80.0}}
+    return {"take_id": take_id, "selected": selected, "measurement_purpose": "reference",
             "pose": {"kind": kind, "driver": driver, "distance_m": distance_mm / 1000},
-            "quality": {"evidence": {"level_db_spl": 80.0}}, "curve": curve,
-            "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs},
-            "artifacts": {"record_id": f"crossover_v2/run/positions/{take_id}.json"}}
+            "verdict": evidence, "quality": evidence, "curves": [{**curve, "role": driver}],
+            "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs}}
 
 
 def _graph(pad_db):
@@ -91,7 +90,7 @@ def test_a_drivers_distance_step_stops_at_its_own_trusted_band():
     so a level change between them moves only a smaller cone's step (ADR-0366),
     and a rear woofer's band is its own cone's, not its front's (ADR-0384)."""
     far = _take("r30", "woofer:rear", 30, 90.0 + STEP, seed=1)
-    for sweep in (far["curve"], *far["curve"]["repeat_curves"]):
+    for sweep in (far["curves"][0], *far["curves"][0]["repeat_curves"]):
         sweep["magnitude_db"] = [db + 6.0 * (360.0 < hz < 400.0) for hz, db in zip(FREQS, sweep["magnitude_db"])]
     steps = [nv.nearfield_view([_take("r15", "woofer:rear", 15, 90.0), far],
                                radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": mm})
@@ -159,9 +158,7 @@ def test_a_placement_states_the_band_its_take_banked(tmp_path, monkeypatch, caps
     banked = {"low_hz": 123.0, "low_source": "gate_floor", "high_hz": 4000.0, "high_source": "far_field_ceiling",
               "undeclared": []}
     take, unbanked = _take("w500", "woofer", 500, 86.0), _take("w1000", "woofer", 1000, 80.0, seed=1)
-    record = take_artifact_path(bundle, take["artifacts"]["record_id"])
-    record.parent.mkdir(parents=True)
-    record.write_text(json.dumps({"trusted_band": banked}))
+    take["trusted_band"] = banked
     write_manifest(bundle, program="drivers/each",
                    groups=[{"set_id": "drivers", "capture_basis": {}, "takes": [take, unbanked]}])
 
@@ -180,9 +177,10 @@ def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
     whose graph was not read back, or cannot be modelled, or whose curve sits
     on another grid stays out of it, and the rest of the view still reads (#5713)."""
     coarse = _take("coarse", "woofer", 15, 70.0, seed=3)
-    coarse["curve"] = {**coarse["curve"], **{key: coarse["curve"][key][::2] for key in ("freqs_hz", "magnitude_db")},
-                       "repeat_curves": [{key: value[::2] for key, value in sweep.items()}
-                                         for sweep in coarse["curve"]["repeat_curves"]]}
+    curve, = coarse["curves"]
+    coarse["curves"] = [{**curve, **{key: curve[key][::2] for key in ("freqs_hz", "magnitude_db")},
+                         "repeat_curves": [{key: value[::2] for key, value in sweep.items()}
+                                           for sweep in curve["repeat_curves"]]}]
     unmodelled = _graph(-6.0)
     unmodelled["pipeline"].append({"type": "Processor", "name": "compressor"})
     takes = [_take("a", "woofer", 15, 60.0, first_low_db=-3.0), _take("b", "woofer", 15, 54.0, seed=1),

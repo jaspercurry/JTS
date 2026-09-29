@@ -23,7 +23,7 @@ from jasper.audio_measurement.band_ladders import SPEC_BAND_EDGES_HZ, band_ladde
 from jasper.audio_measurement.evidence_reasons import REASON_NO_REFERENCE_TAKE, REASON_TOO_FEW_POSITIONS
 
 from ..round_frequency_view import position_label
-from ..position_cycle import measured_curve_band
+from ..position_cycle import measured_curve_band, take_curve
 from ..round_inputs import RoundSetRefused, SetTakes
 
 
@@ -53,7 +53,7 @@ def set_directivity(selected: SetTakes) -> dict[str, Any]:
     for take in selected.takes:
         if not take["selected"] or take["pose"].get("kind") != POSE_KIND_BEARING:
             continue
-        curve = measured_curve_band(take.get("curve") or {})
+        curve = measured_curve_band(take_curve(take, selected.role) or {})
         if curve is None:
             omitted.append(take["take_id"])
         else:

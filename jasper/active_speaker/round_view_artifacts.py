@@ -140,7 +140,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         avoid="more than two sides; frequency overlays whole rounds",
         answer_fields=("bands", "basis", "bins", "comparand", "level_offset_db", "max_abs_db", "max_abs_hz",
                        "mean_abs_db", "relative_arrival_ms", "rms_db", "same_recording")),
-    "frequency": CatalogRow(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR),
+    "frequency": CatalogRow(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR),
                             builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA,
         question="What frequency response did each take bank, for one or two rounds, bundles or documents?",
         needs="one or two banked rounds, session bundles or JSON documents whose takes banked curves",
@@ -350,9 +350,6 @@ def read_purposes(purposes: tuple[str, ...], *, has_room: bool = False) -> set[s
 
 def bookkeeping_views(purposes: tuple[str, ...], *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base, for a round of these purposes."""
-    purpose = purposes[0]
     wanted = read_purposes(purposes, has_room=has_room)
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
-    # A speaker round takes its frequency view from the packet writer, not here.
-    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
-                 if wanted.intersection(row.bookkeeping) and (purpose != PURPOSE_SPEAKER or name != "frequency"))
+    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows if wanted.intersection(row.bookkeeping))

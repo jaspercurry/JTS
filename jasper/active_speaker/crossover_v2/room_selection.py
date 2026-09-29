@@ -17,10 +17,11 @@ from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.platform.json_fields import finite_float
 
 from ..measurement_analysis import analyzed_measurements
+from ..run_manifest import kept_measurements
 from ..measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, validated_pose
 from .journey import PHASE_LATERAL
 from .position_cycle import parse_curve_magnitude
-from .record_index import Measurement, measurement_documents, record_path, take_purpose
+from .record_index import Measurement, record_path
 from .measurement_context import capture_basis
 from .round_captures import doc_pose_key
 
@@ -75,14 +76,10 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         late_energy=summed.get("late_energy") if summed else None,
     )
 
-def is_purpose_take(row: Measurement, record: Mapping[str, Any], purposes: tuple[str, ...] = (PURPOSE_ROOM,)) -> bool:
-    return row.phase == PHASE_LATERAL and take_purpose(row, record) in purposes
-
-
 def purpose_take_records(
     bundle_dir: Path, *, purpose: str = PURPOSE_ROOM,
 ) -> list[tuple[Measurement, Mapping[str, Any]]]:
-    """This round's lateral take records of ONE purpose, exactly as banked.
+    """This round's kept lateral take records of ONE purpose, exactly as banked.
 
     No analyzer, because not every take has one to run: a branch take's program
     is two-channel and ``candidate_branches``-scoped, which
@@ -90,8 +87,7 @@ def purpose_take_records(
     refuses outright. A reader that needs only what the take already banked
     reads it here instead of paying for an analysis it cannot have.
     """
-    return [(row, record) for row, record in measurement_documents(bundle_dir)
-            if is_purpose_take(row, record, (purpose,))]
+    return list(kept_measurements(bundle_dir, phases=(PHASE_LATERAL,), purposes=(purpose,)))
 
 
 def analyzed_purpose_takes(
@@ -99,17 +95,17 @@ def analyzed_purpose_takes(
     purposes: tuple[str, ...] | None = None,
     take_ids: tuple[str, ...] | None = None,
 ) -> list[tuple[Measurement, Mapping[str, Any], SeatTake | None]]:
-    """A missing WAV or a failed analysis yields a ``None`` take for the caller to disclose."""
-    documents = {record_path(row): (row, record) for row, record in measurement_documents(bundle_dir)
+    """The round's kept lateral takes of these purposes; a missing WAV or a
+    failed analysis yields a ``None`` take for the caller to disclose."""
+    documents = {record_path(row): (row, record) for row, record in kept_measurements(
+        bundle_dir, phases=(PHASE_LATERAL,), purposes=purposes if purposes is not None else (purpose,))
                  if take_ids is None or record.get("take_id") in take_ids}
     analyzed: set[str] = set()
     for measurement in analyzed_measurements(bundle_dir, paths=documents):
         row, _ = documents[measurement.record_path]
         analyzed.add(measurement.record_path)
         documents[measurement.record_path] = row, measurement.document()
-    return [(row, record, _take(row, record) if path in analyzed else None)
-            for path, (row, record) in documents.items()
-            if is_purpose_take(row, record, purposes if purposes is not None else (purpose,))]
+    return [(row, record, _take(row, record) if path in analyzed else None) for path, (row, record) in documents.items()]
 
 
 def select_seat_takes(

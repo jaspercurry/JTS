@@ -18,7 +18,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2 import capture_prediction
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture
-from jasper.active_speaker.crossover_v2.round_inputs import COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND
+from jasper.active_speaker.crossover_v2.round_inputs import COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND, comparand
 from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.platform.json_fields import parse_utc_iso
@@ -268,3 +268,18 @@ def test_compare_with_one_take_reads_its_comparand_by_the_one_rule(
         0, *expected[:2], [expected[2]], roles)
     assert set(answer["basis"]) == {"basis_status", "intervention_fields", "incompatible_fields",
                                     "mismatched_fields", "unknown_fields"}
+
+
+def test_the_comparand_rule_reads_run_manifest_rows_only(tmp_path):
+    """ADR-0391's rule reads each round's rows (pose, run, take order), so no
+    earlier round's take record is read to find a comparand (#5737 C1b)."""
+    store = tmp_path / "campaigns"
+    earlier = _banked(store, "e", "2026-09-20T12:00:00Z", {"base": [("e0", 0)]})
+    this = _banked(store, "r", "2026-09-21T12:00:00Z", {"cand": [("c0", 0)]})
+    for record in (earlier / "bundle" / "e").glob("summed/*.json"):
+        record.write_text("{")
+
+    found = comparand(this, "cand", "c0", "summed")
+
+    assert found is not None and (found.source, found.round_dir, found.set_id, found.take_id) == (
+        COMPARAND_EARLIER_ROUND, earlier, "base", "e0")

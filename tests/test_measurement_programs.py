@@ -144,13 +144,13 @@ def test_summed_bookkeeping_includes_one_frequency_image(purpose):
 
 
 def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
-    assert bookkeeping_views(("speaker",), has_room=True) == tuple(
-        row for row in bookkeeping_views(("room",)) if row[0] != "frequency")
+    assert bookkeeping_views(("speaker",), has_room=True) == bookkeeping_views(("room",))
 
 
 @pytest.mark.parametrize(("purposes", "has_room", "expected"), [
-    (("speaker",), False, (("inventory", True, False),)),
-    (("speaker",), True, (("room", True, False), ("room-grade", True, True), ("inventory", True, False))),
+    (("speaker",), False, (("frequency", False, False), ("inventory", True, False))),
+    (("speaker",), True, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
+                          ("inventory", True, False))),
     (("room",), False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
                         ("inventory", True, False))),
     (("bass",), False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),

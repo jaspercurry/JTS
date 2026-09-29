@@ -27,8 +27,7 @@ from jasper.platform.json_fields import finite_float, sha256_file
 
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT
-from ..run_manifest import RUN_MANIFEST_FILENAME
-from .position_cycle import curves_for_take
+from .position_cycle import take_curve
 from .record_index import measurement_documents, played_graph_fingerprint
 from .round_inputs import (
     NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
@@ -167,9 +166,7 @@ def _declared_program_sha(doc: Mapping[str, Any]) -> str | None:
     return None
 
 
-def radiated_band_of(
-    doc: Mapping[str, Any], manifest: Mapping[str, Any] | None = None,
-) -> tuple[float, float] | None:
+def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     """The band this capture's DUT actually radiates, from its own curves.
 
     Public because :mod:`.feature_classifier` asks the same question of the
@@ -179,7 +176,7 @@ def radiated_band_of(
     """
     los: list[float] = []
     his: list[float] = []
-    for curve in curves_for_take(doc, manifest):
+    for curve in doc.get("curves") or ():
         band = curve.get("band_hz") if isinstance(curve, Mapping) else None
         if isinstance(band, Sequence) and len(band) == 2:
             los.append(float(band[0]))
@@ -295,7 +292,6 @@ def _discover_captures(
     clocked: bool = False,
 ) -> tuple[tuple[PoseCapture, ...], list[_Omission]]:
     round_dir, documents = _capture_documents(Path(round_dir))
-    manifest: Mapping[str, Any] | None = None
     if not documents:
         raise EvidenceUnavailable(
             REFUSE_NO_CAPTURES,
@@ -313,13 +309,8 @@ def _discover_captures(
         if doc and select is not None and not select(doc):
             continue
         if fault is None:
-            if not doc.get("curves") and manifest is None:
-                artifact_dir, _ = round_artifact_dir(round_dir)
-                manifest_path = artifact_dir / RUN_MANIFEST_FILENAME if artifact_dir else None
-                manifest = _capture_document(manifest_path) if manifest_path and manifest_path.is_file() else {}
             try:
-                captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, manifest, program_audio,
-                                         clocked=clocked)
+                captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, program_audio, clocked=clocked)
                 continue
             except EvidenceUnavailable as exc:
                 fault = exc
@@ -332,7 +323,7 @@ def _discover_captures(
 
 def _bind_record(
     sidecar: Path, wav: Path, doc: Mapping[str, Any], roles: tuple[str, ...], root: Path,
-    programs: Mapping[str, Path], manifest: Mapping[str, Any] | None, program_audio: dict[str, tuple[np.ndarray, int]],
+    programs: Mapping[str, Path], program_audio: dict[str, tuple[np.ndarray, int]],
     *, clocked: bool,
 ) -> list[PoseCapture]:
     """One record's capture per role, or the refusal that keeps it out."""
@@ -369,13 +360,13 @@ def _bind_record(
                 ),
             },
         )
-    return record_captures(doc, roles, root, manifest, record_path=sidecar, wav=wav, program=program,
+    return record_captures(doc, roles, root, record_path=sidecar, wav=wav, program=program,
                            program_sha256=str(sha or ""), capture_sha256=capture_sha,
                            program_audio=program_audio, clocked=clocked)
 
 
 def record_captures(
-    doc: Mapping[str, Any], roles: tuple[str, ...], root: Path, manifest: Mapping[str, Any] | None, *,
+    doc: Mapping[str, Any], roles: tuple[str, ...], root: Path, *,
     record_path: Path, wav: Path, program: Path | None = None, program_sha256: str = "",
     capture_sha256: str = "", program_audio: dict[str, tuple[np.ndarray, int]] | None = None,
     clocked: bool = True,
@@ -383,7 +374,7 @@ def record_captures(
     """One record's capture per role, from its banked fields. A role the take
     kept an impulse for is read from it; ``wav`` is opened only to rebuild a
     role it kept none for, which ``clocked`` refuses."""
-    band = radiated_band_of(doc, manifest)
+    band = radiated_band_of(doc)
     if band is None:
         raise EvidenceUnavailable(
             REFUSE_RADIATED_BAND_MISSING,
@@ -399,7 +390,7 @@ def record_captures(
         kept = take_impulses(root, doc) if isinstance(doc.get(IMPULSES_KEY), Mapping) else None
     except TakeImpulsesUnreadable as exc:
         raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
-    curves = {role: _role_curve(doc, manifest, role) for role in roles}
+    curves = {role: take_curve(doc, role) or {} for role in roles}
     responses = [_capture_response(doc, role, wav, program, {} if program_audio is None else program_audio,
                                    kept=kept, curve=curves[role], clocked=clocked) for role in roles]
     pose_kind, seat_offset_m = _doc_pose_category(doc)
@@ -430,14 +421,6 @@ def record_captures(
         )
         for role, (ir, rate, retained_band, preprocessing) in zip(roles, responses, strict=True)
     ]
-
-
-def _role_curve(
-    doc: Mapping[str, Any], manifest: Mapping[str, Any] | None, role: str,
-) -> Mapping[str, Any]:
-    """This take's banked curve for ``role``, or empty."""
-    return next((curve for curve in curves_for_take(doc, manifest)
-                 if isinstance(curve, Mapping) and curve.get("role") == role), {})
 
 
 def _role_band(curve: Mapping[str, Any]) -> tuple[float, float] | None:

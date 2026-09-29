@@ -50,7 +50,7 @@ from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BAN
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
-    REASON_REFERENCE_NOT_IN_SET, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
+    REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
 )
 from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
 from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
@@ -323,8 +323,8 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
 
     Every take carries the shape the runner really banks — a two-channel
     ``candidate_branches`` program, which the summed analyzer refuses outright.
-    The manifest carries the THREE role-scoped sets, each row with its take's
-    curve for that role, as the run manifest writes them. ``missing`` drops the solo
+    The manifest carries the THREE role-scoped sets, each row pointing at its
+    take's record, which banks every role's curve. ``missing`` drops the solo
     segments at named bearings; ``diagnostic`` false banks takes that analyzed
     no branches, the shape jts3 produced before #5361; ``swept_hz`` narrows the
     curves' own band so the band figures run out of bands to read.
@@ -373,8 +373,6 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     for role in sorted(rear_views.PAIR_ROLES):
         group = manifest_set(banked, set_id=f"{_PARENT}-{role}")
         group["capture_basis"].update(role=role, candidate_id=_PARENT)
-        for take, (_, record) in zip(group["takes"], banked):
-            take["curve"] = next((curve for curve in record["curves"] if curve["role"] == role), None)
         groups.append(group)
     write_manifest(root, program="rear/pair", groups=groups)
     _round_environment(root, applied=_SECTIONS[applied])
@@ -680,10 +678,11 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
 ):
     """ADR-0391: at each position, the reference against the newest earlier
     banked round's reference there, on the whole ``rear_level`` ladder. Both
-    sides are built as the rear view builds its own reference, a deselected
-    retake included. A position without one names its reason, an earlier
-    reference this build cannot read names its round, and the rear view
-    writes either way."""
+    sides are built as the rear view builds its own reference, from the takes
+    its round kept: a deselected retake is on neither side, and a take its set
+    does not list leaves that position unscored. A position without an earlier
+    reference names its reason, an earlier reference this build cannot read
+    names its round, and the rear view writes either way."""
     # The real reader, so an earlier round's takes refuse or are passed over as they are on a speaker.
     monkeypatch.setattr(room_selection, "analyzed_measurements", measurement_analysis.analyzed_measurements)
     at = {deg: doc_pose_key({"position_deg": deg, "vertical_deg": 0, "mark_distance_m": 1.0}) for deg in (0, -20, 20)}
@@ -706,11 +705,12 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
                       unlisted={_MUTED: (-20,)}, band_hz=(40.0, 20_000.0))
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-21T12:00:00Z"}))
 
-    previous = packet_of(root)[0]["rear"][0]["comparison"]["previous_reference"]
+    comparison = packet_of(root)[0]["rear"][0]["comparison"]
+    previous = comparison["previous_reference"]
     on_axis = previous.pop(at[0])
 
-    assert previous == {at[-20]: {"status": "unavailable", "reason": REASON_REFERENCE_NOT_IN_SET},
-                        at[20]: {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE}}
+    assert comparison["positions_unscored"] == {at[-20]: "no_reference_take"}
+    assert previous == {at[20]: {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE}}
     named = {"round_id": "earlier", "set_id": _MUTED}
     if earlier != "banked":
         assert {key: value for key, value in on_axis.items() if key != "detail"} == (
@@ -720,7 +720,7 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
     bands = {tuple(band["band_hz"]): band for band in on_axis["bands"]}
     assert {key: on_axis[key] for key in ("status", "round_id", "set_id", "ladder")} == {
         "status": "available", **named, "ladder": "rear_level"}
-    assert sorted(on_axis["take_ids"]) == [f"{_MUTED}-0-{repeat}" for repeat in (1, 2, 3)]
+    assert sorted(on_axis["take_ids"]) == [f"{_MUTED}-0-{repeat}" for repeat in (1, 2)]
     assert list(bands) == list(LEVEL_BANDS_HZ)
     # The later round swept from 40 Hz, so the shared band leaves (30, 60) Hz uncovered.
     assert bands.pop((30.0, 60.0)) == {"status": "unavailable", "reason": REASON_COVERAGE_SHORT,
@@ -833,12 +833,7 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # One candidate, so no figure spread for a difference to be real against.
     # How the index renders that line is pinned with the other index cases.
     assert comparison["repeat_spread"]["reason"] == REASON_NO_COMPARISON
-    # The frequency view reads the summed analyzer, which refuses a branch
-    # take's program, so a pair round banks none — as the real round does.
-    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "inventory"}
-    frequency_row = next(r for r in views if r["view"] == "frequency")
-    assert (frequency_row["status"], frequency_row["reason"]) == (
-        "unavailable", "measurement_analysis_program_unsupported")
+    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "frequency", "inventory"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
 
@@ -887,6 +882,22 @@ def test_a_pair_position_without_its_segments_is_disclosed(tmp_path, banked_cand
     assert len(comparison["positions_unscored"]) == 1
     assert set(entry["pair"]["positions"]) == set(comparison["positions"])
     assert not set(comparison["positions_unscored"]) & set(entry["pair"]["positions"])
+
+
+def test_a_pair_take_that_banked_no_curve_refuses_by_field(tmp_path, banked_candidates):
+    """A take that banked an empty ``curves`` banked no segment at all, so the
+    pair view refuses by field and role, not as a missing segment (#2902)."""
+    root = pair_round(tmp_path)
+    session = round_inputs(root).session_dir
+    for row, record in measurement_documents(session):
+        if record.get("measurement_purpose") == "rear":
+            (session / record_path(row)).write_text(json.dumps({**record, "curves": []}))
+
+    _, views = packet_of(root)
+
+    row = next(view for view in views if view["view"] == "rear")
+    assert (row["status"], row["reason"], row["detail"]["field"], row["detail"]["role"]) == (
+        "unavailable", TAKE_CURVES_NOT_BANKED, "curves", rear_views.PAIR_ROLES[0])
 
 
 def test_a_pair_round_never_asks_the_summed_analyzer(tmp_path, banked_candidates, monkeypatch):

@@ -6,21 +6,24 @@
 
 from __future__ import annotations
 
-import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
-from jasper.platform.json_fields import finite_float
 
 from .crossover_v2.record_index import (
     MeasurementCaptureIdentityError, bundle_measurements, record_path, reopen_measurement_record,
 )
-from .frequency_view import FrequencyRun
-from .measurement_document import frequency_run_from_documents
+
+
+def banked_document(record: Mapping[str, Any]) -> dict[str, Any]:
+    """A take record stating the calibration its capture applied, as the frequency view reads it."""
+    calibration = record.get("capture_calibration") or {}
+    return {**record, "calibration": {"applied": bool(calibration.get("applied")),
+                                      "calibration_id": calibration.get("calibration_id")}}
 
 
 @dataclass(frozen=True)
@@ -31,9 +34,7 @@ class BankedMeasurement:
     record_path: str
 
     def document(self) -> dict[str, Any]:
-        calibration = self.record.get("capture_calibration") or {}
-        return {**self.record, "calibration": {"applied": bool(calibration.get("applied")),
-                                               "calibration_id": calibration.get("calibration_id")}}
+        return banked_document(self.record)
 
 
 def _reopened(bundle_dir: Path, paths: Iterable[str] | None) -> Iterator[tuple[str, dict[str, Any]]]:
@@ -67,17 +68,3 @@ def analyzed_measurements(
         if "curves" not in record:
             raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"record": path})
         yield BankedMeasurement(record, path)
-
-
-def analyze_measurement_bundle(bundle_dir: Path, *, run_reference_db: float | None = None) -> FrequencyRun:
-    if run_reference_db is not None and finite_float(run_reference_db) is None:
-        raise ValueError(f"measurement_reference_invalid: {run_reference_db}")
-    info = json.loads((bundle_dir / "info.json").read_text())
-    documents = [take.document() for take in analyzed_measurements(bundle_dir)]
-    if not documents:
-        raise EvidenceUnavailable("measurement_captures_missing", {"bundle_dir": str(bundle_dir)})
-    return frequency_run_from_documents(
-        run_id=info["session_id"], documents=documents,
-        started_at=info.get("started_at"), state=info.get("state"),
-        run_reference_db=run_reference_db,
-    )

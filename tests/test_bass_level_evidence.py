@@ -409,6 +409,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
               "artifacts": {"frequency_view": None, "bass_views": []}, "limits": {},
               "sets": [], "fits": [], "series": [], "packet_fingerprint": None}
     (tmp_path / "packet.json").write_text(json.dumps(packet))
+    (tmp_path / "info.json").write_text("{}")  # the round finish_bass_packet reads its takes from
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"runs": [{"level": {"run": {"level_db": level}}} for level in (-30, -20, -10)], "sets": []}))
     with patch("jasper.active_speaker.round_packet_report.bass_table_markdown", wraps=bass_table_markdown) as render:
@@ -427,3 +428,13 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == {
         "status": "unavailable", "reason": "bass_fit_inputs_missing", "error_type": "RoundViewsError",
     }
+
+
+def test_a_one_level_round_finishes_from_its_manifest_alone(tmp_path):
+    """One level joins no bass table, so its finish reads none of its takes (#5737 C1b)."""
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"runs": [{"level": {"run": {"level_db": -20}}}], "sets": [
+        {"set_id": "set", "base": False, "capture_basis": {"candidate_id": "candidate"},
+         "takes": [{"take_id": "take", "selected": True, "artifacts": {"record_id": "unbanked.json"}}]}]}))
+
+    assert finish_bass_packet(tmp_path, manifest, join_levels=Mock(side_effect=AssertionError)) == tmp_path / "packet.json"

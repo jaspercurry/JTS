@@ -18,11 +18,12 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from jasper.platform.json_fields import finite_float, parse_utc_iso
-from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_TIMING
+from .position_cycle import take_artifact_path
 from jasper.active_speaker import bundles
 from jasper.active_speaker.candidate_bank import _candidate_roots, _directories
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
@@ -481,6 +482,40 @@ class SetTakes(NamedTuple):
         if len(on_axis) == 1:
             return on_axis[0]
         raise RoundSetRefused("round_take_selection_required", set_id=self.set_id, take_ids=ids)
+
+    def with_records(self, bundle_dir: Path) -> SetTakes:
+        """This set, each selected take read with its record (:func:`take_records`)."""
+        return self._replace(takes=tuple(map(take_records(bundle_dir), self.takes)))
+
+
+def take_records(bundle_dir: Path, *, disclose: bool = False) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
+    """One reader's join of a kept take's row with the record it points at, as
+    ``{**row, **record}``, each record read once: a reader reads a take's own
+    record, and only for the takes it reads (#5737 C1b). A take the run did not
+    select keeps its row. A record that cannot be read refuses by name, or with
+    ``disclose`` leaves its take unselected, with the gap as its ``record``."""
+    records: dict[str, Mapping[str, Any]] = {}
+
+    def joined(row: Mapping[str, Any]) -> dict[str, Any]:
+        record_id = row["artifacts"]["record_id"]
+        if not row["selected"]:
+            return {**row, "record_id": record_id}
+        if record_id not in records:
+            record = _read_json_mapping(take_artifact_path(bundle_dir, record_id))
+            if record is None and not disclose:
+                raise RoundSetRefused(CAPTURE_UNREADABLE_SIDECAR, record=record_id, take_id=row["take_id"])
+            records[record_id] = record if record is not None else {
+                "selected": False, "record": unavailable(CAPTURE_UNREADABLE_SIDECAR, {"record": record_id})}
+        return {**row, **records[record_id], "record_id": record_id}
+
+    return joined
+
+
+def with_records(bundle_dir: Path, manifest: Mapping[str, Any], *, disclose: bool = False) -> dict[str, Any]:
+    """``manifest`` with every set's takes read by one :func:`take_records`."""
+    joined = take_records(bundle_dir, disclose=disclose)
+    return {**manifest, "sets": [{**group, "takes": [joined(take) for take in group["takes"]]}
+                                 for group in manifest.get("sets", ())]}
 
 
 def read_run_manifest(

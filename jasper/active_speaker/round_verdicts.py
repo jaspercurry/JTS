@@ -27,7 +27,7 @@ from jasper.audio_measurement.seat_figures import spread_rms_db
 
 from .crossover_v2.commanded import profile_crossover_regions
 from .crossover_v2.intervention import CloudFitTerms
-from .crossover_v2.position_cycle import measured_curve_band, parse_curve_magnitude
+from .crossover_v2.position_cycle import measured_curve_band, parse_curve_magnitude, take_curve
 from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes
 from .linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from .profile import CrossoverRegion
@@ -42,11 +42,11 @@ def _null_ceilings(
         ((group, take) for group in manifest.get("sets", ()) for take in group["takes"]),
         key=lambda group, take: (*capture_identity(group["capture_basis"], set_id=group["set_id"]),
                                 group["capture_basis"].get("level_db"),
-                                json.dumps(take["pose"], sort_keys=True), take["role"])
-        if take.get("role") not in (None, "summed") else None,
+                                json.dumps(take["pose"], sort_keys=True), group["capture_basis"]["role"])
+        if group["capture_basis"].get("role") not in (None, "summed") else None,
     )
     for key, (_group, take) in latest.items():
-        poses.setdefault(key[:-1], {})[take["role"]] = take
+        poses.setdefault(key[:-1], {})[key[-1]] = take
     rows = []
     for (_candidate, capture_graph, *_), roles in poses.items():
         for region in regions:
@@ -54,7 +54,8 @@ def _null_ceilings(
             if any(role not in roles for role in pair):
                 continue
             takes = [roles[role] for role in pair]
-            parsed = [parse_curve_magnitude(take.get("curve") or {}) for take in takes]
+            curves = [take_curve(roles[role], role) or {} for role in pair]
+            parsed = [parse_curve_magnitude(curve) for curve in curves]
             row: dict[str, Any] = {
                 "pose": takes[0]["pose"],
                 "capture_graph": capture_graph,
@@ -73,13 +74,7 @@ def _null_ceilings(
                     tweeter_sweep_lo_hz=upper[2][0],
                     woofer_sweep_hi_hz=lower[2][1],
                 )
-                lo = max(
-                    lo,
-                    *(
-                        take.get("curve", {}).get("validity_floor_hz") or 0
-                        for take in takes
-                    ),
-                )
+                lo = max(lo, *(curve.get("validity_floor_hz") or 0 for curve in curves))
                 row["band_hz"] = [lo, hi]
                 levels = []
                 for freqs, magnitude, _ in (lower, upper):
@@ -106,12 +101,12 @@ def _null_ceilings(
 
 def mark_takes(selected: SetTakes, role: str | None) -> list[Mapping[str, Any]]:
     """One driver's selected MEASURE takes at exactly 0°/0° (ADR-0341)."""
-    return [take for take in selected.on_axis if take.get("phase") == "measure" and take.get("role") == role]
+    return [take for take in selected.on_axis if take.get("phase") == "measure"] if selected.role == role else []
 
 
-def common_measured_band(takes: Sequence[Mapping[str, Any]]) -> list[float] | None:
-    """The band every take measured, so each spread speaks for one span."""
-    bands = [measured[2] for take in takes if (measured := measured_curve_band(take.get("curve") or {}))]
+def common_measured_band(takes: Sequence[Mapping[str, Any]], role: str) -> list[float] | None:
+    """The band every take measured for ``role``, so each spread speaks for one span."""
+    bands = [measured[2] for take in takes if (measured := measured_curve_band(take_curve(take, role) or {}))]
     return [max(lo for lo, _ in bands), min(hi for _, hi in bands)] if bands else None
 
 
@@ -125,10 +120,11 @@ def held_pairs(takes: Sequence[Mapping[str, Any]]) -> list[tuple[Mapping[str, An
 
 
 def pair_spread(
-    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], band_hz: Sequence[float] | None,
+    pairs: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]], band_hz: Sequence[float] | None, role: str,
 ) -> dict[str, Any]:
-    """The largest per-pair RMS dB difference over ``band_hz``, edges included,
-    on the fit's grid, with no level removal or smoothing (ADR-0341)."""
+    """The largest per-pair RMS dB difference of ``role``'s curves over
+    ``band_hz``, edges included, on the fit's grid, with no level removal or
+    smoothing (ADR-0341)."""
     result: dict[str, Any] = {"repeat_spread_db": None, "n_pairs": len(pairs),
                               "repeat_basis": "mark_pairs_max_rms" if pairs else REASON_NO_MARK_PAIRS}
     if not pairs:
@@ -139,7 +135,7 @@ def pair_spread(
         return {**result, "reason": REASON_FIT_BAND_UNAVAILABLE}
     curves = {}
     for take in {id(take): take for pair in pairs for take in pair}.values():
-        measured = measured_curve_band(take.get("curve") or {})
+        measured = measured_curve_band(take_curve(take, role) or {})
         if measured is None:
             return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
         freqs, magnitude, (covered_lo, covered_hi) = measured
@@ -155,7 +151,7 @@ def pair_spread(
 
 
 def _mark_repeat_spread(fit: Mapping[str, Any], group: Mapping[str, Any]) -> dict[str, Any]:
-    return pair_spread(held_pairs(mark_takes(SetTakes.from_row(group), fit["role"])), fit.get("fit_band_hz"))
+    return pair_spread(held_pairs(mark_takes(SetTakes.from_row(group), fit["role"])), fit.get("fit_band_hz"), fit["role"])
 
 
 def round_verdicts(

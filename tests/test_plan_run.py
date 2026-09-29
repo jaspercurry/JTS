@@ -24,6 +24,8 @@ from jasper.active_speaker.measurement_programs import (
     Preset, ProgramPose, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -39,6 +41,7 @@ from jasper.active_speaker.crossover_v2.playback_transaction import PlaybackInte
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
+from jasper.active_speaker.round_view_builders import analyzed_frequency_run
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
@@ -146,14 +149,16 @@ def _takes(document):
     ("staged_stop", ac.LateralWalkRefused, "reason", ac.WALK_STOP_NO_LONGER_VALID),
     ("kept_take", CodedFieldError, "code", "field_required"),
     ("purpose_take", CodedFieldError, "code", "field_required"),
+    ("gated_overlay", CodedFieldError, "code", "field_required"),
 ])
 def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, reader, refusal, field, code):
     """No purpose is inferred from a pose kind (#2902): a staged stop that
     names none is no longer valid, and a banked take that names none refuses
-    by that field."""
+    by that field, the frequency view's gated room overlay included."""
     plan = ac.request_for_preset(run_preset("room", "seat_cube")).to_dict()
     del plan["stops"][0]["purpose"]
-    session, = (bank_seat_round(tmp_path) / "bundle").iterdir()
+    root = bank_seat_round(tmp_path)
+    session, = (root / "bundle").iterdir()
     take = next(session.rglob("positions/*.json"))
     take.write_text(json.dumps({key: value for key, value in json.loads(take.read_text()).items()
                                 if key != "measurement_purpose"}))
@@ -161,6 +166,7 @@ def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, read
         "staged_stop": lambda: ac.AngleCaptureRequest.from_mapping(plan),
         "kept_take": lambda: list(kept_measurements(session, phases=("lateral",), purposes=("room",))),
         "purpose_take": lambda: purpose_take_records(session, purpose="room"),
+        "gated_overlay": lambda: analyzed_frequency_run(root),
     }
     with pytest.raises(refusal) as refused:
         reads[reader]()
@@ -1284,6 +1290,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
                           complete=True, started_s=0, ended_s=1, level_observation={})
     root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")
+    take_artifact_path(round_inputs(root).session_dir, "record").write_text(json.dumps({"take_id": "pilot", "curves": []}))
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest.to_dict()))
     packet = write_round_packet(root, str(path), [])

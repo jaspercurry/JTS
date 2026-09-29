@@ -701,8 +701,10 @@ def _unbanked_frequency_argv(request: pytest.FixtureRequest, root: Path) -> list
 
 
 def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: str) -> list[str]:
+    """A kept room take, whose recording the gated overlay reopens."""
     bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank_take("take", wav_hash="0" * 64 if fault == "wav_hash" else None))
+    path = asyncio.run(bank_take("take", measurement_purpose="room"))
+    write_manifest(bundle, program="room")
     if fault == "record":
         record = bundle / EVIDENCE_ROOT / "artifacts" / path
         record.write_text(f"{record.read_text()} ")
@@ -755,8 +757,6 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
                                      "dsp_replay_window_unavailable"),
     "dsp-levels (pre-ADR-0359 bass)": (_pre_adr_0359_levels_argv, "bass_replay_manifest_predates_adr_0359"),
     "frequency": (_unbanked_frequency_argv, "take_curves_not_banked"),
-    "frequency --analyze-wavs": (lambda request, root: _analyzed_frequency_argv(request, root, "wav_hash"),
-                                 "measurement_capture_identity_mismatch"),
     "impulse": (lambda request, root: [*_kept_take_argv("impulse")(request, root), "--role", "woofer"],
                 "round_role_not_recorded"),
     "nearfield": (lambda request, root: _nearfield_argv(request, root, kept=False), "nearfield_no_kept_takes"),

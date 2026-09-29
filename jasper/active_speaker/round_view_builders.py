@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from dataclasses import replace
 from typing import Any, Mapping
@@ -12,14 +13,14 @@ from typing import Any, Mapping
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 
 from .commissioning_evidence_store import CommissioningEvidenceStoreError
-from .frequency_view import FrequencyRun, build_frequency_view, manifest_frequency_run
+from .frequency_view import FrequencyRun, build_frequency_view
 from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
-from .measurement_analysis import analyze_measurement_bundle
+from .measurement_archive import ArchivedMeasurement, load_measurement
 from .measurement_bass import bass_view
-from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose, run_purposes
-from .run_manifest import room_sets
+from .measurement_programs import PURPOSE_ROOM, run_purposes
 from .crossover_v2.gate_sweep import reference_gated_measurement
 from .crossover_v2.rear_views import rear_document
+from .crossover_v2.record_index import measurement_documents, take_purpose
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
@@ -32,6 +33,11 @@ REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
 
 def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                            run_reference_db: float | None = None) -> FrequencyRun:
+    """Every banked take's curves, read as the measurements page reads them and
+    tagged with the set and selection its run manifest gives them; a selected
+    room take's summed curve gains the gated overlay."""
+    if run_reference_db is not None and not math.isfinite(run_reference_db):
+        raise ValueError(f"measurement_reference_invalid: {run_reference_db}")
     try:
         inputs = round_inputs(path)
         try:
@@ -40,27 +46,33 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
             if exc.reason not in {"round_manifest_missing", "round_manifest_unfinalized"}:
                 raise
             manifest = {}
-        purpose = run_purpose(manifest.get("program"))
-        run = manifest_frequency_run(manifest) if purpose == PURPOSE_SPEAKER else analyze_measurement_bundle(
-            inputs.session_dir, run_reference_db=run_reference_db,
-        )
+        info = json.loads((inputs.session_dir / "info.json").read_text())
+        documents = list(measurement_documents(inputs.session_dir))
+        run = load_measurement(ArchivedMeasurement(info["session_id"], inputs.session_dir, info.get("started_at"),
+                                                   info.get("state")), run_reference_db=run_reference_db,
+                               documents=documents)
+        if unbanked := run.metadata.get("curves"):
+            raise EvidenceUnavailable(unbanked["reason"], {"bundle_dir": str(inputs.session_dir)})
+        by_take = {document.get("take_id"): (row, document) for row, document in documents}
         rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [
             (group, take) for group in manifest.get("sets", ()) for take in group["takes"]]
-        rooms = manifest.get("sets", ()) if purpose == PURPOSE_ROOM else room_sets(manifest) if purpose == PURPOSE_SPEAKER else []
         series = []
         derived: dict[str, dict[str, Any]] = {}
         for curve in run.series:
+            role = curve.details.get("role")
             group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.details.get("take_id")
-                               and (not curve.details.get("set_id") or g["set_id"] == curve.details["set_id"])
-                               and t.get("role") in (None, curve.details.get("role"))), ({}, {}))
+                               and (g["capture_basis"].get("role") or "summed") == role), ({}, {}))
             curve = replace(curve, details={**curve.details, "base": group.get("base", False),
-                                           "set_id": group.get("set_id"),
-                                           **gate_fields({"curve": curve.details}),
+                                           "set_id": group.get("set_id"), "selected": bool(take.get("selected")),
+                                           **gate_fields(curve.details),
                                            "window": "gated" if curve.details.get("gate_window_ms") else "ungated"})
             series.append(curve)
-            if group not in rooms or not take.get("selected") or curve.details.get("role") != "summed":
+            if not take.get("selected") or role != "summed":
                 continue
-            record_path = take["artifacts"]["record_id"]
+            row, document = by_take[take["take_id"]]
+            if take_purpose(row, document) != PURPOSE_ROOM:
+                continue
+            record_path = row.path
             if record_path not in derived:
                 derived[record_path] = reference_gated_measurement(inputs.session_dir, record_path,
                                                                  calibration_root=calibration_root)

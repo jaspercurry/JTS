@@ -15,6 +15,7 @@ from typing import Any, Mapping, NamedTuple
 import numpy as np
 
 from jasper.platform.atomic_io import atomic_write_text
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_programs import PURPOSE_SPEAKER
@@ -142,6 +143,18 @@ def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
     return [curve for curve in curves if isinstance(curve, Mapping)] or None
 
 
+def take_curve(record: Mapping[str, Any], role: str, *, required: bool = False) -> Mapping[str, Any] | None:
+    """The curve a take record banked for ``role``; ``None`` when it banked none
+    for it, as a take whose analysis failed banks none (ADR-0383). A record that
+    banked neither, or none for a ``required`` role, refuses by that field,
+    naming the role (#2902)."""
+    curve = next((curve for curve in record.get("curves") or () if curve.get("role") == role), None)
+    if curve is None and (required or ("curves" not in record and "analysis_error" not in record)):
+        raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {
+            "record": record.get("record_id"), "take_id": record.get("take_id"), "field": "curves", "role": role})
+    return curve
+
+
 def parse_curve_magnitude(
     curve: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, tuple[float, float]] | None:
@@ -241,16 +254,6 @@ def select_pose_curve_pair(
         if roles[0] in by_role and roles[1] in by_role:
             return PoseCurvePair(by_role[roles[0]], by_role[roles[1]], row, document)
     return None
-
-
-def curves_for_take(
-    record: Mapping[str, Any], manifest: Mapping[str, Any] | None = None,
-) -> list[Mapping[str, Any]]:
-    """Read retained curves from the sidecar, then the manifest's role rows."""
-    return list(record.get("curves") or [
-        row["curve"] for group in (manifest or {}).get("sets", ()) for row in group["takes"]
-        if row["take_id"] == (record.get("take_id") or record.get("position_id")) and row.get("curve")
-    ])
 
 
 def parse_curve_complex(
