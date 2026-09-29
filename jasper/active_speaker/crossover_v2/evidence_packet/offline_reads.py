@@ -251,9 +251,7 @@ def _classification_block(raw: Any, reason: str, detail: str = "") -> dict[str, 
 
     Not joined into one list per feature: the typed reader drops rows, so the
     two do not line up by index, and pairing them by frequency is a judgement
-    this module does not make. That is also why the two can disagree on a
-    COLUMN — an artifact banked before the confidence vocabulary was
-    normalised spells ``med`` where ``verdicts[]`` shows ``medium``.
+    this module does not make.
 
     ``uncertainty`` labels every spread the rows publish, and says why the two
     columns that merely LOOK like uncertainties are not — ``gate_slack`` most

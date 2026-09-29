@@ -155,8 +155,8 @@ def _pose_field(value: float | None) -> str:
     return "na" if value is None else f"{value:+.2f}"
 
 
-def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
-    """Prefer the retained program hash; legacy records may bind by file bytes."""
+def _declared_program_sha(doc: Mapping[str, Any]) -> str | None:
+    """The program hash the take's provenance recorded, or ``None``."""
     provenance = doc.get("provenance")
     stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
     if not isinstance(stimulus, Mapping):
@@ -164,14 +164,6 @@ def _declared_program_sha(doc: Mapping[str, Any], root: Path) -> str | None:
     declared = stimulus.get("wav_sha256")
     if isinstance(declared, str) and declared:
         return declared
-    for key in ("wav_path", "path", "program_path"):
-        named = stimulus.get(key)
-        if isinstance(named, str) and named:
-            candidate = Path(named)
-            if not candidate.is_absolute():
-                candidate = root / named
-            if candidate.is_file():
-                return sha256_file(candidate)
     return None
 
 
@@ -355,7 +347,7 @@ def _bind_record(
             REFUSE_CAPTURE_UNREADABLE,
             {"sidecar": sidecar.name, "declared_capture_sha256": doc["wav_sha256"]},
         )
-    sha = _declared_program_sha(doc, root)
+    sha = _declared_program_sha(doc)
     program = programs.get(sha) if sha is not None else None
     # A take that kept its impulses needs no program: nothing is deconvolved again.
     if program is None and not isinstance(doc.get(IMPULSES_KEY), Mapping):

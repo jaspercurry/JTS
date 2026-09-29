@@ -1683,10 +1683,10 @@ def test_an_equidistant_tie_falls_closed():
 #: complete in four columns rather than five, and the lesson outlives the field.
 _BANKED_RECORD = (
     # hz, classification, confidence, measured_q
-    (1037.0, DEFECT_BOOSTABLE, "med", 6.596),
-    (1406.0, DEFECT_CUTTABLE, "med", 5.132),
-    (2057.0, DEFECT_CUTTABLE, "med", 3.949),
-    (4149.0, DEFECT_CUTTABLE, "med", 12.066),
+    (1037.0, DEFECT_BOOSTABLE, "medium", 6.596),
+    (1406.0, DEFECT_CUTTABLE, "medium", 5.132),
+    (2057.0, DEFECT_CUTTABLE, "medium", 3.949),
+    (4149.0, DEFECT_CUTTABLE, "medium", 12.066),
     (4582.0, DEFECT_BOOSTABLE, "high", 12.066),
     (5396.0, DEFECT_CUTTABLE, "high", 12.066),
     (6245.0, DEFECT_BOOSTABLE, "high", 10.401),
