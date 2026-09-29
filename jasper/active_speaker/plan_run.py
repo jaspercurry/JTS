@@ -391,7 +391,7 @@ async def _run(
                     "next_gain_db": assessed.next_gain_db,
                     **{key: value for key, value in assessed.evidence.items()
                        if key.startswith("level_")}})
-        except Exception as exc:  # noqa: BLE001 - the take banks a stop; the loop re-raises after measure
+        except Exception as exc:  # noqa: BLE001 - the take banks a stop; the loop raises an unexpected error after measure
             failures[str(record["take_id"])] = exc
             assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
                                    evidence={"error_type": type(exc).__name__})

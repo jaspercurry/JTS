@@ -35,6 +35,17 @@ TAKE_INCOMPLETE = "incomplete"
 TakeJudge = Callable[[Mapping[str, Any]], tuple[TakeVerdict, Mapping[str, Any]]]
 
 
+def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[str, Any]:
+    basis = capture_basis(record)
+    gains = [segment["gain_db"] for segment in (record.get("program") or {}).get("segments", [])
+             if segment.get("kind") in {KIND_SWEEP, KIND_SUMMED_SWEEP}
+             and (role is None or (segment.get("role") or "summed") == role)]
+    if gains:
+        # The composer can cap the requested rung; report the emitted sweep gain.
+        basis["stimulus_dbfs"] = max(gains)
+    return basis
+
+
 def _take_level(basis: Mapping[str, Any], observed: Mapping[str, Any]) -> dict[str, Any]:
     return {**{key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")},
             **{key: observed.get(key) for key in ("loudest_half_second_db_spl", "level_delta_db")}}
@@ -255,7 +266,7 @@ class RunManifest:
         payload = self.capture_record(record)
         assert self._judge is not None
         verdict, observed = await asyncio.to_thread(self._judge, payload)
-        payload.update(finite_json({"verdict": asdict(verdict), "level": _take_level(capture_basis(payload), observed)}))
+        payload.update(finite_json({"verdict": asdict(verdict), "level": _take_level(_played_basis(payload), observed)}))
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
         return record_id
@@ -299,14 +310,10 @@ class RunManifest:
                        key=lambda take: take["attempt"], default={}).get("alignment", {})
         alignment = capture_alignment_levels(verdict.evidence, previous)
         for role in sorted(roles):
-            basis = capture_basis(record)
+            basis = _played_basis(record, role)
             # Pose is an observation axis, never a set boundary (brief §2.4).
             basis.pop("pose_kind", None)
             basis.update(role=role, stimulus=record.get("regime"), calibration=dict(self.calibration))
-            gains = [segment["gain_db"] for segment in sweeps if (segment.get("role") or "summed") == role]
-            if gains:
-                # The composer can cap the requested rung; report the emitted sweep gain.
-                basis["stimulus_dbfs"] = max(gains)
             set_id = json_fingerprint(basis)
             group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
                 "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})

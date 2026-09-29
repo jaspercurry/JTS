@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    Preset, ProgramPose, run_preset,
+    Preset, ProgramPose, available_presets, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -31,12 +31,12 @@ from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIR
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
-    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
+    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, REASON_INTERNAL_ERROR, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
-from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, kept_measurements
+from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
@@ -544,26 +544,57 @@ def test_operator_retries_are_pooled_across_configs(monkeypatch):
     assert result.status == "partial"
 
 
-def test_failed_analysis_keeps_the_raw_record(monkeypatch):
-    def broken(*args):
-        raise ValueError("bad capture")
-    result, fakes = asyncio.run(_run_gated(_walk([0]), analyze=broken))
-    assert result.status == "partial"
-    assert result.takes_measured == len(fakes.banked) == 1
-    assert result.takes[0]["artifacts"]["record_id"]
-    assert result.takes[0]["fault"] in REASON_REGISTRY
+@pytest.mark.parametrize("case,status,faults", [
+    ("accepted", "complete", [None]),
+    ("refused", "complete", [REASON_DRIFT_BASELINES_DISAGREE, None]),
+    ("drift", "complete", [None, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, None]),
+    ("analysis_error", "partial", [REASON_INTERNAL_ERROR]),
+])
+def test_a_take_banks_the_verdict_and_level_its_manifest_row_holds(case, status, faults):
+    """The bank judges each take before it writes the record, so every banked
+    take holds its manifest row's verdict and level, a refused one and one whose
+    analysis failed too (ADR-0383)."""
+    if case == "drift":
+        result, fakes, _, _ = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
+    else:
+        calls = count(1)
+        def analyze(record):
+            if case == "analysis_error":
+                raise ValueError("bad capture")
+            return replace(_analysis(record), discontinuity_samples=1024 if case == "refused" and next(calls) == 1 else 0)
+        result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
+    records = {record["take_id"]: record for record in fakes.banked}
+    assert (result.status, [row.get("fault") for row in result.takes]) == (status, faults)
+    assert set(records) == {row["take_id"] for row in result.takes}
+    for row in result.takes:
+        record = records[row["take_id"]]
+        assert record["level"] == row["level"]
+        assert record["verdict"] == {
+            "ok": row["quality"]["status"] == TAKE_MEASURED, "fault": row.get("fault"), "next": row.get("next", "accept"),
+            "charge": row.get("charge", "none"), "next_gain_db": row["next_gain_db"],
+            "evidence": row["quality"]["evidence"], "capabilities": row["quality"]["capabilities"], "screens": row["screens"]}
 
 
-def test_real_assessor_sees_glitch_and_retries_once():
-    calls = 0
-    def analyze(record):
-        nonlocal calls
-        calls += 1
-        return replace(_analysis(record), discontinuity_samples=1024 if calls == 1 else 0)
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
-    assert len(fakes.banked) == 2
-    assert result.takes[0]["fault"] == REASON_DRIFT_BASELINES_DISAGREE
-    assert result.status == "complete"
+def test_an_assessor_error_banks_its_take_as_a_stop_then_ends_the_run():
+    fakes = FakeSeams()
+    with pytest.raises(RuntimeError):
+        asyncio.run(_run_gated(_walk([0, 20]), seams=fakes, assessor=Mock(side_effect=RuntimeError)))
+    record, = fakes.banked
+    assert (record["verdict"]["fault"], record["verdict"]["next"], fakes.play.bearings) == (
+        REASON_INTERNAL_ERROR, "stop", [0])
+
+
+@pytest.mark.parametrize("preset_id", available_presets())
+def test_each_planned_capture_plays_one_stimulus(preset_id):
+    """The bank judges each take inside its measure, so the host's rearm and
+    acceptance fall between captures only while each capture plays one
+    stimulus: one bearing at one rung (ADR-0383)."""
+    for layout in run_preset(preset_id).layouts:
+        preset = run_preset(preset_id, layout)
+        request = ac.request_for_preset(preset, mover=preset.mover or "human",
+                                        candidates=("fp-a",) if preset.regime == ac.REGIME_BRANCHES else ())
+        assert all(len(capture.spec.positions) <= 1 and len(capture.spec.level_ladder_dbfs) <= 1
+                   for capture in plan_run.prepare_plan_captures(request, roles_bands=_roles()))
 
 
 @pytest.mark.parametrize("changed", [
