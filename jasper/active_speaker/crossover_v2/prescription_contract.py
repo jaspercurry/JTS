@@ -22,7 +22,7 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_measurement_band_hz,
     resolve_driver_protection_slope_db_per_octave,
 )
-from jasper.active_speaker.branch_chain import branch_chain_peak_db
+from jasper.active_speaker.branch_chain import HEADROOM_MARGIN_DB, branch_chain_peak_db
 from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_BINDING, PROGRAM_HEADROOM_EXHAUSTED
 from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, program_charge_db
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
@@ -397,13 +397,21 @@ def _bass(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "refusal_codes": format_["refusal_reasons"],
         **bass_prescription.bass_evidence_status(evidence),
         "shared_headroom": {
-            "adr": "ADR-0257",
-            "layers": ["driver_linearization", "room", "bass_extension"],
+            "adrs": ["ADR-0385", "ADR-0359", "ADR-0121"],
+            "charge_function": "jasper.active_speaker.program_headroom.charge_db",
+            "charged_layers": ["linearization", "blend_correction", "room_correction", "rear_calibration"],
+            "uncharged_layers": ["bass_extension", "preference_eq"],
+            "margin_db": HEADROOM_MARGIN_DB,
+            "max_charge_db": MAX_PROGRAM_HEADROOM_DB,
             "cost": "maximum_output_level_db",
-            "detail": ("Room, driver and bass boosts share one headroom budget. Room and driver boosts cost "
-                       "maximum level; the bass boost plays at every volume and costs maximum bass level near "
-                       "the clip point, where its compressor gives way (ADR-0359)."),
             "bass_reserve_function": "jasper.bass_extension.dynamic.dynamic_bass_gain_reserve_db",
+            "detail": ("One program charge covers the charged layers: the emitted graph's program peak, where every "
+                       "series stage and mixer sum ahead of an output nets (crossovers, high-passes and trims too), "
+                       f"plus one {HEADROOM_MARGIN_DB:g} dB margin when that peak is over unity, plus the output "
+                       f"trim. Composition refuses {PROGRAM_HEADROOM_EXHAUSTED} past {MAX_PROGRAM_HEADROOM_DB:g} dB. "
+                       "The charge costs maximum output level. The bass boost and preference EQ are not charged: "
+                       "the bass boost plays at every volume, reserves its own lift (bass_reserve_function) and "
+                       "costs maximum bass level near the clip point, where its compressor gives way."),
         },
     }
 

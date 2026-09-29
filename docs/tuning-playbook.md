@@ -295,8 +295,9 @@ This is not a hearing threshold.
 Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
 The harmonic knee across levels is the measured headroom edge; a knee above the top rung is extrapolated and the headroom row says so.
 
-Driver, room and bass boosts spend one shared headroom budget
-(`0257-bass-extension-resumes-rebased-on-wired-capture-and-validated-in-room-below-the-ceiling.md`).
+The bass boost spends no program headroom; it reserves its own lift
+(`contract.bass.shared_headroom`;
+`0385-the-program-charge-is-the-emitted-graphs-peak-with-one-margin.md`).
 
 The reach at each level is the corner; the drive evidence is prescribed minus
 realized; the headroom evidence is the harmonics; nothing is graded against a
@@ -553,7 +554,7 @@ The full ADR file names appear beside their claims above:
 - ADR-0203: structural changes retire the old tune.
 - ADR-0204: tool output and operator authority.
 - ADR-0256: room ceiling, median and taper.
-- ADR-0257: shared boost headroom.
+- ADR-0385: one program charge, which the bass boost does not spend.
 - ADR-0304: bass level evidence; ADR-0311 supersedes its scheduling.
 
 `tuning-methodology.md` gives the cancellation derivation. The room regime
@@ -645,7 +646,8 @@ Bass
 | delta_highpass_exclusive_upper | "detector_lowpass_hz" | field | contract.bass.bounds.delta_highpass_hz_exclusive_upper_field |
 | linkwitz_transform | {"source_hz":{"type":"number","minimum":20.0,"maximum":200.0},"source_q":{"type":"number","minimum":0.3,"maximum":1.5},"target_hz":{"type":"number","minimum":10.0},"target_q":{"type":"number","minimum":0.3,"maximum":1.5}} | Hz, Q | contract.bass.schema.properties.linkwitz_transform.properties |
 | linkwitz_transform_rules | {"adr":"ADR-0359","target_hz_exclusive_upper_field":"source_hz"} | rule | contract.bass.bounds.linkwitz_transform |
-| shared_headroom_layers | ["driver_linearization","room","bass_extension"] | layers | contract.bass.shared_headroom.layers |
+| charged_layers | ["linearization","blend_correction","room_correction","rear_calibration"] | layers | contract.bass.shared_headroom.charged_layers |
+| uncharged_layers | ["bass_extension","preference_eq"] | layers | contract.bass.shared_headroom.uncharged_layers |
 
 Rear
 | Name | Value | Unit | Constant or function field |
