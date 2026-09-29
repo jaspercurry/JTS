@@ -30,12 +30,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     resolve_set as resolve_set, ROUND_INPUT_ERRORS as _ROUND_TOOL_ERRORS,
     default_out as default_out, set_artifact_name as set_artifact_name,
     round_artifact_dir as round_artifact_dir, subject as subject,
-    round_inputs,
-)
-from jasper.active_speaker.crossover_v2.round_views import (
-    BankedRound,
-    RoundViewsError,
-    load_banked_round,
+    RoundViewsError, round_inputs,
 )
 from jasper.audio_measurement.evidence_reasons import (
     REASON_REFUSED as REASON_REFUSED,
@@ -96,14 +91,6 @@ _REASON_BY_CODE = {
 }
 
 
-def _load_round(round_dir: str | Path) -> BankedRound:
-    """Read one round directory. A failure here is the ROUND, not the view."""
-
-    return stage(
-        EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_banked_round, Path(round_dir)
-    )
-
-
 def _write(
     payload: Mapping[str, Any], out: str | Path | None, default_path: Path, *, schema: str,
     make_parents: bool = False,
@@ -158,13 +145,6 @@ def resolved_out(round_dir: Path, artifact: str, set_id: str | None = None) -> P
         return default_out(round_inputs(round_dir), round_dir, artifact, set_id)
     except RoundViewsError:
         return round_dir / set_artifact_name(artifact, set_id)
-
-
-def _view_out(args: argparse.Namespace, round_: BankedRound) -> Path:
-    """This subcommand's own artifact path, from :data:`ARTIFACT_BY_VIEW`."""
-    return default_out(
-        round_.inputs, round_.round_dir, ARTIFACT_BY_VIEW[args.command].artifact, getattr(args, "set", None)
-    )
 
 
 def add_set_argument(

@@ -62,7 +62,7 @@ __all__ = [
 #: The view families, in the order their subcommands are offered; the runbook's
 #: generated tool menu renders that order (ADR-0204).
 _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
-    "grades", "repeat", "candidates", "directivity", "sweeps", "impulse", "compare",
+    "repeat", "candidates", "directivity", "sweeps", "impulse", "compare",
     "frequency", "distortion", "dsp_replay", "classify_features",
     "delay", "room", "room_grade", "bass", "inventory", "speaker_fit", "nearfield",
 ))
