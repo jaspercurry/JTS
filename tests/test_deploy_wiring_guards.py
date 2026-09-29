@@ -352,6 +352,33 @@ def test_recoverable_always_on_services_restart_with_generous_limit():
         assert "StartLimitBurst=20" in text, path
 
 
+def test_librespot_backs_off_below_its_start_limit():
+    """A start Spotify refuses (librespot-org/librespot#1771) keeps retrying.
+
+    systemd's ``service_restart_usec_next`` grows the delay from ``RestartSec``
+    to ``RestartMaxDelaySec`` over ``RestartSteps`` auto-restarts, so failing
+    starts never reach ``StartLimitBurst`` inside ``StartLimitIntervalSec``,
+    which would park the renderer until someone restarts it.
+    """
+    text = (_DEPLOY / "systemd" / "librespot.service").read_text(encoding="utf-8")
+    first = float(value_for(text, "RestartSec") or 0)
+    ceiling = float(value_for(text, "RestartMaxDelaySec") or 0)
+    steps = int(value_for(text, "RestartSteps") or 0)
+    interval = float(value_for(text, "StartLimitIntervalSec") or 0)
+    burst = int(value_for(text, "StartLimitBurst") or 0)
+
+    def delay(n: int) -> float:
+        if n <= 1 or not steps or ceiling <= first:
+            return first
+        return ceiling if n > steps else first * (ceiling / first) ** ((n - 1) / steps)
+
+    starts = [0.0]
+    for n in range(1, 3 * burst):
+        starts.append(starts[-1] + delay(n))
+    busiest = max(sum(1 for t in starts if s <= t < s + interval) for s in starts)
+    assert busiest < burst
+
+
 def test_socket_web_services_have_generous_start_limit():
     """Socket web daemons exit on idle, but should retry through OOM bursts."""
     for path in _RECOVERABLE_SOCKET_WEB_UNITS:
