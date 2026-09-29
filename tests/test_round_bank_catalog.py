@@ -13,6 +13,7 @@ import pytest
 from jasper.active_speaker import baseline_profile, bundles
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import resolve_set, round_inputs
 from jasper.active_speaker.round_bank import (
     REASON_ROUND_AMBIGUOUS, REASON_ROUND_NOT_FOUND, RoundBankError, bank_round, list_rounds, resolve_round,
@@ -105,6 +106,17 @@ def test_show_names_the_takes_every_view_accepts(campaign):
         key: value for key, value in list_rounds()[0].items() if key != "sets"}
     assert [(group["set_id"], [take["take_id"] for take in group["takes"]]) for group in shown["sets"]] == [
         (selected.set_id, list(selected.selected_ids))]
+
+
+def test_the_catalog_reads_each_rounds_manifest_rows_only(campaign):
+    """``list`` and ``show`` read a round's run manifest, never a take's record (#5737 C1b)."""
+    inputs = round_inputs(campaign / "r1")
+    selected = resolve_set(inputs)
+    for take in selected.takes:
+        take_artifact_path(inputs.session_dir, take["artifacts"]["record_id"]).write_text("{")
+
+    assert list_rounds()[0]["sets"] == {selected.set_id: len(selected.selected_ids)}
+    assert [take["take_id"] for take in show_round("r1")["sets"][0]["takes"]] == list(selected.selected_ids)
 
 
 def test_a_view_reads_a_round_by_id_as_by_its_path(campaign, tmp_path, monkeypatch, capsys):

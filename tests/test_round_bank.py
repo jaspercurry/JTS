@@ -38,8 +38,11 @@ from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
     read_position_cycle,
+    take_artifact_path,
     takes_by_position,
 )
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, unavailable
 from jasper.active_speaker.crossover_v2.round_inputs import (
     CAPTURE_STATE_FILENAME, RoundSetRefused, RoundViewsError, resolve_set, round_artifact_dir, round_inputs,
 )
@@ -49,7 +52,7 @@ from jasper.active_speaker.crossover_v2.harmonic_evidence import _bind_measure_c
 from jasper.attribution.session_identity import read_session_identity
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401
 from jasper.active_speaker import measurement_programs, round_view_artifacts
 from jasper.active_speaker.round_view_artifacts import bookkeeping_views
@@ -738,6 +741,49 @@ def test_packet_skips_unreadable_written_room_artifact(tmp_path, contents):
     packet = json.loads((banked.path / "packet.json").read_text())
     assert packet["room"] == []
     assert {**pointer, "set_id": manifest["sets"][0]["set_id"]} in packet["artifacts"]["room_views"]
+
+
+def test_a_kept_take_whose_record_cannot_be_read_is_listed_with_the_gap(tmp_path):
+    """One unreadable record never costs the round (#5737 C1b): the packet lists
+    its take unselected, with the gap as its record, beside the takes it read."""
+    session, state = _live_session(tmp_path)
+    take = {"take_id": "lost", "curves": [], "selected": True, "pose": {"kind": "seat"}}
+    manifest = write_manifest(session, program="room", groups=[{
+        "set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
+        "takes": [take, {**take, "take_id": "kept"}]}])
+    record_id = manifest["sets"][0]["takes"][0]["artifacts"]["record_id"]
+    take_artifact_path(session, record_id).write_text("{")
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state)
+
+    listed = {row["take_id"]: row for row in json.loads((banked.path / "packet.json").read_text())["sets"][0]["takes"]}
+    assert (listed["lost"]["selected"], listed["lost"]["record"]) == (
+        False, unavailable(CAPTURE_UNREADABLE_SIDECAR, {"record": record_id}))
+    assert listed["kept"]["selected"] and "record" not in listed["kept"]
+
+
+def test_the_bank_tags_every_series_and_draws_the_kept_takes(tmp_path, monkeypatch):
+    """Every banked take's series carries its selection; the bank's picture and
+    its index draw the takes the round kept (#5737 C1b)."""
+    source = bank_seat_round(tmp_path / "source")
+    session = round_inputs(source).session_dir
+    refused = next(document["take_id"] for _, document in measurement_documents(session))
+    write_bundle_manifest(session, program="room", refused={refused})
+    mark_state(session, "applied")
+    drawn: list[str] = []
+    monkeypatch.setattr("jasper.active_speaker.round_view_builders.render_frequency_view",
+                        lambda view, path, *, selected, **kwargs: drawn.extend(selected))
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=source / "state.json",
+                        view_runner=run_bookkeeping)
+
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert {series["take_id"] for series in packet["series"] if not series["selected"]} == {refused}
+    view = json.loads((banked.path / "frequency_view.json").read_text())
+    curves = {f"{run['slot']}:{curve['id']}": curve for run in view["runs"] for curve in run["series"]}
+    assert drawn and all(curves[selector]["selected"] for selector in drawn)
+    listed = [line for line in (banked.path / INDEX_FILENAME).read_text().splitlines() if line.startswith("series ")]
+    assert listed and not any(f"take {refused};" in line or line.endswith(f"take {refused}") for line in listed)
 
 
 @pytest.mark.parametrize("window,level,ripple,expected", [

@@ -882,6 +882,22 @@ def test_a_pair_position_without_its_segments_is_disclosed(tmp_path, banked_cand
     assert not set(comparison["positions_unscored"]) & set(entry["pair"]["positions"])
 
 
+def test_a_pair_take_that_banked_no_curve_refuses_by_field(tmp_path, banked_candidates):
+    """A take that banked an empty ``curves`` banked no segment at all, so the
+    pair view refuses by field and role, not as a missing segment (#2902)."""
+    root = pair_round(tmp_path)
+    session = round_inputs(root).session_dir
+    for row, record in measurement_documents(session):
+        if record.get("measurement_purpose") == "rear":
+            (session / record_path(row)).write_text(json.dumps({**record, "curves": []}))
+
+    _, views = packet_of(root)
+
+    row = next(view for view in views if view["view"] == "rear")
+    assert (row["status"], row["reason"], row["detail"]["field"], row["detail"]["role"]) == (
+        "unavailable", "take_curves_not_banked", "curves", rear_views.PAIR_ROLES[0])
+
+
 def test_a_pair_round_never_asks_the_summed_analyzer(tmp_path, banked_candidates, monkeypatch):
     """A branch take's program is two-channel and ``candidate_branches``-scoped,
     which the summed analyzer refuses outright — so the pair path must not ask

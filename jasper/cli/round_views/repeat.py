@@ -89,7 +89,7 @@ def _cmd_repeat_rounds(args: argparse.Namespace) -> int:
         joined = take_records(inputs.session_dir)
         for row in view_sets(read_run_manifest(inputs)):
             basis = row["capture_basis"]
-            takes = [joined(take) for take in mark_takes(SetTakes.from_row(row), basis.get("role"))]
+            takes: list[Mapping[str, Any]] = [joined(take) for take in mark_takes(SetTakes.from_row(row), basis.get("role"))]
             if takes:
                 marks.setdefault((basis.get("side"), basis.get("role")), []).append((index, row["set_id"], takes))
     drivers = []
