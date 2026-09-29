@@ -154,7 +154,6 @@ esac
     assert proc.returncode == 0, proc.stderr
     packet = load_banked_round(destination).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
-    assert packet["entry_baseline"]["available"] is True
     assert (destination / "state.json").is_file() is snapshot
     provenance = json.loads((destination / "provenance.json").read_text())
     assert provenance["missing"] == ([] if snapshot else ["state.json"])

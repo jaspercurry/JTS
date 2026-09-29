@@ -106,7 +106,6 @@ from tests.active_speaker_fixtures import mono_output_topology
 #: fixture's own group modes so a round's bundle and its solos cannot disagree
 #: about how many branches the speaker has.
 __all__ = [
-    "ENTRY_GRID_HZ",
     "MODE_TWO_WAY",
     "MODE_WAY1",
     "SEAT_BAND_HZ",
@@ -128,10 +127,6 @@ MODE_WAY1 = "full_range_passive"
 #: the compared span without re-deriving a union.
 SOLO_BAND_HZ = (200.0, 12000.0)
 SOLO_GRID_HZ = np.linspace(SOLO_BAND_HZ[0], SOLO_BAND_HZ[1], 256)
-
-#: The entry baseline's own reduced grid — log-spaced across all three
-#: ``flat_spec.SPEC_BANDS`` rows so a grade has bins in every band.
-ENTRY_GRID_HZ = np.geomspace(280.0, 16000.0, 90)
 
 #: The grid the VERIFY capture's own banked curve sits on. Deliberately NOT
 #: the solos' grid: the persisted VERIFY pair is on the capture's own
@@ -626,9 +621,6 @@ def entry_baseline_record(
     reference_mark: str,
     graph_fingerprint: str,
     captured_at: str,
-    freqs_hz: Sequence[float],
-    magnitude_db: Sequence[float],
-    excluded: Sequence[bool],
     validity_floor_hz: float | None,
     gate_window_ms: float | None,
     summed_ripple_db: float | None,
@@ -639,24 +631,10 @@ def entry_baseline_record(
     curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
-    """The entry baseline's retained record — a cloud position's shape, minus
-    the group, plus the curve.
-
-    Three fields a cloud position has no use for make THIS capture comparable to
-    the post-apply one, and are why it is a separate builder: WHAT was played
-    (``stimulus_id``), WHERE from (``reference_mark``), and WHICH graph it went
-    through (``graph_fingerprint``).
-
-    The reduced curve rides here, which is what makes this the DURABLE copy:
-    a retained take is write-once and keyed by ``take_id``, while the flow state
-    file holding the same arrays is rewritten on every persist. Bounded at
-    ``round_evidence.BENEFIT_CURVE_MAX_BINS`` upstream. Same three arrays and
-    names as ``round_evidence.EntryBaseline.to_dict``, so one reader covers both.
-
-    ``curves`` is a SECOND curve on a second basis, not a copy: the three arrays
-    are the GRADED side (decimated, magnitude only, carrying the ``excluded``
-    mask), ``curves`` is the MEASURED side on the shared log basis with phase.
-    Neither is derivable from the other.
+    """The timing take's retained record (ADR-0319): a cloud position's shape,
+    minus the group, plus WHAT was played (``stimulus_id``), WHERE from
+    (``reference_mark``), and WHICH graph it went through
+    (``graph_fingerprint``).
 
     The pose is
     :data:`~jasper.active_speaker.crossover_v2.contracts.DESIGN_AXIS_DEG` on
@@ -682,9 +660,6 @@ def entry_baseline_record(
         "vertical_deg": 0,
         "regime": regime,
         "captured_at": captured_at,
-        "freqs_hz": [float(hz) for hz in freqs_hz],
-        "magnitude_db": [float(db) for db in magnitude_db],
-        "excluded": [bool(flag) for flag in excluded],
         "validity_floor_hz": validity_floor_hz,
         "gate_window_ms": gate_window_ms,
         "summed_ripple_db": summed_ripple_db,
@@ -705,8 +680,6 @@ def bank_measure_round(
     root: Path,
     *,
     name: str = "r1-measure",
-    entry_baseline_db: np.ndarray | None = None,
-    entry_excluded: Sequence[bool] | None = None,
     round_ordinal: int = 1,
     mode: str = MODE_TWO_WAY,
     candidates: Sequence[str] = (),
@@ -714,14 +687,12 @@ def bank_measure_round(
     """One STAGE-1 round directory, as the flow banks it.
 
     CHECK, the design-axis MEASURE take carrying both per-driver solos, the
-    lateral walk pose(s), and the entry baseline — plus the round receipt and
-    the flow state. No cloud group and therefore no graded ``spec``: this is the
-    only round shape that produces an entry baseline, and it is the shape the
-    forward model's own worked example points at.
+    lateral walk pose(s), and the timing take — plus the round receipt and
+    the flow state. No cloud group and therefore no graded ``spec``: it is the
+    shape the forward model's own worked example points at.
 
-    ``entry_baseline_db`` defaults to a flat -20 dB curve on
-    :data:`ENTRY_GRID_HZ`. ``mode`` picks the SHAPE: :data:`MODE_TWO_WAY` walks
-    both solos, :data:`MODE_WAY1` the one a subless passive main has.
+    ``mode`` picks the SHAPE: :data:`MODE_TWO_WAY` walks both solos,
+    :data:`MODE_WAY1` the one a subless passive main has.
 
     ``candidates`` makes the walk a LADDER: one lateral pose per named
     candidate at the SAME bearing, each a rung further tilted, which is the
@@ -730,14 +701,6 @@ def bank_measure_round(
     banks.
     """
     round_dir, store, session_id = _open_round(root, name, mode)
-    magnitude_db = (
-        np.full(ENTRY_GRID_HZ.shape, -20.0)
-        if entry_baseline_db is None else np.asarray(entry_baseline_db, dtype=float)
-    )
-    excluded = (
-        [False] * int(ENTRY_GRID_HZ.size)
-        if entry_excluded is None else [bool(flag) for flag in entry_excluded]
-    )
     stamp = {
         "run_id": session_id,
         "graph_fingerprint": "fp-entry-graph",
@@ -776,11 +739,7 @@ def bank_measure_round(
         entry_baseline_record(
             index=3 + len(poses), attempt=1,
             stimulus_id="prog-entry", reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-            freqs_hz=ENTRY_GRID_HZ, magnitude_db=magnitude_db, excluded=excluded,
-            # Capture SCALARS the record carries and every reader in these
-            # suites drops (read_entry_baseline_take narrows to the identity
-            # and the three arrays). Plausible values so the record is whole,
-            # never a number any pin reads.
+            # Plausible values so the record is whole, never a number any pin reads.
             validity_floor_hz=200.0, gate_window_ms=7.0, summed_ripple_db=1.0,
             glitch_detected=False, **stamp,
         ),

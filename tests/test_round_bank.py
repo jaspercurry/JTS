@@ -286,7 +286,6 @@ def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state_path)
     packet = load_banked_round(banked.path).packet
     assert packet["session"]["capture_session_id"] == "capture-1"
-    assert packet["entry_baseline"]["available"] is True
     assert ("state.json" in banked.provenance["missing"]) is not snapshot
 
     def banked_calibration():

@@ -18,7 +18,6 @@ _PREVIOUS_CANDIDATE_FINGERPRINT = "fp-previous"
 
 def _seed_round_state(*, previous_candidate: bool = True) -> dict[str, Any]:
     state = _seed_applied_stage_1_state()
-    state["verify_priors"]["entry_baseline"] = None
     if previous_candidate:
         state["previous_candidate_fingerprint"] = _PREVIOUS_CANDIDATE_FINGERPRINT
         state["previous_candidate_displaced_by"] = "fp-stage-1"

@@ -94,7 +94,7 @@ function responseRun(slot, id) {
       excluded_bands_hz: [[900, 1100]],
     },
     series: [
-      responseSeries("entry", "entry_baseline", true),
+      responseSeries("0-deg", "measurement", true),
       responseSeries("7-deg", "measurement", false, { validity_floor_hz: 250 }),
       responseSeries("14-deg", "analysis", false, { validity_floor_hz: 250 }),
     ],

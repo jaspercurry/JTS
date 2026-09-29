@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One summed capture reduced for comparison, and the entry baseline a round records."""
+"""One summed capture reduced, and the session's timing prior built from it."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -23,7 +23,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "BENEFIT_CURVE_MAX_BINS",
-    "ENTRY_BASELINE_KIND",
     "ITERATION_PLATEAU_DB",
     "MEASURED_BENEFIT_MARGIN_DB",
     "EntryBaseline",
@@ -54,9 +53,6 @@ ITERATION_PLATEAU_DB = 0.25
 #: package, and because governing both sides puts them on one grid by
 #: construction rather than by luck.
 BENEFIT_CURVE_MAX_BINS = 512
-
-#: ``kind`` stamped on the persisted record, matching the package's convention.
-ENTRY_BASELINE_KIND = "jts_crossover_v2_entry_baseline"
 
 
 # --------------------------------------------------------------------------
@@ -134,27 +130,10 @@ def _validity_clamp(grid: np.ndarray, validity_floor_hz: Any) -> tuple[bool, ...
     return tuple(bool(value) for value in (np.asarray(grid, dtype=float) < floor))
 
 
-# --------------------------------------------------------------------------
-# the entry baseline, as it crosses the stage bridge
-# --------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class EntryBaseline:
-    """The pre-apply side of the round, and the graph it was measured on.
-
-    Persisted by the host between stage 1 (which captures it) and stage 2 (which
-    grades against it), so it is JSON-shaped by construction. The graph
-    fingerprint travels with it because a later round binds the currently-active
-    profile as its own entry graph, which a curve with no record of its graph
-    cannot support.
-
-    The flow state file's copy lives exactly as long as the round; the copy
-    meant to outlive it is the write-once retained take — no current product
-    path writes one in that shape, so
-    ``position_cycle.read_entry_baseline_take`` only finds it on a round
-    banked before the engine shipped. Both were written from one
-    :class:`MeasuredResponse`; neither is derived from the other.
+    """The session's timing take (ADR-0319), the prior MEASURE reads its summed
+    alignment from. It lives only in the session: nothing persists it (ADR-0390).
     """
 
     stimulus_id: str
@@ -185,59 +164,3 @@ class EntryBaseline:
             captured_at=_text(captured_at, field_name="captured_at"),
             artifact_ref=str(artifact_ref or ""),
         )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": ENTRY_BASELINE_KIND,
-            "stimulus_id": self.stimulus_id,
-            "reference_mark": self.reference_mark,
-            "freqs_hz": list(self.curve.hz),
-            "magnitude_db": list(self.curve.db),
-            "excluded": [bool(flag) for flag in self.excluded],
-            "graph_fingerprint": self.graph_fingerprint,
-            "captured_at": self.captured_at,
-            "artifact_ref": self.artifact_ref,
-        }
-
-    @classmethod
-    def from_dict(cls, record: Any) -> "EntryBaseline | None":
-        """Rehydrate, or ``None`` for anything this build did not write.
-
-        ``None`` rather than a raise or a partially-trusted record: a pre-key
-        state file, a truncated write and a hand-edited file all mean "there is
-        no comparable baseline".
-        """
-
-        if not isinstance(record, Mapping):
-            return None
-        freqs = record.get("freqs_hz")
-        levels = record.get("magnitude_db")
-        excluded = record.get("excluded")
-        if not isinstance(freqs, (list, tuple)) or not isinstance(
-            levels, (list, tuple)
-        ):
-            return None
-        if not isinstance(excluded, (list, tuple)) or len(excluded) != len(freqs):
-            return None
-        try:
-            curve = ResponseCurve(freqs, levels)
-            return cls(
-                stimulus_id=_text(
-                    record.get("stimulus_id"), field_name="stimulus_id"
-                ),
-                reference_mark=_text(
-                    record.get("reference_mark"), field_name="reference_mark"
-                ),
-                curve=curve,
-                excluded=tuple(bool(flag) for flag in excluded),
-                graph_fingerprint=_text(
-                    record.get("graph_fingerprint"),
-                    field_name="graph_fingerprint",
-                ),
-                captured_at=_text(
-                    record.get("captured_at"), field_name="captured_at"
-                ),
-                artifact_ref=str(record.get("artifact_ref") or ""),
-            )
-        except CrossoverV2ContractError:
-            return None

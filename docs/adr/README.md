@@ -255,7 +255,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0200](0200-the-measurement-toolbox-is-microphone-only.md) | The measurement toolbox is microphone-only | point 3 amended by 0360 |
 | [0201](0201-fdw-stays-out-of-the-correction-path-funded-as-diagnostic-evidence.md) | FDW stays out of the correction path; funded as diagnostic evidence | accepted |
 | [0202](0202-audibility-weighted-co-metrics-beside-the-band-grade.md) | Audibility-weighted co-metrics beside the band grade | accepted |
-| [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | accepted |
+| [0203](0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md) | The incumbent tune retires; recommissioning is structure-first | §4's entry baseline superseded by 0390 |
 | [0204](0204-per-tool-contracts-live-in-the-tool-the-operator-surface-is-tiered.md) | Per-tool contracts live in the tool; the operator surface is tiered | accepted |
 | [0207](0207-tier-1-prescription-bounds-demote-a-cut-is-the-prescribers-to-spend.md) | Tier-1 prescription bounds demote — a cut is the prescriber's to spend | amended by 0367 |
 | [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
@@ -331,7 +331,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0342](0342-one-measurement-path.md) | One measurement path; `jasper-measure` is retired | accepted |
 | [0343](0343-the-room-cut-floor-is-a-disclosure-not-a-refusal.md) | The room cut floor is a disclosure, not a refusal: a cut past the spread-derived floor carries `cut_beyond_spread_db` | accepted |
 | [0344](0344-every-round-view-answer-carries-one-envelope.md) | Every round-view answer carries one envelope: `view`, `schema`, `subject` and `parameters` | §1's home and scope and §4's `ANSWER_SCHEMAS` clause superseded by 0387; §3 amended by 0389 for the `jasper-round` action verbs |
-| [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | §1's rear-headroom fold superseded by 0385 |
+| [0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) | A timing reading that is not comparable never asks for a reset; the timing take plays the front drivers only | §1's rear-headroom fold superseded by 0385; its `entry_grade` note by 0390 |
 | [0346](0346-analysis-views-never-write-a-rounds-evidence.md) | Analysis views never write a round's evidence: `packet_fingerprint` skips `derived_views` | §3 superseded by 0371 |
 | [0352](0352-the-shaped-bass-boost-is-a-linkwitz-transform-reached-through-the-loudness-delta.md) | The shaped bass boost is a Linkwitz transform reached through the Loudness delta: a fixed delta-path stage, the native taper and compressor | amended by 0359 |
 | [0353](0353-the-cabinet-model-is-an-optional-laptop-aid.md) | The cabinet model (near-field takes x a Boundary Lab solve) is an optional laptop-side aid; it reaches the speaker only as a prescription document | accepted |
@@ -364,3 +364,4 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0387](0387-the-tuning-clis-answer-through-one-envelope.md) | The tuning CLIs answer through one envelope: `jasper-round-views`, `jasper-round list\|show` and the prescriber answer through `_refusal.answer`, no success answer has a top-level `status`, and `schema` alone names an artifact's shape | amended by 0389 |
 | [0388](0388-a-declared-geometry-that-carries-front-wall-m-refuses-by-that-field.md) | A declared rig geometry that carries `front_wall_m` refuses by that field and names `jasper-declare-geometry set` as the fix; the front wall comes only from the cabinet-back gap, depth and toe-in | accepted |
 | [0389](0389-the-jasper-round-action-verbs-answer-through-the-envelope.md) | The `jasper-round` action verbs answer through ADR-0387's envelope: their `parameters` are the resolved plan's values, a blocking dry run is a refusal record, and `status` names the wizard's state `state` | accepted |
+| [0390](0390-there-is-no-discrete-before.md) | There is no discrete "before": no take, packet block, state copy, view or page series is kept as a round's "before", a comparison with an earlier take uses #5737 P6's comparand rule, and the ADR-0319 timing take stays | accepted |

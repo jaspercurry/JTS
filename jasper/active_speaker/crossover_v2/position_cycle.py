@@ -20,7 +20,7 @@ from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_programs import PURPOSE_SPEAKER
 from ..run_manifest import kept_measurements
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
-from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .journey import PHASE_LATERAL
 from .record_index import Measurement, bundle_measurements
 
 #: The index's own name, so a reader that finds this document anywhere knows
@@ -60,21 +60,6 @@ _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
 #: several candidates at ONE bearing — without it those rows are
 #: indistinguishable — and ``""`` is a take that named no candidate.
 _DEFAULTED_TAKE_FIELDS = ("vertical_deg", "candidate_id")
-
-#: The three arrays that make a retained entry-baseline take the durable copy.
-#: A take without all three predates the curve riding here and is not readable
-#: as a baseline.
-_ENTRY_CURVE_FIELDS = ("freqs_hz", "magnitude_db", "excluded")
-
-#: What :func:`read_entry_baseline_take` returns — deliberately the field names
-#: ``round_evidence.EntryBaseline.from_dict`` reads, so a caller rehydrates by
-#: handing the result straight to it rather than re-spelling the mapping. The
-#: take's own id is returned as ``artifact_ref``, which is the name that record
-#: gives the artifact it came from.
-_ENTRY_BASELINE_FIELDS = (
-    "stimulus_id", "reference_mark", "graph_fingerprint", "captured_at",
-    *_ENTRY_CURVE_FIELDS,
-)
 
 #: The keys :func:`read_position_cycle` accepts. Strict in both directions: a
 #: key this module does not know is either a newer schema or a hand edit, and
@@ -319,48 +304,6 @@ def parse_curve_complex(
         return None
     tf = 10.0 ** (magnitude_db / 20.0) * np.exp(1j * np.radians(phase_deg))
     return freqs, tf, swept
-
-
-def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:
-    """One banked ``positions/{take_id}.json`` as the round's "before", or ``None``.
-
-    :func:`read_lateral_take`'s sibling, on the phase that is not a group
-    member. Same directory, same accept rule shape, same reason for existing:
-    the record is banked and nothing surfaced it. Filtering on
-    :data:`~.journey.PHASE_ENTRY_BASELINE` says what this take IS, exactly as
-    that reader's own note argues.
-
-    **This is the DURABLE full copy of the entry baseline.** The flow state
-    file carries the same arrays for the duration of one round and is
-    rewritten on the next persist; this take is write-once, so a banked round
-    can still be re-graded (ruling S3, ADR-0228).
-
-    ``None`` for everything that is not one — unreadable, not a JSON object,
-    not a position-evidence record, a different phase, or a record from before
-    the curve rode here. That last case is why the three curve arrays are
-    required rather than defaulted: a take with no curve cannot answer the
-    question this reader is asked, and returning it half-filled would put a
-    baseline-shaped record with no bins in front of a comparison.
-
-    Returns the record narrowed to :data:`_ENTRY_BASELINE_FIELDS`, which are the
-    field names ``round_evidence.EntryBaseline.from_dict`` reads — so a caller
-    rehydrates by handing this straight to it.
-    """
-    try:
-        raw = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(raw, Mapping):
-        return None
-    if raw.get("kind") != POSITION_EVIDENCE_KIND:
-        return None
-    if raw.get("phase") != PHASE_ENTRY_BASELINE:
-        return None
-    if not all(isinstance(raw.get(field), list) for field in _ENTRY_CURVE_FIELDS):
-        return None
-    take = {field: raw.get(field) for field in _ENTRY_BASELINE_FIELDS}
-    take["artifact_ref"] = raw.get("take_id")
-    return take
 
 
 def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:

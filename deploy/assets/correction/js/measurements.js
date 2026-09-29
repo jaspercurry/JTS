@@ -72,15 +72,12 @@ function runColor(run) {
     : cssColor(els.canvas, '--measurement-run-b', '#356c91');
 }
 
-function seriesDash(series, index, allSeries) {
-  if (series.kind === 'entry_baseline') return [10, 4];
-  const detailIndex = allSeries.slice(0, index)
-    .filter((candidate) => candidate.kind !== 'entry_baseline').length;
-  return POSITION_DASHES[detailIndex % POSITION_DASHES.length];
+function seriesDash(index) {
+  return POSITION_DASHES[index % POSITION_DASHES.length];
 }
 
-function seriesSwatch(run, series, index) {
-  const dash = seriesDash(series, index, run.series);
+function seriesSwatch(run, index) {
+  const dash = seriesDash(index);
   return svg('svg.measurement-series__swatch', {
     viewBox: '0 0 24 4',
     'aria-hidden': 'true',
@@ -109,7 +106,7 @@ function draw() {
         color: runColor(run),
         lineWidth: 1.25,
         alpha: 0.55,
-        dash: seriesDash(series, index, run.series),
+        dash: seriesDash(index),
         draw: visibleSeries.has(seriesKey(run, series)),
       });
     });
@@ -156,7 +153,7 @@ function renderSeriesControls() {
         : 'stored curve';
       return h('label.measurement-series__item', null,
         input,
-        seriesSwatch(run, series, index),
+        seriesSwatch(run, index),
         h('span', null, series.label),
         h('small', null, smoothing),
       );
@@ -177,8 +174,7 @@ function detailRows(run) {
     || run.state || 'Unknown';
   const storedFloor = metadata.trusted_floor_hz;
   const floor = Number(storedFloor);
-  const graph = metadata.applied_graph_fingerprint || metadata.entry_graph_fingerprint
-    || (metadata.graph_fingerprints || [])[0];
+  const graph = metadata.applied_graph_fingerprint || (metadata.graph_fingerprints || [])[0];
   const phases = (metadata.phases || []).map((phase) => String(phase).replaceAll('_', ' ')).join(', ');
   return [
     ['Captured', formatDate(run.started_at)],

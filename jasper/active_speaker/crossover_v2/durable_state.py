@@ -225,15 +225,6 @@ def _attempt_optional_positive_int(value: Any) -> int | None:
     return value
 
 
-def _entry_baseline_prior(conductor: Any) -> dict[str, Any] | None:
-    baseline = getattr(conductor, "measure_entry_baseline", None)
-    to_dict = getattr(baseline, "to_dict", None)
-    if not callable(to_dict):
-        return None
-    record = to_dict()
-    return dict(record) if isinstance(record, Mapping) else None
-
-
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
     """Per-role OBSERVE-layer octave deficits
     (``LinearizationFit.observe_octave_summary``, achieved-minus-target dB at
@@ -473,7 +464,6 @@ def build_conductor_state(
         ),
         "verify_priors": {
             "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
-            "entry_baseline": _entry_baseline_prior(conductor),
             "pilot_transfer_reference": None,
         },
         "evidence": dict(evidence) if evidence else None,

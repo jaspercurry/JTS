@@ -236,7 +236,6 @@ def test_the_packet_emits_no_path_no_prose_and_nothing_off_the_allowlist(
     banked = json.loads(take_path.read_text())
     take_path.write_text(json.dumps({**banked, "wav_path": "/var/lib/jasper/commissioning/take.wav"}))
     packet = build_crossover_evidence_packet(session, state_path=state_path)
-    assert packet["entry_baseline"]["available"] is True
     assert needle not in json.dumps(packet)
 
 
@@ -464,24 +463,17 @@ def test_the_packet_reads_a_pose_through_the_index_s_own_accept_rule(tmp_path):
     assert blinded["lateral_poses"]["available"] is False
 
 
-def _bank_entry_baseline(session: Path, *, attempt: int = 1) -> dict[str, Any]:
-    """The round's "before", in the shape a banked round holds it.
-
-    Through the shared take-record builder for the same reason
-    :func:`_bank_lateral_walk` gives: a hand-spelled dict would keep passing the
-    day the record changed shape.
-    """
+def _bank_entry_baseline(session: Path) -> dict[str, Any]:
+    """The round's timing take, in the shape a banked round holds it."""
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     positions = round_dir / "positions"
     positions.mkdir(exist_ok=True)
     record = entry_baseline_record(
-        index=9, attempt=attempt, run_id="capture-1", stimulus_id="prog-entry",
+        index=9, attempt=1, run_id="capture-1", stimulus_id="prog-entry",
         reference_mark="design_axis", graph_fingerprint="fp-entry",
         captured_at="2026-08-11T00:00:00Z",
-        freqs_hz=(200.0, 400.0, 800.0), magnitude_db=(-1.5, 0.0, 1.5),
-        excluded=(True, False, False),
         validity_floor_hz=100.0, gate_window_ms=12.0, summed_ripple_db=1.0,
-        glitch_detected=False, wav_sha256=f"entry-sha-{attempt}",
+        glitch_detected=False, wav_sha256="entry-sha",
     )
     (positions / f"{record['take_id']}.json").write_text(json.dumps({
         "schema_version": 1,
@@ -489,82 +481,6 @@ def _bank_entry_baseline(session: Path, *, attempt: int = 1) -> dict[str, Any]:
         **record,
     }))
     return record
-
-
-def test_the_packet_carries_the_curve_the_round_was_graded_against(tmp_path):
-    """The before, in full, from the only copy that outlives the round.
-
-    The receipt names this capture and carries no curve — *"identities, not
-    payloads"* — and the flow state file's arrays are rewritten on the next
-    persist. Without this block a banked round could say what its "before" was
-    called and never re-grade against it, which is the half of ruling S3's
-    offline promise the bank could not keep.
-    """
-    session, _ = _bundle(tmp_path)
-    banked = _bank_entry_baseline(session)
-
-    block = build_crossover_evidence_packet(session)["entry_baseline"]
-
-    assert block["available"] is True
-    assert block["freqs_hz"] == banked["freqs_hz"]
-    assert block["magnitude_db"] == banked["magnitude_db"]
-    assert block["excluded"] == banked["excluded"]
-    assert block["n_bins"] == 3
-    assert block["n_excluded"] == 1
-    # The three comparability facts, so a reader can tell whether an after is
-    # even comparable to this before.
-    assert block["stimulus_id"] == "prog-entry"
-    assert block["reference_mark"] == "design_axis"
-    assert block["graph_fingerprint"] == "fp-entry"
-    assert block["artifact_ref"] == banked["take_id"]
-
-
-def test_a_round_with_no_banked_before_says_so_rather_than_going_quiet(tmp_path):
-    """Retention is fail-soft, so a missing take is a fact and not a defect."""
-    session, _ = _bundle(tmp_path)
-    _bank_lateral_walk(session, [0])
-
-    block = build_crossover_evidence_packet(session)["entry_baseline"]
-
-    assert block["available"] is False
-    assert block["status"] == "not_evaluated"
-    assert "entry_baseline" in block["reason"]
-
-
-def test_a_retaken_before_publishes_the_take_the_round_ended_on(tmp_path):
-    """"Immediately before apply" is the whole justification, so the LAST one wins.
-
-    A retake supersedes the attempt it followed. Publishing the superseded take
-    would put a curve measured earlier in the session in front of a comparison
-    that is only honest about the capture nearest the apply.
-    """
-    session, _ = _bundle(tmp_path)
-    _bank_entry_baseline(session, attempt=1)
-    second = _bank_entry_baseline(session, attempt=2)
-
-    block = build_crossover_evidence_packet(session)["entry_baseline"]
-
-    assert block["artifact_ref"] == second["take_id"] == "entry_baseline_09_a02"
-
-
-def test_the_packet_reads_the_before_through_the_readers_own_accept_rule(tmp_path):
-    """One vocabulary for "what is an entry-baseline take", not two.
-
-    Same claim, and the same patch target, as the lateral block's: patching the
-    OWNING module cannot be satisfied by a behaviour-identical duplicate inside
-    ``evidence_packet``.
-    """
-    session, _ = _bundle(tmp_path)
-    _bank_entry_baseline(session)
-    assert build_crossover_evidence_packet(session)["entry_baseline"]["available"]
-
-    with mock.patch.object(
-        position_cycle, "read_entry_baseline_take", return_value=None
-    ) as refuse:
-        blinded = build_crossover_evidence_packet(session)
-
-    assert refuse.call_count == 1
-    assert blinded["entry_baseline"]["available"] is False
 
 
 # --------------------------------------------------------------------------- #
