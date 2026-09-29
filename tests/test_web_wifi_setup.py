@@ -345,7 +345,7 @@ def test_run_nmcli_stdin_secret_reaches_child_not_log(caplog):
 
     proc = wifi_setup._run_nmcli(["cat"], stdin_secret=psk)
 
-    assert psk not in caplog.text
+    assert leaked_lines(caplog, psk) == []
     assert psk in proc.stdout
 
 

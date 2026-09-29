@@ -416,7 +416,7 @@ layers = [
   "platform",
 ]
 exhaustive = true
-# Not yet ranked; the ratchet order is tracked in #4719.
+# Not yet ranked.
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
