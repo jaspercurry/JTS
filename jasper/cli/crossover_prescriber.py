@@ -264,9 +264,10 @@ def _cmd_contract(args: argparse.Namespace) -> int:
         selected = resolve_set(inputs, args.set) if inputs is not None and args.set else None
         sources = prescription_sources(inputs, set_id=args.set)
         programs = contract_programs(sources) if inputs is not None else programs_for_topology(load_output_topology())
-        contracts = prescription_contracts(programs=programs, **sources)
-        if args.section != "all" and args.section not in contracts:
+        if args.section != "all" and args.section not in programs:
             return failed(EXIT_REFUSED, "prescription_section_unavailable", args.section)
+        # A named section is built alone, so a section it never reads cannot refuse it.
+        contracts = prescription_contracts(programs=programs if args.section == "all" else (args.section,), **sources)
         document = contracts if args.section == "all" else contracts[args.section]
         payload = contract_json(document)
     except RoundSetRefused as exc:
@@ -279,7 +280,7 @@ def _cmd_contract(args: argparse.Namespace) -> int:
         # The contracts' own compact serialization keeps the answer the size of what it serves.
         print(contract_json(envelope(
             args.command, schema=ANSWER_SCHEMAS[f"{PROG} contract"], subject=read, parameters=parameters,
-            sections=contracts if args.section == "all" else {args.section: document},
+            sections=contracts,
         )))
         return EXIT_OK
     out = Path(args.out)

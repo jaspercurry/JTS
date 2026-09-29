@@ -403,6 +403,18 @@ def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, name
     assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]
 
 
+@pytest.mark.parametrize("section,code", [("speaker", cli.EXIT_UNREADABLE), ("room", cli.EXIT_OK)])
+def test_a_named_section_is_built_alone(round_bank, capsys, section, code):
+    """A declared woofer diameter of 0 cannot be built into the speaker section; a room request
+    never builds that section, so it still answers."""
+    bank, _ = round_bank
+    draft = json.loads((bank / "design-draft.json").read_text())
+    next(row for row in draft["manual_settings"]["drivers"] if row["role"] == "woofer")["radiating_diameter_mm"] = 0.0
+    (bank / "design-draft.json").write_text(json.dumps(draft))
+    assert cli.main(["contract", "--round", str(bank), "--section", section]) == code
+    assert set(json.loads(capsys.readouterr().out).get("sections", ())) == ({section} if code == cli.EXIT_OK else set())
+
+
 def test_live_contract_reads_the_view_writers_path(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     session, _ = _bundle(tmp_path)
