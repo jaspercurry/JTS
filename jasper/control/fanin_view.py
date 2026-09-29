@@ -23,7 +23,7 @@ from jasper.control._health_fields import (
     nonneg_rate,
 )
 from jasper.fanin.status import fanin_inputs_by_label, read_fanin_status
-from jasper.json_fields import as_float
+from jasper.platform.json_fields import as_float
 from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS, MusicSourceSpec
 
 # Fallback mixer rate when fan-in STATUS omits output.sample_rate.

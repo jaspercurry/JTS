@@ -27,7 +27,7 @@ from jasper.chip_aec.policy import (
     ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
 )
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
-from jasper.env_load import parse_bool_value
+from jasper.platform.env_load import parse_bool_value
 from jasper.mics import xvf3800
 from jasper.mics.profile_ids import (
     PROFILE_AUTO, PROFILE_CUSTOM, PROFILE_DIRECT_MIC,

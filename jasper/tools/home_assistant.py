@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from . import tool
 
 from jasper.service_state.home_assistant import DEFAULT_READ_TIMEOUT_SEC, HAClient
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

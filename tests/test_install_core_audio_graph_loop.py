@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import source_intent_units as units
+from jasper.platform import source_intent_units as units
 from jasper.fanin.coupling_reconcile import ENTRY_LOCK_PATH
 from jasper.local_sources.registry import local_source_audio_refresh_units
 from tests.install_surface import installer_shell_paths

@@ -11,7 +11,7 @@ import pytest
 
 import jasper.control.camilla_rate_storm as camilla_rate_storm
 from jasper.control.camilla_health import CAMILLA_UNIT
-from jasper.service_units import CAMILLA_SERVICE
+from jasper.platform.service_units import CAMILLA_SERVICE
 from tests._log_events import event_fields, event_records
 from tests.test_airplay_health import _material_short_read_lines, _storm_sampler
 

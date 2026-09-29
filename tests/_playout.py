@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The TTS-playout stand-ins, one per real surface: `FakeOutputdStream` for
-`jasper.tts_playout._OutputdStreamAdapter` (the blocking socket writer) and
-`FakeTts` for `jasper.tts_playout.TtsPlayout`; `playout_over_fake_stream`
+`jasper.runtime.tts_playout._OutputdStreamAdapter` (the blocking socket writer) and
+`FakeTts` for `jasper.runtime.tts_playout.TtsPlayout`; `playout_over_fake_stream`
 builds a real `TtsPlayout` writing into a `FakeOutputdStream`.
 
 Both record every call; per-test behaviour comes from the constructor hooks
@@ -20,7 +20,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jasper.tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 
 _DEFAULT_FLUSH_ACK = {
     "ok": True,

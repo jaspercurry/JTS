@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Voice-side measurement lease, driven by MEASURE_PAUSE / MEASURE_RESUME
-and startup adoption. ``jasper.measurement_window`` owns the window;
+and startup adoption. ``jasper.runtime.measurement_window`` owns the window;
 this class alone writes the shared measurement event read by wake/session paths.
 """
 
@@ -17,7 +17,7 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from ..control.measurement_hold import read_measurement_hold
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from .assistant_output import AssistantOutput
@@ -231,7 +231,7 @@ class MeasurementHold:
 
         Refuses with `BUSY` while a voice session is active — yanking it would
         orphan the user's turn. The coordinator
-        (jasper.measurement_window) checks STATUS first.
+        (jasper.runtime.measurement_window) checks STATUS first.
 
         Ordering is load-bearing (issue #1898): admission closes first, then
         the measurement event is set and the MEASUREMENT_AUTOCLEAR_SEC safety

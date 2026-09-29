@@ -57,8 +57,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from jasper.env_load import parse_bool_value, read_env_file_state, HOME_ASSISTANT_ENV_PATH
-from jasper.log_event import log_event
+from jasper.platform.env_load import parse_bool_value, read_env_file_state, HOME_ASSISTANT_ENV_PATH
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     import httpx

@@ -4,7 +4,7 @@
 
 """One case table for both redactors.
 
-`jasper/secret_redaction.py` is the Python one; `redact_jasper_diagnostics`
+`jasper/platform/secret_redaction.py` is the Python one; `redact_jasper_diagnostics`
 in `scripts/_diagnostic_redaction.sh` is the bash one that guards the support
 bundle when the venv is the broken thing. Rows flagged `bash=True` sit inside
 the bash redactor's mandate and must come out identical from both.
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.secret_redaction import (
+from jasper.platform.secret_redaction import (
     SECRET_ENV_NAME_RE,
     SECRET_ENV_SUFFIX_RE,
     redact_secrets,

@@ -36,9 +36,9 @@ from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
 from tests._log_events import event_field_maps

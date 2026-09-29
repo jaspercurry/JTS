@@ -18,12 +18,12 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import CodedFieldError
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.json_fields import CodedFieldError
+from jasper.platform.json_fields import utc_now_iso as _utc_now
 from jasper.audio_routes.output_topology import OutputTopology
-from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
-from jasper.paths import resolve_state_path
+from jasper.platform.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
+from jasper.platform.paths import resolve_state_path
 from ._common import (
     DRIVER_CLASSES,
     MANUAL_CANDIDATE_FIELDS,
@@ -981,7 +981,7 @@ def save_design_draft(
     """Persist a design draft atomically. This does not authorize playback.
 
     ``durable=True`` fsyncs the write before it is visible (see
-    :func:`jasper.atomic_io.atomic_write_text`). The default stays ``False``
+    :func:`jasper.platform.atomic_io.atomic_write_text`). The default stays ``False``
     for ordinary editing saves; callers that are accepting a value onto the
     Sound declaration (the crossover-accept seam) opt in explicitly so that
     acceptance survives a power loss, not just a torn write.

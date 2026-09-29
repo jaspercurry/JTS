@@ -16,11 +16,11 @@ from typing import Any, Awaitable, Callable, Mapping
 import yaml
 
 from jasper.active_speaker.commissioning_admission import parse_running_graph
-from jasper.json_fields import sha256_text
+from jasper.platform.json_fields import sha256_text
 from jasper.active_speaker.restore_wait import attempt_graph_restore
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_control.camilla import CamillaUnavailable
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .measure_spec import CANDIDATE_SCOPES, GRAPH_SCOPES, GRAPH_SCOPE_DRIVERS
 from .tuning_scope import COMPARABILITY_BOUNDARY, tuning_scope_fingerprint
 

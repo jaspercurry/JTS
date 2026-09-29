@@ -752,7 +752,7 @@ def test_the_module_writes_no_journal_lines():
     """The package is side-effect free: it journals nothing."""
     import ast
 
-    assert "jasper.log_event" not in _spatial_imports()
+    assert "jasper.platform.log_event" not in _spatial_imports()
     assert not hasattr(spatial, "logger")
 
     called = {

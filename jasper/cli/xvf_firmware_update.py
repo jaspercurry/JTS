@@ -19,16 +19,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
-from jasper.json_fields import utc_now_iso
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.json_fields import utc_now_iso
 
 from ..mics import xvf3800
-from ..service_units import (
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
 )
-from jasper.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
+from jasper.platform.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
 
 
 STATE_PATH = Path(XVF_FIRMWARE_UPDATE_STATE_PATH)

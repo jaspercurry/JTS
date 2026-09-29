@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json, read_json_mapping
+from jasper.platform.atomic_io import atomic_write_json, read_json_mapping
 
 OUTCOME_PATH = Path("/var/lib/jasper/chip-aec-commission.json")
 SCHEMA_VERSION = 1

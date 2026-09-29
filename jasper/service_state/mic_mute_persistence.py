@@ -31,9 +31,9 @@ import logging
 import os
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text
-from jasper.env_file import read_value
-from jasper.env_load import parse_bool_value
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.env_file import read_value
+from jasper.platform.env_load import parse_bool_value
 
 logger = logging.getLogger("jasper.mic_mute_persistence")
 

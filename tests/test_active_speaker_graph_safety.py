@@ -20,7 +20,7 @@ import yaml
 
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.profile import SUPPORTED_LR_ORDERS
-from jasper.speaker_layout import SUB_CROSSOVER_HZ_HI
+from jasper.platform.speaker_layout import SUB_CROSSOVER_HZ_HI
 
 MUTE_GAIN = -120.0
 

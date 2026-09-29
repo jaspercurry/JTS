@@ -22,7 +22,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, REASON_NO_IMPULSE,
 )
 from jasper.audio_measurement.seat_figures import band_indices, figure_level_db
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 #: Applied before the log so a bin that cancelled to exactly zero banks a
 #: number instead of ``-inf``, which is not JSON — the same floor

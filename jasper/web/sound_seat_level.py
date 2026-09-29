@@ -34,7 +34,7 @@ from typing import Any, Mapping
 
 from jasper.active_speaker.seat_level_reference import DEFAULT_TARGET_DB_SPL
 from jasper.audio_measurement import household_mic
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ class _SeatLevelSession:
     lock allows at a time. The cross-process guard against two passes
     running at once -- including one started directly from the CLI -- is
     ``jasper-seat-level``'s own ``measurement_window`` lease
-    (:mod:`jasper.measurement_window`), not this lock.
+    (:mod:`jasper.runtime.measurement_window`), not this lock.
     """
 
     def __init__(self) -> None:
@@ -198,7 +198,8 @@ class _SeatLevelSession:
             proc = self._process
             target = self._target_db_spl
             result = self._result
-        if proc is not None and proc.poll() is None:
+        # _reap clears _process only as it records _result, so no poll() here (#5925).
+        if proc is not None:
             return {"state": "running", "target_db_spl": target}
         if result is not None:
             if result["force_stopped"]:

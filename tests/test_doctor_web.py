@@ -20,7 +20,7 @@ from jasper.cli import doctor
 from jasper.cli.doctor import _evidence, _shared
 from jasper.cli.doctor import web as doctor_web
 from jasper.control import control_token
-from jasper.conversation_history import (
+from jasper.runtime.conversation_history import (
     CAPTURE_ENABLED_ENV,
     ConversationStore,
     ConversationTurn,

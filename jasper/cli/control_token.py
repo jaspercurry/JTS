@@ -37,7 +37,7 @@ import sys
 from html import escape
 from pathlib import Path
 
-from ..atomic_io import atomic_write_bytes, atomic_write_text
+from jasper.platform.atomic_io import atomic_write_bytes, atomic_write_text
 from ..control import control_token
 
 # Baked by jasper.web.landing at install; rewritten here because jasper/cli may

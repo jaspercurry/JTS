@@ -49,8 +49,8 @@ from urllib.parse import parse_qs, urlparse
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
 
-from ..log_event import log_event
-from ..logging_setup import configure_logging
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
 from ..platform.systemd import no_hold
 
 from ._common import (

@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from .speech_activity import END_OF_UTTERANCE_SILENCE_SEC
 
 logger = logging.getLogger(__name__)

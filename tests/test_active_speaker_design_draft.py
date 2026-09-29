@@ -29,7 +29,7 @@ from jasper.active_speaker.declaration_vocabulary import (
     supported_declaration_filter_types,
     supported_declaration_slopes_db_per_octave,
 )
-from jasper.json_fields import CodedFieldError
+from jasper.platform.json_fields import CodedFieldError
 from jasper.active_speaker.driver_pad import DriverPadError
 from jasper.audio_routes.output_topology import OutputTopology
 from jasper.active_speaker.installation import installation_evidence, normalise_installation

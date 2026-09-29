@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from jasper.atomic_io import EnvKeyAction as EnvAction
-from jasper.env_file import read_env_file
+from jasper.platform.atomic_io import EnvKeyAction as EnvAction
+from jasper.platform.env_file import read_env_file
 
 if TYPE_CHECKING:
     from jasper.audio_hardware.reconcile import Pass

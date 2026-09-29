@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from . import PackOutcome, Tool, build_tool
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from .tool_state import read_tool_state
 from .audio import make_audio_tools
 from .calendar import make_calendar_tools
@@ -47,7 +47,7 @@ from .weather import make_weather_tools
 
 if TYPE_CHECKING:
     from jasper.service_state.google_creds import GoogleClients
-    from ..google_routes import GoogleRoutesClient
+    from jasper.runtime.google_routes import GoogleRoutesClient
     from jasper.service_state.home_assistant import HAClient
     from jasper.audio_control.renderer import RendererClient
     from jasper.service_state.spotify_router import Router

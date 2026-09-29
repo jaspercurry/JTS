@@ -20,7 +20,7 @@ import httpx
 import pytest
 
 from jasper.control import service_restart
-from jasper import atomic_io, env_file
+from jasper.platform import atomic_io, env_file
 from jasper.voice import catalog
 from jasper.voice import model_discovery
 from jasper.web import _common, voice_cost_page, voice_costs, voice_setup

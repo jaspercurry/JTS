@@ -42,9 +42,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..env_load import GROUPING_ENV_FILE
-from ..ring_header import RingFlowState, ring_flow_state
-from ..systemd_probe import unit_states
+from jasper.platform.env_load import GROUPING_ENV_FILE
+from jasper.platform.ring_header import RingFlowState, ring_flow_state
+from jasper.platform.systemd_probe import unit_states
 from . import config
 from .config import SNAP_STREAM_ID, GroupingConfig
 from .effective_role import read_effective_role_status
@@ -514,7 +514,7 @@ def _ring_age_ms(age_ns: int | None) -> int | None:
 
 
 def _grouping_ring_signal(flow: RingFlowState) -> dict[str, Any]:
-    """Project one :class:`~jasper.ring_header.RingFlowState` into the ``ring``
+    """Project one :class:`~jasper.platform.ring_header.RingFlowState` into the ``ring``
     block. PURE.
 
     The ingress transport's own health, which no unit state can see: every

@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.env_file import read_value
+from jasper.platform.env_file import read_value
 from jasper.fanin import coupling_auto as ca
 from jasper.fanin import coupling_reconcile as cr
 from jasper.fanin import latency_mode as lm
@@ -59,7 +59,7 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
     """Keep effective-env tests independent of the developer host's /etc state."""
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.platform.env_load.BASE_ENV_PATH", str(jasper_env))
     monkeypatch.setattr("jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env))
 
 

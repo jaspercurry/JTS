@@ -33,7 +33,7 @@ from jasper.active_speaker.plan_run import RunDoor, after_grading
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_ENTRY_BASELINE

@@ -17,7 +17,7 @@ Three pieces here, all load-bearing:
   production code under test) that writes to os.environ directly gets
   cleaned up at teardown. pytest's monkeypatch only rolls back changes
   *it* made via setenv/delenv; direct os.environ[...] = ... mutations
-  (e.g. by jasper.env_load.load_env_files, which is what production
+  (e.g. by jasper.platform.env_load.load_env_files, which is what production
   ships) silently leak across tests. The leak's most-visible victim
   was tests/voice_eval/ running with OPENAI_API_KEY=wiz-key dragged in
   from a test_doctor case — see #254 / #255 / #256 for context (this
@@ -310,7 +310,7 @@ def _isolate_jasper_logger_level():
 def _isolate_root_logger_filters():
     """Undo any filter a test's real ``main()`` left on a root handler.
 
-    ``configure_logging()`` (``jasper/logging_setup.py``) unconditionally
+    ``configure_logging()`` (``jasper/platform/logging_setup.py``) unconditionally
     adds ``REDACTING_FILTER`` to every handler already on root -- pytest's
     own session-long capture handler included -- and never removes it.
     Restoring each handler's filter list after every test is what keeps
@@ -417,7 +417,7 @@ def bare_root_logger():
 def logging_sandbox(monkeypatch):
     """A deterministic single 'journal' StreamHandler on a clean root, yielded
     so tests can assert its level."""
-    from jasper import flight_recorder as fr
+    from jasper.runtime import flight_recorder as fr
 
     with bare_root_logger() as root:
         console = logging.StreamHandler(io.StringIO())

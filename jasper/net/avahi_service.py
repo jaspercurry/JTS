@@ -31,7 +31,7 @@ each caller; for the control advert, the retry opportunities are a later
 render is idempotent (a byte-stable render skips the write, so a
 long-lived advert like
 ``_jasper-control._tcp`` never tears down and re-adds its service-group)
-and atomic through :func:`jasper.atomic_io.atomic_write_text`.
+and atomic through :func:`jasper.platform.atomic_io.atomic_write_text`.
 
 The two callers differ only in whether the substituted values need
 XML-escaping, which is the ``escape`` knob:
@@ -64,8 +64,8 @@ import re
 from pathlib import Path
 from xml.sax.saxutils import escape as xml_escape
 
-from jasper.atomic_io import atomic_write_text
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.log_event import log_event
 
 # Detector for any unresolved __FOO__ placeholder. Catches template
 # drift (a new token added to a template without a matching key in the

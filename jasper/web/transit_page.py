@@ -10,13 +10,13 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import google_routes
+from jasper.runtime import google_routes
 from jasper.service_state import location_state
 from .. import transit
 from ..transit import citibike
 from ..transit.bus import parse_bus_stops
-from ..env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value, GOOGLE_ROUTES_ENV_PATH
-from ..secret_redaction import redact_secrets
+from jasper.platform.env_load import BASE_ENV_PATH, TRANSIT_ENV_PATH, parse_bool_value, GOOGLE_ROUTES_ENV_PATH
+from jasper.platform.secret_redaction import redact_secrets
 from ._common import csrf_field_html, mask_secret, value_for_env as _value_for
 from .chrome import canonical_banner, canonical_header, canonical_page
 

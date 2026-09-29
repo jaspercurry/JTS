@@ -21,10 +21,10 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.atomic_io import atomic_write_json, fsync_directory
-from jasper.json_fields import finite_float as _finite, require_sha256_hex, utc_now_iso as _utc_now
-from jasper.log_event import log_event
-from jasper.paths import resolve_state_path
+from jasper.platform.atomic_io import atomic_write_json, fsync_directory
+from jasper.platform.json_fields import finite_float as _finite, require_sha256_hex, utc_now_iso as _utc_now
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import resolve_state_path
 
 from . import passive_profile as _passive
 from ._common import coerce_finite_float

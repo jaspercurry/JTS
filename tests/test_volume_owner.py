@@ -22,7 +22,7 @@ import pytest
 
 from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled
 
-from jasper.volume_latch import READBACK_TOLERANCE_DB
+from jasper.platform.volume_latch import READBACK_TOLERANCE_DB
 from jasper.audio_resources.volume_owner import (
     ClaimKind,
     VolumeClaimConflict,
@@ -40,7 +40,7 @@ class _DoorRaised(Exception):
     """A door that raises something the fail-closed set does not name.
 
     ``CamillaUnavailable`` is exactly this shape: an ``Exception`` outside
-    :data:`~jasper.volume_latch.FADER_IO_ERRORS`, which
+    :data:`~jasper.platform.volume_latch.FADER_IO_ERRORS`, which
     ``set_and_confirm_volume`` therefore does not swallow. Holders are
     contracted to bind ``best_effort=True`` doors so it never escapes; this is
     what happens when one does not.

@@ -21,7 +21,7 @@ from jasper.active_speaker.baseline_reemit import reemit_applied_baseline
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.graph_selector import (
     PARKED_MUTED_STATUS,
@@ -35,7 +35,7 @@ from jasper.active_speaker.graph_selector import (
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.audio_routes.output_topology import OutputTopology, topology_config_fingerprint
 from jasper.audio_routes.output_topology_store import load_output_topology_strict, stamp_statefile_convergence
-from jasper.service_units import OUTPUTD_SERVICE
+from jasper.platform.service_units import OUTPUTD_SERVICE
 
 logger = logging.getLogger(__name__)
 

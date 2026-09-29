@@ -37,7 +37,7 @@ from ..fanin.status import (
 )
 from jasper.playback_state.music_sources import SOURCE_SPECS, Source
 from jasper.audio_routes.output_hardware import current_usb_data_role
-from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
+from jasper.platform.service_units import read_unit_states, unit_active, unit_activating, unit_loaded
 from jasper.audio_routes.source_intent import read_source_intents
 from jasper.device_probe.usbgadget import uac2_card_present
 from .markers import local_sources_allowed
@@ -293,7 +293,7 @@ def sources_parked() -> bool:
 def read_source_status() -> dict[str, dict[str, bool | str]]:
     """One-shot snapshot of all four sources. The BT branch runs an
     asyncio task because dbus-next is async-only; the rest share one
-    ``systemctl show`` batch via :func:`jasper.service_units.read_unit_states`."""
+    ``systemctl show`` batch via :func:`jasper.platform.service_units.read_unit_states`."""
     intents = read_source_intents()
     # None (not {}) is preserved past this point: it means the batch itself
     # is unavailable (systemctl unreachable/timed out), which every

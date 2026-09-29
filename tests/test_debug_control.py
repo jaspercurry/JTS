@@ -15,7 +15,7 @@ import pytest
 
 from jasper.audio_control import debug_mode
 from jasper.control import debug_control
-from jasper.env_file import read_env_file
+from jasper.platform.env_file import read_env_file
 
 from tests.control_server_fixtures import (
     _explicit_passive_output_topology,

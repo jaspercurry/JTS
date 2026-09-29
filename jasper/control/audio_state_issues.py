@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jasper.playback_state.music_sources import Source
-from ..service_units import CAMILLA_SERVICE, unit_failed
+from jasper.platform.service_units import CAMILLA_SERVICE, unit_failed
 from ._health_fields import mapping
 from ._health_sources import (
     SOURCE_HEALTH_UNITS,

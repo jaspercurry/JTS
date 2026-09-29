@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import outputd_failure_reconcile_state as reader
+from jasper.runtime import outputd_failure_reconcile_state as reader
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-failure-reconcile"

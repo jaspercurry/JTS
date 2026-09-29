@@ -15,7 +15,7 @@ from jasper.audio_measurement.ramp import SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.frame_ledger import LOST_AT_CAPTURE_OVERRUN
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
-from jasper.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
+from jasper.platform.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
 
 from .spatial import GEOMETRY_RETRY_POSITIONS
 

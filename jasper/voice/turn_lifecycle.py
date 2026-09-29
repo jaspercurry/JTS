@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import NoReturn
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.service_state.usage import SpendCap, UsageStore
 from ._tasks import (

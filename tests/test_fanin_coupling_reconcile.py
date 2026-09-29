@@ -17,14 +17,14 @@ SHIPPED_RING_CONF_D = (
     Path(__file__).resolve().parents[1] / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
 )
 
-from jasper import source_intent_units as units
+from jasper.platform import source_intent_units as units
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
-from jasper.env_file import read_value
+from jasper.platform.env_file import read_value
 from jasper.fanin.coupling_reconcile import (
     _write_env_actions,
     reconcile_coupling,
 )
-from jasper.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
+from jasper.platform.env_load import FANIN_ENV_PATH, OUTPUTD_ENV_PATH
 from jasper.fanin.ring_readiness import ring_edge_width_ready
 from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
@@ -53,7 +53,7 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
 
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.platform.env_load.BASE_ENV_PATH", str(jasper_env))
     monkeypatch.setattr("jasper.fanin.ring_readiness.BASE_ENV_PATH", str(jasper_env))
     # ...and of its /var/lib state. ``resolve_ring_wire`` reads the box's declared
     # ring wire off the SAME jasper.env -> fanin.env chain jasper-fanin resolves,
@@ -63,7 +63,7 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     # exercises a real fanin.env passes its own path explicitly.
     fanin_env = tmp_path / "isolated-fanin.env"
     fanin_env.write_text("", encoding="utf-8")
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr("jasper.platform.env_load.FANIN_ENV_PATH", str(fanin_env))
     monkeypatch.setattr("jasper.fanin.ring_readiness.FANIN_ENV_PATH", str(fanin_env))
     # Keep every main() invocation's entry flock inside the test tmp dir — never
     # the real /run path — so parallel test workers can't contend on one file.
@@ -116,28 +116,21 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
 
-def _recorder(
-    *,
-    outputd_ok=True,
-    fanin_ok=True,
-    camilla_ok=True,
-    camilla_fail_for=None,
-):
+def _recorder():
     """Build (calls, restart_outputd, restart_fanin, reconcile_camilla) hooks."""
     calls: list[str] = []
 
     def restart_outputd() -> tuple[bool, str]:
         calls.append("outputd")
-        return (outputd_ok, "" if outputd_ok else "outputd restart failed")
+        return (True, "")
 
     def restart_fanin() -> tuple[bool, str]:
         calls.append("fanin")
-        return (fanin_ok, "" if fanin_ok else "fanin restart failed")
+        return (True, "")
 
     def reconcile_camilla() -> tuple[bool, str]:
         calls.append(f"camilla:{COUPLING_SHM_RING}")
-        ok = camilla_ok and camilla_fail_for is None
-        return (ok, "reconciled" if ok else "invalid config")
+        return (True, "reconciled")
 
     return calls, restart_outputd, restart_fanin, reconcile_camilla
 
@@ -213,7 +206,7 @@ def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
         raise OSError("disk full")
 
     # The publish moved into the shared locked writer; patch it where it lives.
-    monkeypatch.setattr("jasper.atomic_io.atomic_write_text", boom)
+    monkeypatch.setattr("jasper.platform.atomic_io.atomic_write_text", boom)
     res = _reconcile(
         fanin_env=fanin_env,
         outputd_env=outputd_env,
@@ -258,7 +251,7 @@ def test_outputd_env_write_gives_up_after_the_bound_wait(tmp_path, monkeypatch):
     forever; the shared env writer behind ``_write_env_actions`` passes an
     explicit bound for exactly this reason.
     """
-    from jasper import atomic_io
+    from jasper.platform import atomic_io
     from jasper.fanin import coupling_reconcile as cr
 
     monkeypatch.setattr(atomic_io, "ENV_FILE_LOCK_TIMEOUT_SECONDS", 0.2)
@@ -282,7 +275,7 @@ def test_cli_main_hydrates_env_files_before_reconciling(monkeypatch):
 
     order: list[str] = []
     monkeypatch.setattr(
-        "jasper.env_load.load_env_files", lambda *a, **k: order.append("hydrate")
+        "jasper.platform.env_load.load_env_files", lambda *a, **k: order.append("hydrate")
     )
 
     def fake_reconcile(*a, **k):
@@ -305,9 +298,9 @@ def test_cli_main_configures_info_logging(monkeypatch, capsys):
     import logging
 
     from jasper.fanin import coupling_reconcile as cr
-    from jasper.log_event import log_event
+    from jasper.platform.log_event import log_event
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     monkeypatch.setattr(
         cr,
         "reconcile_coupling",
@@ -546,7 +539,7 @@ def test_the_camilla_rung_still_accepts_the_anchor_over_the_websocket(monkeypatc
 def test_cli_auto_dispatches_to_reconcile_auto(monkeypatch, capsys):
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     seen = {}
 
     def fake_auto(*a, **k):
@@ -568,7 +561,7 @@ def test_cli_auto_dispatches_to_reconcile_auto(monkeypatch, capsys):
 def test_cli_auto_and_explicit_are_mutually_exclusive(monkeypatch):
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     with pytest.raises(SystemExit):
         cr.main([COUPLING_SHM_RING, "--auto"])
 
@@ -576,7 +569,7 @@ def test_cli_auto_and_explicit_are_mutually_exclusive(monkeypatch):
 def test_cli_requires_a_choice_or_auto(monkeypatch):
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     with pytest.raises(SystemExit):
         cr.main([])
 
@@ -647,7 +640,7 @@ def test_cli_proceeds_unserialized_when_lock_unavailable(monkeypatch, tmp_path):
 
     # A lock path whose parent dir does not exist -> os.open raises -> unavailable.
     monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(tmp_path / "no-such-dir" / "l.lock"))
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     ran = {"auto": 0}
 
     def fake_auto(*a, **k):
@@ -676,7 +669,7 @@ def test_cli_verbs_run_under_entry_lock(monkeypatch, tmp_path, argv):
 
     lock_path = tmp_path / "entry.lock"
     monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
 
     observed: dict[str, bool] = {}
 
@@ -735,7 +728,7 @@ def test_cli_entry_lock_contention_stops_before_the_verb(
     monkeypatch.setattr(cr, "ENTRY_LOCK_PATH", str(lock_path))
     monkeypatch.setattr(cr, "ENTRY_LOCK_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(cr, "ENTRY_LOCK_POLL_SECONDS", 0.05)
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     for verb in ("reconcile_auto", "reconcile_coupling"):
         monkeypatch.setattr(
             cr, verb, lambda *a, **k: pytest.fail("verb ran despite lock contention")
@@ -1406,7 +1399,7 @@ def test_a_camilla_start_that_returned_zero_is_read_back(
         restart_broker, "manage_units", lambda *_u, **_k: {"ok": True},
     )
     monkeypatch.setattr(
-        "jasper.service_units.read_unit_states",
+        "jasper.platform.service_units.read_unit_states",
         lambda _units, **_k: {
             cr.CAMILLA_UNIT: {
                 "load_state": "loaded",
@@ -1438,7 +1431,7 @@ def test_a_camilla_start_on_a_box_without_the_unit_stays_unknown(monkeypatch):
         restart_broker, "manage_units", lambda *_u, **_k: {"ok": True},
     )
     monkeypatch.setattr(
-        "jasper.service_units.read_unit_states", lambda _units, **_k: None,
+        "jasper.platform.service_units.read_unit_states", lambda _units, **_k: None,
     )
 
     assert cr._start_camilla(reason="t") == (True, "")
@@ -1540,7 +1533,7 @@ def test_shm_ring_is_the_only_coupling_the_cli_accepts(
     """The one transport is the one argument; the retired token is rejected."""
     import jasper.fanin.coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     calls: list[dict] = []
 
     def fake_reconcile(**kw):
@@ -1554,37 +1547,6 @@ def test_shm_ring_is_the_only_coupling_the_cli_accepts(
     assert len(calls) == 1
     with pytest.raises(SystemExit):
         cr.main(["loopback"])
-
-
-# --- Blocker 2: shm_ring refused while the bond reads the dac_content lane -----
-
-
-def _bonded_follower_cfg():
-    from jasper.multiroom.config import GroupingConfig
-
-    return GroupingConfig(
-        enabled=True, role="follower", channel="right", bond_id="b",
-        leader_addr="jts.local", buffer_ms=400, codec="flac", error=None,
-    )
-
-
-def _drive_grouping_shape(monkeypatch, *, box_is_active: bool, flat_allowed: bool):
-    """Drive the reconciler's route shape through the REAL readers.
-
-    The gate consults the dac_content-lane writer now, so a duck-typed config
-    stub no longer reaches it — a real GroupingConfig plus the topology state
-    the writer's own caller reads is what decides the verdict.
-    """
-    import jasper.multiroom.reconcile as mr
-
-    monkeypatch.setattr(
-        "jasper.multiroom.config.load_config",
-        lambda *a, **k: _bonded_follower_cfg(),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        mr, "output_topology_state", lambda: (box_is_active, flat_allowed)
-    )
 
 
 # ---------------------------------------------------------------------------

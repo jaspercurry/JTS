@@ -22,9 +22,9 @@ import time
 from types import ModuleType
 from typing import Any, Callable, Iterable
 
-from jasper.atomic_io import atomic_write_text
-from jasper.log_event import log_event
-from jasper.percentiles import nearest_rank_percentile
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.log_event import log_event
+from jasper.platform.percentiles import nearest_rank_percentile
 from jasper.audio_routes.usb_mic import (
     RELAY_STATUS_PATH,
     USB_HOST_MIC_UDP_PORT,
@@ -36,7 +36,7 @@ from jasper.audio_routes.usb_mic import (
     USB_MIC_PACKET_MAGIC,
     USB_MIC_PACKET_VERSION,
 )
-from jasper.logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.usb_mic")
 

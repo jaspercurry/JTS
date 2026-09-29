@@ -32,7 +32,7 @@ from jasper.dsp_control.output_topology_observation import declared_hardware_mis
 from ..fanin.status import DIRECT_HEALTH_BROKEN
 from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from ..platform.status_socket import FANIN_STALE_MS, OUTPUTD_STALE_MS
-from ..service_units import CAMILLA_SERVICE, unit_not_running
+from jasper.platform.service_units import CAMILLA_SERVICE, unit_not_running
 from ._health_fields import (
     DIAGNOSTICS_REMEDY,
     RESTART_REMEDY,
@@ -620,7 +620,7 @@ def camilla_stopped_verdict(raw_state: Any) -> tuple[str, str] | None:
     name, its systemd state and the `journalctl` line stay in doctor's
     `check_camilla_service`, which fails on the same fact.
 
-    Reads :func:`jasper.service_units.unit_not_running`, wider than a bare
+    Reads :func:`jasper.platform.service_units.unit_not_running`, wider than a bare
     `failed` check on purpose: a clean stop and a jasper-camilla-recover park
     (#2163, ADR-0175) both count, because CamillaDSP — unlike jasper-outputd's
     missing-DAC `ExecCondition` or jasper-voice's `voice-input-absent` marker —

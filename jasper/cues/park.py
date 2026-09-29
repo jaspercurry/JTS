@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 
-from ..tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 from jasper.service_state.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
 from .factory import build_env_cue_manager
 

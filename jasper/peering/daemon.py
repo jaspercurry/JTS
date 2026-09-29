@@ -28,8 +28,8 @@ import logging
 import time
 from typing import Optional
 
-from jasper.json_fields import as_float
-from jasper.log_event import log_event
+from jasper.platform.json_fields import as_float
+from jasper.platform.log_event import log_event
 
 from .config import (
     ARBITRATE_RPC_TIMEOUT_SEC,

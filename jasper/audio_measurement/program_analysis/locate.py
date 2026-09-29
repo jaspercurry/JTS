@@ -22,7 +22,7 @@ from jasper.audio_measurement.program import (
     segment_stimulus,
     STIMULUS_KINDS,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .model import (
     ANCHOR_DISCRIMINATION_RATIO,
     AnchorEvidence,

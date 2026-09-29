@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""jasper.service_units: the shared ``systemctl show`` reader and its
+"""jasper.platform.service_units: the shared ``systemctl show`` reader and its
 record predicates (ADR-0233 rule 1 — one parser, one roster)."""
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import service_units
+from jasper.platform import service_units
 
 
 @pytest.mark.parametrize(

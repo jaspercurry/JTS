@@ -11,10 +11,10 @@ import json
 from typing import Any
 
 from ...cues.manager import REASON_BUSY, REASON_UNKNOWN_SLUG
-from ...log_event import log_event
+from jasper.platform.log_event import log_event
 from ...platform import wire
 from ...platform.uds import voice_socket_command
-from ...service_units import JASPER_VOICE_SERVICE, read_unit_states
+from jasper.platform.service_units import JASPER_VOICE_SERVICE, read_unit_states
 from . import peering as _peering
 from ._base import ControlHandlerMixin, logger
 

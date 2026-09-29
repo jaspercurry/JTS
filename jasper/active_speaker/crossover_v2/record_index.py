@@ -19,10 +19,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
-from jasper.atomic_io import read_json_mapping
+from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.bundles import read_artifact_manifest, relative_artifact_path
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
-from jasper.json_fields import CodedFieldError, as_mapping
+from jasper.platform.json_fields import CodedFieldError, as_mapping
 
 from ..bundles import BUNDLE_KIND
 from ..commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT

@@ -106,7 +106,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
     expected = []
     def analyze(record):
         analysis = stand_in(record)
-        expected.append(analysis_json(analysis))
+        expected.append({**analysis_json(analysis), "bass": None})
         return analysis
     result, _ = asyncio.run(_run_gated(replace(_walk([0]), repeats=2), analyze=analyze,
                                        seams=FakeSeams(records=Records()), gate=AnsweredGate()))

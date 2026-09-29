@@ -39,9 +39,9 @@ import sys
 import time
 
 from jasper.audio_control import debug_mode
-from .logging_setup import REDACTING_FILTER
+from jasper.platform.logging_setup import REDACTING_FILTER
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.flight_recorder")
 
 DEFAULT_CAPACITY = 1000  # stores formatted lines (~0.3 KB) -> ~0.3 MB/daemon
 FLUSH_LEVEL = logging.WARNING

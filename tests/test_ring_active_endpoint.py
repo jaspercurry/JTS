@@ -24,8 +24,8 @@ import pytest
 
 from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
-from jasper import ring_header
-from jasper.env_file import read_env_file
+from jasper.platform import ring_header
+from jasper.platform.env_file import read_env_file
 
 from .doctor_test_support import record_active_dac
 from .transport_camilla_fixtures import (
@@ -940,7 +940,7 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}=1\n", encoding="utf-8"
     )
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
+    monkeypatch.setattr("jasper.platform.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
 
     conf_d = tmp_path / "60-jts-ring.conf"
     conf_d.write_text(
@@ -1431,7 +1431,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
 
     monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
-        "jasper.env_file.read_value",
+        "jasper.platform.env_file.read_value",
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     )
     monkeypatch.setattr(
@@ -1478,7 +1478,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
 
     monkeypatch.setattr(audio_runtime_fanin, "requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
-        "jasper.env_file.read_value",
+        "jasper.platform.env_file.read_value",
         lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     )
     monkeypatch.setattr(
@@ -1890,7 +1890,7 @@ def _commissioning_apply_site(cam):
     from jasper.web.correction_crossover_v2_apply import apply_candidate
     import asyncio
     from jasper.active_speaker import applied_tune, baseline_profile
-    from jasper.json_fields import sha256_text
+    from jasper.platform.json_fields import sha256_text
 
     def call_site():
         reviewed = applied_tune.compile_commissioning_profile(applied_profile=baseline_profile.load_applied_baseline_profile_state())
@@ -2932,7 +2932,7 @@ def test_baseline_reemit_publishes_atomically(monkeypatch, tmp_path):
 
     h = _reemit_harness(monkeypatch, tmp_path)
     calls: list[tuple] = []
-    import jasper.atomic_io as atomic_io
+    import jasper.platform.atomic_io as atomic_io
 
     real = atomic_io.atomic_write_text
 
@@ -3585,7 +3585,7 @@ def test_baseline_reemit_publishes_the_anchor_pair_durably(monkeypatch, tmp_path
     takes deploys, so this is availability rather than safety, but the two halves
     should survive together and the fix is one kwarg.
     """
-    from jasper import atomic_io
+    from jasper.platform import atomic_io
     from jasper.cli.active_speaker import main
 
     h = _anchor_reemit_harness(monkeypatch, tmp_path)
@@ -3660,7 +3660,7 @@ def test_baseline_reemit_publishes_the_anchor_pair_under_one_lock(
     that dutifully locked a file nobody else takes would pass the first claim
     and serialize nothing.
     """
-    from jasper import atomic_io
+    from jasper.platform import atomic_io
     from jasper.active_speaker import staging as staging_mod
     from jasper.cli.active_speaker import main
 

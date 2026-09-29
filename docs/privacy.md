@@ -113,7 +113,7 @@ pruning failures are reported without blocking the voice turn, so retention
 is best effort. Clear-all deletes the stored rows; there is no per-row delete
 control in the UI. Capture does not put transcript text in system logs.
 
-Implementation: [store and settings](../jasper/conversation_history.py),
+Implementation: [store and settings](../jasper/runtime/conversation_history.py),
 [capture writer](../jasper/voice/conversation_capture.py), and
 [web/API](../jasper/web/chat_setup.py). The design decision is
 [ADR-0337](adr/0337-conversation-history-is-local-opt-in-native-text.md).

@@ -22,7 +22,7 @@ import pytest
 from dbus_next.errors import AuthError
 
 from jasper.audio_routes import source_intent
-from jasper.json_fields import sha256_text
+from jasper.platform.json_fields import sha256_text
 from jasper.local_sources import reconcile as source_reconcile
 from jasper.bluetooth import engine as engine_module
 from jasper.bluetooth.models import BluetoothActionResult, adapter_not_ready_result
@@ -61,6 +61,20 @@ def _availability(
     )
 
 
+def _clear_device_actions():
+    with bluetooth_setup._DEVICE_COORDINATION_LOCK:
+        abandoned = list(bluetooth_setup._PAIR_STREAMS.values())
+        bluetooth_setup._PAIR_STREAMS.clear()
+        mutations = list(bluetooth_setup._DEVICE_MUTATIONS.values())
+        bluetooth_setup._DEVICE_MUTATIONS.clear()
+        bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = None
+    for attempt in abandoned:
+        bluetooth_setup._cancel_pair_attempt(attempt)
+    for mutation in mutations:
+        if mutation.expiry_timer is not None:
+            mutation.expiry_timer.cancel()
+
+
 @pytest.fixture(autouse=True)
 def _hardware_free_availability_and_pair_cleanup(monkeypatch):
     # Every requested unit loaded (installed) but not active by default --
@@ -81,29 +95,9 @@ def _hardware_free_availability_and_pair_cleanup(monkeypatch):
         "probe_bluetooth_availability",
         lambda _unit_probe: _availability(),
     )
-    with bluetooth_setup._DEVICE_COORDINATION_LOCK:
-        abandoned = list(bluetooth_setup._PAIR_STREAMS.values())
-        bluetooth_setup._PAIR_STREAMS.clear()
-        mutations = list(bluetooth_setup._DEVICE_MUTATIONS.values())
-        bluetooth_setup._DEVICE_MUTATIONS.clear()
-        bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = None
-    for attempt in abandoned:
-        bluetooth_setup._cancel_pair_attempt(attempt)
-    for mutation in mutations:
-        if mutation.expiry_timer is not None:
-            mutation.expiry_timer.cancel()
+    _clear_device_actions()
     yield
-    with bluetooth_setup._DEVICE_COORDINATION_LOCK:
-        abandoned = list(bluetooth_setup._PAIR_STREAMS.values())
-        bluetooth_setup._PAIR_STREAMS.clear()
-        mutations = list(bluetooth_setup._DEVICE_MUTATIONS.values())
-        bluetooth_setup._DEVICE_MUTATIONS.clear()
-        bluetooth_setup._ACTIVE_BLUETOOTH_ACTION = None
-    for attempt in abandoned:
-        bluetooth_setup._cancel_pair_attempt(attempt)
-    for mutation in mutations:
-        if mutation.expiry_timer is not None:
-            mutation.expiry_timer.cancel()
+    _clear_device_actions()
 
 
 @pytest.fixture

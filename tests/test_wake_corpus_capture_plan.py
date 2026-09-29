@@ -20,7 +20,7 @@ import pytest
 from jasper.audio_routes import aec_sweep
 from jasper.service_state import wake_ports
 from jasper.chip_aec.policy import ChipAecGate
-from jasper.env_file import read_env_file
+from jasper.platform.env_file import read_env_file
 from jasper.wake_corpus import (
     active_session,
     bridge_session,

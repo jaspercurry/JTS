@@ -46,7 +46,7 @@ from jasper.audio_control.assistant_volume import (
     volume_context_publisher_for_runtime,
 )
 from jasper.identity.speaker_name import runtime_name as speaker_runtime_name
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import Source, VolumeMode, volume_mode
 from jasper.audio_control import volume_push_sources
 from jasper.audio_control.renderer import RendererClient, audible_source

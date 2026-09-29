@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 
-from jasper import env_file
+from jasper.platform import env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import _common, weather_setup
 from jasper.web._common import RestartOutcome

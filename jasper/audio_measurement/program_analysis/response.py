@@ -27,7 +27,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.recorded_impulse import kept_end
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT, ALIGNMENT_SAVED_TIMING, TIMING_NEEDS_MEASUREMENT,

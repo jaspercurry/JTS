@@ -46,12 +46,12 @@ from jasper.playback_state.install_profile import (
 )
 from jasper.audio_control import volume_process
 from jasper.service_state import wake_ports
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.active_speaker.audition import recover_web_audition
 from jasper.audio_control.camilla import primary_controller
 
 from jasper.service_state.accounts import registry_path as spotify_registry_path
-from ..env_load import SPEAKER_NAME_ENV_PATH, VOICE_PROVIDER_ENV_PATH
+from jasper.platform.env_load import SPEAKER_NAME_ENV_PATH, VOICE_PROVIDER_ENV_PATH
 from jasper.service_state.google_creds import registry_path as google_registry_path
 from ..platform import systemd as _systemd
 from . import (
@@ -68,7 +68,7 @@ from . import (
     weather_setup,
     wifi_setup,
 )
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

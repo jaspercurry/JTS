@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 
 from . import bundles
 from .frequency_view import FrequencyRun

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from jasper.aec.reconcile import VOICE_RESTART_INTENT_MARKER
-from jasper.atomic_io import advisory_file_lock
+from jasper.platform.atomic_io import advisory_file_lock
 from jasper.audio_routes.enhanced_aec import (
     INSTALL_LOCK_PATH,
     SOURCE_ROOT,
@@ -34,9 +34,9 @@ from jasper.audio_routes.enhanced_aec import (
     write_installed_marker,
     write_job_state,
 )
-from jasper.json_fields import sha256_file
-from jasper.logging_setup import configure_logging
-from jasper.secret_redaction import redact_secrets
+from jasper.platform.json_fields import sha256_file
+from jasper.platform.logging_setup import configure_logging
+from jasper.platform.secret_redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 

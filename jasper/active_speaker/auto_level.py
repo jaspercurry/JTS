@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.audio_measurement.ramp import HARD_CEILING_DBFS, MAX_STEP_DB, SPL_CEILING_EXCEEDED
 from jasper.audio_measurement.wired_capture import WiredCaptureError, WiredSplCeilingExceeded
-from jasper.env_load import bounded_env_float
+from jasper.platform.env_load import bounded_env_float
 
-from jasper.volume_latch import read_fader_db, set_and_confirm_volume
+from jasper.platform.volume_latch import read_fader_db, set_and_confirm_volume
 from .seat_level_reference import SeatLevelTargetError, validate_ramp_target_spl
 
 if TYPE_CHECKING:

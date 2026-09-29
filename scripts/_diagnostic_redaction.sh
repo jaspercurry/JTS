@@ -18,7 +18,7 @@
 # Pure sed on purpose: this is the only guard on the secret-compartment
 # `cat` in fetch-pi-logs.sh and pi-bundle.sh, and it has to work when the
 # Python venv is the broken thing being diagnosed. Its shapes are pinned
-# side by side with jasper/secret_redaction.py's in
+# side by side with jasper/platform/secret_redaction.py's in
 # tests/test_secret_redaction.py.
 #
 # Bash-only: the array below is unsourceable by /bin/sh, and every

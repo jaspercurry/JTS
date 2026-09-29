@@ -18,7 +18,7 @@ import pytest
 from jasper.audio_routes import enhanced_aec
 from jasper.aec import bridge_engines
 from jasper.cli import enhanced_aec_install
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 
 
 def _write_source(root: Path, *, value: str = "one") -> None:

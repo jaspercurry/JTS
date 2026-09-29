@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 
 from jasper.sound import build_sound_filters
-from jasper.biquad import (
+from jasper.platform.biquad import (
     GAINLESS_BIQUAD_TYPES,
     FilterSpec,
     RESPONSE_SAMPLE_RATE_HZ,
@@ -60,7 +60,7 @@ def _camilladsp_shelf_db(
 
     Transcribed from CamillaDSP v4.1.3 ``src/filters/biquad.rs`` — the four
     ``Highshelf``/``Lowshelf`` × ``ShelfSteepness::{Q,Slope}`` match arms —
-    deliberately NOT reusing ``jasper.biquad.biquad_coeffs``: this is
+    deliberately NOT reusing ``jasper.platform.biquad.biquad_coeffs``: this is
     the independent side of the comparison. Exactly one of ``q``/``slope``, as
     CamillaDSP itself requires.
 

@@ -33,7 +33,7 @@ import sys
 from html import escape
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.control.control_token import ensure_token
 from jasper.playback_state.install_profile import (
     read_install_profile,

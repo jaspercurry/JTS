@@ -15,7 +15,7 @@ import signal
 from dbus_next import BusType  # type: ignore
 from dbus_next.aio import MessageBus  # type: ignore
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .adapter import (
     BluezSession,
@@ -24,7 +24,7 @@ from .adapter import (
     untrust_unbonded,
 )
 from .agent import NoCodeAgent, register_agent, unregister_agent
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

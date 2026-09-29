@@ -13,9 +13,9 @@ from jasper.audio_measurement.program_analysis.check import ambient_rows_in_band
 from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .capture_schedule import walk_price
 from .angle_capture import (

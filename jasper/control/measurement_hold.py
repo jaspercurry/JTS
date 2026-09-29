@@ -4,7 +4,7 @@
 
 """jasper-control's copy of the open measurement window — the third lease.
 
-``jasper.measurement_window.measurement_window()`` is the one writer of
+``jasper.runtime.measurement_window.measurement_window()`` is the one writer of
 "a measurement is live". It already holds two self-expiring copies of that
 fact — jasper-voice's ``_measurement_active`` and jasper-mux's diagnostic-gate
 lease — and this module is the third: the copy jasper-control needs so it can stop
@@ -62,7 +62,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

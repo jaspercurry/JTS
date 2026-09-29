@@ -21,11 +21,11 @@ import math
 from typing import Any, Mapping, NamedTuple
 
 from jasper.bass_extension.dynamic_graph import PREFIX as DYNAMIC_BASS_PREFIX
-from jasper.biquad import (
+from jasper.platform.biquad import (
     EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN,
     SHELF_BIQUAD_TYPES, SHELF_Q, SHELF_Q_EMIT_DECIMALS,
 )
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .graph_safety import GraphView, view_from_emitted_text
 from .graph_transfer import GraphTransferError, complex_channel_transfer, mixer_mapping
@@ -207,7 +207,7 @@ def _unity_bounded(spec: Any) -> bool:
     """No frequency leaves this filter above unity.
 
     A q or frequency outside the evaluator's domain is left to the evaluator:
-    f64 round-off can lift a cut there (jasper/biquad.py).
+    f64 round-off can lift a cut there (jasper/platform/biquad.py).
     """
     params = spec.get("parameters") if isinstance(spec, Mapping) else None
     if not isinstance(params, Mapping):

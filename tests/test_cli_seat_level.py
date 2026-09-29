@@ -396,7 +396,7 @@ def commissioning_box(tmp_path, monkeypatch):
 async def test_accepted_candidate_can_compile_without_a_banked_candidate_id(tmp_path, monkeypatch, commissioning_box, applied):
     from dataclasses import replace
     from jasper.active_speaker import baseline_profile
-    from jasper.json_fields import sha256_text
+    from jasper.platform.json_fields import sha256_text
     from jasper.active_speaker.candidate_bank import find_banked_candidate
     from jasper.active_speaker.candidate_parts import candidate_from_design_draft
     from jasper.active_speaker.crossover_v2 import door

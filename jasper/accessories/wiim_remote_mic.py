@@ -34,7 +34,7 @@ from dbus_next.errors import DBusError  # type: ignore
 
 from jasper.bluetooth.adapter import BUS_CONNECT_TIMEOUT_SEC, connect_bounded
 from jasper.control import restart_broker
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from ._dbus import variant_value
 from .constants import (

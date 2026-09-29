@@ -19,7 +19,7 @@ from jasper.active_speaker.round_bank import (
     show_round,
 )
 from jasper.cli import round_views
-from jasper.json_fields import parse_utc_iso
+from jasper.platform.json_fields import parse_utc_iso
 from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round, bank_verify_round
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 

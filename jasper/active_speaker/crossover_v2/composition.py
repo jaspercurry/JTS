@@ -21,7 +21,7 @@ from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_control.camilla import CamillaConfigRejected
 
 from .._common import MeasurementGraphRefused

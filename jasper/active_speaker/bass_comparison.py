@@ -12,7 +12,7 @@ import numpy as np
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
 from jasper.audio_measurement.series_stats import band_change_db
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .crossover_v2.measurement_context import CAPTURE_FIELDS, GRAPH_FIELDS, capture_basis, compare_capture_basis
 from .crossover_v2.round_captures import doc_pose_key

@@ -78,7 +78,7 @@ from jasper.active_speaker.runtime_contract import (
     classify_camilla_graph as _classify_camilla_graph,
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
 )
-from jasper.biquad import FilterSpec, PeqFilter
+from jasper.platform.biquad import FilterSpec, PeqFilter
 from jasper.sound.profile import SimpleEq, SoundProfile
 
 from tests._camilla_readback_double import (

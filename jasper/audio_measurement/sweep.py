@@ -20,7 +20,7 @@ from typing import BinaryIO
 
 import numpy as np
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from .excitation import AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
 
 logger = logging.getLogger(__name__)

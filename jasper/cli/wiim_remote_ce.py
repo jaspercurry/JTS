@@ -108,8 +108,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from jasper.accessories.constants import WIIM_REMOTE_2_NAME_RE
-from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

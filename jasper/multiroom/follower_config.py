@@ -44,8 +44,8 @@ from jasper.active_speaker.graph_types import (
     GRAPH_DRIVER_DOMAIN_BASELINE,
 )
 from ..active_speaker.state_paths import baseline_config_path
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
-from ..log_event import log_event
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
+from jasper.platform.log_event import log_event
 from .config import GroupingConfig
 from .role_stash import RoleStash
 from jasper.audio_routes.output_topology import OutputTopologyError

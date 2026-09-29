@@ -39,15 +39,15 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
 from jasper.local_sources.markers import local_sources_allowed
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import Source
-from jasper.service_units import (
+from jasper.platform.service_units import (
     AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
     SYSTEMCTL_TIMEOUT_SEC,
@@ -55,7 +55,7 @@ from jasper.service_units import (
     show_blocks,
 )
 from jasper.audio_routes.source_intent import source_intent_enabled
-from jasper.systemd_probe import unit_state
+from jasper.platform.systemd_probe import unit_state
 
 from . import status as accessory_status
 from ._dbus import variant_value
@@ -67,7 +67,7 @@ from .mic_env import (
     render_manual_mic_env,
 )
 from .registry import adapter_mic_profiles, lookup_by_name
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

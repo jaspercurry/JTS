@@ -26,7 +26,7 @@ from ._shared import (
     systemctl_unavailable_result,
 )
 from ...identity import identity_state
-from ...paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ...active_speaker.environment import (
     classify_camilla_config_text,
     read_camilla_statefile_config_path,
@@ -134,7 +134,7 @@ def check_correction_web_service() -> CheckResult:
 # busy_for_s clears HOLD_LEAK_WARN_AFTER_SEC (the journalctl call below
 # already filters to `-p warning`, so a match here is always the escalated
 # case). Captures (busy_for_seconds, holds). The holds alternative tries a
-# logfmt-quoted value first — log_event.py (jasper/log_event.py) quotes any
+# logfmt-quoted value first — log_event.py (jasper/platform/log_event.py) quotes any
 # value containing a space — so a hold label with a space is captured whole
 # instead of truncating at the space; `_unquote_logfmt_value` below reverses
 # that quoting.
@@ -150,7 +150,7 @@ def _unquote_logfmt_value(raw: str) -> str:
     """Reverse ``log_event``'s logfmt quoting for one captured field value.
 
     A bare token (the common case) passes through unchanged. A quoted value
-    uses exactly the escape subset ``_escape_logfmt_text`` (jasper/log_event.py)
+    uses exactly the escape subset ``_escape_logfmt_text`` (jasper/platform/log_event.py)
     emits — ``\\``, ``\\"``, ``\\n``, ``\\r``, ``\\t``, ``\\uXXXX`` — which is
     also valid JSON string syntax, so ``json.loads`` decodes it without a
     hand-rolled unescaper.
@@ -425,7 +425,7 @@ def check_correction_state_dirs() -> CheckResult:
 def active_camilla_config_path() -> tuple[Path, str | None]:
     """Which statefile this box means, and the config it names (or ``None``).
 
-    The path comes from ``jasper.paths``' one resolver and the parse from
+    The path comes from ``jasper.platform.paths``' one resolver and the parse from
     ``active_speaker.environment``. The path is returned too so callers can
     name it when the parse fails.
     """

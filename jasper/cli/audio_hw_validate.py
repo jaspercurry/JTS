@@ -28,7 +28,7 @@ from jasper.audio_control.audio_validation_hardware_checks import (
     CHIP_AEC_CONVERGENCE_COMMAND,
     CHIP_AEC_PROFILE_READBACK_COMMANDS,
 )
-from ..audio_validation import (
+from jasper.runtime.audio_validation import (
     CHIP_AEC_PROFILE,
     DAC8X_OUTPUTD_STABILITY_PROFILE,
     DEFAULT_HARDWARE_OBSERVE_SECONDS,
@@ -46,9 +46,9 @@ from jasper.audio_control.audio_validation_probes import (
 )
 from jasper.audio_control.audio_validation_readiness import profile_runtime_ready
 from ..aec.bridge_telemetry import read_bridge_stats
-from ..log_event import log_event
-from ..logging_setup import configure_logging
-from ..service_units import (
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     CAMILLA_SERVICE,
     FANIN_SERVICE,

@@ -12,7 +12,7 @@ from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
 )
 from jasper.multiroom.snapfifo import SNAPFIFO
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.sound.camilla_yaml import emit_sound_config
 from jasper.sound.profile import SoundProfile
 

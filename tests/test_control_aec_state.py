@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.audio_routes import enhanced_aec
 from jasper.service_state import wake_models
 from jasper.aec.bridge_telemetry import BRIDGE_STATS_PATH_ENV

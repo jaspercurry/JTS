@@ -6,7 +6,7 @@
 from typing import Any, Iterable, Mapping
 
 from jasper.audio_measurement.evidence_reasons import REASON_GRAPH_MISMATCH, REASON_SNR_SHORT
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 # 0.5 dB fallback: the predictor gives 0.0104 dB RMS for a 10 us error on an ideal 2.5 kHz LR4, so no room-independent floor can be derived.
 TIMING_RESIDUAL_FLOOR_DB = 0.5

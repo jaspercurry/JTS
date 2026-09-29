@@ -17,7 +17,7 @@ from jasper.audio_routes.audio_runtime_overrides import (
     runtime_overrides_path,
     set_runtime_override,
 )
-from jasper.env_load import (
+from jasper.platform.env_load import (
     BASE_ENV_PATH,
     FANIN_ENV_PATH,
     GROUPING_ENV_FILE,

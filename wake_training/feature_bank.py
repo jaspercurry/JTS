@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from jasper.json_fields import sha256_file as sha256
+from jasper.platform.json_fields import sha256_file as sha256
 from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 
 try:

@@ -23,7 +23,7 @@ from jasper.active_speaker.level_trim import declared_driver_gains
 from jasper.active_speaker.measurement_programs import program_entries
 from jasper.audio_routes.output_topology_store import load_output_topology
 from jasper.active_speaker.layout import build_speaker_layout, layout_choices
-from jasper.json_fields import CodedFieldError, issue
+from jasper.platform.json_fields import CodedFieldError, issue
 
 
 class SpeakerSetupView(TypedDict):

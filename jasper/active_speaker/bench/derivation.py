@@ -20,7 +20,7 @@ import yaml
 from jasper.active_speaker.camilla_names import driver_baseline_limiter_name
 from jasper.active_speaker.graph_safety import view_from_emitted_text
 from jasper.active_speaker.program_headroom import written_headroom_db
-from jasper.json_fields import require_finite
+from jasper.platform.json_fields import require_finite
 
 ALLOWED_FILTER_TYPES: frozenset[str] = frozenset(
     {"Biquad", "BiquadCombo", "Conv", "Delay", "Gain", "Limiter"}

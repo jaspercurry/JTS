@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, TypeAlias
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
-from jasper.json_fields import canonical_json_bytes, freeze_json, require_finite
+from jasper.platform.json_fields import canonical_json_bytes, freeze_json, require_finite
 
 MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0

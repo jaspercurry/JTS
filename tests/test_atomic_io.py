@@ -17,8 +17,8 @@ import time
 
 import pytest
 
-from jasper import atomic_io as atomic_io_module, env_file
-from jasper.atomic_io import (
+from jasper.platform import atomic_io as atomic_io_module, env_file
+from jasper.platform.atomic_io import (
     advisory_file_lock,
     advisory_file_lock_async,
     atomic_write_bytes,
@@ -32,7 +32,7 @@ from jasper.atomic_io import (
     write_env_file,
 )
 
-from jasper.env_file import parse_env_mapping, read_env_file
+from jasper.platform.env_file import parse_env_mapping, read_env_file
 
 from ._async_wait import wait_signalled
 from ._log_events import event_records

@@ -44,6 +44,8 @@ REFUSE_COMPARE_NO_COMMON_BAND = "compare_no_common_band"
 REFUSE_COMPARE_RATES_DIFFER = "compare_sample_rates_differ"
 #: A preview document that carries no magnitude prediction to compare.
 REFUSE_PREVIEW_UNREADABLE = "compare_preview_unreadable"
+#: A take left to find its own side A that has no comparand (ADR-0391).
+REFUSE_COMPARE_NO_COMPARAND = "compare_no_comparand"
 #: The spacing of the Schroeder curves a decay artifact carries.
 SCHROEDER_STEP_MS = 1.0
 

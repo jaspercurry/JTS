@@ -31,7 +31,7 @@ import pytest
 
 from tests._log_events import event_fields
 
-from jasper.busctl import BusctlResult
+from jasper.platform.busctl import BusctlResult
 from jasper.control.shairport_supervisor import (
     ShairportSupervisor,
     _OPTIONS_REQUEST,
@@ -393,7 +393,7 @@ async def test_shairport_unit_probe_verdicts(monkeypatch, probe, returncode, std
     async def fake_exec(*args, **kwargs):
         return proc
 
-    monkeypatch.setattr("jasper.systemd_probe.asyncio.create_subprocess_exec", fake_exec)
+    monkeypatch.setattr("jasper.platform.systemd_probe.asyncio.create_subprocess_exec", fake_exec)
     sup = ShairportSupervisor()
     assert await getattr(sup, f"is_shairport_unit_{probe}")() is expected
 
@@ -407,7 +407,7 @@ async def test_is_shairport_unit_disabled_fails_open_without_systemctl(
         raise FileNotFoundError("no such file: systemctl")
 
     monkeypatch.setattr(
-        "jasper.systemd_probe.asyncio.create_subprocess_exec",
+        "jasper.platform.systemd_probe.asyncio.create_subprocess_exec",
         boom,
     )
     sup = ShairportSupervisor()

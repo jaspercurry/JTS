@@ -114,7 +114,7 @@ async def test_flag_tool_triggers_flight_recorder_dump_on_success(
     """On a successful flag, the voice flight recorder is dumped to the
     journal so the DEBUG context the user just noticed is captured (Tier
     C). Best-effort — only on the success path."""
-    from jasper import flight_recorder
+    from jasper.runtime import flight_recorder
     dumps: list[str] = []
     monkeypatch.setattr(
         flight_recorder, "dump",

@@ -11,7 +11,7 @@ import logging
 from http import HTTPStatus
 from typing import Any, Mapping
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.active_speaker.capture_status import SESSION_ENDED_STATUSES
 from .chrome import canonical_header, canonical_page
 

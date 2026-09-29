@@ -30,7 +30,7 @@ from tests.crossover_v2_fixtures import (
     _run_phase,
 )
 
-# Full event names as `jasper.log_event.log_event` renders them — the
+# Full event names as `jasper.platform.log_event.log_event` renders them — the
 # `correction.` domain prefix is part of the exact name `event_records`
 # matches on, not a decoration a substring scan could ignore.
 UNMAPPED_EVENT = "correction.crossover_v2_begin_decision_kind_unmapped"

@@ -17,7 +17,7 @@ from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.audio_measurement.bundles import record_artifact
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from ..commissioning_evidence_store import CommissioningEvidenceStore
 from ..run_manifest import RUN_MANIFEST_KIND, RUN_MANIFEST_FILENAME

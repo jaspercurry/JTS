@@ -30,7 +30,7 @@ from jasper.audio_routes.aec_sweep import (
 from jasper.playback_state import wake_legs
 from jasper.config import env_bool
 from jasper.service_state.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.aec.bridge_telemetry import (
     BRIDGE_STATS_PATH,
     BRIDGE_STATS_PATH_ENV,

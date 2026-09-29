@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path
-from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
+from jasper.platform.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.audio_control.audio_runtime_plan import apply_capture_precedence
 from jasper.service_state.audio_runtime_settings import EmitSoundConfigKwargs
 from jasper.multiroom.snapfifo import SNAPFIFO

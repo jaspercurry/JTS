@@ -15,7 +15,7 @@ from jasper.active_speaker.baseline_profile import (
     profile_driver_corrections,
     profile_linearization,
 )
-from jasper.json_fields import as_mapping, finite_float
+from jasper.platform.json_fields import as_mapping, finite_float
 
 from ..round_inputs import recent_round_sessions, round_artifact_dir
 from .offline_reads import absence, read_json

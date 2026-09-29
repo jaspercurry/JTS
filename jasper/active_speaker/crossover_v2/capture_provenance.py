@@ -13,7 +13,7 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
 from jasper.audio_measurement.trusted_band import TrustedBand, trusted_band
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from ..measurement_programs import POSE_KIND_SEAT, gate_exemption
 from .measure_spec import CANDIDATE_SCOPES
 from .planning import analysis_json
@@ -45,7 +45,7 @@ def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]
     """
     return finite_json({
         "curves": analysis_curve_records(analysis, program),
-        "analysis": analysis_json(analysis),
+        "analysis": {**analysis_json(analysis), "bass": getattr(analysis, "bass", None)},
         "diagnostic": analysis_diagnostic_summary(analysis),
         "branch_diagnostic": getattr(analysis, "branch_diagnostic", None) or None,
     })

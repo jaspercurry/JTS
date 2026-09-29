@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from jasper.atomic_io import atomic_write_bytes
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_bytes
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.wake_events")
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping
 
-from jasper.json_fields import CodedFieldError
+from jasper.platform.json_fields import CodedFieldError
 from ._common import DriverFields
 
 # Closed vocabulary for the "kind" of in-line pad a driver can declare.

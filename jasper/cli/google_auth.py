@@ -18,7 +18,7 @@ import argparse
 import sys
 import urllib.parse
 
-from .. import env_load
+from jasper.platform import env_load
 from jasper.service_state.accounts import valid_account_name
 from ..config import Config
 from jasper.service_state.google_creds import (

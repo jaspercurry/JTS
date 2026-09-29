@@ -63,12 +63,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ..platform import systemd
-from ..atomic_io import read_json_mapping
-from ..json_fields import as_float
+from jasper.platform.atomic_io import read_json_mapping
+from jasper.platform.json_fields import as_float
 from ..net import wifi_guardian_persistence, wifi_scan_repair
 from ..control.restart_broker import manage_units
-from ..log_event import log_event
-from ..secret_redaction import redact_secrets
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 from ._common import (
     JsonBodyError,
     begin_request,

@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.biquad import SHELF_Q, FilterSpec, filter_response_db
+from jasper.platform.biquad import SHELF_Q, FilterSpec, filter_response_db
 from jasper.active_speaker.delta_probe import (
     DELTA_PROBE_BAND_ABOVE_CEILING,
     DELTA_PROBE_BAND_CROSSOVER,

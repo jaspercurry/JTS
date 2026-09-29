@@ -15,10 +15,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.json_fields import utc_now_iso
-from jasper.log_event import log_event
-from jasper.paths import resolve_state_path
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json
+from jasper.platform.json_fields import utc_now_iso
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import resolve_state_path
 
 STATE_KIND = "jts_active_speaker_repeat_admission"
 SCHEMA_VERSION = 1

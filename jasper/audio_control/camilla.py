@@ -16,15 +16,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
-from jasper.atomic_io import flock_held
+from jasper.platform.atomic_io import flock_held
 from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAMILLA_PORT,
     VolumeLimitViolation,
     check_volume_limit,
 )
 from jasper.audio_routes.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
-from jasper.log_event import log_event
-from jasper.volume_latch import (
+from jasper.platform.log_event import log_event
+from jasper.platform.volume_latch import (
     READBACK_TOLERANCE_DB,
     duck_release_target_db,
     fader_matches,

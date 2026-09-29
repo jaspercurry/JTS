@@ -23,7 +23,7 @@ from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.sweep import read_wav_mono
-from jasper.json_fields import finite_float, sha256_file
+from jasper.platform.json_fields import finite_float, sha256_file
 
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT

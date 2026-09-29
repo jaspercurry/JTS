@@ -21,7 +21,7 @@ regenerate_audio_cues() {
     echo "  Regenerating audio cues..."
     # jasper-cues auto-loads /etc/jasper/jasper.env then
     # /var/lib/jasper/voice_provider.env (web-wizard overrides) via
-    # jasper.env_load — same precedence as the daemon's systemd unit.
+    # jasper.platform.env_load — same precedence as the daemon's systemd unit.
     # We deliberately do NOT pre-source jasper.env here: doing so puts
     # those vars into the shell's environment first, where load_env_files's
     # setdefault preserves them and the wizard file can't override.

@@ -31,7 +31,7 @@ seed_speaker_name_env() {
 import os
 import sys
 
-from jasper.env_load import parse_env_file
+from jasper.platform.env_load import parse_env_file
 from jasper.identity.speaker_name import initial_name_from_hostname, quote_env_value
 
 env_path, system_hostname = sys.argv[1:]

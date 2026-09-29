@@ -17,7 +17,7 @@ from jasper.audio_hardware.dac import (
     kind_for,
     percent_pinned_control_for,
 )
-from jasper.json_fields import issue as _issue
+from jasper.platform.json_fields import issue as _issue
 from jasper.audio_routes.output_hardware import (
     ObservedOutput,
     OutputCardFact,

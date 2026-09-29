@@ -19,9 +19,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from jasper.accessories import status as accessory_status
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
-from ..mic_capture import MicCapture
+from jasper.runtime.mic_capture import MicCapture
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -48,7 +48,7 @@ PTT_MIN_INPUT_CAP_SEC = 5.0
 
 # Liveness-tick cadence for a push-to-talk-only speaker, which has no
 # primary mic stream to prove the async loop is iterating. Must stay well
-# under `Heartbeat`'s stale threshold (jasper/watchdog.py) or the unit's
+# under `Heartbeat`'s stale threshold (jasper/platform/watchdog.py) or the unit's
 # WatchdogSec=30s would reap a healthy daemon; 2 s leaves 2.5x margin
 # while costing one wakeup per interval. The relationship is pinned by
 # test_ptt_keepalive_stays_inside_heartbeat_stale_threshold.

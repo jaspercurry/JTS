@@ -17,7 +17,7 @@ import yaml
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ, band_ladder_name
 from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 
 from ..graph_safety import view_from_yaml_dict
 from .derivation import ArtifactHeader, derive_offline_render_config

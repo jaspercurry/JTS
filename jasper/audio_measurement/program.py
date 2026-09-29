@@ -37,9 +37,9 @@ from jasper.audio_measurement.sweep import (
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as PROGRAM_SAMPLE_RATE_HZ
-from jasper.json_fields import json_fingerprint
-from jasper.log_event import log_event
+from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ as PROGRAM_SAMPLE_RATE_HZ
+from jasper.platform.json_fields import json_fingerprint
+from jasper.platform.log_event import log_event
 
 from .deconv import required_pre_guard_s
 from .room_boundary import AUDIO_BAND_TOP_HZ, ROOM_FLOOR_HZ

@@ -26,7 +26,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH

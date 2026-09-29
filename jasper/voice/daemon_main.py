@@ -18,14 +18,15 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
-    from ..google_routes import GoogleRoutesClient
+    from jasper.runtime.google_routes import GoogleRoutesClient
 
-from .. import flight_recorder, transit
-from ..mic_capture import InputDeviceUnavailable, make_mic_capture
-from ..tts_playout import TtsPlayout
+from jasper.runtime import flight_recorder
+from .. import transit
+from jasper.runtime.mic_capture import InputDeviceUnavailable, make_mic_capture
+from jasper.runtime.tts_playout import TtsPlayout
 from jasper.runtime_config.assistant_loudness import active_voice_identity, ensure_seed_profile
 from jasper.audio_control.assistant_volume import volume_context_publisher_for_runtime
 from jasper.audio_control.camilla import (
@@ -33,7 +34,7 @@ from jasper.audio_control.camilla import (
     set_canonical_target_db_provider,
 )
 from ..config import Config, VoiceConfigError, VoiceProviderNotConfigured
-from ..conversation_history import (
+from jasper.runtime.conversation_history import (
     ConversationStore,
     read_settings as read_conversation_settings,
 )
@@ -47,7 +48,7 @@ from ..cues.registry import (
     VOICE_NOT_SET_UP_CUE_SLUG,
 )
 from jasper.service_state.google_creds import GoogleClients, build_google_clients
-from ..google_routes import build_google_routes_client
+from jasper.runtime.google_routes import build_google_routes_client
 from jasper.service_state.home_assistant import HAClient, build_ha_client
 from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
@@ -85,7 +86,7 @@ from jasper.audio_resources.volume_owner import install_volume_owner
 from jasper.service_state.volume_persistence import VolumePersistence
 from jasper.service_state.wake import WakeWordDetector
 from jasper.service_state.wake_events import WakeEventStore
-from ..watchdog import Heartbeat
+from jasper.platform.watchdog import Heartbeat
 from jasper.service_state.weather import WeatherClient
 from ..voice_daemon import (
     VOICE_MIC_UNAVAILABLE_EXIT,
@@ -97,7 +98,7 @@ from ._tasks import cancel_tracked_tasks, track_task
 from .content_activity import ContentActivityTracker
 from .push_to_talk import ManualMicRuntime
 from .wake_detect import CAPTURE_RING_FRAMES, LegRuntime, configured_wake_legs
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger("jasper.voice_daemon")
 
@@ -1063,7 +1064,7 @@ async def run() -> None:
     cfg = Config.from_env()
     configure_logging()
     # DEBUG for the in-RAM ring, INFO for the journal, plus the /system
-    # Debug card toggle. See jasper/flight_recorder.py.
+    # Debug card toggle. See jasper/runtime/flight_recorder.py.
     flight_recorder.install("voice")
     speech_policy = _log_speech_input_policy(cfg)
     pricing, pricing_overrides = _resolve_pricing(cfg)
@@ -1170,7 +1171,7 @@ async def run() -> None:
 
         # Tier 1 of the resilience ladder: bumped on every mic frame inside
         # WakeLoop.run, paired with `Type=notify` + `WatchdogSec=30s` in
-        # jasper-voice.service. See jasper/watchdog.py.
+        # jasper-voice.service. See jasper/platform/watchdog.py.
         heartbeat = Heartbeat(stale_threshold_sec=HEARTBEAT_STALE_THRESHOLD_SEC, interval_sec=10.0)
         heartbeat.start()
         _release(stack, "heartbeat", heartbeat.stop)

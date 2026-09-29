@@ -22,8 +22,8 @@ from jasper.audio_measurement.program import (
     ProgramSegment,
 )
 from jasper.audio_measurement.quality_model import DRIVER
-from jasper.json_fields import finite_float
-from jasper.log_event import log_event
+from jasper.platform.json_fields import finite_float
+from jasper.platform.log_event import log_event
 from .model import (
     ALIGNMENT_SNR_REFUSAL_VERDICT,
     CHANNEL_MAP_MIN_ISOLATION_DB,

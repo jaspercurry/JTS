@@ -39,7 +39,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from jasper.env_load import GROUPING_ENV_FILE, read_env_file_or_warn
+from jasper.platform.env_load import GROUPING_ENV_FILE, read_env_file_or_warn
 
 logger = logging.getLogger(__name__)
 

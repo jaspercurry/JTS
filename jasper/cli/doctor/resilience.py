@@ -15,7 +15,7 @@ from ...accessories import status as accessory_status
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
 from ...control.restart_broker import SELF_UNIT as _CONTROL_UNIT
 from ...control.system_supervisor import DEFAULT_REBOOT_STATE_PATH
-from ...service_units import (
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     GROUPING_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
@@ -27,7 +27,8 @@ from ...service_units import (
 )
 from ...voice.input_presence import voice_parked_no_mic
 from ...voice.provider_state import read_active_provider_state
-from ... import outputd_failure_reconcile_state, source_intent_units
+from jasper.runtime import outputd_failure_reconcile_state
+from jasper.platform import source_intent_units
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (
@@ -658,7 +659,7 @@ def check_speaker_silence() -> CheckResult:
     the same block the /system dashboard headline renders, so the two surfaces
     cannot disagree. ``reason`` IS the published code. ``warn``, never ``fail``
     — ``speaker_silent`` leads the summary without touching severity or exit
-    code (jasper/doctor_contract.py). With no verdict published the row skips
+    code (jasper/platform/doctor_contract.py). With no verdict published the row skips
     and this run's own unit-state rows lead instead.
     """
     label = "speaker silence"

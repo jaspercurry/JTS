@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 def _import_func():
-    from jasper.backoff import (
+    from jasper.platform.backoff import (
         RECONNECT_INITIAL_BACKOFF_SEC,
         RECONNECT_MAX_BACKOFF_SEC,
         reconnect_backoff_delay,
@@ -70,7 +70,7 @@ def test_terminal_failure_polls_on_the_slow_interval():
     however long it lasts. The interval is pinned outright: an edit
     that leaves it merely above the 60 s cap would still hammer the
     provider all day. See issue #3855."""
-    from jasper.backoff import (
+    from jasper.platform.backoff import (
         RECONNECT_BACKOFF_JITTER_FRACTION,
         RECONNECT_MAX_BACKOFF_SEC,
         TERMINAL_POLL_INTERVAL_SEC,
@@ -96,7 +96,7 @@ def test_terminal_failure_polls_on_the_slow_interval():
 def test_reconnect_nudge_admits_one_early_retry_per_cap_window():
     """A wake word may shorten a backoff wait, but repeated wakes must
     not retry the provider faster than an ordinary blip already does."""
-    from jasper.backoff import RECONNECT_MAX_BACKOFF_SEC, ReconnectNudge
+    from jasper.platform.backoff import RECONNECT_MAX_BACKOFF_SEC, ReconnectNudge
 
     now = [1000.0]
     nudge = ReconnectNudge(clock=lambda: now[0])

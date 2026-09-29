@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from jasper.playback_state.music_sources import Source
-from ..service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
+from jasper.platform.service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 
 
 @dataclass(frozen=True)

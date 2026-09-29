@@ -21,19 +21,19 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from jasper.atomic_io import (
+from jasper.platform.atomic_io import (
     advisory_file_lock,
     locked_update_env_file,
     read_regular_bytes_nofollow,
 )
 from jasper.control.restart_broker import manage_units
-from jasper.env_file import parse_env_lines
-from jasper.env_load import SOURCE_INTENT_ENV
-from jasper.json_fields import sha256_text
+from jasper.platform.env_file import parse_env_lines
+from jasper.platform.env_load import SOURCE_INTENT_ENV
+from jasper.platform.json_fields import sha256_text
 from jasper.local_sources import local_source_lifecycle, local_source_lifecycles
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import Source
-from jasper.source_intent_units import RECONCILE_BROKER_TIMEOUT_SECONDS, RECONCILE_UNIT
+from jasper.platform.source_intent_units import RECONCILE_BROKER_TIMEOUT_SECONDS, RECONCILE_UNIT
 
 logger = logging.getLogger("jasper.source_intent")
 

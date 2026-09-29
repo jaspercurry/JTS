@@ -56,7 +56,7 @@ import time
 from typing import Any
 
 from jasper.identity import reader as identity
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
 
 from . import household_credential

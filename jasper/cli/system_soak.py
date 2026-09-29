@@ -30,7 +30,7 @@ from jasper.control.system_metrics import (
     JASPER_SERVICE_GROUPS,
     SystemSampler,
 )
-from jasper.service_units import JournalctlUnavailable, run_journalctl_json
+from jasper.platform.service_units import JournalctlUnavailable, run_journalctl_json
 
 DEFAULT_OUTPUT_DIR = "/var/lib/jasper/diagnostics/system-soak"
 DEFAULT_DURATION_SEC = 10 * 60

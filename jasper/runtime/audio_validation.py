@@ -22,10 +22,10 @@ from jasper.runtime_config.audio_profile_state import (
     probe_xvf_mic as _probe_xvf_mic,
     runtime_env_from_mapping,
 )
-from .aec.bridge_telemetry import read_bridge_stats
-from .audio_hardware.dac import HIFIBERRY_DAC8X_ID
-from .chip_aec.policy import resolve_chip_aec_dac_gate
-from .service_units import (
+from jasper.aec.bridge_telemetry import read_bridge_stats
+from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_ID
+from jasper.chip_aec.policy import resolve_chip_aec_dac_gate
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     CAMILLA_SERVICE,
     FANIN_SERVICE,

@@ -14,7 +14,7 @@ from typing import Any, Mapping, NamedTuple
 
 import numpy as np
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_programs import PURPOSE_SPEAKER

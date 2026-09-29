@@ -52,22 +52,22 @@ from jasper.aec.bridge_engines import (
     DTLN_ENABLED_ENV,
 )
 from jasper.aec.bridge_telemetry import read_bridge_stats
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.mics.xvf3800 import (
     AEC_MIC_DEVICE_ENV,
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
-from jasper.env_file import read_env_file
-from jasper.env_load import (
+from jasper.platform.env_file import read_env_file
+from jasper.platform.env_load import (
     BASE_ENV_PATH,
     parse_bool_value,
     DEFAULT_AEC_MODE_PATH,
     WAKE_CORPUS_BRIDGE_ENV_PATH,
 )
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET
-from jasper.service_units import AEC_BRIDGE_SERVICE
-from jasper.systemd_probe import unit_query, unit_state
+from jasper.platform.service_units import AEC_BRIDGE_SERVICE
+from jasper.platform.systemd_probe import unit_query, unit_state
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 

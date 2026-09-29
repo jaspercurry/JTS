@@ -25,7 +25,7 @@ from jasper.dsp_control.fanin_coupling import (
     RING_A_CHANNELS,
     RING_SLOT_FRAMES,
 )
-from jasper.ring_header import (
+from jasper.platform.ring_header import (
     RING_SAMPLE_FORMAT_NAMES,
     RING_SAMPLE_FORMAT_S16LE,
     RING_SAMPLE_FORMAT_S32LE,

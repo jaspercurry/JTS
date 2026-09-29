@@ -19,8 +19,8 @@ from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
-from ..atomic_io import atomic_write_text, read_regular_bytes_nofollow
-from ..log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text, read_regular_bytes_nofollow
+from jasper.platform.log_event import log_event
 from ._health_fields import duration_label, finite_number, mapping
 from .audio_attribution import ATTRIBUTION_VERDICTS
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.volume_curve import main_mute_for_db
 from jasper.audio_resources.volume_owner import VolumeOwner
 

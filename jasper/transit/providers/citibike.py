@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 
-from ...env_load import parse_bool_value
+from jasper.platform.env_load import parse_bool_value
 from .. import citibike
 from ..base import BoundingBox, Stop, haversine_miles
 

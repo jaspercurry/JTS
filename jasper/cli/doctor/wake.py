@@ -14,7 +14,7 @@ from jasper.runtime_config.audio_profile_state import (
     resolve_audio_input_intent,
 )
 from ...config import Config, local_mic_present_from_env
-from ...json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 from jasper.service_state.openwakeword_guard import ensure_openwakeword_import_safe
 from ._evidence import evidence
 from ._registry import doctor_check

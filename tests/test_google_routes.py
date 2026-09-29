@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper import google_routes
+from jasper.runtime import google_routes
 
 
 ENV = {

@@ -21,16 +21,16 @@ from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any, AsyncIterator
 
-from .control import control_token
-from .control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
-from .platform import wire
-from .platform.control_client import AsyncControlClient
-from .platform.status_socket import VOICE_CONTROL_SOCKET_PATH
-from .platform.uds import daemon_command
-from .platform.uds import mux_socket_command as _mux_socket_command
-from .log_event import log_event
+from jasper.control import control_token
+from jasper.control.measurement_hold import MEASUREMENT_HOLD_TTL_SEC
+from jasper.platform import wire
+from jasper.platform.control_client import AsyncControlClient
+from jasper.platform.status_socket import VOICE_CONTROL_SOCKET_PATH
+from jasper.platform.uds import daemon_command
+from jasper.platform.uds import mux_socket_command as _mux_socket_command
+from jasper.platform.log_event import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.measurement_window")
 
 
 # Renew the voice-side crash-recovery timer while a window is open; a capture

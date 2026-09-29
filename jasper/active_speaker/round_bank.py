@@ -56,9 +56,9 @@ from jasper.attribution.session_identity import (
     ALIAS_CAPTURE_SESSION_ID, SessionIdentity, SessionIdentityError, stamp_session_identity,
 )
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.log_event import log_event
-from jasper.paths import camilla_statefile
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import camilla_statefile
 
 from .bundles import _UNFINISHED_STATES, _detect_build_sha
 from .state_paths import DEFAULT_CAMPAIGN_ROOT

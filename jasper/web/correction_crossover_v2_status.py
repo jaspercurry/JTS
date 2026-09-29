@@ -25,7 +25,7 @@ from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.seat_level_reference import seat_level_reference_status
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 
 logger = logging.getLogger(__name__)

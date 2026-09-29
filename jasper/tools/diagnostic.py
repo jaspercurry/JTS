@@ -24,8 +24,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .. import flight_recorder
-from ..log_event import log_event
+from jasper.runtime import flight_recorder
+from jasper.platform.log_event import log_event
 from . import tool
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
         )
         # Tier C: the user flagged an issue the daemon may not have logged
         # as a WARNING, so dump the recent DEBUG context (voice's flight
-        # recorder) to the journal. Best-effort. See jasper/flight_recorder.py.
+        # recorder) to the journal. Best-effort. See jasper/runtime/flight_recorder.py.
         try:
             flight_recorder.dump("voice_flagged")
         except Exception:  # noqa: BLE001

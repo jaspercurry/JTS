@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from ..conversation_history import (
+from jasper.runtime.conversation_history import (
     ConversationSettings,
     ConversationStore,
     ConversationTurn,

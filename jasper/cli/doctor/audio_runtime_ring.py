@@ -19,7 +19,7 @@ from typing import Any
 
 from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
-from ... import ring_header
+from jasper.platform import ring_header
 from ...audio_hardware.dac import latency_floor_for
 from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from jasper.audio_routes.output_hardware import active_dac_profile_id
@@ -29,7 +29,7 @@ from ._shared import CheckResult, PROBE_FRAMES, run
 from .audio_runtime_camilla import evidence_statefile
 from .audio_runtime_fanin import requires_roleful_graph
 from .audio_runtime_outputd import outputd_reconciled_env
-from ...service_units import FANIN_SERVICE
+from jasper.platform.service_units import FANIN_SERVICE
 
 # Aliases of the ring_assets SSOT; tests monkeypatch these names.
 _JTS_RING_ALSA_PLUGIN_DIR = ring_assets.RING_ALSA_PLUGIN_DIR
@@ -284,7 +284,7 @@ def check_content_transport_coherence() -> CheckResult:
     window from a wedge by the reconcile entry lock.
     """
     from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
-    from jasper.paths import crossover_statefile
+    from jasper.platform.paths import crossover_statefile
     from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.dsp_control.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -756,7 +756,7 @@ def check_ring_reader_stall() -> CheckResult:
     is STALE. Not ``read_seq``-flat — the writer advances ``read_seq`` on the
     absent reader's behalf at demotion, so a ``read_seq`` clause goes false
     exactly when the drops begin. See
-    :class:`jasper.ring_header.RingStallVerdict`.
+    :class:`jasper.platform.ring_header.RingStallVerdict`.
 
     Judges every ring below and reports per-ring so an operator knows which
     daemon to look at. ``present=False`` keeps absent/idle rings silent, which

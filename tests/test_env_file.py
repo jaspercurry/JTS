@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The shared systemd EnvironmentFile helper (jasper.env_file)."""
+"""The shared systemd EnvironmentFile helper (jasper.platform.env_file)."""
 
 from __future__ import annotations
 
 import pytest
 
-from jasper import atomic_io, env_file
+from jasper.platform import atomic_io, env_file
 
 
 @pytest.mark.parametrize(

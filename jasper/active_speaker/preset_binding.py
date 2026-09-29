@@ -10,7 +10,7 @@ import re
 from dataclasses import replace
 from typing import Any
 
-from jasper.json_fields import issue as _issue
+from jasper.platform.json_fields import issue as _issue
 from jasper.audio_routes.output_topology import (
     OutputTopology,
     SpeakerChannel,
@@ -18,7 +18,7 @@ from jasper.audio_routes.output_topology import (
     main_speaker_groups,
     subwoofer_speaker_groups,
 )
-from jasper.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE, DEFAULT_SUB_CROSSOVER_HZ, WAY_COUNT_BY_MAIN_MODE
+from jasper.platform.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE, DEFAULT_SUB_CROSSOVER_HZ, WAY_COUNT_BY_MAIN_MODE
 
 from ._common import gate as _gate
 from .crossover_preview import CROSSOVER_PREVIEW_KIND

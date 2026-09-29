@@ -26,8 +26,8 @@ from collections.abc import Callable
 from typing import Any
 
 from ..config import Config, VoiceProviderNotConfigured
-from ..env_load import load_env_files
-from ..log_event import log_event
+from jasper.platform.env_load import load_env_files
+from jasper.platform.log_event import log_event
 from .generator import (
     CHIME_VOICE_LABEL,
     GEMINI_TTS_MODEL,
@@ -40,7 +40,7 @@ from .generator import (
     TTSBackend,
 )
 from .manager import AudioCueManager
-from jasper.paths import SOUNDS_DIR
+from jasper.platform.paths import SOUNDS_DIR
 
 logger = logging.getLogger(__name__)
 

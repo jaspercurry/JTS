@@ -16,8 +16,8 @@ import os
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_json
+from jasper.platform.log_event import log_event
 
 from .status import STATUS_PATH
 

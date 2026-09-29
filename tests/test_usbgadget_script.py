@@ -626,7 +626,7 @@ def test_converge_reads_the_kill_switch_from_the_env_file_it_did_not_inherit(
 
 
 def test_env_file_kill_switch_is_read_the_way_the_python_parser_reads_it(tmp_path):
-    """One key, parsed as jasper.env_file.parse_env_mapping parses it: comments
+    """One key, parsed as jasper.platform.env_file.parse_env_mapping parses it: comments
     skipped, quotes stripped, surrounding whitespace trimmed, last wins. An
     inherited assignment still beats the file, and an unreadable or keyless file
     falls back to the default-on network rather than dropping it."""
@@ -1089,7 +1089,7 @@ def test_shell_and_python_intent_readers_cannot_disagree(tmp_path: Path, body: b
 def test_readers_refuse_state_they_cannot_bound(tmp_path: Path, readable: bool):
     """A symlink, a FIFO, or a file over the reader's cap is refused rather
     than followed or truncated — the same rejection
-    jasper.atomic_io.read_regular_bytes_nofollow makes."""
+    jasper.platform.atomic_io.read_regular_bytes_nofollow makes."""
     target = tmp_path / "target.env"
     target.write_text('JASPER_SPEAKER_NAME="Forged"\n', encoding="utf-8")
     cases = [tmp_path / "link.env", tmp_path / "fifo.env", tmp_path / "big.env"]

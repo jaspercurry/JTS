@@ -9,8 +9,8 @@ import sqlite3
 
 import pytest
 
-from jasper import conversation_history as history_module
-from jasper.conversation_history import (
+from jasper.runtime import conversation_history as history_module
+from jasper.runtime.conversation_history import (
     CAPTURE_ENABLED_ENV,
     DEFAULT_RETENTION_DAYS,
     DEFAULT_RETENTION_MAX_ROWS,

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .. import atomic_io
+from jasper.platform import atomic_io
 
 
 def camilla():

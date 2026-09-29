@@ -30,9 +30,9 @@ from jasper.audio_routes.aec_sweep import (
     config_metadata,
     variant_metadata,
 )
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 from jasper.cli.wake_enroll import VOICE_UNIT
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from . import session_store
 from .bridge_session import (

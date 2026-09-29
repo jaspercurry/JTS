@@ -38,7 +38,6 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         if name == "bass":
             parser.add_argument("round_dir", type=Path)
             add_set_argument(parser)
-            parser.add_argument("--calibration-root", type=Path)
         else:
             parser.add_argument("round_dir", type=Path, nargs="+")
             parser.add_argument("--candidate", type=Path, action="append", required=True, help="candidate artifact or banked fingerprint; repeat for each candidate")
@@ -78,7 +77,7 @@ def _cmd(args: argparse.Namespace) -> int:
             destination = default_out(inputs, root, ARTIFACT_BY_VIEW[args.command].artifact,
                                       args.set if args.command == "bass" else None)
             if args.command == "bass":
-                payload = bass_payload(inputs, args.set, calibration_root=args.calibration_root)
+                payload = bass_payload(inputs, args.set)
                 summary = {"takes": len(payload["takes"])}
                 read = subject(inputs, set_id=payload["set_id"], candidate_id=payload["candidate_id"])
                 parameters = {"calibration_id": calibration_id(payload["takes"][0]["calibration"])}

@@ -43,7 +43,7 @@ from jasper.audio_control.transport_coherence import (
     transport_coherence_report,
     transport_topology_for_coupling,
 )
-from jasper.env_load import EnvFileState
+from jasper.platform.env_load import EnvFileState
 from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,

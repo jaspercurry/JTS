@@ -58,7 +58,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, ClassVar
 
 from jasper.service_state.accounts import RecordRegistry, account_file_stem
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 
 logger = logging.getLogger("jasper.google_creds")
 

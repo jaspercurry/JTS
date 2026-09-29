@@ -9,7 +9,7 @@ from contextlib import closing
 
 import pytest
 
-from jasper.conversation_history import (
+from jasper.runtime.conversation_history import (
     CAPTURE_ENABLED_ENV,
     ConversationStore,
     ConversationTurn,

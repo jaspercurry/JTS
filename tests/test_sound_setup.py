@@ -54,7 +54,7 @@ from jasper.active_speaker.graph_selector import (
     safe_graph_for_current_topology,
 )
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import (
@@ -1693,7 +1693,7 @@ RECONCILE_FAILED = {"ok": False, "error": "private backend detail"}
 
 def _stub_reconcile(monkeypatch, result: dict) -> None:
     monkeypatch.setattr(
-        "jasper.output_topology_runtime.trigger_reconcile",
+        "jasper.runtime.output_topology_runtime.trigger_reconcile",
         lambda **_kwargs: result,
     )
 
@@ -5156,7 +5156,7 @@ def test_repinned_box_reconcile_cannot_repoint_the_statefile_at_audio(
         parked_safe_graph_decision(topology, config_path=parked),
         statefile_path=statefile, topology=topology,
     )
-    monkeypatch.setattr("jasper.output_topology_runtime.trigger_reconcile", reconcile)
+    monkeypatch.setattr("jasper.runtime.output_topology_runtime.trigger_reconcile", reconcile)
 
     sound_setup._repin_output_topology_payload({})
 

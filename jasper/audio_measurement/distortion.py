@@ -141,10 +141,7 @@ class HarmonicReading:
         against NaN is False in numpy, which would otherwise mark the one region
         that is certainly NOT a driver reading as the cleanest of the curve.
         """
-        values = np.asarray(self.relative_db[order], dtype=np.float64)
-        floor = np.asarray(self.floor_relative_db[order], dtype=np.float64)
-        separation = values - floor
-        return ~(separation >= float(margin_db))
+        return floor_limited_mask(self.relative_db[order], self.floor_relative_db[order], margin_db)
 
     def harmonic_db(self, order: int) -> np.ndarray:
         """Absolute level of order ``order`` -- ``fundamental_db + relative_db``.
@@ -170,6 +167,16 @@ class HarmonicReading:
             self.relative_db[order],
             self.floor_limited(order) if above_floor else None,
         )
+
+
+def floor_limited_mask(
+    relative_db: Sequence[float | None] | np.ndarray,
+    floor_relative_db: Sequence[float | None] | np.ndarray,
+    margin_db: float = FLOOR_LIMITED_MARGIN_DB,
+) -> np.ndarray:
+    """:meth:`HarmonicReading.floor_limited` over plain arrays, where ``None`` reads as NaN."""
+    separation = np.asarray(relative_db, dtype=np.float64) - np.asarray(floor_relative_db, dtype=np.float64)
+    return ~(separation >= float(margin_db))
 
 
 def worst_clear_of_floor(
@@ -209,8 +216,7 @@ def order_band_hz(meta: SweepMeta, order: int) -> tuple[float, float]:
     """
     if type(order) is not int or order < 1:
         raise ValueError("harmonic order must be a positive integer")
-    lo = float(meta.f1) * 2.0**BAND_EDGE_TRIM_OCTAVES
-    hi = float(meta.f2) / order
+    lo, hi = _order_edges_hz(meta, order)
     if hi <= lo:
         raise ValueError(
             f"sweep {meta.f1:g}-{meta.f2:g} Hz is too narrow for order {order}: "
@@ -230,6 +236,19 @@ def analysis_band_hz(
     curves reach further and use :func:`order_band_hz` instead.
     """
     return order_band_hz(meta, max(validated_orders(orders)))
+
+
+def sweep_covers_band(
+    meta: SweepMeta, band_hz: tuple[float, float], orders: Sequence[int] = DEFAULT_HARMONIC_ORDERS,
+) -> bool:
+    """Whether EVERY requested order is real somewhere inside ``band_hz``, which
+    a harmonic reading over ``band_hz`` needs."""
+    lo, hi = _order_edges_hz(meta, max(validated_orders(orders)))
+    return max(lo, float(band_hz[0])) < min(hi, float(band_hz[1]))
+
+
+def _order_edges_hz(meta: SweepMeta, order: int) -> tuple[float, float]:
+    return float(meta.f1) * 2.0**BAND_EDGE_TRIM_OCTAVES, float(meta.f2) / order
 
 
 def _magnitude_on_excitation_axis(

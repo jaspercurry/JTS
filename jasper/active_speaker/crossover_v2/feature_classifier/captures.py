@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 
 from jasper.audio_measurement.evidence_reasons import (
     CAPTURES_UNREADABLE,

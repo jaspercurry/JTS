@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.log_event — the canonical structured-log emitter.
+"""Tests for jasper.platform.log_event — the canonical structured-log emitter.
 
 Pins the logfmt rendering (so the on-the-wire `event=` shape stays
 grep-stable), the quoting/escaping that fixes the broken-parse bug for
@@ -18,7 +18,7 @@ import logging
 
 import pytest
 
-from jasper.log_event import (
+from jasper.platform.log_event import (
     json_mode_enabled,
     log_event,
     render_json,

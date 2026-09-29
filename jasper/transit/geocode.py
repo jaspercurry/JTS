@@ -38,7 +38,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 # httpx is imported lazily inside `geocode()` and the per-service
 # request helpers — this module is imported at the top of the /assistant/transit/

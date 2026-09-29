@@ -17,9 +17,9 @@ import shlex
 import socket
 from dataclasses import dataclass
 
-from ..atomic_io import atomic_write_text
-from ..env_load import SPEAKER_NAME_ENV_PATH
-from ..env_file import quote_env_value as quote_env_value
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.env_load import SPEAKER_NAME_ENV_PATH
+from jasper.platform.env_file import quote_env_value as quote_env_value
 
 DEFAULT_SPEAKER_NAME = "JTS"
 ENV_VAR = "JASPER_SPEAKER_NAME"

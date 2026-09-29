@@ -17,7 +17,7 @@ import json
 import sys
 from typing import Any
 
-from jasper.output_topology_runtime import (
+from jasper.runtime.output_topology_runtime import (
     RECONCILE_UNIT,
     read_before,
     reset_to_unconfigured,

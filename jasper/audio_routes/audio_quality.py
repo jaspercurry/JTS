@@ -18,8 +18,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
-from jasper.paths import resolve_state_path
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.paths import resolve_state_path
 
 DEFAULT_CONVERTER = "samplerate_medium"
 STATE_ENV_KEY = "JASPER_ALSA_RATE_CONVERTER"

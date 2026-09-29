@@ -77,7 +77,7 @@ from jasper.audio_measurement.program import (
     is_level_probe,
 )
 from jasper.audio_measurement.ramp import MAX_STEP_DB
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
 from tests.test_active_speaker_audition import ACTIVE_PCM
 from tests.test_active_speaker_program_admission import _profile_and_targets

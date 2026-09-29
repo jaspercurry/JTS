@@ -11,7 +11,7 @@ import pytest
 
 from jasper.cli.doctor import env
 from jasper.cli.doctor.env import _classify_state_group_write
-from jasper.env_load import parse_env_file
+from jasper.platform.env_load import parse_env_file
 
 from .doctor_test_support import _fresh_cfg, _pretend_group_is_jasper, _registered_check_names
 from .secret_env_fixtures import SECRET_ENV_NAMES
@@ -45,7 +45,7 @@ def test_parse_env_file_missing_returns_empty(tmp_path: Path):
 
 
 def test_read_env_file_state_reports_loaded_and_missing(tmp_path: Path):
-    from jasper.env_load import read_env_file_state
+    from jasper.platform.env_load import read_env_file_state
 
     p = tmp_path / "jasper.env"
     p.write_text("JASPER_HOSTNAME=jts.local\n")
@@ -61,7 +61,7 @@ def test_read_env_file_state_reports_loaded_and_missing(tmp_path: Path):
 
 
 def test_read_env_file_state_reports_unreadable(monkeypatch, tmp_path: Path):
-    from jasper.env_load import read_env_file_state
+    from jasper.platform.env_load import read_env_file_state
 
     p = tmp_path / "jasper.env"
     p.write_text("JASPER_HOSTNAME=jts.local\n")
@@ -83,7 +83,7 @@ def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
     systemd unit's `EnvironmentFile=` ordering. Verified via the
     explicit-paths form of `load_env_files` so test fixtures don't
     have to monkeypatch a module-level constant."""
-    from jasper.env_load import load_env_files
+    from jasper.platform.env_load import load_env_files
 
     operator = tmp_path / "jasper.env"
     operator.write_text("GEMINI_API_KEY=op-key\nJASPER_VOICE_PROVIDER=gemini\n")
@@ -100,7 +100,7 @@ def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
 
 
 def test_default_env_files_include_spotify_credentials_in_systemd_order():
-    from jasper.env_load import ENV_FILES
+    from jasper.platform.env_load import ENV_FILES
 
     spotify_creds = "/var/lib/jasper-intsecrets/spotify_credentials.env"
     assert "/etc/jasper/jasper.env" in ENV_FILES
@@ -116,7 +116,7 @@ def test_default_env_files_include_spotify_credentials_in_systemd_order():
 def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
     """A var already in the calling shell must NOT be overwritten by
     the env files. Lets an operator probe with `FOO=bar jasper-doctor`."""
-    from jasper.env_load import load_env_files
+    from jasper.platform.env_load import load_env_files
 
     operator = tmp_path / "jasper.env"
     operator.write_text("JASPER_VOICE_PROVIDER=gemini\n")

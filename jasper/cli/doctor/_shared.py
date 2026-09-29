@@ -5,7 +5,7 @@
 """Shared primitives for the jasper-doctor check package.
 
 The base layer every per-domain check module imports from: the output
-contract re-exported from :mod:`jasper.doctor_contract`, the
+contract re-exported from :mod:`jasper.platform.doctor_contract`, the
 subprocess/env-file wrappers, the ANSI colour constants, and the
 helpers and ``REASON_*`` codes more than one domain uses — each declared
 beside the helper it belongs to.
@@ -27,9 +27,9 @@ import subprocess
 import time
 from collections.abc import Iterable
 from typing import Any
-# The row contract lives in `jasper.doctor_contract` (stdlib-only, so
+# The row contract lives in `jasper.platform.doctor_contract` (stdlib-only, so
 # jasper-control can build contract rows without importing this package).
-from ...doctor_contract import (  # noqa: F401 — re-exported for the domain modules
+from jasper.platform.doctor_contract import (  # noqa: F401 — re-exported for the domain modules
     CHECK_STATUSES,
     CheckResult,
     REASON_CHECK_CRASHED,
@@ -41,8 +41,8 @@ from ...doctor_contract import (  # noqa: F401 — re-exported for the domain mo
     summarize,
 )
 from jasper.playback_state.install_profile import is_streambox_install_profile, read_install_profile
-from ...secret_redaction import redact_secrets
-from ...service_units import unit_not_running
+from jasper.platform.secret_redaction import redact_secrets
+from jasper.platform.service_units import unit_not_running
 
 GREEN = "\033[32m"
 
@@ -228,7 +228,7 @@ def service_state_failure(
 
     One ladder for jasper-fanin, jasper-camilla and jasper-outputd — each
     passes its own three reason codes into
-    :func:`jasper.service_units.unit_not_running`. All three units carry an
+    :func:`jasper.platform.service_units.unit_not_running`. All three units carry an
     ``[Install]`` section, so anything other than ``enabled``/``enabled-runtime``
     (including ``static``, ``disabled``, ``indirect``, ``masked``) means the
     unit will not come up on its own. `journalctl -u <unit>` is the next step

@@ -32,7 +32,7 @@ from pathlib import Path
 
 from tests.install_surface import installer_text
 
-from jasper.env_load import parse_env_file
+from jasper.platform.env_load import parse_env_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,7 +180,7 @@ def test_avahi_unavailable_falls_back_to_os_hostname(tmp_path):
          'JASPER_IDENTITY_DRIFT',
          '0'),
         # Quotes must be stripped to match what
-        # jasper.env_file.parse_env_mapping sees, or a hand-edited hostname
+        # jasper.platform.env_file.parse_env_mapping sees, or a hand-edited hostname
         # shows drift forever.
         ('jts3',
          'JASPER_HOSTNAME="jts3.local"\n',

@@ -193,7 +193,7 @@ _apply_jts_mglru() {
 # once at early boot and sizes the zram device. Per swap.conf(5):
 # "After modifying any swap configuration, you must reboot the
 # system for changes to take effect."
-# Must equal jasper.memory_policy.ZRAM_TARGET_PERCENT (and
+# Must equal jasper.platform.memory_policy.ZRAM_TARGET_PERCENT (and
 # deploy/rpi-swap/50-jts.conf's RamMultiplier), which jasper-doctor's
 # check_zram_size_ratio derives its warn bound from. Shell cannot import the
 # Python owner, so tests/test_memory_policy.py pins this literal to it.
@@ -256,7 +256,7 @@ _apply_jts_zram_dropin() {
 # at adj=0 until reboot. Live-writing sets the kernel-visible value
 # immediately — zero audio glitch, fully reversible.
 #
-# Reads the canonical target values from jasper._oom_adj.INSTALL_LIVE_WRITE
+# Reads the canonical target values from jasper.platform._oom_adj.INSTALL_LIVE_WRITE
 # (single source of truth shared with jasper-doctor).
 _apply_jts_oom_score_adj_live() {
     # Read the canonical target values from the Python package.
@@ -264,11 +264,11 @@ _apply_jts_oom_score_adj_live() {
     # has already run by this point in main).
     local oom_adj_data
     if ! oom_adj_data=$(/opt/jasper/.venv/bin/python3 -c \
-            'from jasper._oom_adj import INSTALL_LIVE_WRITE
+            'from jasper.platform._oom_adj import INSTALL_LIVE_WRITE
 for k, v in INSTALL_LIVE_WRITE.items():
     print(f"{k}={v}")' 2>/dev/null); then
         _mem_log "oom_score_adj.source_unavailable" \
-            "WARN — couldn't read jasper._oom_adj; live-write skipped"
+            "WARN — couldn't read jasper.platform._oom_adj; live-write skipped"
         return 1
     fi
     local live_writes=0 live_skips=0

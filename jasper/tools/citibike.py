@@ -9,7 +9,7 @@ import asyncio
 import logging
 
 from ..transit.citibike import CitiBikeClient
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..transit.base import TransitError
 from . import tool
 

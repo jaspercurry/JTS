@@ -920,8 +920,8 @@ def test_camilla_outputd_config_declares_outputd_lane():
 
 def _emit_shipped_cutover_config(monkeypatch, tmp_path) -> str:
     """Render the shipped wide ring graph."""
-    monkeypatch.setattr("jasper.env_load.FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
-    monkeypatch.setattr("jasper.env_load.BASE_ENV_PATH", str(tmp_path / "jasper.env"))
+    monkeypatch.setattr("jasper.platform.env_load.FANIN_ENV_PATH", str(tmp_path / "fanin.env"))
+    monkeypatch.setattr("jasper.platform.env_load.BASE_ENV_PATH", str(tmp_path / "jasper.env"))
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
 
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
@@ -989,7 +989,7 @@ def test_shipped_cutover_seed_is_byte_identical_to_the_emitter(monkeypatch, tmp_
         PYTHONPATH=$PWD .venv/bin/python -c \\
             "import os; \\
              os.environ['JASPER_OUTPUT_TOPOLOGY_PATH'] = '/tmp/absent-topology.json'; \\
-             import jasper.env_load as e; \\
+             import jasper.platform.env_load as e; \\
              e.FANIN_ENV_PATH = '/tmp/absent-fanin.env'; \\
              e.BASE_ENV_PATH = '/tmp/absent-jasper.env'; \\
              from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config as g; \\

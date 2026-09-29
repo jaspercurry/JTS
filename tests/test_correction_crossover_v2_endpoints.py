@@ -45,7 +45,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.bundles import CAPTURE_KIND_SEQUENTIAL, open_bundle
-from jasper.atomic_io import env_lock_path, flock_held
+from jasper.platform.atomic_io import env_lock_path, flock_held
 from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.web import correction_crossover_v2_wired as wired
@@ -1090,6 +1090,7 @@ def test_production_analyze_threads_geometry_and_resolved_calibration(monkeypatc
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
 
     curve_sentinel = CalibrationCurve([20.0, 20000.0], [0.0, 1.0])
 
@@ -1152,6 +1153,7 @@ def test_production_analyze_threads_the_pages_frame_report(monkeypatch):
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
 
     report = {"frames": 4, "encoded_frames": 4, "capture_gaps": 0,
               "capture_gap_frames": 0}
@@ -1198,6 +1200,7 @@ def test_production_analyze_annotates_uncalibrated_when_none_resolves(monkeypatc
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
     meta: dict[str, Any] = {}
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta=meta
@@ -1234,6 +1237,7 @@ def test_production_analyze_threads_mic_tier_from_resolved_calibration(monkeypat
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
 
     class _Record:
         curve = CalibrationCurve([20.0, 20000.0], [0.0, 1.0])
@@ -1282,6 +1286,7 @@ def test_production_analyze_mic_tier_defaults_to_phone_when_no_calibration_resol
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={},
     )
@@ -1320,6 +1325,7 @@ def test_production_analyze_mic_tier_handles_a_bare_calibration_curve_record(mon
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
     bare_curve = CalibrationCurve(
         freqs_hz=[20.0, 20000.0], correction_db=[0.0, 0.0],
     )
@@ -1361,6 +1367,7 @@ def test_uncalibrated_warn_reports_the_setup_the_phone_actually_sent(
     monkeypatch.setattr(
         pa_mod, "analyze_program_capture", lambda *a, **k: "analysis"
     )
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
     analyze = v2evidence.bind_production_analyze(
         resolve_calibration=lambda setup, device: None, meta={}
     )
@@ -1508,6 +1515,7 @@ def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
 
     meta: dict[str, Any] = {}
     # resolve_calibration defaults to resolve_setup_calibration — the REAL
@@ -1570,6 +1578,7 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
 
     meta: dict[str, Any] = {}
     analyze = v2evidence.bind_production_analyze(meta=meta)

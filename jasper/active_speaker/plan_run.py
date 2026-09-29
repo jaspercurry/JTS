@@ -19,7 +19,7 @@ from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe

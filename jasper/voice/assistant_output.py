@@ -20,14 +20,14 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.runtime_config.assistant_loudness import (
     active_voice_identity,
     tts_envelope_lufs_for_level,
 )
 from jasper.audio_control.assistant_volume import resolved_route_consumes_volume_context
-from ..tts_playout import TtsPlayout
+from jasper.runtime.tts_playout import TtsPlayout
 from ..config import Config
 from ..cues import AudioCueManager, registry
 from ..cues.manager import (

@@ -24,10 +24,10 @@ from jasper.active_speaker.measurement_emit import MeasurementGraphRefused, comp
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.program_headroom import written_headroom_db
 from jasper.active_speaker.state_paths import baseline_candidate_config_path, baseline_config_path
-from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
+from jasper.platform.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_control.dsp_apply import DspApplyError, dsp_writer_lock, validate_camilla_config
-from jasper.json_fields import sha256_text
-from jasper.log_event import log_event
+from jasper.platform.json_fields import sha256_text
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology_store import load_output_topology
 from jasper.sound import settings as sound_settings
 from .sound_design_draft import apply_measured_crossover_geometry

@@ -17,13 +17,13 @@ from jasper.audio_measurement.admission.playback import (
     PlaybackError, PlaybackObservation, WavPlaybackCancelled,
     WavPlaybackCancelledBeforeSpawn,
 )
-from jasper.log_event import log_event
-from jasper.measurement_window import MEASUREMENT_FANIN_LABEL
+from jasper.platform.log_event import log_event
+from jasper.runtime.measurement_window import MEASUREMENT_FANIN_LABEL
 from jasper.platform.route_health import (
     ROUTE_SURFACES, TAKE_FAULT_COUNTER_PATHS, TAKE_FAULT_COUNTER_SUFFIXES, known_counter_deltas, lane_indexes,
     numeric_deltas,
 )
-from jasper.json_fields import utc_now_iso
+from jasper.platform.json_fields import utc_now_iso
 from .playback_transaction import PlaybackInterrupted
 
 from jasper.active_speaker.bundles import (

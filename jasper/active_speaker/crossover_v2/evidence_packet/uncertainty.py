@@ -10,7 +10,7 @@ from typing import Any
 
 from jasper.active_speaker.linearization_envelope import _MIC_TRUST_TABLE_HZ
 from jasper.audio_measurement.mic_identity import MIC_TIERS
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 
 from ...repeat_floor import REPEAT_FLOOR_KIND, load_repeat_floor, stopping_thresholds
 from ..contracts import POSITION_EVIDENCE_KIND

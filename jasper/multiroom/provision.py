@@ -43,8 +43,8 @@ import os
 import shutil
 import subprocess
 
-from .. import atomic_io
-from ..log_event import log_event
+from jasper.platform import atomic_io
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

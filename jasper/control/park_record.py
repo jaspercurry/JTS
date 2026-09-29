@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..env_file import parse_env_mapping
+from jasper.platform.env_file import parse_env_mapping
 
 #: What ``deploy/bin/jasper-unpark`` appends to a park record's path when it
 #: retires it.

@@ -90,7 +90,7 @@ from jasper.active_speaker.safe_playback import (
 from jasper.dsp_control.dsp_apply import validate_camilla_config
 from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
 from jasper.audio_routes.output_topology_store import load_output_topology_strict
-from jasper.paths import camilla_statefile
+from jasper.platform.paths import camilla_statefile
 
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:

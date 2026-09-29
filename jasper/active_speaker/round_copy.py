@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from jasper.speaker_layout import measurement_target_name
+from jasper.platform.speaker_layout import measurement_target_name
 
 from .crossover_v2.round_frequency_view import position_label
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT

@@ -31,11 +31,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
 from jasper.service_state import location_state
-from ..atomic_io import locked_transform_env_file
+from jasper.platform.atomic_io import locked_transform_env_file
 from ..transit import geocode as geocode_mod
-from ..log_event import log_event
-from ..env_file import read_env_file
-from ..env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
+from jasper.platform.log_event import log_event
+from jasper.platform.env_file import read_env_file
+from jasper.platform.env_load import TRANSIT_ENV_PATH, WEATHER_ENV_PATH
 from ._common import (
     RESTART_CLAUSE,
     begin_request,

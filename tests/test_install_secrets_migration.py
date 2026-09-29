@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.env_file import read_env_file
+from jasper.platform.env_file import read_env_file
 from tests._lock_holder import spawn_lock_holder
 
 ROOT = Path(__file__).resolve().parents[1]

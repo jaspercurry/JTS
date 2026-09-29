@@ -51,9 +51,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.json_fields import finite_float
-from jasper.log_event import log_event
-from jasper.percentiles import nearest_rank_percentile
+from jasper.platform.json_fields import finite_float
+from jasper.platform.log_event import log_event
+from jasper.platform.percentiles import nearest_rank_percentile
 from jasper.route_latency import click_track, ref9891_pcap, warm_check
 from jasper.route_latency.impulse_detect import (
     DEFAULT_HYSTERESIS,

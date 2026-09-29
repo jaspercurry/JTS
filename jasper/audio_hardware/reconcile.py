@@ -38,7 +38,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import EnvKeyAction as EnvAction, locked_upsert_env_file
+from jasper.platform.atomic_io import EnvKeyAction as EnvAction, locked_upsert_env_file
 from jasper.audio_hardware import reconcile_boot as boot
 from jasper.audio_hardware import reconcile_env_files as env_files
 from jasper.audio_hardware import reconcile_hardware as hardware
@@ -57,10 +57,10 @@ from jasper.audio_hardware.reconcile_common import (
 from jasper.audio_hardware.reconcile_inputs import publish_reconcile_inputs
 from jasper.audio_hardware.usb_port_role import DEFAULT_MODEL_PATH
 from jasper.device_probe.usbgadget import DEFAULT_UDC_CLASS_DIR
-from jasper.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
-from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
-from jasper.paths import (
+from jasper.platform.env_load import BASE_ENV_PATH, FANIN_ENV_PATH, OUTPUTD_ENV_PATH
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
+from jasper.platform.paths import (
     OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH,
     camilla_statefile,
     crossover_statefile,
@@ -70,7 +70,7 @@ from jasper.audio_routes.output_hardware import (
     degraded_marker_path,
     state_path,
 )
-from jasper.shell_env import render_shell_assignments
+from jasper.platform.shell_env import render_shell_assignments
 from jasper.playback_state.install_profile import INSTALL_PROFILE_FILE
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import service_units
+from jasper.platform import service_units
 from jasper.cli.doctor import _evidence
 from jasper.cli.doctor._evidence import Evidence, StatusRead
 from jasper.control.system_metrics import VCGENCMD_INTERVAL_SEC
@@ -119,7 +119,7 @@ def test_env_file_readers_are_memoized_and_fail_soft_to_none(
     run (several checks each used to open it themselves — ADR-0233 rule 4); a
     missing or unreadable file reads as None, matching every consuming
     check's prior broad ``except OSError``."""
-    import jasper.env_load as env_load
+    import jasper.platform.env_load as env_load
 
     path = tmp_path / "env"
     path.write_text("FOO=bar\n")

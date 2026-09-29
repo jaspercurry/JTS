@@ -9,11 +9,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE as SAMPLE_RATE
 from jasper.fanin.status import USBSINK_INPUT_LABEL
-from jasper.json_fields import as_mapping
-from jasper.paths import resolve_state_path
+from jasper.platform.json_fields import as_mapping
+from jasper.platform.paths import resolve_state_path
 
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"

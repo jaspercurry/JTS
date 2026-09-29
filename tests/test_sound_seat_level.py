@@ -157,14 +157,21 @@ def test_start_reports_running_then_converged(
     monkeypatch.setenv("SEAT_LEVEL_STUB_DELAY_S", "0.05")
     monkeypatch.setattr(seat_level, "SEAT_LEVEL_CLI", str(stub_cli))
     session = seat_level._SeatLevelSession()
+    reap = session._reap
+    unreaped: list = []
+    monkeypatch.setattr(session, "_reap", unreaped.append)
     result = session.start(target_db_spl=78.0, calibration_file="/dev/null")
     assert result == {"status": "started", "target_db_spl": 78.0}
 
-    status = session.status()
-    assert status["state"] in ("running", "converged")
+    _wait_until(lambda: unreaped)
+    (proc,) = unreaped
+    proc.wait()
+    # Exited but not yet reaped: this window must not read as idle (#5925).
+    assert session.status() == {"state": "running", "target_db_spl": 78.0}
 
-    _wait_until(lambda: session.status()["state"] == "converged")
+    reap(proc)
     status = session.status()
+    assert status["state"] == "converged"
     assert status["target_db_spl"] == 78.0
     assert status["measured_db_spl"] == 77.4
     assert status["detail"] == "converged"

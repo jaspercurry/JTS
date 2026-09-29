@@ -30,7 +30,7 @@ from jasper.audio_measurement.band_ladders import (
 )
 from jasper.audio_measurement.quality import dbfs
 from jasper.audio_measurement.quality_model import ROOM, QualityModel
-from jasper.json_fields import as_float
+from jasper.platform.json_fields import as_float
 
 DBFS_FLOOR = ROOM.dbfs_floor
 

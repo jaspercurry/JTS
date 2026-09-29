@@ -12,7 +12,7 @@ to the ACTIVE ring on an armed roleful box). See ADR-0100 — a topology the rin
 cannot serve parks under its own name
 (:mod:`jasper.control.transport_eligibility`); it never falls back.
 
-This module is import-cheap (stdlib plus :mod:`jasper.env_file`) so
+This module is import-cheap (stdlib plus :mod:`jasper.platform.env_file`) so
 socket-activated web surfaces and the config emitters can resolve the ring
 without pulling in NumPy/SciPy.
 """
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, TypedDict, cast
 
-from jasper.env_file import read_value
+from jasper.platform.env_file import read_value
 
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via the CAPTURE direction of the ``jts_ring`` ioplug. The Rust
@@ -281,7 +281,7 @@ def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
     active-ring endpoint.
     """
     if env is None:
-        from jasper.env_load import OUTPUTD_ENV_PATH  # lazy: read at call time
+        from jasper.platform.env_load import OUTPUTD_ENV_PATH  # lazy: read at call time
 
         try:
             with open(OUTPUTD_ENV_PATH, encoding="utf-8") as fh:
@@ -536,7 +536,7 @@ def outputd_content_is_central_ring(env: "Mapping[str, str]") -> bool:
     ring and leaves ``shm_ring`` unattached while declaring no bridge — which
     :func:`outputd_bridge_is_ring` alone would read as the central ring.
 
-    Takes the MERGED env (:func:`jasper.env_load.outputd_reconciled_env`): the
+    Takes the MERGED env (:func:`jasper.platform.env_load.outputd_reconciled_env`): the
     marker lives in outputd's second ``EnvironmentFile=`` layer. An empty mapping
     reads as the ring, the same as an unwritten box.
     """

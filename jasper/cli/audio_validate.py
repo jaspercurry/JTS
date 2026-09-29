@@ -11,10 +11,10 @@ import sys
 from pathlib import Path
 
 from jasper.audio_resources import audio_validation_artifacts as artifacts
-from jasper.audio_validation import CHIP_AEC_PROFILE, build_chip_aec_readiness_artifact
+from jasper.runtime.audio_validation import CHIP_AEC_PROFILE, build_chip_aec_readiness_artifact
 from jasper.audio_control.audio_validation_probes import logger
-from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
 
 
 def main(argv: list[str] | None = None) -> int:

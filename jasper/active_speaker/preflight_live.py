@@ -14,8 +14,8 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.program import KIND_PILOT
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
-from jasper.biquad import PeqFilter
-from jasper.log_event import log_event
+from jasper.platform.biquad import PeqFilter
+from jasper.platform.log_event import log_event
 from jasper.platform.control_client import read_output_volume
 
 from .angle_capture import AngleCaptureRequest

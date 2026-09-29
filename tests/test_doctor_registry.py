@@ -192,7 +192,7 @@ def test_every_built_check_is_named_by_one_rule(install_profile):
 _REASON_CODE_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 
 # Infrastructure, not a subject: these build the harness rows whose vocabulary
-# is `jasper.doctor_contract`, and they register no checks of their own.
+# is `jasper.platform.doctor_contract`, and they register no checks of their own.
 _NON_DOMAIN_MODULES = frozenset(
     {"__init__", "_cli", "_harness", "_registry", "_shared"}
 )

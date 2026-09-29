@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 
 
 def _jsonable(value: Any) -> Any:

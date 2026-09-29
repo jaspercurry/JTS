@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ._health_fields import MONITOR_ERRORS
-from .. import paths
+from jasper.platform import paths
 from ..active_speaker.environment import read_camilla_statefile_config_path
 from ..active_speaker.playback_route import (
     ActiveLaneCapabilityGap,

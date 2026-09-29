@@ -317,7 +317,7 @@ module = [
     "jasper.runtime_config.assistant_loudness",
     # peq: latent type debt kept on the baseline, not fixed inside a relocation.
     "jasper.audio_measurement.peq",
-    "jasper.audio_validation",
+    "jasper.runtime.audio_validation",
     "jasper.audio_control.audio_validation_readiness",
     "jasper.audio_control.audio_validation_hardware_checks",
     "jasper.bluetooth.scan",
@@ -337,7 +337,7 @@ module = [
     "jasper.control.system_metrics",
     "jasper.control.system_supervisor",
     "jasper.service_state.home_assistant",
-    "jasper.mic_capture",
+    "jasper.runtime.mic_capture",
     "jasper.multiroom.leader_config",
     "jasper.mux",
     "jasper.net.wifi_scan_repair",
@@ -353,7 +353,7 @@ module = [
     "jasper.transit",
     "jasper.transit.providers.citibike",
     "jasper.transit.providers.nyc_subway",
-    "jasper.tts_playout",
+    "jasper.runtime.tts_playout",
     "jasper.service_state.usage",
     "jasper.usbsink.volume_bridge",
     "jasper.voice.daemon_main",
@@ -403,7 +403,7 @@ containers = ["jasper"]
 broken_contract_guidance = "A lower layer must not import a higher one, directly or through any chain. grimp counts function-local imports, so deferring the import does not fix it: move the fact into the module that owns it."
 layers = [
   "mux : voice_daemon : cli : turntable : web",
-  "audio_input_view : audio_validation : conversation_history : flight_recorder : google_routes : measurement_window : mic_capture : outputd_failure_reconcile_state : tts_playout : output_topology_runtime",
+  "runtime",
   "audio_control",
   "aec : runtime_config : config",
   "service_state",
@@ -413,8 +413,7 @@ layers = [
   "playback_state",
   "audio_measurement : audio_resources : bass_extension",
   "identity : net",
-  "logging_setup",
-  "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : platform : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",
+  "platform",
 ]
 exhaustive = true
 # Not yet ranked; the ratchet order is tracked in #4719.
@@ -502,3 +501,13 @@ source_modules = [
   "jasper.audio_routes.output_hardware",
 ]
 forbidden_modules = ["jasper.route_latency"]
+
+[[tool.importlinter.contracts]]
+name = "Platform layers"
+type = "layers"
+containers = ["jasper.platform"]
+exhaustive = true
+layers = [
+  "logging_setup",
+  "_oom_adj : atomic_io : backoff : biquad : busctl : doctor_contract : env_file : env_load : json_fields : log_event : memory_policy : os_fault : paths : percentiles : control_client : route_health : status_socket : systemd : uds : wire : ring_header : secret_redaction : service_units : shell_env : source_intent_units : speaker_layout : systemd_probe : transition_log : volume_floor : volume_latch : watchdog",
+]

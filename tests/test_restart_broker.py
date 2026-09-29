@@ -27,7 +27,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import source_intent_units as units
+from jasper.platform import source_intent_units as units
 from jasper.control import restart_broker
 from jasper.local_sources import (
     local_source_audio_refresh_units,
@@ -35,7 +35,7 @@ from jasper.local_sources import (
     local_source_park_units,
 )
 from jasper.multiroom import reconcile as reconcile_mod
-from jasper.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
+from jasper.platform.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 
 from tests._log_events import event_fields, parse_event
 

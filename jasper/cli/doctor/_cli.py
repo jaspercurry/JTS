@@ -28,7 +28,7 @@ from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
 from jasper.playback_state.librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from jasper.service_state.volume_persistence import configured_path as volume_state_path
 from ...config import Config
-from ...env_load import (
+from jasper.platform.env_load import (
     bounded_env_int,
     load_env_files as _load_env_files,
 )
@@ -37,8 +37,8 @@ from jasper.playback_state.install_profile import (
     is_streambox_install_profile,
     read_install_profile,
 )
-from ...log_event import render_logfmt
-from ...secret_redaction import redact_secrets
+from jasper.platform.log_event import render_logfmt
+from jasper.platform.secret_redaction import redact_secrets
 from ...identity.speaker_name import runtime_name as _speaker_runtime_name
 from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
 from jasper.service_state.usage import DEFAULT_USAGE_DB
@@ -157,7 +157,7 @@ def _emit_json(payload: dict, out_path: str | None) -> None:
     if out_path is None:
         print(text)
         return
-    from jasper.atomic_io import atomic_write_text
+    from jasper.platform.atomic_io import atomic_write_text
     atomic_write_text(out_path, text + "\n", mode=0o640)
 
 

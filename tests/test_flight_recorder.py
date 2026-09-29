@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.flight_recorder — the Tier C log flight recorder.
+"""Tests for jasper.runtime.flight_recorder — the Tier C log flight recorder.
 
 Exercises the ring buffer, the auto-flush-on-WARNING + explicit-dump
 paths (writing a tagged burst to a stream), and install()'s logging
@@ -17,9 +17,9 @@ import logging
 import pytest
 
 from jasper.audio_control import debug_mode
-from jasper import flight_recorder as fr
-from jasper.conversation_history import ConversationStore
-from jasper.log_event import log_event
+from jasper.runtime import flight_recorder as fr
+from jasper.runtime.conversation_history import ConversationStore
+from jasper.platform.log_event import log_event
 
 
 def _rec(level, msg, name="jasper.test"):
@@ -171,7 +171,7 @@ def test_a_log_wrapper_keeps_its_callers_keys_distinct(tmp_path):
     s = io.StringIO()
     ring = fr.RingFlushHandler(10, s)
     store = ConversationStore(str(tmp_path / "conversations.db"))
-    logger = logging.getLogger(ConversationStore.__module__)
+    logger = logging.getLogger("jasper.conversation_history")
     logger.addHandler(ring)
     logger.setLevel(logging.DEBUG)
     propagate, logger.propagate = logger.propagate, False

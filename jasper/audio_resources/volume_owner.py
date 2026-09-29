@@ -16,8 +16,8 @@ level a caller derives arrives as an argument to
 :meth:`VolumeOwner.acquire_level`.
 
 **One confirm tolerance, and it is not minted here.**
-:data:`~jasper.volume_latch.READBACK_TOLERANCE_DB` via
-:func:`~jasper.volume_latch.fader_matches` is the repo's one
+:data:`~jasper.platform.volume_latch.READBACK_TOLERANCE_DB` via
+:func:`~jasper.platform.volume_latch.fader_matches` is the repo's one
 *"do these two fader dB values agree?"* test. This module consumes it.
 
 **The 0 dB ceiling is NOT this module's.** ``devices.volume_limit`` stays
@@ -32,7 +32,7 @@ ramps over 400 ms.
 
 **Doors are injected and must not raise.** The setter and getter are the
 holder's to bind, and the contract is
-:data:`~jasper.volume_latch.FADER_IO_ERRORS`'s: report failure,
+:data:`~jasper.platform.volume_latch.FADER_IO_ERRORS`'s: report failure,
 never raise a transport error. A claim's ledger entry unwinds on ANY escape, so
 a holder that breaks the contract loses its claim rather than stranding one.
 
@@ -53,15 +53,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from jasper.volume_latch import (
+from jasper.platform.volume_latch import (
     FADER_IO_ERRORS,
     READBACK_TOLERANCE_DB,
     fader_matches,
     read_fader_db,
     set_and_confirm_volume,
 )
-from jasper.json_fields import require_finite
-from jasper.log_event import log_event
+from jasper.platform.json_fields import require_finite
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.volume_owner")
 
@@ -360,7 +360,7 @@ class VolumeOwner:
         EVERY exit an acquire did not complete — a refusal, a cancellation, or a
         raise from the injected door. That last one this owner cannot prevent:
         ``CamillaUnavailable`` is not in
-        :data:`~jasper.volume_latch.FADER_IO_ERRORS`, and naming
+        :data:`~jasper.platform.volume_latch.FADER_IO_ERRORS`, and naming
         it would mean importing ``jasper.audio_control.camilla``, which imports this module.
         The pop is synchronous and cannot fail, so the ledger is correct before
         anything is awaited.
@@ -472,7 +472,7 @@ class VolumeOwner:
         """Put the fader on ``target_db`` and prove it, writing only if needed.
 
         READ, then delegate to
-        :func:`~jasper.volume_latch.set_and_confirm_volume`. The
+        :func:`~jasper.platform.volume_latch.set_and_confirm_volume`. The
         pre-read earns two things:
 
         **Arbitration is not churn.** Every claim change re-derives the whole

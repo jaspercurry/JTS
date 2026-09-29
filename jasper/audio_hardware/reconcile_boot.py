@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jasper.audio_hardware.reconcile_common import _Abort, _ensure_dir
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.audio_hardware.reconcile import Pass
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 def reconcile_i2s_hat_boot(run: Pass, logger: logging.Logger) -> None:
     """``logger`` is the pass module's: every journal line names its logger
-    (``jasper.logging_setup.LOG_FORMAT``), and under ``python -m`` that is
+    (``jasper.platform.logging_setup.LOG_FORMAT``), and under ``python -m`` that is
     ``__main__``, so the boot role events are logged through it."""
     # lazy: patch target — the tests replace it on the source module, which
     # only a per-call import sees.

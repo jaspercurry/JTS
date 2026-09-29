@@ -18,13 +18,13 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.active_speaker.crossover_v2.coordinator import (
     ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
 )
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker import driver_base_trim
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.active_speaker.model_error_store import ModelErrorStoreSnapshot
@@ -99,7 +99,7 @@ def load_v2_state() -> dict[str, Any] | None:
 def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     """Write the durable v2 state. ``durable`` decides whether it is fsync'd.
 
-    Atomic is not durable. :func:`~jasper.atomic_io.atomic_write_text` writes a
+    Atomic is not durable. :func:`~jasper.platform.atomic_io.atomic_write_text` writes a
     tempfile and renames, so a concurrent reader never sees a partial file —
     but without ``durable=True`` nothing has told the kernel to put those bytes
     on the platter, and a power cut can lose the whole write while leaving the

@@ -16,7 +16,7 @@ counted: a profile that never installs a unit (a streambox omits the
 voice/AEC stack), a kernel that does not expose a knob, and a host with
 no systemd all skip.
 
-Rationale for the values lives with their owners: ``jasper/_oom_adj.py``
+Rationale for the values lives with their owners: ``jasper/platform/_oom_adj.py``
 (the OOM ladder, shared with install.sh).
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...control.bootloop_guard_state import snapshot as _bootloop_guard_snapshot
-from ..._oom_adj import EXPECTED as _EXPECTED_OOM_ADJ
+from jasper.platform._oom_adj import EXPECTED as _EXPECTED_OOM_ADJ
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult

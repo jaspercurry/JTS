@@ -19,7 +19,7 @@ from jasper.playback_state import librespot_state
 from ..accessories import status as accessory_status
 from ..active_speaker.audition import audition_summary
 from jasper.dsp_control.dsp_apply import last_dsp_apply_state
-from ..json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 from jasper.playback_state.music_sources import MUSIC_SOURCE_VALUES, Source
 from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
@@ -29,7 +29,7 @@ from jasper.audio_routes.output_hardware import load_state as load_output_hardwa
 from jasper.audio_control.renderer import PROBE_ORDER
 from jasper.playback_state.source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..sound.camilla_yaml import BASE_CONFIG_PATH
 from ..sound.profile import build_sound_filters, estimate_headroom_db, load_profile
 from ..sound.settings import load_sound_settings, output_trim_db

@@ -28,7 +28,7 @@ import yaml
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import baseline_apply
 from jasper.audio_routes import output_topology_store
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker import commissioning_coordinator, measurement_view
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
@@ -47,9 +47,11 @@ from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, near_field_drivers, run_preset
+from jasper.active_speaker.measurement_programs import (
+    RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
+)
 from jasper.active_speaker.preflight import PreflightReport
-from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
+from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -63,6 +65,7 @@ from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
+from tests.test_active_speaker_runtime_contract import _active_topology
 from tests.test_preflight import ready_facts
 from tests.test_arm_walk import (
     FakeMover, FakeSession, FakeWalkClock, LiveThen, _COMPLETE, _STOPPED,
@@ -1055,6 +1058,82 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     assert AngleCaptureRequest.from_mapping(published) == by_door.plan == by_cli.plan
     assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
+
+
+_PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair", "room_sweep",
+                "cleared_layers", "stimulus", "level_ladder_db", "layout", "layouts"}
+_LAYOUT_KEYS = {"layout", "description", "use_when", "mover", "poses", "targets", "captures", "seconds", "refused"}
+
+
+_NOT_OFFERED, _CANDIDATE_REQUIRED = "measurement_program_not_offered", "measurement_candidate_required"
+_SPEAKER = {"speaker/mark", "tournament/express", "branches/express", "front_rear/express"}
+_REAR = {"front_rear/express", "rear/express", "rear/seat", "rear/pair"}
+_ALONE = {"drivers/each", "nearfield/each"}
+
+
+def _speaker_context(topology):
+    """The inline context on ``topology``, with a band, cap and sweep limit for each output it declares."""
+    context = _inline_context()
+    outputs = dict.fromkeys(measurement_target_id(target["role"], target.get("output_variant", "primary"))
+                            for target in active_driver_targets(topology))
+    band, cap = context.roles_bands[0].band, context.driver_caps_dbfs["woofer"]
+    return replace(context, topology=topology, driver_bands=dict.fromkeys(outputs, band),
+                   driver_caps_dbfs={**context.driver_caps_dbfs, **dict.fromkeys(outputs, cap)},
+                   driver_sweep_duration_limits_s={**context.driver_sweep_duration_limits_s,
+                                                   **dict.fromkeys(outputs, 6.0)})
+
+
+@pytest.mark.parametrize("topology,hidden,targets", [
+    pytest.param(mono_output_topology(mode="full_range_passive"), _SPEAKER | _REAR | _ALONE, {}, id="one_way_passive"),
+    pytest.param(mono_output_topology(), _REAR, {"drivers/each": ["woofer", "tweeter"], "nearfield/each": ["woofer"]},
+                 id="two_way"),
+    pytest.param(_rear_pair("mono")[1], set(), {"drivers/each": ["woofer", "woofer:rear", "tweeter"],
+                                                 "nearfield/each": ["woofer", "woofer:rear"]}, id="cardioid"),
+    pytest.param(_active_topology("stereo", "active_2_way"), _REAR | _ALONE, {}, id="stereo_pair"),
+])
+def test_presets_lists_every_preset_and_prices_what_the_page_offers(monkeypatch, capsys, topology, hidden, targets):
+    """`presets --json` lists every preset and layout. It prices one level of each layout the
+    measure page offers this speaker, and marks the rest not offered (#5737 A3b)."""
+    context, programs = _speaker_context(topology), programs_for_topology(topology)
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *_args, **_kwargs: context)
+    monkeypatch.setattr("jasper.active_speaker.setup_status.conductor_status", lambda: {})
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": programs, "near_field_drivers": near_field_drivers(topology), "next_action": {"program": programs[0]}})
+    offered = {choice["id"] for choice in measurement_view.round_choices({})}
+
+    code, body = _run(["presets", "--json"], _opener(), monkeypatch, capsys)
+
+    rows = [(row, layout) for row in body["presets"] for layout in row["layouts"]]
+    assert (code, body["view"], body["schema"], body["subject"], body["parameters"]) == (
+        cli.EXIT_OK, "presets", ANSWER_SCHEMAS["jasper-round presets"], {}, {})
+    assert [row["preset"] for row in body["presets"]] == list(available_presets())
+    assert [set(row) for row in body["presets"]] == [_PRESET_KEYS] * len(available_presets())
+    assert [set(layout) for _, layout in rows] == [_LAYOUT_KEYS] * len(rows)
+    assert all(row["description"] and row["use_when"] and layout["description"] and layout["use_when"]
+               for row, layout in rows)
+    assert [(row["preset"], layout["layout"], len(layout["poses"])) for row, layout in rows] == [
+        (name, layout, len(run_preset(name, layout).poses)) for name in available_presets() for layout in preset(name).layouts]
+    assert {row["preset"]: row["level_ladder_db"] for row in body["presets"] if row["level_ladder_db"]} == {
+        "bass/axis": list(LEVEL_OFFSETS_DB)}
+    assert {row["preset"] if layout["layout"] == row["layout"] else f"{row['preset']}@{layout['layout']}"
+            for row, layout in rows if layout["refused"] != _NOT_OFFERED} == offered
+    assert {row["preset"] for row, layout in rows if layout["refused"] == _NOT_OFFERED} == hidden
+    assert {row["preset"] for row, layout in rows if layout["refused"] == _CANDIDATE_REQUIRED} == {
+        "branches/express", "front_rear/express"} - hidden
+    assert all(layout["captures"] > 0 and layout["seconds"] > 0 if not layout["refused"]
+               else layout["captures"] is layout["seconds"] is None for _, layout in rows)
+    assert {row["preset"]: layout["targets"] for row, layout in rows if layout["targets"]} == targets
+
+
+def test_presets_refuses_by_code_when_the_speaker_cannot_measure(monkeypatch, capsys):
+    def not_ready(*_args, **_kwargs):
+        raise CrossoverV2Refused(REASON_REGISTRY["measure_box_not_ready"].message, code="measure_box_not_ready")
+
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", not_ready)
+    monkeypatch.setattr("jasper.active_speaker.setup_status.conductor_status", lambda: {})
+    code, body = _run(["presets", "--json"], _opener(), monkeypatch, capsys)
+    assert (code, body["code"], body["next_action"]["id"]) == (cli.EXIT_REFUSED, "measure_box_not_ready", "speaker_setup")
 
 
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])

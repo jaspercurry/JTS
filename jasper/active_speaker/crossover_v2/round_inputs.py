@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
-from jasper.json_fields import finite_float, parse_utc_iso
+from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
@@ -42,7 +42,7 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
 )
-from jasper.paths import camilla_statefile
+from jasper.platform.paths import camilla_statefile
 
 __all__ = [
     'APPLIED_PROFILE_DEFAULT_PATH', 'APPLIED_PROFILE_FILENAME', 'CAPTURE_STATE_FILENAME',
@@ -56,7 +56,7 @@ __all__ = [
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
     'default_out', 'view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
-    'subject',
+    'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand',
 ]
 
 STATE_FILENAME = "state.json"
@@ -520,3 +520,68 @@ def subject(
         ("round_id", banked.name if banked else None), ("set_id", set_id),
         ("take_ids", None if take_ids is None else list(take_ids)), ("candidate_id", candidate_id),
     ) if value is not None}
+
+
+#: Where a take's comparand came from (ADR-0391).
+COMPARAND_SAME_ROUND = "same_round_base"
+COMPARAND_EARLIER_ROUND = "earlier_round"
+
+
+class Comparand(NamedTuple):
+    source: str
+    round_dir: Path
+    set_id: str
+    take_id: str
+    role: str
+
+
+def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = None) -> tuple[Any, ...]:
+    """The place a take's pose names, the drivers it reads (its side's, the
+    response ``role``), and the graph scope that played."""
+    pose = {key: value for key, value in (take.get("pose") or {}).items() if key != "place"}
+    basis = group.capture_basis
+    return json.dumps(pose, sort_keys=True), basis.get("side"), role or group.role, basis.get("graph_scope")
+
+
+def comparand(round_dir: Path, set_id: str, take_id: str, role: str, *, limit: int = 32) -> Comparand | None:
+    """The one comparand rule (ADR-0391): the round's base take at the take's
+    place, preferring the take's own run; else the newest selected take banked
+    before the round at the same place, drivers and graph scope, among the
+    banked rounds in :func:`banked_rounds`' window of ``limit`` directories. A
+    live bundle dates by its bank copy when the window holds one, else by when
+    it started. The same-round A/B is the decision evidence and an earlier take
+    is context: a comparison over the pair discloses
+    :func:`~.measurement_context.compare_capture_basis`."""
+    inputs = round_inputs(round_dir)
+    sets = view_sets(read_run_manifest(inputs))
+    row = next(row for row in sets if row["set_id"] == set_id)
+    take = next(take for take in SetTakes.from_row(row).takes if take["take_id"] == take_id)
+    key = _comparand_key(SetTakes.from_row(row), take, role)
+
+    def newest(rows: Iterable[Mapping[str, Any]], order: Callable[[Mapping[str, Any]], tuple[Any, ...]]) -> Any:
+        return max(((order(other), other["take_id"], group.set_id) for group in map(SetTakes.from_row, rows)
+                    for other in group.takes if other["selected"] and _comparand_key(group, other) == key),
+                   default=None)
+
+    if not row.get("base") and (found := newest(
+            [group for group in sets if group.get("base")],
+            lambda other: (other.get("run_id") == take.get("run_id"), *take_order(other)))):
+        return Comparand(COMPARAND_SAME_ROUND, round_dir, found[2], found[1], role)
+    rounds = sorted(((banked_at, str(path)) for path, _, banked_at in banked_rounds(inputs.session_dir, limit=limit)),
+                    reverse=True)
+    # round_bank copies a live bundle under the bundle's own name.
+    own = bank_of(inputs) or next((Path(path) for _, path in rounds
+                                   if (Path(path) / "bundle" / inputs.session_dir.name).is_dir()), None)
+    dated = read_banked_round(own, own.stat().st_mtime) if own else None
+    before = dated[1] if dated else finite_float(
+        (_read_json_mapping(inputs.session_dir / "info.json") or {}).get("started_at")) or 0.0
+    for banked_at, directory in rounds:
+        if banked_at >= before:
+            continue
+        try:
+            found = newest(view_sets(read_run_manifest(round_inputs(Path(directory)))), take_order)
+        except ROUND_INPUT_ERRORS:
+            continue
+        if found:
+            return Comparand(COMPARAND_EARLIER_ROUND, Path(directory), found[2], found[1], role)
+    return None

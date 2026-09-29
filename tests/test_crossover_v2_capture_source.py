@@ -67,8 +67,8 @@ def test_a_contract_only_answer_satisfies_the_production_analyze_seam(
     This is the wired-readiness pin: a provider that mints an answer with
     exactly ``wav``/``device``/``setup``/``capture_integrity`` flows through
     ``bind_production_analyze`` — resolver, integrity report and all — so the
-    next source needs no provider-shaped extras. The analysis itself is
-    stubbed; the subject is what the binding consumes off the answer.
+    next source needs no provider-shaped extras. The analysis and its bass
+    reading are stubbed; the subject is what the binding consumes off the answer.
     """
     from jasper.audio_measurement import program_analysis as pa_mod
     from jasper.audio_measurement.program import build_verify_program
@@ -85,6 +85,7 @@ def test_a_contract_only_answer_satisfies_the_production_analyze_seam(
         return "analysis"
 
     monkeypatch.setattr(pa_mod, "analyze_program_capture", spy)
+    monkeypatch.setattr(v2evidence, "bass_evidence", lambda *_args: None)
 
     resolved: list = []
 

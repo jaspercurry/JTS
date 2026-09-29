@@ -21,8 +21,8 @@ from jasper.audio_hardware.dac import (
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     label_for as _dac_label_for,
 )
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_hardware import OutputHardwareState, load_state as load_output_hardware_state
 from jasper.audio_routes.output_topology import (
     OutputHardware,
@@ -33,9 +33,9 @@ from jasper.audio_routes.output_topology import (
     topology_config_fingerprint,
     unknown_output_hardware,
 )
-from jasper.paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
-from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
-from jasper.transition_log import TransitionLog
+from jasper.platform.paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
+from jasper.platform.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
+from jasper.platform.transition_log import TransitionLog
 
 logger = logging.getLogger("jasper.output_topology_store")
 
@@ -413,7 +413,7 @@ def _now() -> float:
     return time.monotonic()
 
 
-# The shared transition-or-reminder gate (jasper.transition_log), also consumed
+# The shared transition-or-reminder gate (jasper.platform.transition_log), also consumed
 # by the crossover level-run poller. The clock is looked up through this module
 # so a test may monkeypatch `_now`.
 _load_failures = TransitionLog(

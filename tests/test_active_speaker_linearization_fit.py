@@ -79,7 +79,7 @@ from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.peq import PEQ, predicted_response
 from jasper.audio_measurement.program_analysis import DriverResponse
-from jasper.biquad import SHELF_Q, filter_response_db
+from jasper.platform.biquad import SHELF_Q, filter_response_db
 from jasper.active_speaker.crossover_section import CrossoverSection
 
 _NATIVE_FREQS_HZ = np.linspace(100.0, 22_000.0, 4096)
@@ -461,7 +461,7 @@ def test_reason_summary_values_are_plain_strings_not_enum_members():
 
 def test_complex_correction_response_magnitude_matches_filter_response_db():
     """Magnitude-consistency parity: ``abs(complex_correction_response)`` equals
-    ``10**(sum of jasper.biquad.filter_response_db over filters / 20)``
+    ``10**(sum of jasper.platform.biquad.filter_response_db over filters / 20)``
     bin-for-bin. The complex correction and the emitted graph's magnitude share
     the ``biquad_coeffs`` SSOT, so the applied correction's magnitude can never
     silently drift from what CamillaDSP realizes -- only its phase is added."""

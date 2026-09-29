@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from jasper import service_units
+from jasper.platform import service_units
 from jasper.cli.doctor import _evidence, _shared, resilience, web
 from jasper.audio_control.mic_presence import MicPresence
 from jasper.voice.provider_state import ActiveProviderState

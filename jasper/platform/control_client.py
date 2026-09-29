@@ -36,7 +36,7 @@ import json
 import os
 from urllib.parse import urlsplit
 
-from ..secret_redaction import redact_secrets
+from jasper.platform.secret_redaction import redact_secrets
 
 # No module logger by design: the client's failure surface is the ControlError
 # it raises (which carries method + path + cause); callers log it with their

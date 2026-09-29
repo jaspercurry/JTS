@@ -35,7 +35,7 @@ import pytest
 
 from tests._log_events import event_fields
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.service_state import wake_events
 from jasper.service_state.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES,

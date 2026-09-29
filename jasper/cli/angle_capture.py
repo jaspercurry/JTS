@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Sequence
 
 from jasper.active_speaker import arm_walk
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 from ._refusal import EXIT_OK, EXIT_REFUSED, failed
 
 MOVER_TURNTABLE = "turntable"

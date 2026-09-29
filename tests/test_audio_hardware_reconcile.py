@@ -2120,7 +2120,7 @@ def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
 def _assert_publications_agree(tmp_path: Path) -> None:
     """After one reconcile pass, JASPER_AUDIO_DAC_ID names what the record's
     ``active_profile_id`` names — the one contract between the two."""
-    from jasper.env_load import parse_env_file
+    from jasper.platform.env_load import parse_env_file
     from jasper.audio_routes.output_hardware import active_dac_profile_id, published_dac_id
 
     env = parse_env_file(str(tmp_path / "jasper.env"))

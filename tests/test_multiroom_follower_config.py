@@ -26,7 +26,7 @@ from tests.multiroom_reconcile_fixtures import _FakeCamilla
 pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 import jasper.active_speaker.crossover_preview as crossover_preview_mod
 import jasper.active_speaker.design_draft as design_draft_mod

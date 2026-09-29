@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
-from jasper.atomic_io import CONFIG_FILE_MODE, atomic_write_text
+from jasper.platform.atomic_io import CONFIG_FILE_MODE, atomic_write_text
 from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -30,7 +30,7 @@ from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_SAMPLE_RATE,
     resolve_enable_rate_adjust,
 )
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
 from jasper.audio_routes.camilla_emit import (
     FLAT_PROGRAM_WIDTH,
@@ -43,7 +43,7 @@ from jasper.audio_routes.camilla_emit import (
 )
 from jasper.audio_routes.camilla_stereo_prefix import build_stereo_prefix
 from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
-from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
+from jasper.platform.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
 from .profile import (
     SoundProfile,

@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
-from ...memory_policy import (
+from jasper.platform.memory_policy import (
     DISK_FAIL_PERCENT,
     DISK_WARN_PERCENT,
     MEM_PSI_WARN_AVG60,
@@ -37,7 +37,7 @@ from jasper.service_state.wake_events import (
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, run
-from jasper.paths import WAKE_EVENTS_DIR
+from jasper.platform.paths import WAKE_EVENTS_DIR
 
 # Machine-stable codes naming which branch of a memory check produced a
 # result (AGENTS.md: tests pin status + reason, never detail prose).
@@ -183,7 +183,7 @@ def check_memory_pressure() -> CheckResult:
     since_boot = "" if not kills else f"; {kills} OOM kill(s) since boot"
     if psi is None:
         # A kill observed without PSI is still an observation, so it is `ok`
-        # with the count and never `skipped` (jasper.doctor_contract); the
+        # with the count and never `skipped` (jasper.platform.doctor_contract); the
         # /system tile draws the same line (sections.js: `cur.oom_kill > 0`).
         return CheckResult(
             name, "ok" if kills else "skipped",
@@ -210,7 +210,7 @@ def check_zram_size_ratio() -> CheckResult:
     """Verify the rpi-swap drop-in sized zram near its target share of
     RAM. The old zramswap default was 100% of RAM, which amplifies
     thrash (more zsmalloc bookkeeping during reclaim);
-    ``jasper.memory_policy.ZRAM_TARGET_PERCENT`` is the one number the
+    ``jasper.platform.memory_policy.ZRAM_TARGET_PERCENT`` is the one number the
     installer sizes to, and ``ZRAM_WARN_PERCENT`` beside it is the band
     this check reads that live sizing against."""
     usage = zram_usage(total_kb=evidence.mem_total_kb() or 0)

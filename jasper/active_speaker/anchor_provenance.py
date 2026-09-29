@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from jasper.json_fields import sha256_text
+from jasper.platform.json_fields import sha256_text
 
 from .applied_identity import applied_identity
 

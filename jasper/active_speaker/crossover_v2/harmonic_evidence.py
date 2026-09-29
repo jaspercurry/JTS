@@ -43,8 +43,8 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     write_program_wav,
 )
-from jasper.json_fields import finite_float, sha256_file
-from jasper.volume_latch import fader_matches
+from jasper.platform.json_fields import finite_float, sha256_file
+from jasper.platform.volume_latch import fader_matches
 
 from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from jasper.audio_measurement import deconv

@@ -33,10 +33,10 @@ from jasper.runtime_config.audio_profile_state import (
     resolve_audio_input_intent,
     runtime_env_from_mapping,
 )
-from ..atomic_io import read_json_mapping
-from ..audio_input_view import build_microphone_settings_view
-from ..env_file import read_env_file
-from ..env_load import env_file_path, read_env_file_state, DEFAULT_AEC_MODE_PATH
+from jasper.platform.atomic_io import read_json_mapping
+from jasper.runtime.audio_input_view import build_microphone_settings_view
+from jasper.platform.env_file import read_env_file
+from jasper.platform.env_load import env_file_path, read_env_file_state, DEFAULT_AEC_MODE_PATH
 from jasper.audio_routes.usb_mic import (
     build_usb_mic_status,
     read_usb_mic_leg,
@@ -47,10 +47,10 @@ from ..chip_aec.policy import (
     effective_chip_aec_dac_gate,
 )
 from jasper.service_state.wake_models import WAKE_MODEL_FILE, read_wake_threshold
-from .. import env_load, systemd_probe
+from jasper.platform import env_load, systemd_probe
 from jasper.service_state import wake_models
 from ..mics import xvf3800
-from jasper.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
+from jasper.platform.paths import XVF_FIRMWARE_UPDATE_STATE_PATH
 
 
 AEC_MODE_FILE = str(DEFAULT_AEC_MODE_PATH)

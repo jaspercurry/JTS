@@ -48,7 +48,7 @@ from tests.crossover_v2_banked_round import (
     bank_seat_round,
     bank_verify_round,
 )
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median
@@ -608,6 +608,18 @@ def _round_argv(argv: list[str], **wizard: Any) -> Callable[[pytest.FixtureReque
     return argv_
 
 
+def _presets_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    """``jasper-round presets`` on a speaker ready to measure: the envelope is under test, not the catalog."""
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    for target, value in (
+        ("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *args, **kwargs: None),
+        ("jasper.active_speaker.setup_status.conductor_status", lambda: {}),
+        ("jasper.active_speaker.preset_catalog.preset_catalog", lambda context: []),
+    ):
+        monkeypatch.setattr(target, value)
+    return ["presets", "--json"]
+
+
 #: The tools whose answers are not views, and one success per answer each
 #: gives, by its ``ANSWER_SCHEMAS`` row. A room preview reads no take, so the
 #: ``--take`` its rows name must not reach their subjects.
@@ -625,6 +637,7 @@ _OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = 
     "jasper-round wait": _round_argv(["wait", "--run", "run-1", "--timeout", "0"]),
     "jasper-round apply": _round_argv(["apply", "a" * 64]),
     "jasper-round reset": _round_argv(["reset", "--program", "speaker", "--keep-timing"]),
+    "jasper-round presets": _presets_argv,
     "jasper-crossover-prescriber contract": lambda request, root: ["contract"],
     "jasper-crossover-prescriber status": lambda request, root: ["status"],
     "jasper-crossover-prescriber judge": _prescription_argv("judge"),
@@ -642,6 +655,7 @@ _OTHER_ENVELOPES: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "jasper-round status": ({}, {}),
     "jasper-round apply": ({"candidate_id": "a" * 64}, {}),
     "jasper-round reset": ({"candidate_id": "f" * 64}, {"program": "speaker", "keep_timing": True}),
+    "jasper-round presets": ({}, {}),
 }
 
 

@@ -37,7 +37,7 @@ from jasper.dsp_control.dsp_apply import (
     record_dsp_apply_state,
     validate_camilla_config,
 )
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 
 from ._async_wait import wait_signalled
 

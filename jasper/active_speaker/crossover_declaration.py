@@ -39,7 +39,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from .driver_protection import (
     format_protection_hz,
     protection_highpass_floor_satisfied,

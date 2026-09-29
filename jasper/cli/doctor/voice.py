@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from ...transit.bus import parse_bus_stops
 from ...config import Config
-from ...env_load import parse_bool_value
+from jasper.platform.env_load import parse_bool_value
 from ...transit import enabled_pack_ids
 from ...transit._mta_stations import stations_by_id
 from ...voice.catalog import (
@@ -753,7 +753,7 @@ def check_google_tokens(cfg: Config) -> CheckResult:
 @doctor_check(label="Google Routes", needs_cfg=True)
 def check_google_routes(cfg: Config) -> CheckResult:
     """Verify Google Routes configuration without making a billable API call."""
-    from ... import google_routes
+    from jasper.runtime import google_routes
 
     label = "Google Routes"
     status = google_routes.config_status(os.environ)

@@ -13,7 +13,7 @@ from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
-from jasper.atomic_io import read_json_mapping
+from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import REFUSE_NO_NEAR_FIELD_TAKES, EvidenceUnavailable
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.audio_measurement.trusted_band import TrustedBand

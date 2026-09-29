@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.audio_routes import output_topology_store as output_topology_mod
-from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
+from jasper.platform.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
 from jasper.audio_routes.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputHardware,
@@ -111,7 +111,7 @@ def test_save_output_topology_cleans_temp_file_on_replace_failure(
     def fail_replace(src, dst):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("jasper.atomic_io.os.replace", fail_replace)
+    monkeypatch.setattr("jasper.platform.atomic_io.os.replace", fail_replace)
 
     with pytest.raises(OSError):
         save_output_topology(topology, path)

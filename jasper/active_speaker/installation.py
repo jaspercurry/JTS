@@ -9,7 +9,7 @@ import math
 from collections.abc import Mapping
 from typing import Any
 
-from jasper.json_fields import CodedFieldError, JsonFields
+from jasper.platform.json_fields import CodedFieldError, JsonFields
 
 
 INSTALLATION_FIELDS: dict[str, dict[str, Any]] = {

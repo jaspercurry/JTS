@@ -18,9 +18,9 @@ from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from jasper.active_speaker import tuning_handoff
 from jasper.active_speaker.crossover_v2 import round_inputs
 from jasper.cli.doctor import active_speaker as doctor
-from jasper.doctor_contract import check_row
+from jasper.platform.doctor_contract import check_row
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
-from jasper.json_fields import parse_utc_iso
+from jasper.platform.json_fields import parse_utc_iso
 from jasper.web import correction_crossover_v2_status as v2status, sound_active_speaker
 from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 

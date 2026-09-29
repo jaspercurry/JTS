@@ -32,7 +32,7 @@ from jasper.audio_measurement.mic_identity import (
     DEFAULT_SIGN_CONVENTION,
     SUPPORTED_MODELS,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .mic_calibration import MAX_UPLOAD_BYTES
 

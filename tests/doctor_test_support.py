@@ -20,7 +20,7 @@ def _make_unit_states_fake(
     default_load_state: str = "loaded",
 ):
     """Table-driven double for ``_evidence.read_unit_states`` (also
-    ``jasper.service_units.read_unit_states``, the same function).
+    ``jasper.platform.service_units.read_unit_states``, the same function).
 
     ``overrides`` maps a FULL unit name (e.g. ``"jasper-camilla.service"``)
     to a partial state dict merged over a default of

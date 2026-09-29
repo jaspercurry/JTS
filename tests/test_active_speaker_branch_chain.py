@@ -44,7 +44,7 @@ from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 # restated so the migration corpus asserts the condition the contract applies.
 from jasper.active_speaker.graph_types import PEAK_EPS_DB
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
-from jasper.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
+from jasper.platform.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
 from tests.test_rear_output_foundation import _rear_document
 
 # --------------------------------------------------------------------------- #

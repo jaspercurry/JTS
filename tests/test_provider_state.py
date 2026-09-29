@@ -14,7 +14,7 @@ import textwrap
 
 from jasper.voice.catalog import default_model_id
 from jasper.voice import provider_state as provider_state_mod
-from jasper.env_load import EnvFileState
+from jasper.platform.env_load import EnvFileState
 from jasper.voice.provider_state import (
     barge_in_env_key,
     read_active_provider_state,
@@ -106,7 +106,7 @@ def test_model_falls_back_to_catalog_default(tmp_path):
 # file — .env.example ships the keys there) or this module's own wizard
 # file (select_voice, via the wizard or jasper-settings, writes that one), so unlike reading
 # the wizard file alone this reads the merged env-file set —
-# jasper.env_load.merged_env_files — and must ignore os.environ entirely: a
+# jasper.platform.env_load.merged_env_files — and must ignore os.environ entirely: a
 # calling-shell export outranks both files there (load_env_files uses
 # setdefault), which is the drift #3133 closes.
 
