@@ -36,7 +36,7 @@ from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
 )
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, design_draft_view, save_design_draft
-from jasper.active_speaker.crossover_contract import legacy_manual_preservation_state
+from jasper.active_speaker.crossover_contract import crossover_snapshot_state
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -164,7 +164,7 @@ def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
+def test_noop_draft_save_preserves_source_identity(tmp_path, changed):
     topology = _dual_apple_topology()
     path = tmp_path / "draft.json"
     sources = []
@@ -180,12 +180,12 @@ def test_noop_draft_save_preserves_manual_profile_identity(tmp_path, changed):
         ))
     first, second = sources
     assert first["design_draft_updated_at"] != second["design_draft_updated_at"]
-    state = legacy_manual_preservation_state(
-        {"status": "applied", "source": first},
-        current_source_fingerprint=second["fingerprint"],
-    )
-    assert state["ready"] is not changed
-    assert state["reason"] == ("manual_crossover_source_changed" if changed else None)
+    assert (first["fingerprint"] == second["fingerprint"]) is not changed
+
+
+def test_an_applied_profile_without_its_snapshot_refuses_by_that_field():
+    state = crossover_snapshot_state({"status": "applied", "source": {"fingerprint": "f" * 64}})
+    assert (state["valid"], state["reason"]) == (False, "active_applied_profile_snapshot_missing")
 
 
 def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):

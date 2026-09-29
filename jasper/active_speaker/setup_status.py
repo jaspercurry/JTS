@@ -22,10 +22,7 @@ from jasper.output_topology_store import load_output_topology_strict
 from jasper.multiroom.config import is_active_member, load_config
 
 from .candidate_bank import load_applied_candidate
-from .crossover_contract import (
-    crossover_snapshot_state,
-    legacy_manual_preservation_state,
-)
+from .crossover_contract import crossover_snapshot_state
 from . import web_measurement
 from .environment import read_camilla_statefile_config_path
 from .graph_evidence import active_layer_a_fingerprint, active_layer_a_projection
@@ -378,9 +375,6 @@ def read_active_speaker_setup_status(
         status["applied_crossover"] = crossover_snapshot_state(
             applied_profile, expected_topology_id=topology.topology_id,
             expected_topology_fingerprint=str(source.get("topology_fingerprint") or "") or None,
-        )
-        status["manual_preservation"] = legacy_manual_preservation_state(
-            applied_profile, current_source_fingerprint=str(source.get("fingerprint") or "") or None,
         )
     status["commissioning"] = commissioning_summary(
         topology, profile=profile, applied_profile=applied_profile,
