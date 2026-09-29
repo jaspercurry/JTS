@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from ._refusal import (
-    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, envelope, failed, read_source_bytes,
+    EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, envelope, failed, help_from_rows,
+    read_source_bytes,
 )
 from .round_views._common import RoundSetRefused, add_set_argument, context_artifacts
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG
+from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG, TAKES_THIS_ROUND, CatalogRow, view_rows
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -634,14 +635,40 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 
+#: What a round argument takes here; unlike a view, a verb of this tool takes no banked round id.
+_ROUND_HELP = "a banked round directory or a live session bundle"
+
+#: The modes no catalog row covers: judge and compose answer no analysis question (ADR-0393), so their
+#: help rows live with the verbs.
+_DOCUMENT_ARGV = ("<document.json>", "--round", TAKES_THIS_ROUND, "--set", "<set-id>")
+_UNCATALOGUED = {
+    "judge": {f"{PROG} judge": CatalogRow(
+        argv=_DOCUMENT_ARGV, question="Does a prescription document pass every gate, and what candidate would it make?",
+        avoid="the predicted response; judge --preview predicts it")},
+    "compose": {f"{PROG} compose": CatalogRow(
+        argv=_DOCUMENT_ARGV, question="Which candidate does a judged document make, banked under its fingerprint?",
+        avoid="checking a document, which judge does without banking, or applying one; jasper-round apply does that")},
+}
+
+#: What the shared exit words leave out: judge and compose refuse a malformed document (1) where the
+#: vocabulary calls malformed input unreadable (2), and status refuses nothing (see _cmd_status).
+_DOCUMENT_EXITS: dict[str, Any] = {"note": "A document that is not valid JSON, or does not fit the document schema, exits 1 "
+                                            "as a refusal. Code 2 means the document file or the round cannot be read."}
+_EXITS: dict[str, dict[str, Any]] = {
+    "judge": _DOCUMENT_EXITS, "compose": _DOCUMENT_EXITS,
+    "status": {"codes": (EXIT_OK,), "note": "It refuses nothing. A round it cannot read shows in the answer as packet_error."},
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
-    contract.add_argument("--round", metavar="DIR")
+    contract.add_argument("--round", metavar="DIR", help=f"evaluate the bounds on this round: {_ROUND_HELP}")
     add_set_argument(contract)
-    contract.add_argument("--section", choices=(*SECTIONS, "all"), default="all")
-    contract.add_argument("--out", metavar="FILE")
+    contract.add_argument("--section", choices=(*SECTIONS, "all"), default="all",
+                          help="the program whose contract to serve, or all (default: %(default)s)")
+    contract.add_argument("--out", metavar="FILE", help="write the contracts here; the answer then names the file and its sha256")
     contract.set_defaults(func=_cmd_contract)
     for verb in ("judge", "compose"):
         command = sub.add_parser(verb, help="judge every section and preview resolution" if verb == "judge" else "judge, prove and bank one candidate")
@@ -649,7 +676,7 @@ def build_parser() -> argparse.ArgumentParser:
             f'a file, or - for stdin: {{"kind": "{DOCUMENT_KIND}", "schema": 1, "base": "saved" or a banked '
             f'fingerprint, "sections": {{name: {{...}} or null}}, "rationale": text}}; a section left out '
             f'keeps the base\'s, null or {{}} clears it; sections: {", ".join(SECTION_KINDS)}'))
-        command.add_argument("--round", dest="round", metavar="DIR")
+        command.add_argument("--round", dest="round", metavar="DIR", help=f"judge the document against this round: {_ROUND_HELP}")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
             command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
@@ -660,12 +687,21 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read applied layers, last banked rounds and the next program; optionally inspect a round")
-    status.add_argument("session_dir", nargs="?")
-    for name in ("state", "drivers", "applied-profile", "repeat-floor", "declared-geometry"):
-        status.add_argument(f"--{name}")
+    status.add_argument("session_dir", nargs="?", metavar="DIR",
+                        help=f"read this round's evidence packet: {_ROUND_HELP}; without one, list the recent rounds")
+    for name, help_text in (
+        ("state", "with a round, read this flow state file in place of the round's own"),
+        ("drivers", "with a round, read this driver declaration (design draft) in place of the round's own"),
+        ("applied-profile", "read this applied baseline profile in place of the round's or the speaker's own"),
+        ("repeat-floor", "with a round, read this repeat floor in place of the round's own"),
+        ("declared-geometry", "with a round, read this declared rig geometry in place of the round's own"),
+    ):
+        status.add_argument(f"--{name}", metavar="FILE", help=help_text)
     status.set_defaults(func=_cmd_status)
     for command in (status, *[sub.choices[v] for v in ("judge", "compose")]):
         command.set_defaults(state=None, drivers=None, applied_profile=None, repeat_floor=None, declared_geometry=None)
+    for verb, child in sub.choices.items():
+        help_from_rows(child, {**_UNCATALOGUED.get(verb, {}), **view_rows(verb, PROG)}, **_EXITS.get(verb, {}))
     return parser
 
 

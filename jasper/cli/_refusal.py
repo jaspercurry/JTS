@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The tuning CLIs' shared source reader, exit-code rule, and its output.
+"""The tuning CLIs' shared source reader, exit-code rule, its output, and the
+``--help`` they render from their catalog rows (ADR-0393).
 
 A failure is an output, not an error, and there are three of them: the
 instrument REFUSED a round it could read, the input was UNREADABLE, or the
@@ -17,12 +18,17 @@ never by numbering them itself. :data:`OWN_EXIT_VOCABULARY` names who does not.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+import textwrap
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
 
 from ._report import render_report
+
+if TYPE_CHECKING:  # type only: the catalog loads NumPy, and jasper-round list|show stay light (ADR-0393)
+    from jasper.active_speaker.round_view_artifacts import CatalogRow
 
 _T = TypeVar("_T")
 
@@ -64,6 +70,33 @@ def exit_codes_help(codes: Sequence[int] = tuple(EXIT_MEANINGS)) -> str:
         *(['  a failure prints "<status> (<reason>): <detail>" on stderr and the\n'
            '  same record as JSON on stdout'] if failing else []),
     ))
+
+
+#: argparse wraps its own help at 78 columns on an 80-column terminal; a verb's rendered text matches it.
+_HELP_WIDTH = 78
+
+
+def help_from_rows(
+    parser: argparse.ArgumentParser, rows: Mapping[str, CatalogRow], *,
+    codes: Sequence[int] = tuple(EXIT_MEANINGS), note: str = "",
+) -> None:
+    """A verb's ``--help`` from its catalog rows (ADR-0393): each mode's question and
+    when not to use it, its example, and the exit ``codes`` it returns.
+
+    ``note`` says what the shared words leave out for this verb.
+    """
+    modes = []
+    for command, row in rows.items():
+        mode = " ".join(command.split()[2:])
+        modes.append(textwrap.fill(f"{mode}: {row.question}" if mode else row.question, _HELP_WIDTH) + "\n"
+                     + textwrap.fill(f"Not for {row.avoid}.", _HELP_WIDTH, initial_indent="  ", subsequent_indent="  "))
+    examples = [f"  {' '.join((command, *row.argv))}" for command, row in rows.items()]
+    exits = [exit_codes_help(codes)]
+    if note:
+        exits.append(textwrap.fill(note, _HELP_WIDTH, initial_indent="  ", subsequent_indent="  "))
+    parser.formatter_class = argparse.RawDescriptionHelpFormatter
+    parser.description = "\n\n".join(modes)
+    parser.epilog = "\n\n".join(("\n".join(("EXAMPLES" if len(examples) > 1 else "EXAMPLE", *examples)), "\n".join(exits)))
 
 
 def read_source_bytes(path: str) -> bytes:

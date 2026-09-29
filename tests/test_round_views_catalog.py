@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The tool catalog: one complete row per tool, each row a call its parser accepts,
-and each view's --help rendered from its rows."""
+and each view's and prescriber verb's --help rendered from its rows."""
 
 import argparse
 import json
@@ -18,9 +18,12 @@ from jasper.cli import crossover_prescriber, round as round_cli, round_views
 
 ROOT = Path(__file__).resolve().parents[1]
 _PARSERS = {module.PROG: module.build_parser() for module in (round_views, crossover_prescriber, round_cli)}
-_VIEWS = next(action for action in _PARSERS[PROG]._actions if isinstance(action, argparse._SubParsersAction))
+#: The tools whose verbs' --help renders from their rows.
+_VERBS = {prog: next(action for action in _PARSERS[prog]._actions if isinstance(action, argparse._SubParsersAction))
+          for prog in (PROG, crossover_prescriber.PROG)}
+_VIEWS = _VERBS[PROG]
 #: A value each placeholder's parser accepts; any other placeholder takes "value".
-_VALUES = {"<db>": "1", "<start>": "0", "<stop>": "1", "<change>": "candidate"}
+_VALUES = {"<db>": "1", "<start>": "0", "<stop>": "1", "<change>": "candidate", "<program>": "room"}
 _FIELDS = {"tool", "question", "needs", "reads", "programs", "argv", "schema", "artifact", "answer_fields"}
 
 
@@ -28,7 +31,7 @@ _FIELDS = {"tool", "question", "needs", "reads", "programs", "argv", "schema", "
 def test_every_row_is_complete_and_its_call_parses_for_each_program_it_names(command):
     row = CATALOG[command]
     assert row.question and "\n" not in row.question and row.needs and row.reads in READS
-    assert (row.avoid or not command.startswith(PROG)) and "\n" not in row.avoid
+    assert (row.avoid or not command.startswith(tuple(_VERBS))) and "\n" not in row.avoid
     assert bool(row.schema) == bool(row.answer_fields)
     prog, *words = command.split()
     for program in row.programs or PURPOSES:
@@ -45,13 +48,13 @@ def test_every_view_has_a_row_and_every_view_row_a_view():
     assert all(choice.help.startswith("[") for choice in _VIEWS._choices_actions if choice.dest != "catalog")
 
 
-@pytest.mark.parametrize("view", _VIEWS.choices)
-def test_every_views_help_has_a_description_and_examples_its_parser_accepts(view):
-    parser = _VIEWS.choices[view]
-    examples = [line.split()[1:] for line in parser.format_help().splitlines() if line.startswith(f"  {PROG} ")]
+@pytest.mark.parametrize("prog, verb", [(prog, verb) for prog, verbs in _VERBS.items() for verb in verbs.choices])
+def test_every_verbs_help_has_a_description_and_examples_its_parser_accepts(prog, verb):
+    parser = _VERBS[prog].choices[verb]
+    examples = [line.split()[1:] for line in parser.format_help().splitlines() if line.startswith(f"  {prog} ")]
     assert parser.description and examples
     for argv in examples:
-        _PARSERS[PROG].parse_args([_VALUES.get(token, "value") if token.startswith("<") else token for token in argv])
+        _PARSERS[prog].parse_args([_VALUES.get(token, "value") if token.startswith("<") else token for token in argv])
 
 
 @pytest.mark.parametrize("program", PURPOSES)
