@@ -29,9 +29,6 @@ What each test catches:
   instead of importing it, which the alias test alone cannot see
   (``typing.Literal`` is cached, so an identical re-declaration IS the same
   object);
-* the legacy-spelling scan — a NEW writer of the retired ``med``;
-* the tolerant-read test — a banked artifact from before the rename, which is
-  on disk forever and must still read;
 * the refusal test — the one rank that is deliberately NOT this vocabulary,
   pinned so nobody "unifies" it by mistake;
 * the synthetic-key test — a copy key readable as a verdict value it is not.
@@ -62,16 +59,6 @@ _CANONICAL_SETS = {
     "Severity": _SEVERITY_WORDS,
     "ReportLevel": _REPORT_WORDS,
     "TrustLevel": _TRUST_WORDS,
-}
-
-#: The retired middle-rank spelling. The classifier wrote it until 2026-08-22.
-_LEGACY_TRUST_WORD = "med"
-
-#: Where the legacy spelling is still allowed to appear as a string constant:
-#: exactly the reader that maps it, and nowhere else. A WRITER of it anywhere
-#: in the tree is the regression this scan exists for.
-_LEGACY_SPELLING_ALLOWLIST = {
-    "jasper/active_speaker/crossover_v2/feature_classification.py",
 }
 
 
@@ -165,66 +152,9 @@ def test_no_module_redeclares_a_canonical_word_set() -> None:
     )
 
 
-def test_no_module_writes_the_retired_middle_rank_spelling() -> None:
-    """``med`` survives only in the reader that maps it forward.
-
-    A subject scan, not a diff scan: a NEW writer of the old spelling in a
-    module this PR never touched is exactly what a diff-scoped sweep misses.
-
-    Deliberately unscoped, and therefore capable of catching a bare ``"med"``
-    that means something else entirely. That is the accepted cost of total
-    coverage — the fix for a genuine unrelated use is one line in
-    :data:`_LEGACY_SPELLING_ALLOWLIST`, and the failure message says so.
-    """
-    offenders = set()
-    for path in sorted(_JASPER.rglob("*.py")):
-        rel = path.relative_to(_REPO).as_posix()
-        if rel in _LEGACY_SPELLING_ALLOWLIST:
-            continue
-        try:
-            tree = ast.parse(path.read_text())
-        except (SyntaxError, UnicodeDecodeError):  # pragma: no cover
-            continue
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and node.value == _LEGACY_TRUST_WORD
-            ):
-                offenders.add(rel)
-    assert offenders == set(), (
-        f"{_LEGACY_TRUST_WORD!r} is the retired spelling of 'medium' "
-        f"(quality_model.TrustLevel); these modules still write it: "
-        f"{sorted(offenders)}. If one of them means something unrelated by "
-        f"that string, add it to _LEGACY_SPELLING_ALLOWLIST with a note."
-    )
-
-
-def test_a_banked_med_reads_back_as_medium() -> None:
-    """The tolerant read at the artifact parse boundary.
-
-    Artifacts banked before 2026-08-22 carry ``med`` and are on disk forever,
-    so the READER normalises and only the reader does. Deleting the mapping
-    must fail here, not surface as a bar that silently stops recognising a
-    trust rank it used to.
-    """
-    banked = {
-        "hz": 1037.0,
-        "classification": feature_classification.DEFECT_BOOSTABLE,
-        "confidence": "med",
-    }
-    verdict = feature_classification.read_feature_verdicts([banked])[0]
-    assert verdict.confidence == "medium"
-    assert verdict.confidence in _TRUST_WORDS
-    # Round-trip: what the reader produces reads back unchanged, so a packet
-    # republishing a normalised row is not re-normalised into something else.
-    again = feature_classification.read_feature_verdicts([verdict.to_dict()])[0]
-    assert again == verdict
-
-
 def test_an_unknown_confidence_is_kept_verbatim() -> None:
-    """Tolerant in ONE direction. An unrecognised string is evidence about
-    who wrote the artifact; repairing it would erase that."""
+    """An unrecognised string is kept verbatim: it is evidence about who
+    wrote the artifact, and repairing it would erase that."""
     banked = {
         "hz": 1037.0,
         "classification": feature_classification.DEFECT_BOOSTABLE,

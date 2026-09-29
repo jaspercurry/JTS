@@ -243,10 +243,9 @@ class FeatureVerdict:
     egd_verdict: str
     gate_verdict: str
     #: ``"high"`` / ``"medium"`` / ``"low"`` — the shared
-    #: :data:`~jasper.audio_measurement.quality_model.TrustLevel` words. An
-    #: artifact using the legacy spelling carries ``"med"`` and is normalised on
-    #: the way in by :func:`read_feature_verdicts`; any other string is kept
-    #: verbatim, since an unknown value is evidence about the writer.
+    #: :data:`~jasper.audio_measurement.quality_model.TrustLevel` words. Any
+    #: other string is kept verbatim, since an unknown value is evidence
+    #: about the writer.
     confidence: str
     #: The feature's own measured Q, when the artifact carried one — what a cut's
     #: width should match. Reported rather than enforced: a filter narrower than
@@ -313,7 +312,7 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
                 classification=classification.strip(),
                 egd_verdict=_text(entry.get("egd_verdict")),
                 gate_verdict=_text(entry.get("gate_verdict")),
-                confidence=_confidence(entry.get("confidence")),
+                confidence=_text(entry.get("confidence")),
                 measured_q=finite_float(entry.get("measured_q")),
                 depth_db=finite_float(entry.get("depth_db")),
             )
@@ -323,24 +322,6 @@ def read_feature_verdicts(raw: Any) -> tuple[FeatureVerdict, ...]:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-#: The one legacy spelling this column has ever carried. The classifier used to
-#: write ``med`` and those artifacts are on disk forever, so the
-#: READER maps it and only the reader does. A one-entry table rather than
-#: an inline ``if``: the next legacy spelling is a row here.
-_LEGACY_CONFIDENCE: dict[str, str] = {"med": "medium"}
-
-
-def _confidence(value: Any) -> str:
-    """A banked ``confidence`` column, in the current vocabulary.
-
-    Tolerant in one direction only: a legacy spelling is normalised, anything
-    else is passed through verbatim, because an unrecognised string is
-    evidence about who wrote the artifact and repairing it would erase that.
-    """
-    text = _text(value)
-    return _LEGACY_CONFIDENCE.get(text, text)
 
 
 def defect_cuttable_at(

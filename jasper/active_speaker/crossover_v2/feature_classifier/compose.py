@@ -214,9 +214,7 @@ def _compose(
     )
     resolved_gates = gate["resolved_gates"]
     # The three words are quality_model's shared TrustLevel — `medium` spelled in
-    # full. An artifact using the legacy spelling carries `med` and is
-    # normalised on the way back in by
-    # feature_classification.read_feature_verdicts.
+    # full.
     confidence: TrustLevel
     if classification == UNRESOLVED:
         confidence = "low"
