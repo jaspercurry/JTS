@@ -9,6 +9,7 @@ from jasper.active_speaker.program_failure import classify_program_failure
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 from dataclasses import asdict, replace
+from functools import partial
 import asyncio
 import logging
 from pathlib import Path
@@ -28,7 +29,7 @@ from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import banked_entry_baseline
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
-from jasper.active_speaker.plan_run import RunDoor
+from jasper.active_speaker.plan_run import RunDoor, after_grading
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
@@ -174,9 +175,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                           spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
-            conductor.rearm_measure_after_transient(assessed)
+            after_grading(partial(conductor.rearm_measure_after_transient, assessed))
         elif verdict is not None and assessed.ok:
-            conductor.note_accepted(phase, index)
+            after_grading(partial(conductor.note_accepted, phase, index))
         return assessed
 
     return analyze, assessor

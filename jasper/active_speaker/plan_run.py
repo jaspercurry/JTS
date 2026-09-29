@@ -10,6 +10,7 @@ import logging
 import sys
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from itertools import accumulate, groupby
 from collections import Counter
@@ -59,6 +60,25 @@ from .round_copy import PLACE_MICROPHONE, take_counts
 logger = logging.getLogger(__name__)
 _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
 Analyze = Callable[[Mapping[str, Any]], ProgramAnalysis]
+#: What a take's assessment may raise and still answer with a stop; any other ends the run.
+_ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
+#: A graded take's host effects (a rearm, an acceptance), held while its capture
+#: plays so that no later rung is composed from them (ADR-0383).
+_held_effects: ContextVar[list[Callable[[], None]] | None] = ContextVar("held_effects", default=None)
+
+
+def after_grading(effect: Callable[[], None]) -> None:
+    """Run ``effect`` now, or, inside a capture, before its next take is graded or once it has played."""
+    held = _held_effects.get()
+    if held is None:
+        effect()
+    else:
+        held.append(effect)
+
+
+def _release(held: list[Callable[[], None]]) -> None:
+    while held:
+        held.pop(0)()
 
 
 @dataclass
@@ -372,11 +392,12 @@ async def _run(
             level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
         return level_observations[take_id]
 
+    run_task = asyncio.current_task()
     failures: dict[str, Exception] = {}
 
-    def judge(item: _Work, spec: MeasureSpec, record: Mapping[str, Any]) -> tuple[TakeVerdict, Mapping[str, Any]]:
-        level_verdict = observe_level(record)
+    def grade(item: _Work, spec: MeasureSpec, record: Mapping[str, Any], level_verdict: TakeVerdict) -> TakeVerdict:
         try:
+            _release(_held_effects.get() or [])
             analysis = analyze(record)
             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
             assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
@@ -391,11 +412,23 @@ async def _run(
                     "next_gain_db": assessed.next_gain_db,
                     **{key: value for key, value in assessed.evidence.items()
                        if key.startswith("level_")}})
+            return assessed
         except Exception as exc:  # noqa: BLE001 - the take banks a stop; the loop raises an unexpected error after measure
             failures[str(record["take_id"])] = exc
-            assessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop",
-                                   evidence={"error_type": type(exc).__name__})
-        return assessed, level_verdict.evidence
+            log_event(logger, "active_speaker.take_assessment_failed", level=logging.WARNING,
+                      take_id=record["take_id"], error_type=type(exc).__name__)
+            return TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop", evidence={"error_type": type(exc).__name__})
+
+    async def judge(item: _Work, spec: MeasureSpec, record: Mapping[str, Any]) -> tuple[TakeVerdict, Mapping[str, Any]]:
+        level_verdict = observe_level(record)
+        # Grading a take banked as its run is cancelled would hold the cancel, and one
+        # after its capture's assessment raised would run host effects for a capture
+        # the run abandons (ADR-0383).
+        if ((run_task is not None and run_task.cancelling())
+                or any(not isinstance(failure, _ASSESSMENT_FAILURES) for failure in failures.values())):
+            unassessed = TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop", evidence={"assessed": False})
+            return unassessed, level_verdict.evidence
+        return await asyncio.to_thread(grade, item, spec, record, level_verdict), level_verdict.evidence
 
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
@@ -523,15 +556,21 @@ async def _run(
                 if gate:
                     gate.publish(progress)
                 attempts[offset] = attempt
-                # The bank judges each take before it writes the record (ADR-0383).
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index,
-                               replay=attempt > 1 and ledger.by_household + ledger.by_speaker == spent,
-                               judge=partial(judge, item, spec))
+                               replay=attempt > 1 and ledger.by_household + ledger.by_speaker == spent)
+                # The bank judges each take before it writes the record (ADR-0383).
+                manifest.judge = partial(judge, item, spec)
+                held: list[Callable[[], None]] = []
                 token = playback_observer.set(partial(publish_sweeps, progress, gate, before) if gate else None)
+                holding = _held_effects.set(held)
                 try:
                     outcome = await measure(session, spec) if measure else await session.measure(spec)
                 finally:
                     playback_observer.reset(token)
+                    _held_effects.reset(holding)
+                    manifest.judge = None
+                if held:
+                    await asyncio.to_thread(_release, held)
                 manifest.detail = next((s.detail for s in outcome.stimuli if s.detail), "")
                 verdict = None
                 records = attempt_records()
@@ -539,7 +578,7 @@ async def _run(
                     level_verdict = observe_level(record)
                     if record_id:
                         if (failure := failures.pop(str(record["take_id"]), None)) is not None:
-                            if not isinstance(failure, (ValueError, KeyError, OSError)):
+                            if not isinstance(failure, _ASSESSMENT_FAILURES):
                                 raise failure
                             manifest.detail = exception_detail(failure)
                         assessed = TakeVerdict(**record["verdict"])
@@ -608,6 +647,7 @@ async def _run(
                                           ended_s=ended - started, level_observation=observe_level(record).evidence)
                 break
             finally:
+                failures.clear()
                 if take_started is not None:
                     while len(manifest.wall_s) <= item.pose_index:
                         manifest.wall_s.append(0.0)

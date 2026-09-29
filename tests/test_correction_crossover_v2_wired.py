@@ -1237,6 +1237,34 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]
 
 
+async def test_a_rung_asking_louder_rearms_only_once_its_capture_has_played(monkeypatch, tmp_path, box):
+    """A rung that grades retake_louder rearms the gain plan after its capture's
+    later rung is composed, so that rung plays the levels the capture began with
+    (ADR-0383)."""
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "measure"}, gain_plan_db={"woofer": -20.0, "tweeter": -26.0},
+                           driver_caps_dbfs={"woofer": 0.0, "tweeter": 0.0})
+    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure", level_ladder_dbfs=(-24.0, -18.0))
+    declared = [compose_plan_program(conductor, spec, rung, context=plan_context()).to_dict()
+                for rung in spec.level_ladder_dbfs]
+    fakes, played = EngineSeams(), []
+    manifest = RunManifest("louder", _Store(fakes.records))
+
+    def answer():
+        program = compose_plan_program(conductor, spec, fakes.play.calls[-1]["stimulus_dbfs"], context=plan_context())
+        played.append(program.to_dict())
+        return WiredCaptureAnswer(wav=b"", program=program.to_dict())
+    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
+    analyze, assessor = correction_run_host.bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    graded = iter([refusal_copy.TakeVerdict(True, next="retake_louder", charge="speaker", next_gain_db=-20.0,
+                                            evidence={"next_gain_db.tweeter": -20.0})])
+    monkeypatch.setattr(correction_run_host, "assess", lambda *_a, **_k: next(graded, refusal_copy.TakeVerdict(True)))
+    request = replace(_walk([0]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    result = await plan_run.run_plan(request, door=_run_door(tmp_path, box, fakes, manifest, records), manifest=manifest,
+                                     analyze=analyze, assessor=assessor, aborts={},
+                                     captures=(plan_run.PlanCapture(request.stops[0], spec),))
+    assert (result.status, played[:2], conductor.gain_plan_db["tweeter"]) == ("complete", declared, -20.0)
+
+
 @pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
 @pytest.mark.parametrize("pose,distance", [
     ({}, 1.0), ({"distance_m": 1.25}, 1.25),

@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
+from jasper.active_speaker.crossover_v2.playback_transaction import PlaybackInterrupted
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
@@ -43,6 +44,7 @@ from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -54,6 +56,7 @@ from tests.crossover_v2_fixtures import (
 )
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
+from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
@@ -575,13 +578,37 @@ def test_a_take_banks_the_verdict_and_level_its_manifest_row_holds(case, status,
             "evidence": row["quality"]["evidence"], "capabilities": row["quality"]["capabilities"], "screens": row["screens"]}
 
 
-def test_an_assessor_error_banks_its_take_as_a_stop_then_ends_the_run():
-    fakes = FakeSeams()
-    with pytest.raises(RuntimeError):
-        asyncio.run(_run_gated(_walk([0, 20]), seams=fakes, assessor=Mock(side_effect=RuntimeError)))
+def test_an_assessor_error_ends_its_captures_assessment_then_the_run(caplog):
+    """The take whose assessor raised banks a stop and is logged; its capture's
+    later rung banks unassessed, and the error ends the run once the capture has
+    played (ADR-0383)."""
+    fakes, assessor = FakeSeams(), Mock(side_effect=RuntimeError)
+    request = _walk([0, 20])
+    request = replace(request, template=replace(request.template, level_ladder_dbfs=(-24, -18)))
+    with caplog.at_level("WARNING", logger=plan_run.logger.name), pytest.raises(RuntimeError):
+        asyncio.run(_run_gated(request, seams=fakes, assessor=assessor))
+    assert (assessor.call_count, fakes.play.rungs) == (1, [-24, -18])
+    assert [(record["verdict"]["fault"], record["verdict"]["evidence"]) for record in fakes.banked] == [
+        (REASON_INTERNAL_ERROR, {"error_type": "RuntimeError"}), (REASON_INTERNAL_ERROR, {"assessed": False})]
+    assert event_fields(caplog, "active_speaker.take_assessment_failed") == {
+        "take_id": fakes.banked[0]["take_id"], "error_type": "RuntimeError"}
+
+
+def test_a_take_banked_as_its_run_is_cancelled_is_never_assessed():
+    """A cancel that lands once the stimulus played interrupts its capture: the
+    take banks unassessed, nothing grades it, and the run keeps no judge (ADR-0383)."""
+    class InterruptedPlay(FakePlay):
+        async def run(self, **kwargs):
+            await super().run(**kwargs)
+            asyncio.current_task().cancel()
+            raise PlaybackInterrupted(PlaybackObservation(emission="completed"), wav_path="capture.wav")
+
+    grading = Mock()
+    result, fakes = asyncio.run(_run_gated(_walk([0]), seams=FakeSeams(play=InterruptedPlay()),
+                                           analyze=grading, assessor=grading))
     record, = fakes.banked
-    assert (record["verdict"]["fault"], record["verdict"]["next"], fakes.play.bearings) == (
-        REASON_INTERNAL_ERROR, "stop", [0])
+    assert (result.status, record["verdict"]["evidence"], grading.called, result.judge) == (
+        "cancelled", {"assessed": False}, False, None)
 
 
 @pytest.mark.parametrize("preset_id", available_presets())
