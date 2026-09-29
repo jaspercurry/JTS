@@ -5,6 +5,7 @@
 """Deploy artifact, unit and socket contracts."""
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from . import nginx_site
 from ._shell_corpus import shell_files
 from .install_surface import installer_shell_paths
 from .test_install_core_audio_graph_loop import staged_file_copies
-from .systemd_unit_helpers import value_for, values_for
+from .systemd_unit_helpers import seconds_for, value_for, values_for
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
@@ -361,14 +362,18 @@ def test_librespot_backs_off_below_its_start_limit():
     which would park the renderer until someone restarts it.
     """
     text = (_DEPLOY / "systemd" / "librespot.service").read_text(encoding="utf-8")
-    first = float(value_for(text, "RestartSec") or 0)
-    ceiling = float(value_for(text, "RestartMaxDelaySec") or 0)
+    interval = seconds_for(text, "StartLimitIntervalSec", default=10.0)
+    if math.isinf(interval):
+        return  # StartLimitIntervalSec=0: no start limit, nothing to park at
+    burst = int(value_for(text, "StartLimitBurst") or 5)
+    # RestartSec=0 means "at once", not the "no timeout" seconds_for reads it as.
+    first = seconds_for(text, "RestartSec", default=0.1)
+    first = 0.0 if math.isinf(first) else first
+    ceiling = seconds_for(text, "RestartMaxDelaySec", default=math.inf)
     steps = int(value_for(text, "RestartSteps") or 0)
-    interval = float(value_for(text, "StartLimitIntervalSec") or 0)
-    burst = int(value_for(text, "StartLimitBurst") or 0)
 
     def delay(n: int) -> float:
-        if n <= 1 or not steps or ceiling <= first:
+        if n <= 1 or not steps or not first or math.isinf(ceiling) or first >= ceiling:
             return first
         return ceiling if n > steps else first * (ceiling / first) ** ((n - 1) / steps)
 
