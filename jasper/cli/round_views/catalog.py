@@ -10,15 +10,18 @@ import argparse
 import shlex
 
 from jasper.active_speaker.measurement_programs import PURPOSES, available_presets, preset
+from jasper.active_speaker.round_view_artifacts import read_purposes
 
 from ._common import ANSWER_SCHEMAS, CATALOG, answer
 
 
 def _purposes(program: str) -> set[str]:
-    """The purposes a program's rounds carry, over every preset it offers: a rear
-    seat round is read by the room views too."""
+    """The purposes whose views read a round of any preset of this program, by the
+    rule the round's bookkeeping follows: a rear seat round, or a speaker round
+    that keeps a room sweep, is read by the room views too."""
     presets = (preset(name) for name in available_presets())
-    return {program, *(purpose for row in presets if row.purpose == program for purpose in row.purposes)}
+    return {program}.union(*(read_purposes(row.purposes, has_room=row.room_sweep)
+                             for row in presets if row.purpose == program))
 
 
 def _cmd_catalog(args: argparse.Namespace) -> int:

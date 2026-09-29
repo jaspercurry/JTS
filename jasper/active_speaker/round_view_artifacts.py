@@ -128,7 +128,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("bands", "basis", "bins", "level_offset_db", "max_abs_db", "max_abs_hz", "mean_abs_db",
                        "relative_arrival_ms", "rms_db", "same_recording")),
     "frequency": CatalogRow(FREQUENCY_VIEW_FILENAME, bookkeeping=(PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR),
-                            builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA, reads=READS_RECORDING,
+                            builder="round_bookkeeping.frequency", schema=FREQUENCY_VIEW_SCHEMA,
         question="What frequency response did each take bank, for one or two rounds, bundles or documents?",
         needs="one or two banked rounds, session bundles or JSON documents whose takes banked curves",
         answer_fields=("image", "runs", "series")),
@@ -252,7 +252,8 @@ CATALOG: dict[str, CatalogRow] = {
                        "latest_agent_note", "next", "next_commands", "packet_contracts", "packet_error",
                        "packet_fingerprint", "reading_order", "recent_rounds", "seat_level_reference_volume_db",
                        "selected_round", "speaker")),
-    f"{_ROUND} list": CatalogRow(argv=("--program", "<program>"), schema=ANSWER_SCHEMAS[f"{_ROUND} list"],
+    f"{_ROUND} list": CatalogRow(argv=("--program", "<program>"), programs=RUNNABLE_PROGRAMS,
+                                 schema=ANSWER_SCHEMAS[f"{_ROUND} list"],
         question="Which rounds are banked, newest first, with their program, result and applied identity?",
         needs="nothing; --program narrows the list to one program's rounds",
         answer_fields=("rounds", "truncated")),
@@ -310,10 +311,16 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
     }
 
 
+def read_purposes(purposes: tuple[str, ...], *, has_room: bool = False) -> set[str]:
+    """The purposes whose views read a round of these purposes: a speaker round
+    that kept its summed stops as room sets is read by the room views too."""
+    return set(purposes) | ({PURPOSE_ROOM} if purposes[0] == PURPOSE_SPEAKER and has_room else set())
+
+
 def bookkeeping_views(purposes: tuple[str, ...], *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base, for a round of these purposes."""
     purpose = purposes[0]
-    wanted = set(purposes) | ({PURPOSE_ROOM} if purpose == PURPOSE_SPEAKER and has_room else set())
+    wanted = read_purposes(purposes, has_room=has_room)
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
     # A speaker round takes its frequency view from the packet writer, not here.
     return tuple((name, row.per_set, row.grades_against_base) for name, row in rows

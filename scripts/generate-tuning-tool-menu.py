@@ -196,12 +196,19 @@ def _subcommand_names(parser: argparse.ArgumentParser) -> tuple[str, ...]:
     return ()
 
 
+def _catalogued(prog: str, name: str, verb: argparse.ArgumentParser) -> bool:
+    """A catalog row calls this verb as is, or with the option it cannot run without."""
+    calls = [tuple(command.split()) for command in CATALOG]
+    required = any(action.required and action.option_strings for action in verb._actions)
+    return (prog, name) in calls or (required and any(call[:2] == (prog, name) for call in calls))
+
+
 def _tool_row(module_name: str) -> str:
     """One CLI, naming only the verbs with no catalog line of their own."""
     module = importlib.import_module(module_name)
     parser = module.build_parser()
-    catalogued = {command.split()[1] for command in CATALOG if command.split()[0] == parser.prog}
-    subcommands = [name for name in _subcommand_names(parser) if name not in catalogued]
+    verbs = next((action.choices for action in parser._actions if isinstance(action, argparse._SubParsersAction)), {})
+    subcommands = [name for name, verb in verbs.items() if not _catalogued(parser.prog, name, verb)]
     tool = parser.prog + (" " + "\\|".join(subcommands) if subcommands else "")
     description = " ".join((parser.description or "").split())
     where = Path(cast(str, module.__file__)).resolve().relative_to(ROOT)

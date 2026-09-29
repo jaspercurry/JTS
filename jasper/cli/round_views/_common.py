@@ -44,7 +44,7 @@ from jasper.cli._refusal import (
 )
 from jasper.cli._report import write_report
 
-AUTHORITY_TIER = "advisory (analysis views save artifacts)"
+AUTHORITY_TIER = "advisory (`catalog` reads; the analysis views save artifacts)"
 _ROUND_TOOL_ERRORS = ROUND_INPUT_ERRORS
 
 #: What every round-directory positional takes, said once. Both shapes: the

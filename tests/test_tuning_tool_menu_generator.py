@@ -119,6 +119,17 @@ def test_the_menu_gives_every_catalog_row_one_line():
     assert len(lines) == len(menu.CATALOG) and all(line.count(" | ") == 4 for line in lines)
 
 
+@pytest.mark.parametrize("module_name,verbs", [
+    ("jasper.cli.crossover_prescriber", ["judge", "compose"]),
+    ("jasper.cli.round_views", ["catalog"]),
+])
+def test_a_verb_leaves_the_cli_table_only_when_a_row_calls_it(module_name, verbs):
+    """Plain ``judge`` stays, since only its previews are rows; ``sweep`` goes,
+    since it cannot run without a ``--scope`` and both scopes are rows."""
+    tool = menu._tool_row(module_name).split("`")[1]
+    assert tool.split(" ", 1)[1].split("\\|") == verbs
+
+
 def test_every_covered_tool_declares_its_own_authority_tier():
     """One owner (ticket 6.4): the tier lives in the CLI module, not here."""
     for module_name in menu.TUNING_TOOL_MODULES:
