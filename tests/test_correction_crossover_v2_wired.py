@@ -1303,7 +1303,7 @@ _TAKE_RECORD_KEYS = frozenset({
     "incident", "index", "inverted_role", "kind", "layout", "level_db", "level_match_trims_db", "level_matched",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
     "pose", "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program", "program_phase",
-    "prompt", "provenance", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
+    "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
     "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "vertical_deg",
     "wav_bytes", "wav_path", "wav_sha256",
 })
@@ -1361,7 +1361,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     consume = Mock(side_effect=AssertionError("drifting take consumed"))
     monkeypatch.setattr(conductor, "check_verdict", consume)
     manifest = RunManifest("drift", _Store(EngineSeams().records))
-    manifest.begin({"index": 1, "purpose": "speaker", "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())

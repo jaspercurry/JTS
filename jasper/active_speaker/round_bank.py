@@ -298,9 +298,9 @@ def _bookkeeping(
     if manifest is None or not manifest.is_file():
         return None, []
     document = json.loads(manifest.read_text())
-    purpose, *co_purposes = run_purposes(document["program"])
+    purposes = run_purposes(document["program"])
     room_groups = room_sets(document)
-    views = bookkeeping_views(purpose, has_room=bool(room_groups), co_purposes=tuple(co_purposes))
+    views = bookkeeping_views(purposes, has_room=bool(room_groups))
     sets = view_sets(document)
     multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
 
@@ -310,7 +310,7 @@ def _bookkeeping(
     results = []
     for view, per_set, grades_against_base in views:
         targets = sets if per_set and len(sets) > 1 else [None]
-        if purpose == PURPOSE_SPEAKER and view.startswith("room"):
+        if purposes[0] == PURPOSE_SPEAKER and view.startswith("room"):
             targets = room_groups
         for row in targets:
             set_id = row["set_id"] if row else None

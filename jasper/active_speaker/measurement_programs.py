@@ -227,6 +227,20 @@ def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> s
     return driver
 
 
+def validated_purposes(purposes: Sequence[str], regime: str, drivers: Collection[str]) -> tuple[str, ...]:
+    """What a preset's or a stop's takes serve, each named once. Every purpose,
+    not only the first, must admit the regime and each driver a pose plays
+    alone, so their order never decides what loads (ADR-0383)."""
+    purposes = tuple(purposes)
+    if not purposes or len(set(purposes)) < len(purposes):
+        raise ValueError("a measurement names its purposes, each once")
+    for purpose in purposes:
+        validated_capture_purpose(purpose, regime)
+        for driver in drivers:
+            validated_pose_driver(driver, regime=regime, purpose=purpose)
+    return purposes
+
+
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
     """The branch pair a take names, judged against the regime that plays it."""
     if branch_pair not in BRANCH_PAIRS:
@@ -251,12 +265,11 @@ def run_purpose(banked: str | None) -> str:
 
 
 def run_purposes(banked: str) -> tuple[str, ...]:
-    """The primary purpose and co-purposes of a run manifest's preset."""
+    """The purposes of a run manifest's preset, its program's first."""
     try:
-        row = preset(banked)
+        return preset(banked).purposes
     except UnknownPresetError:
         return (run_purpose(banked),)
-    return (row.purpose, *row.co_purposes)
 
 
 def gate_exemption(purpose: str | None, *, driver: str = "", distance_m: float | None = None) -> str | None:
@@ -359,7 +372,8 @@ class Preset:
     offers (ADR-0366 §6)."""
     preset: str
     poses: tuple[ProgramPose, ...]
-    purpose: str = PURPOSE_SPEAKER
+    #: What its takes serve, its program's first (ADR-0336, ADR-0383).
+    purposes: tuple[str, ...]
     regime: str = REGIME_PER_DRIVER
     mover: str | None = None
     layout: str = ""
@@ -367,7 +381,6 @@ class Preset:
     stimulus: Mapping[str, Any] | None = None
     room_sweep: bool = False
     branch_pair: str = BRANCH_PAIR_DRIVERS
-    co_purposes: tuple[str, ...] = ()
     #: The named layouts this preset offers; ``layout`` is the one these poses are,
     #: or :data:`CUSTOM_LAYOUT` for an inline list (ADR-0366 §6).
     layouts: tuple[str, ...] = ()
@@ -375,17 +388,16 @@ class Preset:
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement preset must contain at least one pose")
-        validated_capture_purpose(self.purpose, self.regime)
-        for purpose in self.co_purposes:
-            if purpose not in PURPOSES or purpose == self.purpose or self.co_purposes.count(purpose) > 1:
-                raise ValueError("co_purposes must be distinct from each other and the primary purpose")
-            validated_capture_purpose(purpose, self.regime)
+        object.__setattr__(self, "purposes", validated_purposes(
+            self.purposes, self.regime, [pose.driver for pose in self.poses]))
         validated_branch_pair(self.branch_pair, self.regime)
-        for pose in self.poses:
-            validated_pose_driver(pose.driver, regime=self.regime, purpose=self.purpose)
         if not isinstance(self.room_sweep, bool) or (self.room_sweep and
-                (self.purpose != PURPOSE_SPEAKER or self.regime != REGIME_PER_DRIVER)):
+                (set(self.purposes) != {PURPOSE_SPEAKER} or self.regime != REGIME_PER_DRIVER)):
             raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
+
+    @property
+    def purpose(self) -> str:
+        return self.purposes[0]
 
     @property
     def mic_move_count(self) -> int:
@@ -514,13 +526,14 @@ def _load_presets(
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
-        unknown = set(row) - {"preset", "layout", "layouts", "purpose", "regime", "levels", "stimulus",
-                              "room_sweep", "branch_pair", "co_purposes"}
+        unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "levels", "stimulus",
+                              "room_sweep", "branch_pair"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
             preset_id = _text(row["preset"], f"preset {index} id")
             layout = _text(row["layout"], f"preset {index} layout")
+            purposes = row["purposes"]
         except KeyError as exc:
             raise ValueError(f"preset {index} is missing {exc.args[0]}") from None
         offered = row.get("layouts", [layout])
@@ -539,20 +552,18 @@ def _load_presets(
         levels = row.get("levels")
         if levels not in (None, "auto"):
             raise ValueError(f"preset {preset_id} levels must be 'auto', got {levels!r}")
-        co_purposes = row.get("co_purposes", [])
-        if not isinstance(co_purposes, list):
-            raise ValueError("co_purposes must be a list")
+        if not isinstance(purposes, list):
+            raise ValueError(f"preset {preset_id} purposes must be a list")
         presets[preset_id] = Preset(
             preset_id,
             layouts[layout],
-            purpose=row.get("purpose", PURPOSE_SPEAKER),
+            purposes=tuple(_text(value, f"preset {preset_id} purpose") for value in purposes),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=movers.get(layout),
             layout=layout, layouts=tuple(offered), levels=levels,
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
-            co_purposes=tuple(_text(value, "co-purpose") for value in co_purposes),
         )
     named = {name: (poses, movers.get(name)) for name, poses in layouts.items()}
     return MappingProxyType(presets), MappingProxyType(named)

@@ -232,7 +232,7 @@ class RunManifest:
             "pose": {"driver": None, **{key: value for key, value in pose.items() if key != "place"}},
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
             "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
-            "measurement_purpose": self._context["purpose"],
+            "measurement_purpose": self._context["purpose"], "purposes": list(self._context["purposes"]),
         }
         context: dict[str, Any] = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
                                    if key in self._context}
