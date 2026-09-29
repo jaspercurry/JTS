@@ -151,7 +151,7 @@ def _pose(stop: Any) -> dict[str, Any]:
 
 def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
     return {"index": index, "repeat": repeat, "pose": _pose(stop),
-            "candidate_id": stop.candidate_id, "purpose": stop.purpose}
+            "candidate_id": stop.candidate_id, "purpose": stop.purpose, "purposes": list(stop.purposes)}
 
 
 # Allow a person to move the stand and confirm placement between pose batches.

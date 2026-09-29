@@ -1361,7 +1361,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     consume = Mock(side_effect=AssertionError("drifting take consumed"))
     monkeypatch.setattr(conductor, "check_verdict", consume)
     manifest = RunManifest("drift", _Store(EngineSeams().records))
-    manifest.begin({"index": 1, "purpose": "speaker", "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())

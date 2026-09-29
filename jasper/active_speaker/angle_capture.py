@@ -59,7 +59,7 @@ from .measurement_programs import (
     REGIMES,
     validated_branch_pair,
     validated_capture_purpose,
-    validated_pose_driver,
+    validated_purposes,
     pose_place,
     validated_pose,
     validated_angle,
@@ -242,6 +242,9 @@ class AngleStop:
     distance_m: float | None = None
     seat_offset_m: tuple[float, float, float] | None = None
     purpose: str | None = None
+    #: Every purpose its takes serve, :attr:`purpose` first; a stop that names
+    #: only its purpose serves that one (ADR-0383).
+    purposes: tuple[str, ...] = ()
     headline: str = ""
     detail: str = ""
     stimulus: Mapping[str, Any] | None = None
@@ -258,9 +261,12 @@ class AngleStop:
         )
         try:
             offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
-            object.__setattr__(self, "purpose", validated_capture_purpose(self.purpose, self.regime))
+            purpose = validated_capture_purpose(self.purpose, self.regime)
+            purposes = validated_purposes(self.purposes or (purpose,), self.regime, (self.driver,))
+            if purposes[0] != purpose:
+                raise ValueError(f"a stop's purposes start with its purpose {purpose!r}, got {list(purposes)}")
+            object.__setattr__(self, "purposes", purposes)
             validated_branch_pair(self.branch_pair, self.regime)
-            validated_pose_driver(self.driver, regime=self.regime, purpose=self.purpose)
             if self.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:
@@ -497,7 +503,7 @@ class AngleCaptureRequest:
             "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
                 {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else
-                 list(stop.seat_offset_m) if f.name == "seat_offset_m" and stop.seat_offset_m is not None else getattr(stop, f.name)
+                 list(getattr(stop, f.name)) if isinstance(getattr(stop, f.name), tuple) else getattr(stop, f.name)
                  for f in fields(stop)
                  if f.name in ("angle_deg", "regime", "elevation_deg", "candidate_id", "purpose")
                  or getattr(stop, f.name) != f.default}
@@ -809,6 +815,7 @@ def request_for_preset(
                 distance_m=pose.distance_m,
                 seat_offset_m=pose.seat_offset_m,
                 purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else preset.purpose,
+                purposes=(PURPOSE_ROOM,) if room_sweep and stop.plays_summed else preset.purposes,
                 headline=pose.headline, detail=pose.detail,
                 stimulus=preset.stimulus,
                 branch_pair=preset.branch_pair,

@@ -1029,17 +1029,33 @@ async def test_a_run_banks_its_preset_and_its_layout():
         "program": "tournament/express", "layout": "tournament_full"}
 
 
-@pytest.mark.parametrize("name,layout,banked", [
-    ("speaker/mark", "speaker_mark", {("speaker", ("speaker",)), ("room", ("room",))}),
-    ("rear/seat", "seat_express", {("rear", ("rear", "room"))}),
+def _staged(name, layout, restaged):
+    plan = ac.request_for_preset(run_preset(name, layout)).to_dict()
+    for stop in plan["stops"]:
+        stop.update(restaged)
+    return ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan)))
+
+
+@pytest.mark.parametrize("name,layout,restaged,banked", [
+    ("speaker/mark", "speaker_mark", {}, {("speaker", ("speaker",)), ("room", ("room",))}),
+    ("rear/seat", "seat_express", {}, {("rear", ("rear", "room"))}),
+    ("rear/seat", "seat_express", {"purpose": "room", "purposes": ["room"]}, {("room", ("room",))}),
 ])
-async def test_a_take_banks_its_stops_purpose_then_its_presets_others(name, layout, banked):
-    """A room sweep serves room alone; a seat trial's take serves rear and room (ADR-0336, ADR-0383)."""
-    request = ac.request_for_preset(run_preset(name, layout))
+async def test_a_take_banks_the_purposes_its_stop_names(name, layout, restaged, banked):
+    """A preset names its purposes on each stop, a room sweep's stop names room alone, and a
+    stop staged under a preset's id serves what it names, not the preset's (ADR-0336, ADR-0383)."""
+    request = _staged(name, layout, restaged)
     result, fakes = await _run_gated(request, captures=plan_run.prepare_plan_captures(request),
                                      assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept"))
     assert result.status == "complete"
     assert {(take["measurement_purpose"], tuple(take["purposes"])) for take in fakes.banked} == banked
+
+
+@pytest.mark.parametrize("restaged", [{"purpose": "room"}, {"purposes": ["rear", "rear"]}])
+def test_a_staged_stop_names_its_purpose_first_and_each_purpose_once(restaged):
+    with pytest.raises(ac.LateralWalkRefused) as refused:
+        _staged("rear/seat", "seat_express", restaged)
+    assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID
 
 
 async def test_room_uses_its_first_seat_take_as_the_level_reference():
@@ -1150,7 +1166,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
-    request = replace(request, stops=tuple(replace(stop, purpose="bass") for stop in request.stops))
+    request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
     facts = ready_facts(request)
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60}]}}))
@@ -1210,7 +1226,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     assert verdict.ok is False
     assert verdict.fault == "pilot_level_collapse"
     request = _walk([0])
-    request = replace(request, stops=(replace(request.stops[0], purpose=purpose),))
+    request = replace(request, stops=(replace(request.stops[0], purpose=purpose, purposes=(purpose,)),))
     result, _ = await _run_gated(request, analyze=lambda *_args: analysis)
     assert result.status == "partial"
     take = _takes(result.to_dict())[0]
