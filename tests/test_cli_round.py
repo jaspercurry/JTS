@@ -42,12 +42,14 @@ from jasper.active_speaker.crossover_v2 import prescription_document as prescrip
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
-from jasper.web import correction_crossover_v2_volume as v2volume
+from jasper.web import correction_crossover_v2_evidence as v2evidence, correction_crossover_v2_volume as v2volume
 from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_preset
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, near_field_drivers, run_preset
+from jasper.active_speaker.preflight import PreflightReport
+from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -56,7 +58,7 @@ from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
-from tests.crossover_v2_fixtures import _roles
+from tests.crossover_v2_fixtures import _RecordingCheckStore
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
@@ -66,7 +68,7 @@ from tests.test_arm_walk import (
     FakeMover, FakeSession, FakeWalkClock, LiveThen, _COMPLETE, _STOPPED,
     _IN_FLIGHT_QUIET, _RecordingTrail, _own_signals,
 )
-from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _seed_baseline_apply_environment
+from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _inline_context, _seed_baseline_apply_environment
 from tests.test_prescription_document import document, timing_evidence
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
@@ -673,6 +675,24 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
         takes[0] if len(takes) == 1 else takes, "woofer" if program == "nearfield" else None)
 
 
+@pytest.mark.parametrize("flags,asked", [
+    (["--program", "room", "--layout", "seat_cloud", "--level-db", "-25"],
+     {"program": "room", "layout": "seat_cloud", "level_db": -25}),
+    (["--program", "rear", "--poses", "0,-45,45", "--repeats", "2", "--mover", "human"],
+     {"program": "rear", "poses": [0, -45, 45], "repeats": 2, "mover": "human"}),
+    (["--program", "nearfield", "--poses", _NEAR_FIELD_POSES], {"program": "nearfield", "poses": json.loads(_NEAR_FIELD_POSES)}),
+    (["--program", "speaker", "--candidates", "base,{fp}"], {"program": "speaker", "candidates": ["base", "{fp}"]}),
+    (["--program", "speaker", "--layout", "seat_cloud"], {"program": "speaker", "layout": "seat_cloud"}),
+    (["--program", "nearfield", "--driver", "woofer:rear"], {"program": "nearfield", "driver": "woofer:rear"}),
+])
+def test_a_request_states_the_run_its_flags_state(preflight_ready, bank_trial, monkeypatch, capsys, flags, asked):
+    """`--request` keys the run by the flags' own names: the same dry run, or the same refusal (#5737 A3)."""
+    fingerprint = bank_trial({"driver": "document"})
+    asked = json.loads(json.dumps(asked).replace("{fp}", fingerprint))
+    by_flags = _run(["run", *(flag.replace("{fp}", fingerprint) for flag in flags), "--dry-run"], _opener(), monkeypatch, capsys)
+    assert _run(["run", "--request", json.dumps(asked), "--dry-run"], _opener(), monkeypatch, capsys) == by_flags
+
+
 @pytest.mark.parametrize("repeats", [None, 2])
 def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, capsys, repeats):
     preset, topology = _rear_pair("mono")
@@ -1004,22 +1024,37 @@ def test_a_rear_pair_at_custom_bearings_plans_branch_takes_on_the_applied_base(
     assert candidate_bank.banked_candidates() == []
 
 
-def test_the_cli_and_the_page_post_one_rear_pair_plan(monkeypatch, capsys, preflight_ready):
-    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
+@pytest.mark.parametrize("choice_id", ["room/seat", "bass/axis@seat_express", "rear/pair", "nearfield/each"])
+def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
+    monkeypatch, preflight_ready, banked_session_level, choice_id,
+):
+    """`--request`, the page's start action and the session door resolve one
+    request to one plan and one level ladder (#5737 A3)."""
+    topology, context = mono_output_topology(), _inline_context()
+    context = replace(context, topology=topology, driver_bands={role.role: role.band for role in context.roles_bands})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *_args, **_kwargs: context)
     monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
-        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": (), "next_action": {"program": "rear"}})
-    choice = next(c for c in measurement_view.round_choices({}, "rear/pair") if c["id"] == "rear/pair")
-    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": near_field_drivers(topology),
+        "next_action": {"program": "speaker"}})
+    body = next(c for c in measurement_view.round_choices({}, choice_id) if c["id"] == choice_id)["action"]["body"]
+    monkeypatch.setattr(_run_request, "load_output_topology", lambda: topology)
+    by_cli = _run_request.resolve_run(cli.build_parser().parse_args(["run", "--request", json.dumps(body["request"])]))
+    admitted: list = []
+    monkeypatch.setattr(v2host, "preflight_levels", lambda *args: admitted.append(preflight_levels(*args)) or admitted[-1])
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
+    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _topology: (store, store.session_id))
 
-    code, _ = _run(["run", "--program", "rear/pair"], opener, monkeypatch, capsys)
+    v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
 
-    posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
-    assert code == cli.EXIT_OK
-    # The CLI posts the level its preflight resolved; the door resolves the page's (#5737 RX-4 A3).
-    assert {**posted, "level": None} == {**choice["action"]["body"]["plan"], "level": None}
+    by_door, = admitted
+    published = next(payload for path, payload in store.published if path.endswith("/plan.json"))
+    assert AngleCaptureRequest.from_mapping(published) == by_door.plan == by_cli.plan
+    assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
+    assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
 
 
 @pytest.mark.parametrize("state", ["awaiting_join", "starting", "awaiting_capture", "stopping"])
@@ -1034,6 +1069,11 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
 @pytest.mark.parametrize("argv,reason", [
     (["--repeats", "0"], "walk_level_policy_invalid"),
     (["--program", "room", "--mover", "arm"], "walk_mover_mismatch"),
+    (["--request", '{"repeats": 0}'], "walk_level_policy_invalid"),
+    (["--request", '{"program": "room", "layouts": "seat_cloud"}'], "program_plan_shape_invalid"),
+    (["--request", '{"layout": "seat_cloud", "poses": [0]}'], "program_plan_shape_invalid"),
+    (["--request", '{"program": "room"}', "--layout", "seat_cloud"], "program_plan_shape_invalid"),
+    (["--request", '{"program": "room"'], "program_plan_shape_invalid"),
 ])
 def test_run_shape_refusal_is_json(preflight_ready, argv, reason, monkeypatch, capsys):
     code, body = _run(["run", "--wait", *argv], _opener(), monkeypatch, capsys)
@@ -1184,7 +1224,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     verb, flags, noise, levels,
 ):
     from jasper.active_speaker import bundles, round_bank, plan_run
-    from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
     from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, default_out

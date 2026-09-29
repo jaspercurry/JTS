@@ -23,12 +23,11 @@ from pathlib import Path
 from jasper.active_speaker import preflight_live
 from typing import Any, Callable, Mapping
 
-from jasper.active_speaker.angle_capture import (
-    AngleCaptureRequest, LateralWalkRefused,
-    default_run_level,
-)
+from jasper.active_speaker.angle_capture import AngleCaptureRequest, LateralWalkRefused
+from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
+from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
@@ -114,6 +113,13 @@ def _resolve_prepare_wired_mic() -> Any:
         ) from exc
 
 
+def _refused(exc: Exception) -> CrossoverV2Refused:
+    """A request or plan this door cannot run, under the code it names."""
+    if isinstance(exc, LateralWalkRefused):
+        return CrossoverV2Refused(exc.detail, code=exc.reason)
+    return CrossoverV2Refused(str(exc), code=getattr(exc, "reason", None) or "program_plan_shape_invalid")
+
+
 def _mint_wired_session(wired_device: Any, spec: Any) -> Any:
     from jasper.web import correction_crossover_v2_wired as wired
 
@@ -168,17 +174,13 @@ def prepare_v2_session(
         V2ConductorSnapshot,
     )
 
-    if "tier" in raw or "stage" in raw or not isinstance(raw.get("plan"), Mapping):
-        raise CrossoverV2Refused("An inline v5 plan is required", code="program_plan_shape_invalid")
+    if "tier" in raw or "stage" in raw or isinstance(raw.get("plan"), Mapping) is isinstance(raw.get("request"), Mapping):
+        raise CrossoverV2Refused("A run request or an inline v5 plan is required", code="program_plan_shape_invalid")
     try:
-        request = AngleCaptureRequest.from_mapping(raw["plan"])
-    except LateralWalkRefused as exc:
-        raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
+        source = (RunRequest.from_mapping(raw["request"]) if isinstance(raw.get("request"), Mapping)
+                  else AngleCaptureRequest.from_mapping(raw["plan"]))
     except (ValueError, TypeError, CrossoverV2FlowError) as exc:
-        raise CrossoverV2Refused(str(exc), code="program_plan_shape_invalid") from exc
-    level, level_source = default_run_level(request)
-    if request.level_source == "program_default":
-        request = dataclasses.replace(request, level=level, level_source=level_source)
+        raise _refused(exc) from exc
     if v2volume.session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
             "the measurement volume needs recovery; recover it before starting "
@@ -189,8 +191,12 @@ def prepare_v2_session(
     except CrossoverV2Refused as exc:  # answered as the preflight reports it, default action included
         refusal = PreflightIssue.from_code(exc.code, str(exc))
         raise CrossoverV2Refused(refusal.detail, code=refusal.code, next_action=refusal.next_action) from exc
+    try:
+        request, levels = resolve_plan(source, targets=lambda: near_field_drivers(context.topology))
+    except (ValueError, CrossoverV2FlowError) as exc:
+        raise _refused(exc) from exc
     facts = preflight_live.read_preflight_facts(request, context=context)
-    report = preflight_levels(request, facts)
+    report = preflight_levels(request, facts, levels)
     issue = next((issue for issue in report.issues if issue.blocking), None)
     if issue is not None:
         raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)

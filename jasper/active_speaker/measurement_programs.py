@@ -597,9 +597,10 @@ def preset(name: str) -> Preset:
     return found
 
 
-def run_preset(name: str, layout: str | None = None, poses: str | None = None) -> Preset:
+def run_preset(name: str, layout: str | None = None, poses: str | Sequence[Any] | None = None) -> Preset:
     """Resolve a run's preset (a bare program name is its first preset) at a named
-    layout it offers, or at an inline JSON pose list or bearing list (ADR-0298,
+    layout it offers, or at an inline list of pose objects or whole-degree bearings,
+    given as a list or as text: a JSON list or comma-separated bearings (ADR-0298,
     ADR-0366 §6)."""
     selected = preset(name)
     if layout is not None:
@@ -609,12 +610,13 @@ def run_preset(name: str, layout: str | None = None, poses: str | None = None) -
         selected = replace(selected, layout=layout, poses=layout_poses, mover=mover)
     if poses is None:
         return selected
-    if poses in _LAYOUTS:
-        raise PosesNameALayoutError(poses)
-    rows = json.loads(poses) if poses.lstrip().startswith("[") else [
-        {"azimuth_deg": int(value.strip()), "elevation_deg": 0} for value in poses.split(",")]
+    if isinstance(poses, str):
+        if poses in _LAYOUTS:
+            raise PosesNameALayoutError(poses)
+        poses = json.loads(poses) if poses.lstrip().startswith("[") else [int(value) for value in poses.split(",")]
     return replace(selected, layout=CUSTOM_LAYOUT, poses=tuple(
-        _pose(value, CUSTOM_LAYOUT, index) for index, value in enumerate(rows)))
+        _pose({"azimuth_deg": value, "elevation_deg": 0} if isinstance(value, int) else value, CUSTOM_LAYOUT, index)
+        for index, value in enumerate(poses)))
 
 
 def plan_poses(preset: Preset, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
