@@ -186,7 +186,7 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   platform/          Shared I/O, paths, math, logs, systemd and IPC clients
   fanin/ multiroom/ transit/ cues/ peering/ usbsink/ accessories/
   sound/             CamillaDSP config emission and the graph carrier
-  active_speaker/ audio_measurement/ correction/ attribution/
+  active_speaker/ audio_measurement/
                      The speaker tuning + measurement program
   mics/ xvf/ audio_hardware/  Mic families, XVF3800 control, DAC registry
 rust/              jasper-fanin (mixer), jasper-outputd (final output owner),
