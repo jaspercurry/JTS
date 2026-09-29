@@ -15,6 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.band_ladders import ROOM_BAND_SPLITS_HZ as ROOM_BAND_SPLITS_HZ
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import local_features
 from jasper.audio_measurement.room_boundary import (
     CEILING_SOURCE_FALLBACK,
@@ -37,7 +38,6 @@ from .journey import PHASE_LATERAL, PHASE_MEASURE
 from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
-from .round_inputs import RoundViewsError
 
 #: A feature is a local excursion at least this deep against the local level,
 #: at least this wide between its half-depth edges; positions agree on it
@@ -143,10 +143,8 @@ def _stacked(
     keep = (grid >= lo_hz) & (grid <= hi_hz)
     freqs = grid[keep]
     if lo_hz >= hi_hz:
-        raise RoundViewsError(
-            f"no seat take carries a bin between {lo_hz:g} and {hi_hz:g} Hz "
-            f"(the takes span {float(grid[0]):g}-{float(grid[-1]):g} Hz)"
-        )
+        raise EvidenceUnavailable(REASON_COVERAGE_SHORT, {
+            "band_hz": [lo_hz, hi_hz], "take_bands_hz": {take.take_id: list(take.band_hz) for take in takes}})
     freqs = np.unique(np.concatenate(([lo_hz], freqs, [hi_hz])))
     rows = np.vstack([
         np.interp(freqs, take.freqs_hz, take.magnitude_db) for take in takes

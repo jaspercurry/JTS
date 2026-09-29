@@ -177,7 +177,7 @@ def bass_view(bundle_dir: Path, *, take_ids: tuple[str, ...]) -> dict[str, Any]:
     paths = (record_path(row) for row, record in measurement_documents(bundle_dir) if record.get("take_id") in take_ids)
     takes = [bass_take(take) for take in analyzed_measurements(bundle_dir, paths=paths, refuse_failed=True)]
     if not takes:
-        raise ValueError("measurement_captures_missing")
+        raise EvidenceUnavailable("measurement_captures_missing", {"bundle_dir": str(bundle_dir), "take_ids": list(take_ids)})
     return {
         "schema": BASS_VIEW_SCHEMA, "bundle_dir": str(bundle_dir), "takes": takes,
         "units": {"fundamental_db": "deconvolution magnitude; compare compatible takes only",

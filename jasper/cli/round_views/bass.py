@@ -13,11 +13,12 @@ from typing import Any
 from jasper.active_speaker.bass_table_report import bass_table_markdown, bass_table_rows
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from jasper.active_speaker.round_view_builders import bass_payload
+from jasper.audio_measurement.band_ladders import BASS_FIT_REFERENCE_BAND_HZ
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 from ._common import (
-    ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_TOOL_ERRORS, _write, add_set_argument, answer,
-    calibration_id, default_out, read_run_manifest, resolve_set, round_inputs, subject,
+    ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
+    _write, add_set_argument, answer, calibration_id, default_out, read_run_manifest, resolve_set, round_inputs, subject,
 )
 
 
@@ -26,22 +27,27 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
                             ("bass-compare", "compare selected bass sets"),
                             ("bass-fit-table", "read candidate reach, drive and headroom by level")):
         parser = sub.add_parser(name, help=help_text)
-        parser.add_argument("--out")
+        parser.add_argument("--out", help="artifact destination")
         parser.set_defaults(func=_cmd)
         if name == "bass-compare":
-            parser.add_argument("before", type=Path)
-            parser.add_argument("after", type=Path)
+            parser.add_argument("before", type=Path, metavar="<before-round>", help=f"the round before the change: {_ROUND_DIR_HELP}")
+            parser.add_argument("after", type=Path, metavar="<after-round>", help=f"the round after it: {_ROUND_DIR_HELP}")
             add_set_argument(parser, name="--before-set", take=True)
             add_set_argument(parser, name="--after-set", take=True)
-            parser.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"))
+            parser.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"),
+                                help="what changed between the two sets")
             continue
         if name == "bass":
-            parser.add_argument("round_dir", type=Path)
+            parser.add_argument("round_dir", type=Path, metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
             add_set_argument(parser)
         else:
-            parser.add_argument("round_dir", type=Path, nargs="+")
+            parser.add_argument("round_dir", type=Path, nargs="+", metavar=_ROUND_DIR_METAVAR,
+                                help=f"each bass round to read: {_ROUND_DIR_HELP}")
             parser.add_argument("--candidate", type=Path, action="append", required=True, help="candidate artifact or banked fingerprint; repeat for each candidate")
-            parser.add_argument("--reference-band-hz", type=float, nargs=2)
+            parser.add_argument("--reference-band-hz", type=float, nargs=2, metavar=("LOW", "HIGH"),
+                                default=list(BASS_FIT_REFERENCE_BAND_HZ),
+                                help="band where each candidate take is level-matched to its baseline, in Hz "
+                                     f"(default: {' '.join(f'{hz:g}' for hz in BASS_FIT_REFERENCE_BAND_HZ)})")
 
 
 def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[str, Any]]]:
@@ -82,9 +88,7 @@ def _cmd(args: argparse.Namespace) -> int:
                 read = subject(inputs, set_id=payload["set_id"], candidate_id=payload["candidate_id"])
                 parameters = {"calibration_id": calibration_id(payload["takes"][0]["calibration"])}
             else:
-                from jasper.active_speaker.bass_fit import REFERENCE_BAND_HZ  # lazy: laptop array analysis
                 from ._bass_inputs import fit_run  # lazy: laptop array analysis
-                args.reference_band_hz = args.reference_band_hz or REFERENCE_BAND_HZ
                 payload = fit_run(args)
                 levels = [row for table in payload["tables"] for row in table["levels"]]
                 summary = {"run_ids": payload["run_ids"], "level_count": len(levels),

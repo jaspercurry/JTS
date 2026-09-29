@@ -116,8 +116,8 @@ def _add_landscape_arguments(child: argparse.ArgumentParser, *, out_name: str) -
                        help="banked round or its commissioning bundle")
     child.add_argument("--fc-hz", type=float,
                        help="override the banked applied crossover corner")
-    child.add_argument("--upper-role", default="tweeter")
-    child.add_argument("--lower-role", default="woofer")
+    child.add_argument("--upper-role", default="tweeter", help="the driver above the crossover (default: %(default)s)")
+    child.add_argument("--lower-role", default="woofer", help="the driver below the crossover (default: %(default)s)")
     child.add_argument("--take", help="take ID to read; otherwise the latest take carrying both driver curves")
     child.add_argument(
         "--inverted-role", default=None, choices=sorted(DRIVER_ROLES),

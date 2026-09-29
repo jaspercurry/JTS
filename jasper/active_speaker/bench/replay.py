@@ -16,6 +16,7 @@ import yaml
 
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ, band_ladder_name
 from jasper.audio_measurement.deconv import DEFAULT_MAX_CAPTURE_SECONDS
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.snr_policy import band_levels_dbfs
 from jasper.platform.json_fields import sha256_file
 
@@ -69,7 +70,8 @@ def replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, float],
     data = np.memmap(raw, dtype="<f8", mode="r").reshape(-1, channels)
     first, last = round(start * rate), round(stop * rate)
     if first < 0 or last > len(data) or last - first < 8:
-        raise ValueError("dsp_replay_window_unavailable")
+        raise EvidenceUnavailable("dsp_replay_window_unavailable", {
+            "window_s": list(window_s), "render_s": len(data) / rate, "output": str(raw)})
     named_bands = [(f"{lo:g}-{hi:g}", lo, hi) for lo, hi in bands]
     return {"schema": DSP_LEVELS_SCHEMA, "output_sha256": manifest["render"]["output_sha256"],
             "graph_sha256": manifest["graph_sha256"], "stimulus_sha256": manifest["stimulus_sha256"],

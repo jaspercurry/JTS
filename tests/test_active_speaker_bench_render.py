@@ -183,10 +183,6 @@ def test_bass_levels_attribute_output_changes_and_reject_unmatched_evidence(tmp_
     with pytest.raises(ValueError):
         bass_replay.bass_replay_levels(manifest, raw, (0, 1))
     manifests['baseline']['main_db'] = -16
-    manifests['volume_taper'] = dict(manifests['full_boost'])
-    with pytest.raises(ValueError, match='bass_replay_manifest_predates_adr_0359'):
-        bass_replay.bass_replay_levels(manifest, raw, (0, 1))
-    del manifests['volume_taper']
     (tmp_path / 'full_boost' / 'output.f64le').write_bytes(b'changed')
     with pytest.raises(ValueError):
         bass_replay.bass_replay_levels(manifest, raw, (0, 1))

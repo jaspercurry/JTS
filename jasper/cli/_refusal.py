@@ -33,12 +33,17 @@ OWN_EXIT_VOCABULARY = frozenset({
 })
 
 EXIT_OK = 0
-#: The instrument declined a round it could read.
 EXIT_REFUSED = 1
-#: The round, bundle or source could not be read at all.
 EXIT_UNREADABLE = 2
-#: The work was done and the result could not be filed.
 EXIT_WRITE_FAILED = 3
+
+#: What each code tells the caller; a tool's ``--help`` lists them from here.
+EXIT_MEANINGS = {
+    EXIT_OK: "the answer",
+    EXIT_REFUSED: "it read its input and cannot grade it; the reason names why",
+    EXIT_UNREADABLE: "it cannot read its input, malformed input included",
+    EXIT_WRITE_FAILED: "it did the work, but cannot write its artifact",
+}
 
 #: The word each failing code publishes as ``status``: callers name the CODE
 #: and this picks the word, so the two can never disagree.
@@ -47,6 +52,18 @@ STATUS_BY_CODE = {
     EXIT_UNREADABLE: "unreadable",
     EXIT_WRITE_FAILED: "unwritable",
 }
+
+
+def exit_codes_help(codes: Sequence[int] = tuple(EXIT_MEANINGS)) -> str:
+    """The ``EXIT CODES`` block of a ``--help``, each failure under the ``status`` its record carries."""
+    failing = [code for code in codes if code in STATUS_BY_CODE]
+    return "\n".join((
+        "EXIT CODES",
+        *(f"  {code}  {STATUS_BY_CODE[code] + ': ' if code in failing else ''}{EXIT_MEANINGS[code]}"
+          for code in codes),
+        *(['  a failure prints "<status> (<reason>): <detail>" on stderr and the\n'
+           '  same record as JSON on stdout'] if failing else []),
+    ))
 
 
 def read_source_bytes(path: str) -> bytes:

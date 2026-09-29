@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.snr_policy import DBFS_FLOOR
 from jasper.bass_extension.dynamic import as_dynamic_bass_descriptor
 from jasper.bass_extension.dynamic_graph import build_native_dynamic_bass_graph, dynamic_bass_owner_groups, validated_base_graph
@@ -52,7 +53,7 @@ def bass_replay_levels(manifest: Mapping, raw: Path, window_s: tuple[float, floa
     stages = attribution['stages']
     if 'volume_taper' in stages:
         # Rendered before ADR-0359: its delivered output includes the taper, so no stage isolates the compressor.
-        raise ValueError('bass_replay_manifest_predates_adr_0359')
+        raise EvidenceUnavailable('bass_replay_manifest_predates_adr_0359', {'stages': sorted(stages)})
     readings = {'delivered': replay_levels(manifest, raw, window_s)}
     for name in ('baseline', 'full_boost'):
         stage = stages[name]
