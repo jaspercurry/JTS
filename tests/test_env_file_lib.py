@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.env_file import read_env_file
+from jasper.platform.env_file import read_env_file
 from tests._lock_holder import spawn_lock_holder
 from tests.install_surface import installer_text
 
@@ -264,8 +264,8 @@ def test_env_file_writers_never_publish_a_truncated_render(
 
 
 def test_env_lock_path_matches_atomic_io(tmp_path: Path) -> None:
-    """Bash and jasper.atomic_io must name the same lock file for FILE."""
-    from jasper.atomic_io import env_lock_path
+    """Bash and jasper.platform.atomic_io must name the same lock file for FILE."""
+    from jasper.platform.atomic_io import env_lock_path
 
     target = tmp_path / "outputd.env"
     result = _bash(f'jasper_env_lock_path "{target}"')
@@ -285,7 +285,7 @@ def test_env_file_set_refuses_a_planted_lock(tmp_path: Path, plant: str) -> None
     dangling one must not make root create the target, and a device must not be
     re-moded — bash adds O_EXCL under noclobber only when its pre-open stat
     FAILS, so a device is opened and followed where a regular file is refused.
-    Removal condition: only jasper/atomic_io.py, which opens O_NOFOLLOW, writes
+    Removal condition: only jasper/platform/atomic_io.py, which opens O_NOFOLLOW, writes
     these files.
     """
     env_file = tmp_path / "jasper.env"

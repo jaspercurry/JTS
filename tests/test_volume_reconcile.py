@@ -22,7 +22,7 @@ from tests.volume_coordinator_fixtures import (
     _real_coord,
 )
 
-from jasper.atomic_io import advisory_file_lock
+from jasper.platform.atomic_io import advisory_file_lock
 from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import camilla_graph_mutation

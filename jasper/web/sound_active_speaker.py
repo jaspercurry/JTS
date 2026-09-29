@@ -48,7 +48,7 @@ from jasper.audio_hardware.i2s_hat import (
 from jasper.active_speaker.audition import AUDITION_LAYER_REAR_COMPARE, audition_summary
 from jasper.active_speaker.rear_compare import rear_compare_level
 from ._common import bonded_follower_active
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.platform import wire
 from jasper.platform.uds import mux_socket_command
 from jasper.audio_routes.output_topology import (

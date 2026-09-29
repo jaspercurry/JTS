@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jasper.audio_measurement.timing_verification import TIMING_NOT_COMPARABLE
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 
 def _number(value: Any) -> str | None:

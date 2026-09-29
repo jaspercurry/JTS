@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper._oom_adj import EXPECTED as _OOM_EXPECTED
+from jasper.platform._oom_adj import EXPECTED as _OOM_EXPECTED
 from tests.systemd_unit_helpers import (
     assignments_for as _assignments_for,
     value_for as _value_for,

@@ -20,7 +20,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.service_state.wake_events import make_event_id
 from .wake_telemetry import WakeTelemetry

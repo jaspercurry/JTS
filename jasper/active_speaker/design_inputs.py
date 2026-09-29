@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from jasper.audio_routes.output_topology import OutputTopology
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 
 
 def _overlay(base: Mapping[str, Any], edits: Mapping[str, Any]) -> dict[str, Any]:

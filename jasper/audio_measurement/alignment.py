@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import signal as scipy_signal
 
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
+from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ
 
 # Not empirically derived; tuning needs on-device sweeps.
 DEFAULT_CONFIDENCE_THRESHOLD = 0.40

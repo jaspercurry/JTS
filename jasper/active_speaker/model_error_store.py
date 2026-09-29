@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_json
-from jasper.json_fields import utc_now_iso as _utc_now
-from jasper.log_event import log_event
-from jasper.paths import resolve_state_path
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json
+from jasper.platform.json_fields import utc_now_iso as _utc_now
+from jasper.platform.log_event import log_event
+from jasper.platform.paths import resolve_state_path
 
 from .attempts_loop import (
     FLOOR_BASES,

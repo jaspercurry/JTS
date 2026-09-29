@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
-from jasper.json_fields import JsonFields, issue
+from jasper.platform.json_fields import JsonFields, issue
 
 if TYPE_CHECKING:
     from jasper.audio_routes.output_topology import SpeakerGroup

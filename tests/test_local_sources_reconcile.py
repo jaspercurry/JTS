@@ -17,8 +17,8 @@ import pytest
 
 from jasper.bluetooth.rfkill import BluetoothRfkillState
 from jasper.audio_routes import source_intent
-from jasper import source_intent_units as units
-from jasper.json_fields import sha256_text
+from jasper.platform import source_intent_units as units
+from jasper.platform.json_fields import sha256_text
 from jasper.local_sources import reconcile
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.multiroom import reconcile as reconcile_mod

@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 __all__ = [
     "CLASSIFICATIONS",

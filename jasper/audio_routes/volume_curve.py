@@ -22,7 +22,7 @@ from typing import TypeGuard
 
 from jasper.playback_state.music_sources import VolumeMode
 from jasper.sound import settings as sound_settings
-from jasper.volume_floor import (
+from jasper.platform.volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     RECONCILE_DRIFT_DB,
     VOLUME_CEILING_DB,

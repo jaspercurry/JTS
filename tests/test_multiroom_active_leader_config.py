@@ -10,7 +10,7 @@ armed camilla#2), and the unbond restore (always an ACTIVE graph, never passive,
 re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.audio_routes import output_topology_store as output_topology_mod
 from tests.active_speaker_fixtures import declared_profile_fixture
 

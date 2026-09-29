@@ -39,7 +39,7 @@ import sys
 import time
 
 from jasper.audio_control import debug_mode
-from jasper.logging_setup import REDACTING_FILTER
+from jasper.platform.logging_setup import REDACTING_FILTER
 
 logger = logging.getLogger("jasper.flight_recorder")
 

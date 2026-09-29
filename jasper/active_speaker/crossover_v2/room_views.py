@@ -28,7 +28,7 @@ from jasper.audio_measurement.room_boundary import (
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.seat_figures import spread_rms_db
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from ..measurement_programs import PURPOSE_SPEAKER
 from ..run_manifest import kept_measurements, room_sets, view_sets
 

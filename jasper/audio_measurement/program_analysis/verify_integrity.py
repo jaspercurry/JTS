@@ -19,7 +19,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.repeated_sweep import SummedPassAlignment, summed_pass_noise, summed_pass_refusal
 from jasper.audio_measurement.wired_capture import scan_zero_runs
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .drift import estimate_drift
 from .model import (
     CaptureIntegrity,

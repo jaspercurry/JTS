@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from jasper.accessories.reconcile import request_reconcile
-from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.audio_hardware.usb_port_role import UsbPortRoleState
 from jasper.bluetooth.rfkill import BluetoothRfkillState, read_bluetooth_rfkill_state
-from jasper.env_load import SOURCE_INTENT_ENV
+from jasper.platform.env_load import SOURCE_INTENT_ENV
 from jasper.fanin.status import (
     DIRECT_HEALTH_CAPTURING,
     DIRECT_HEALTH_IDLE,
@@ -36,11 +36,11 @@ from jasper.local_sources.markers import (
     local_sources_allowed,
     publish_allowed_markers,
 )
-from jasper.log_event import log_event
-from jasper.logging_setup import configure_logging
+from jasper.platform.log_event import log_event
+from jasper.platform.logging_setup import configure_logging
 from jasper.playback_state.music_sources import Source
 from jasper.audio_routes.output_hardware import current_usb_data_role
-from jasper.service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
+from jasper.platform.service_units import LIBRESPOT_SERVICE, SHAIRPORT_SYNC_SERVICE, USBGADGET_SERVICE
 from jasper.audio_routes.source_intent import (
     SOURCE_STATUS_PATH,
     intent_fingerprint,
@@ -48,7 +48,7 @@ from jasper.audio_routes.source_intent import (
     read_intent,
     source_intent_sources,
 )
-from jasper.source_intent_units import (
+from jasper.platform.source_intent_units import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
     BLUETOOTH_SERVICE,
     UNIT_ENABLEMENT_VERBS,
@@ -59,7 +59,7 @@ from jasper.source_intent_units import (
     USB_DIRECT_SETTLE_SECONDS,
     unit_action_timeout_sec,
 )
-from jasper.systemd_probe import unit_query, unit_state
+from jasper.platform.systemd_probe import unit_query, unit_state
 from jasper.device_probe.usbgadget import uac2_card_present
 
 logger = logging.getLogger(__name__)
@@ -174,7 +174,7 @@ def _run_unit_action(unit: str, verb: str) -> tuple[int, str]:
 def _query_unit_state(query: str, unit: str) -> bool | None:
     """Tri-state ``systemctl is-active``/``is-enabled``/``is-failed``.
 
-    Classification lives in jasper.systemd_probe (shared with the multiroom
+    Classification lives in jasper.platform.systemd_probe (shared with the multiroom
     reconciler's `_systemctl_unit_state`); this wrapper only picks the timeout.
     """
     return unit_query(unit_state(query, unit, timeout=UNIT_STATE_QUERY_TIMEOUT_SEC))

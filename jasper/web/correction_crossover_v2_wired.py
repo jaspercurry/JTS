@@ -32,7 +32,7 @@ from jasper.audio_measurement.wired_capture import (
 from jasper.active_speaker.crossover_v2.wired_stimulus import (
     WiredStimulusCapture as WiredStimulusCapture,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.active_speaker import plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY, exception_detail
 from jasper.web.correction_runtime import refusal_envelope

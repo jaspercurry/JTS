@@ -23,9 +23,9 @@ from jasper.dsp_control.camilla_config_contract import (
 )
 from jasper.audio_routes.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from ...config import Config
-from ...paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR as CAMILLA_CONFIGS_DIR
 from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, ring_capacity_frames
-from ...service_units import CAMILLA_SERVICE
+from jasper.platform.service_units import CAMILLA_SERVICE
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import (

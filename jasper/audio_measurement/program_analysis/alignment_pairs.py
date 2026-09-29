@@ -17,7 +17,7 @@ from jasper.audio_measurement.alignment import (
 )
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
 from jasper.audio_measurement.program import ExcitationProgram, ProgramSegment
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .model import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW, ALIGNMENT_OK, AlignmentEstimate,
     GCC_SNAP_RADIUS_PERIODS, logger, MeasurementGeometry, MeasurementPriors,

@@ -8,7 +8,7 @@ import contextlib
 
 import pytest
 
-from jasper.backoff import (
+from jasper.platform.backoff import (
     RECONNECT_BACKOFF_JITTER_FRACTION,
     RECONNECT_INITIAL_BACKOFF_SEC,
     RECONNECT_MAX_BACKOFF_SEC,

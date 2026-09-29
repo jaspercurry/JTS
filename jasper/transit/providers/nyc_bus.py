@@ -39,8 +39,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import httpx
 
-from ...log_event import log_event
-from ...secret_redaction import redact_secrets
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 from ..base import CredentialSpec, Stop, TransitError, haversine_miles
 from ._nyc import NYC_BBOX
 

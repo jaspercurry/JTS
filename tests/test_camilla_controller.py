@@ -33,7 +33,7 @@ from jasper.dsp_control.dsp_apply import (
     ValidationStatus,
     apply_dsp_config,
 )
-from jasper.volume_latch import duck_release_target_db
+from jasper.platform.volume_latch import duck_release_target_db
 
 from ._async_wait import wait_signalled
 from ._log_events import event_field_maps, event_fields, event_records

@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.audio_routes.camilla_emit import CHANNEL_SELECT_MIXER, emit_mixer, mono_sum_sources
 from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 
 from ..camilla_names import (
     bass_management_hp_name,

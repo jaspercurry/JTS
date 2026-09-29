@@ -9,8 +9,8 @@ import logging
 from typing import Any, Mapping
 
 from .driver_safety import driver_floor_issues
-from ..json_fields import as_mapping
-from ..log_event import log_event
+from jasper.platform.json_fields import as_mapping
+from jasper.platform.log_event import log_event
 from .measurement_view import round_capture
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
 from .crossover_v2.coordinator import series_position_from_state

@@ -16,11 +16,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 from jasper.audio_measurement import mic_meter
 from jasper.audio_measurement.mic_meter import classify_mic_meter
-from jasper.json_fields import utc_now_iso as _utc_now
-from jasper.paths import resolve_state_path
+from jasper.platform.json_fields import utc_now_iso as _utc_now
+from jasper.platform.paths import resolve_state_path
 
 from ._common import coerce_finite_float
 

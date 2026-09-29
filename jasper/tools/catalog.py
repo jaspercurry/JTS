@@ -34,8 +34,8 @@ import logging
 import types
 from typing import Any, Iterable
 
-from ..atomic_io import atomic_write_text
-from ..log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.log_event import log_event
 # The wizard shares these without importing the tool factories.
 from .tool_catalog_view import (
     CATALOG_SCHEMA_VERSION,

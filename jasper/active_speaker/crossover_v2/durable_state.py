@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import finite_float as _finite
+from jasper.platform.json_fields import finite_float as _finite
 
 from .coordinator import ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state
 from .journey import PHASE_MEASURE

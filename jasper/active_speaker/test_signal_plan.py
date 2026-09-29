@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from jasper.json_fields import as_float, issue as _issue
+from jasper.platform.json_fields import as_float, issue as _issue
 
 from .driver_protection import (
     driver_protection_payload,

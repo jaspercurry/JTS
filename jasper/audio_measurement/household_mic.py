@@ -47,8 +47,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jasper.atomic_io import atomic_write_text
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
@@ -225,7 +225,7 @@ def write_household_mic(
 ) -> None:
     """Persist the household mic record.
 
-    Atomic tempfile+rename (``jasper.atomic_io.atomic_write_text``), mode
+    Atomic tempfile+rename (``jasper.platform.atomic_io.atomic_write_text``), mode
     0644 — the record carries no secrets (a hash plus an optional last-4
     serial display), so it is world-readable like the rest of
     ``/var/lib/jasper``. Raises ``OSError`` on failure; callers that want

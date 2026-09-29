@@ -43,7 +43,7 @@ from typing import Any, Awaitable, Callable, Optional
 from jasper.platform.control_client import (
     CONTROL_PORT, AsyncControlClient, ControlError, ControlResponse,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 # pyudev is Linux-only (Pi runtime). Imported lazily inside the HID bridge
 # so the rest of the module (registry types, _TapCounter, _Coalescer)
@@ -64,7 +64,7 @@ from .registry import (
 )
 from .status import STATUS_PATH, MicLink
 from .supervisor import Bridge, Detail, Publish, supervise
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

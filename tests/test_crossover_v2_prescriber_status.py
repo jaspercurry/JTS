@@ -35,7 +35,7 @@ import pytest
 from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
-from jasper.json_fields import parse_utc_iso
+from jasper.platform.json_fields import parse_utc_iso
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 from tests.test_round_inputs import _bank_packet

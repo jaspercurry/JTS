@@ -26,8 +26,8 @@ from typing import Any
 
 import numpy as np
 
-from jasper.json_fields import finite_float
-from jasper.biquad import (
+from jasper.platform.json_fields import finite_float
+from jasper.platform.biquad import (
     EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN, RESPONSE_NYQUIST_HZ, SHELF_Q,
 )
 
@@ -147,7 +147,7 @@ def driver_max_q_for_gain(gain_db: float) -> float:
     """The widest Q one prescribed filter may use, by the SIGN of its gain.
 
     A boost gets :data:`DRIVER_MAX_BOOST_Q`, a POLICY ceiling; everything else
-    — ``0.0`` included — gets :data:`~jasper.biquad.EVALUABLE_Q_MAX`, an
+    — ``0.0`` included — gets :data:`~jasper.platform.biquad.EVALUABLE_Q_MAX`, an
     INSTRUMENT-fidelity one (past it the f64 biquad cascade stops evaluating
     the filter asked for: measured +6.99 dB realized from a requested Q 8e14 on
     an admitted -3.0 dB cut). Same shape as ``blend_prescription.

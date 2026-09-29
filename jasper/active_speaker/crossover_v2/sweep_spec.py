@@ -29,7 +29,7 @@ from jasper.active_speaker.capture_geometry import (
     reference_axis_driver_acknowledgement_label,
     summed_acknowledgement_label,
 )
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ as REQUIRED_SAMPLE_RATE_HZ
+from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ as REQUIRED_SAMPLE_RATE_HZ
 from jasper.playback_state.capture_protocol import (
     MAX_CAPTURE_PLAN_ATTEMPTS,
     CapturePlan,

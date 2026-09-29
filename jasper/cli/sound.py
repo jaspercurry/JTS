@@ -14,10 +14,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.sound.profile import PROFILE_PATH
 from jasper.sound.runtime import DEFAULT_CONFIG_DIR, reconcile_current_dsp
-from jasper.logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     # chunksize / target-level keys the emit consults from the live env. The
     # ring format is fixed; setdefault keeps an explicit shell override
     # winning for the keys that remain configurable.
-    from jasper.env_load import load_env_files
+    from jasper.platform.env_load import load_env_files
 
     load_env_files()
     parser = build_parser()

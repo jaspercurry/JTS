@@ -26,7 +26,7 @@ import os
 
 from jasper.net import avahi_service
 from jasper.net.avahi_service import RenderResult
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

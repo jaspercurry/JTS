@@ -12,10 +12,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
-from jasper.biquad import (
+from jasper.platform.biquad import (
     RESPONSE_SAMPLE_RATE_HZ, SHELF_Q, FilterSpec, biquad_response_complex, filter_response_complex, freq_trig,
 )
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 
 DETECTOR_CORNER_HZ_MIN = 20.0

@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.program_analysis import ALIGNMENT_OK, ProgramAnalysis, half_period_us
 from jasper.audio_measurement.program_analysis.model import TIMING_NEEDS_MEASUREMENT
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from ._prescription_common import (
     PRESCRIPTION_MALFORMED as _PRESCRIPTION_MALFORMED,

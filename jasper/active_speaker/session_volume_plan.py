@@ -14,7 +14,7 @@ the program's per-segment digital gains (§5.5), not in re-leveling the speaker.
 This module owns that plan. It reuses the fail-closed latch pattern the
 pre-v2 per-step leveler established — durable intent written BEFORE the
 first volume mutation, set-and-confirm through an independent readback (the
-shared :func:`jasper.volume_latch.set_and_confirm_volume`),
+shared :func:`jasper.platform.volume_latch.set_and_confirm_volume`),
 and restore-exactly-once — but adds the lifecycle a *session* needs that a
 per-step lease does not:
 
@@ -55,11 +55,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
-from jasper.json_fields import finite_float
-from jasper.log_event import log_event
-from jasper.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
+from jasper.platform.json_fields import finite_float
+from jasper.platform.log_event import log_event
+from jasper.platform.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
 
 from .excitation_safety_plan import resolve_driver_excitation_ceilings
 from .seat_level_reference import ANCHOR_UNUSABLE, LevelUnresolved, seat_level_reference_volume_db
@@ -407,7 +407,7 @@ class FaderVolumeDoor:
     """The direct door: set-and-confirm straight at the fader.
 
     Both verbs land on the same
-    :func:`~jasper.volume_latch.set_and_confirm_volume` — at this
+    :func:`~jasper.platform.volume_latch.set_and_confirm_volume` — at this
     door they are one act. Callers that arbitrate through
     :class:`~jasper.audio_resources.volume_owner.VolumeOwner` bind a door that does; a process
     with no owner to arbitrate through binds this one.

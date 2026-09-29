@@ -19,8 +19,8 @@ from typing import Any, Mapping
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.audio_measurement.null_walk import DspPredecessor, NullWalkError
-from jasper import json_fields
-from jasper.json_fields import canonical_json_bytes, freeze_json, require_sha256_hex
+from jasper.platform import json_fields
+from jasper.platform.json_fields import canonical_json_bytes, freeze_json, require_sha256_hex
 
 ACTIVE_RAW_NORMALIZATION_DOMAIN = "camilladsp_active_raw"
 ACTIVE_RAW_NORMALIZATION_ALGORITHM_ID = "jts_active_raw_canonical_json"

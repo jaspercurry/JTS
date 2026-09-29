@@ -22,7 +22,7 @@ from jasper.audio_routes.aec_sweep import (
     config_metadata,
     variant_metadata,
 )
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 
 from .bridge_session import (
     AEC3_SWEEP_LEGS,

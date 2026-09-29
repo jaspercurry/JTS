@@ -11,14 +11,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from jasper.dsp_control import ring_conf
-from jasper import ring_header
+from jasper.platform import ring_header
 from jasper.audio_hardware.dac import latency_floor_for
 from jasper.dsp_control.fanin_coupling import (
     RING_SLOT_FRAMES,
     RingWire,
     resolve_ring_wire,
 )
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 
 # lazy: import cost — keep ring asset readers import-cheap.
 if TYPE_CHECKING:

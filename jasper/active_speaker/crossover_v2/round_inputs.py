@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple
 
-from jasper.json_fields import finite_float, parse_utc_iso
+from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, view_sets
@@ -42,7 +42,7 @@ from jasper.audio_measurement.measurement_geometry import (
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
 )
-from jasper.paths import camilla_statefile
+from jasper.platform.paths import camilla_statefile
 
 __all__ = [
     'APPLIED_PROFILE_DEFAULT_PATH', 'APPLIED_PROFILE_FILENAME', 'CAPTURE_STATE_FILENAME',

@@ -16,7 +16,7 @@ import urllib.parse
 from collections.abc import Sequence
 from typing import Any
 
-from ..env_load import parse_env_file
+from jasper.platform.env_load import parse_env_file
 from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 from ._common import control_token_meta_html, csrf_meta_html
 

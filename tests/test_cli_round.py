@@ -28,7 +28,7 @@ import yaml
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import baseline_apply
 from jasper.audio_routes import output_topology_store
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker import commissioning_coordinator, measurement_view
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop

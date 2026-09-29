@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conventions guard: operational ``event=`` lines go through ``jasper.log_event``.
+"""Conventions guard: operational ``event=`` lines go through ``jasper.platform.log_event``.
 
 JTS logs operational events as ``event=<domain>.<action> k=v k=v`` lines so
 ``jasper-trace.sh`` / ``journalctl | grep event=`` show what happened, when, and
@@ -10,7 +10,7 @@ from which surface. Historically every call site hand-rolled that f-string, and
 **none of them escaped field values** — an SSID, USB descriptor, Bluetooth
 device name, HA error body, or free-text reason that contains a space, ``=``, or
 a quote silently corrupted the logfmt parse for anything reading the journal as
-key=val. :mod:`jasper.log_event` is the one place that renders the line (logfmt
+key=val. :mod:`jasper.platform.log_event` is the one place that renders the line (logfmt
 by default, JSON under ``JASPER_LOG_JSON``), byte-identical for clean values and
 properly quoted/escaped for dirty ones.
 
@@ -112,7 +112,7 @@ _ACTIVE_ZONE_PREFIXES = (
 
 # There is NO permanent exemption. A field whose name collides with a reserved
 # parameter (chiefly `level`, the volume level) or isn't a valid identifier
-# rides log_event's explicit `fields=` mapping (see jasper/log_event.py), so
+# rides log_event's explicit `fields=` mapping (see jasper/platform/log_event.py), so
 # every event line can go through the canonical emitter. The allowlist is purely
 # the active-zone deferrals above.
 ALLOWLIST: dict[str, set[str]] = dict(DEFERRED_ACTIVE_ZONE)
@@ -356,7 +356,7 @@ def _is_allowed(rel_path: str, event_name: str) -> bool:
 
 
 def test_no_unmigrated_event_logger_calls():
-    """Every operational event= line must go through jasper.log_event.log_event."""
+    """Every operational event= line must go through jasper.platform.log_event.log_event."""
     offending: list[str] = []
     for rel_path, hits in _all_violations().items():
         for lineno, name in hits:
@@ -365,7 +365,7 @@ def test_no_unmigrated_event_logger_calls():
     assert not offending, (
         "Hand-written `event=` logger call(s) found — use "
         "`log_event(logger, \"<domain.action>\", k=v, ...)` from "
-        "jasper.log_event instead (it escapes untrusted field values). "
+        "jasper.platform.log_event instead (it escapes untrusted field values). "
         "If a site genuinely cannot migrate, add it to ALLOWLIST in this "
         "test with a reason:\n  " + "\n  ".join(offending)
     )

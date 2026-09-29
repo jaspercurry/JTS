@@ -60,9 +60,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, TypeVar
 
 from ..platform import systemd
-from .. import atomic_io
-from ..env_load import TOOL_STATE_ENV_PATH
-from ..log_event import log_event
+from jasper.platform import atomic_io
+from jasper.platform.env_load import TOOL_STATE_ENV_PATH
+from jasper.platform.log_event import log_event
 from ..tools.tool_prompt_overrides import DEFAULT_PATH as PROMPT_OVERRIDES_FILE
 from ..tools.tool_prompt_overrides import read_prompt_overrides, write_prompt_overrides
 from ..tools.tool_catalog_view import DEFAULT_CATALOG_PATH, catalog_view

@@ -9,7 +9,7 @@ A leaf on purpose: ``audio_incidents`` must not import the composer, so the
 two ends of one dashboard payload read its untyped daemon JSON through this
 module instead of through each other. A field that may simply be absent reads
 as ``None`` rather than raising, and a number stays an ``int`` where
-:func:`jasper.json_fields.finite_float` would widen it to ``float``.
+:func:`jasper.platform.json_fields.finite_float` would widen it to ``float``.
 ``read_text_file`` and ``read_int_file`` apply the same rule to a small /proc
 or /sys file.
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jasper.json_fields import as_mapping, finite_float
+from jasper.platform.json_fields import as_mapping, finite_float
 
 # Expected failures at optional/cached observability boundaries. Programming
 # errors outside this set should not be hidden; a dead sampler is surfaced as
@@ -49,7 +49,7 @@ DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 
 
 def finite_number(value: Any) -> int | float | None:
-    """:func:`~jasper.json_fields.finite_float`'s verdict on ``value``,
+    """:func:`~jasper.platform.json_fields.finite_float`'s verdict on ``value``,
     returning ``value`` itself so an ``int`` stays an ``int``."""
     return value if finite_float(value) is not None else None
 

@@ -16,9 +16,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ...active_speaker.setup_status import read_active_speaker_setup_status
-from ...atomic_io import atomic_write_text, locked_update_env_file
-from ...env_load import GROUPING_ENV_FILE
-from ...log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text, locked_update_env_file
+from jasper.platform.env_load import GROUPING_ENV_FILE
+from jasper.platform.log_event import log_event
 from ...multiroom.config import (
     BondMember,
     GroupingConfig,

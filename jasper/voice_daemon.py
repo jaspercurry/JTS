@@ -14,7 +14,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime, timezone
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.audio_control.audio_buffer import AudioBuffer
 from jasper.runtime.mic_capture import InputDeviceUnavailable, MicCapture
@@ -24,7 +24,7 @@ from .cues import AudioCueManager
 from jasper.service_state.vad import SpeechVAD
 from .config import Config
 from jasper.runtime.conversation_history import ConversationStore
-from .watchdog import Heartbeat
+from jasper.platform.watchdog import Heartbeat
 from jasper.service_state.timers import Timer, announcement_text
 from jasper.service_state.usage import (
     SpendCap,
@@ -172,7 +172,7 @@ class WakeLoop:
         # AND the async loop is iterating. If either dies (PortAudio
         # wedge, asyncio deadlock, mic device disappearance), the
         # heartbeat thread stops patting systemd and
-        # `Restart=on-watchdog` revives us. See jasper/watchdog.py.
+        # `Restart=on-watchdog` revives us. See jasper/platform/watchdog.py.
         self._heartbeat = heartbeat
 
         # None on a push-to-talk-only daemon: every reader below is already

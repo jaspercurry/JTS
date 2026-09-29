@@ -293,7 +293,7 @@ def test_the_explicit_operator_arm_is_untouched(monkeypatch):
     from jasper.fanin import converge as cv
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     converged: list[str] = []
     monkeypatch.setattr(
         cv,
@@ -348,7 +348,7 @@ def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconci
 
     from jasper.fanin import coupling_reconcile as cr
 
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     converged: list[str] = []
 
     def _raise_after_recording(**kwargs):
@@ -436,7 +436,7 @@ def test_a_non_derived_raise_inside_the_cli_costs_only_the_convergence(
     assert box.kicks == [], "a refused re-emit must not kick the reconciler"
 
     # 3. The whole pass: its non-convergence duties still run.
-    monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
+    monkeypatch.setattr("jasper.platform.env_load.load_env_files", lambda *a, **k: None)
     reached: list[str] = []
     monkeypatch.setattr(
         cr,

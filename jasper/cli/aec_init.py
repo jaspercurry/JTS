@@ -26,7 +26,7 @@ from typing import Any
 from jasper.chip_aec import health as chip_aec_health
 from jasper.chip_aec import shipped as shipped_alignment
 from jasper.audio_routes import output_hardware
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
 from jasper.config import env_bool
 from jasper.runtime_config.audio_profile_state import (
@@ -34,7 +34,7 @@ from jasper.runtime_config.audio_profile_state import (
     PROFILE_CUSTOM,
     normalize_audio_input_profile,
 )
-from jasper.env_load import parse_env_file, DEFAULT_AEC_MODE_PATH
+from jasper.platform.env_load import parse_env_file, DEFAULT_AEC_MODE_PATH
 from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_ENV
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
@@ -45,7 +45,7 @@ from jasper.mics.xvf3800 import CHIP_AEC_ENABLED_ENV, CORPUS_CHIP_AEC_ENABLED_EN
 # the JASPER_OUTPUTD_ENV_FILE both reconcilers already honour.
 # tests/test_aec_init.py pins this against jasper-outputd.service's own
 # EnvironmentFile= line.
-from jasper.env_load import OUTPUTD_ENV_PATH
+from jasper.platform.env_load import OUTPUTD_ENV_PATH
 from jasper.chip_aec.alignment import (
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
@@ -57,11 +57,11 @@ from jasper.chip_aec.alignment import (
     required_queue_samples,
     runtime_sys_delay,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.mics import xvf3800
 from jasper.platform.status_socket import OUTPUTD_STATUS_SOCKET, read_status_socket
-from jasper.logging_setup import configure_logging
-from jasper.service_units import OUTPUTD_SERVICE
+from jasper.platform.logging_setup import configure_logging
+from jasper.platform.service_units import OUTPUTD_SERVICE
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2

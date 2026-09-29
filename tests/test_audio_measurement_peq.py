@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement import peq
-from jasper.biquad import total_positive_boost_db
+from jasper.platform.biquad import total_positive_boost_db
 
 
 def _flat_target(freqs: np.ndarray) -> np.ndarray:

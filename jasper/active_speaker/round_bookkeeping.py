@@ -8,7 +8,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from .crossover_v2.room_prescription import RoomPrescriptionRefused

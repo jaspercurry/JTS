@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 
 from jasper.audio_measurement import gating
-from jasper.json_fields import finite_float as _finite
+from jasper.platform.json_fields import finite_float as _finite
 
 #: Transform length for the pre/post-gate magnitude comparison, and the ceiling
 #: of the "literal" (un-intersected) evaluation band. Both are the banked E5

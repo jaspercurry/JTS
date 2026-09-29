@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from jasper.service_state.accounts import Account
-from jasper.busctl import BusctlResult
+from jasper.platform.busctl import BusctlResult
 from jasper.service_state.spotify_router import AccountClient, Router, airplay_client_name
 from tests._log_events import event_records
 

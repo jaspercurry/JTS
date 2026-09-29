@@ -23,7 +23,7 @@ from jasper.audio_routes.audio_quality import (
     read_active_converter as _read_active_audio_converter,
     read_state as _read_audio_quality_state,
 )
-from ...doctor_contract import (
+from jasper.platform.doctor_contract import (
     DOCTOR_RESULT_PATH,
     REASON_REFRESH_FAILED,
     REASON_SNAPSHOT_PENDING,
@@ -42,9 +42,9 @@ from ...local_sources import (
     local_source_audio_refresh_units,
     local_source_park_units,
 )
-from ...log_event import log_event
-from ...service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
-from ...source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
+from jasper.platform.log_event import log_event
+from jasper.platform.service_units import CAMILLA_SERVICE, JASPER_VOICE_SERVICE
+from jasper.platform.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
 from .. import camilla_topology_gate_state
 from .. import debug_control
 from .. import restart_broker

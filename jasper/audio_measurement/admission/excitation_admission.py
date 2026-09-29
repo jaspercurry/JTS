@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from jasper.json_fields import json_fingerprint, require_finite, require_sha256_hex
+from jasper.platform.json_fields import json_fingerprint, require_finite, require_sha256_hex
 
 SCHEMA_VERSION = 2
 

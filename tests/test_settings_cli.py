@@ -17,7 +17,7 @@ import pytest
 
 from jasper.service_state import wake_models
 from jasper.cli import _refusal, settings
-from jasper.env_file import parse_env_mapping
+from jasper.platform.env_file import parse_env_mapping
 from jasper.voice import model_discovery, provider_state
 from jasper.web._common import RestartOutcome
 from tests._log_events import leaked_lines

@@ -54,7 +54,7 @@ from jasper.active_speaker.graph_selector import (
     safe_graph_for_current_topology,
 )
 from jasper.audio_hardware.dac import all_profiles as dac_all_profiles
-from jasper.biquad import PeqFilter
+from jasper.platform.biquad import PeqFilter
 from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
 from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import (

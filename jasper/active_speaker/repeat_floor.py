@@ -11,10 +11,10 @@ from pathlib import Path
 from statistics import mean, stdev
 from typing import Any, Mapping, Sequence
 
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .attempts_loop import FloorStats, percentile
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.platform.json_fields import utc_now_iso as _utc_now
 
 SCHEMA_VERSION = 1
 REPEAT_FLOOR_KIND = "jts_active_speaker_repeat_floor"

@@ -36,7 +36,7 @@ from jasper.dsp_control.fanin_coupling import (
 from tests._ring_negotiation_model import accept, ioplug_constraints, negotiate
 from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 from tests.ring_abi import ring_abi
-from jasper.ring_header import (
+from jasper.platform.ring_header import (
     RING_SAMPLE_FORMAT_NAMES,
     RING_SAMPLE_FORMAT_S16LE,
     RING_SAMPLE_FORMAT_S32LE,

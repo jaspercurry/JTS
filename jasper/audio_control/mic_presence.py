@@ -63,8 +63,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.accessories.mic_env import read_accessory_mic_sources
-from jasper.atomic_io import read_json_mapping
-from jasper.env_file import parse_env_mapping
+from jasper.platform.atomic_io import read_json_mapping
+from jasper.platform.env_file import parse_env_mapping
 from jasper.voice.input_presence import (
     voice_input_absent_marker_lines,
     voice_parked_no_mic,

@@ -7,7 +7,7 @@
 Every `LiveConnection` implementation drives the same loop from here:
 the supervisor task, its reconnect run with backoff, transient/terminal
 exception classification and the once-per-outage escalation
-announcement. The generic retry schedule lives in :mod:`jasper.backoff`
+announcement. The generic retry schedule lives in :mod:`jasper.platform.backoff`
 so non-voice subsystems do not depend on this private module.
 
 Providers differ only in what a failed attempt costs them in session
@@ -24,10 +24,10 @@ import socket
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from ..backoff import RECONNECT_INITIAL_BACKOFF_SEC, reconnect_delay, sleep_or_nudge
-from ..log_event import log_event
-from ..os_fault import exception_chain, root_os_error
-from ..secret_redaction import redact_secrets
+from jasper.platform.backoff import RECONNECT_INITIAL_BACKOFF_SEC, reconnect_delay, sleep_or_nudge
+from jasper.platform.log_event import log_event
+from jasper.platform.os_fault import exception_chain, root_os_error
+from jasper.platform.secret_redaction import redact_secrets
 from .session import ConnectionState, CuePlayer
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ NEEDS_ATTENTION_CUE_SLUG = "provider_needs_attention"
 CANT_CONNECT_CUE_SLUG = "cant_connect"
 NETWORK_DOWN_CUE_SLUG = "network_down"
 
-# On the default 1/2/4/8 s ±25 % schedule (jasper/backoff.py) the fourth
+# On the default 1/2/4/8 s ±25 % schedule (jasper/platform/backoff.py) the fourth
 # attempt lands ~15 s after the drop: past a Wi-Fi roam or a DHCP renew,
 # still ahead of a rebooting router coming back.
 NETWORK_DOWN_ATTEMPTS = 4

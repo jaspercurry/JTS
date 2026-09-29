@@ -82,7 +82,7 @@ from jasper.audio_measurement.sweep import (
     synchronized_sweep_metadata,
     synchronized_swept_sine,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .compare import (
     SOFT_CLIP_BUDGET_DB,

@@ -17,7 +17,7 @@ from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from ..control.measurement_hold import read_measurement_hold
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from .assistant_output import AssistantOutput

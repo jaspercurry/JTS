@@ -87,7 +87,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, NamedTuple, Optional
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from jasper.playback_state import librespot_state, mux_mode_persistence
 from jasper.playback_state.airplay_session import AirplaySessionCleanup
@@ -108,7 +108,7 @@ from .platform.status_socket import (
 )
 from .platform.uds import fanin_command, local_status_json
 from jasper.audio_control.renderer import RendererClient
-from .service_units import LIBRESPOT_SERVICE
+from jasper.platform.service_units import LIBRESPOT_SERVICE
 from jasper.service_state.source_events import start_source_event_tasks
 from jasper.playback_state.source_state import (
     airplay_playing_observed as airplay_playing,
@@ -119,7 +119,7 @@ from jasper.playback_state.source_state import (
 from jasper.service_state.spotify_oauth import resolved_spotify_redirect_uri
 from jasper.service_state.spotify_router import build_router
 from jasper.audio_control.volume_coordinator import build_volume_coordinator
-from .logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 

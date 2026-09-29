@@ -10,7 +10,7 @@ from jasper.active_speaker import state_paths
 from jasper.active_speaker.candidate_bank import _directories
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_REAR
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.json_fields import parse_utc_iso
+from jasper.platform.json_fields import parse_utc_iso
 from .rear_views import front_on_axis, pair_diagnostic
 from .room_selection import purpose_take_records
 from .round_captures import doc_pose_key

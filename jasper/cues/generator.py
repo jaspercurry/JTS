@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from typing import Callable, Collection, Protocol
 
-from ..atomic_io import atomic_write_bytes
+from jasper.platform.atomic_io import atomic_write_bytes
 from ..voice.earcons import LISTENING_CHIRP_RECIPE, render_recipe
 from .registry import CueDef
 

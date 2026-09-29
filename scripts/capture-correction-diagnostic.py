@@ -31,7 +31,7 @@ import numpy as np
 import sounddevice as sd
 from scipy.io import wavfile
 
-from jasper.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
+from jasper.platform.paths import DEFAULT_CAMILLA2_STATEFILE, DEFAULT_CAMILLA_STATEFILE
 
 
 SAMPLE_RATE = 48_000

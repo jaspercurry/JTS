@@ -33,14 +33,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..atomic_io import CONFIG_FILE_MODE, atomic_write_json
-from ..volume_floor import (
+from jasper.platform.atomic_io import CONFIG_FILE_MODE, atomic_write_json
+from jasper.platform.volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_FLOOR_MAX_DB,
     VOLUME_FLOOR_MIN_DB,
     normalize_volume_floor_db,
 )
-from jasper.biquad import FilterSpec
+from jasper.platform.biquad import FilterSpec
 from .profile import (
     SoundProfile,
     _coerce_bool,
@@ -49,7 +49,7 @@ from .profile import (
     load_profile,
     loudness_compensation_db,
 )
-from jasper.paths import resolve_state_path
+from jasper.platform.paths import resolve_state_path
 
 logger = logging.getLogger(__name__)
 

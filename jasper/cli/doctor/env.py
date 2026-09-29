@@ -8,8 +8,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from ...config import Config
-from ...env_load import VOICE_PROVIDER_ENV_PATH, env_file_path, read_env_file_state
-from ...secret_redaction import SECRET_ENV_SUFFIX_RE
+from jasper.platform.env_load import VOICE_PROVIDER_ENV_PATH, env_file_path, read_env_file_state
+from jasper.platform.secret_redaction import SECRET_ENV_SUFFIX_RE
 from ._registry import doctor_check
 from ._shared import CheckResult, group_writable_dir
 
@@ -82,7 +82,7 @@ def check_env_file_secrets() -> CheckResult:
 
 @doctor_check()
 def check_speaker_name() -> CheckResult:
-    from ...env_load import SPEAKER_NAME_ENV_PATH
+    from jasper.platform.env_load import SPEAKER_NAME_ENV_PATH
     from ...identity.speaker_name import read_state
 
     state = read_state()

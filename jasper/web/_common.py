@@ -100,10 +100,10 @@ from ..platform import control_client as control
 from ..control import control_token
 from ..identity.identity_state import management_read_allowed, mutating_request_allowed
 from ..local_sources.markers import local_sources_allowed
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from ..multiroom import config as grouping_config, effective_role
 from ..multiroom.config import LOCAL_SOURCES_PARK_REASON_BONDED_FOLLOWER
-from ..secret_redaction import redact_secrets
+from jasper.platform.secret_redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.service_state.usage import (
     AggregateUsageReader, Pricing, UsageStore, UNRECORDED_SESSION,
     USAGE_READS, UsageRow, household_usage_reader,

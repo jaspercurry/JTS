@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.active_speaker import baseline_apply, candidate_parts, measurement_emit
 from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.profile import ActiveSpeakerConfigError

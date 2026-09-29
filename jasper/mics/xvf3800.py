@@ -16,8 +16,8 @@ from math import pi
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.env_load import parse_bool_value
-from jasper.json_fields import json_fingerprint
+from jasper.platform.env_load import parse_bool_value
+from jasper.platform.json_fields import json_fingerprint
 from jasper.mics.profile_ids import PROFILE_DIRECT_MIC, PROFILE_XVF_CHIP_AEC
 
 

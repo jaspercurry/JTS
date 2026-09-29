@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from .rank import WakeReport, rank
 
 logger = logging.getLogger(__name__)

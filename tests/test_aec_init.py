@@ -26,7 +26,7 @@ from jasper.audio_routes import output_hardware
 from jasper.chip_aec.alignment import AlignmentArtifact, AlignmentIdentity
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.cli import aec_init
-from jasper.env_load import parse_env_file
+from jasper.platform.env_load import parse_env_file
 from jasper.mics import xvf3800
 from tests.systemd_unit_helpers import seconds_for
 from tests._log_events import event_fields, event_records

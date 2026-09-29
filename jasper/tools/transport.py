@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from ..busctl import run_busctl
+from jasper.platform.busctl import run_busctl
 from jasper.playback_state.source_state import (
     GNOME_DEST, GNOME_PATH, GNOME_REMOTE_IFACE, MPRIS_DEST, MPRIS_PATH, MPRIS_PLAYER_IFACE,
 )

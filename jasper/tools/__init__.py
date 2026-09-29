@@ -47,7 +47,7 @@ import typing
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Iterable, Protocol
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

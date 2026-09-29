@@ -61,7 +61,7 @@ import logging
 import sys
 import types
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 __all__ = ["ensure_openwakeword_import_safe"]
 

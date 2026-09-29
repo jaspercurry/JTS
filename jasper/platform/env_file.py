@@ -13,14 +13,14 @@ Two halves, one quoting rule (:func:`_unquoted`, systemd's own):
   hand-written ``KEY = value`` is normalized) — harmless because every writer
   here emits clean ``KEY=value``, which is the ``EnvironmentFile`` form.
 * **The whole file**, for the wizards whose unit of work is the file: read it
-  into a mapping or delete it. Publication belongs to ``jasper.atomic_io``.
+  into a mapping or delete it. Publication belongs to ``jasper.platform.atomic_io``.
 
 Scope is deliberately small: no interpolation, no multi-line values, no
 ``export`` handling, because ``EnvironmentFile`` lines are plain ``KEY=value``
 — the format the daemons actually read. Callers own their key names, their
 value validation, and their restart/rollback; a caller whose writers race owns
-picking :func:`jasper.atomic_io.locked_update_env_file` over
-:func:`jasper.atomic_io.write_env_file`.
+picking :func:`jasper.platform.atomic_io.locked_update_env_file` over
+:func:`jasper.platform.atomic_io.write_env_file`.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.env_file")
 
 # A parsed line is either a real assignment ``(key, value)`` or a line we
 # preserve verbatim -- comment / blank / malformed -- carried as ``(raw, None)``.
@@ -180,7 +180,7 @@ def read_env_file_text(
     Returns ``(text, None)`` when the file is read successfully, ``(None,
     None)`` when it does not exist, or ``(None, exc)`` when it exists but
     can't be read or decoded — the exception a caller that must tell those
-    two apart (:func:`jasper.env_load.read_env_file_state`) reports.
+    two apart (:func:`jasper.platform.env_load.read_env_file_state`) reports.
     """
     try:
         return Path(path).read_text(encoding="utf-8"), None

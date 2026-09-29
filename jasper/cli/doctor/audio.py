@@ -32,7 +32,7 @@ from ._shared import (
     parked_follower_result,
     run,
 )
-from ...service_units import JASPER_VOICE_SERVICE
+from jasper.platform.service_units import JASPER_VOICE_SERVICE
 
 REASON_ALSA_TOOL_MISSING = "alsa_tool_missing"
 REASON_ALSA_CARD_ABSENT = "alsa_card_absent"

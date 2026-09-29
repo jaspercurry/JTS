@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from jasper.active_speaker.wizard_client import WizardClient
-from jasper.json_fields import as_float
+from jasper.platform.json_fields import as_float
 
 from ._refusal import EXIT_OK as EXIT_OK, EXIT_UNREADABLE, answered, failed
 

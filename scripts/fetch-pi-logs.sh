@@ -310,7 +310,7 @@ true
 REMOTE
 
 # The CACHED doctor report only (deploy/systemd/jasper-doctor-json.service
-# writes it; jasper/doctor_contract.py owns the path). Never a live run from
+# writes it; jasper/platform/doctor_contract.py owns the path). Never a live run from
 # here: the doctor opens PCMs on the ring lanes and budgets 600 s / 256 MB,
 # which is the last thing an incident box under investigation can spare
 # (ADR-0242). Its age is on stderr so the operator can see how stale it is.

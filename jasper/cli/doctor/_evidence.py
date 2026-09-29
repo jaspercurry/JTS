@@ -23,13 +23,13 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from ...control.system_metrics import VCGENCMD_INTERVAL_SEC
-from ...env_load import parse_env_mapping
+from jasper.platform.env_load import parse_env_mapping
 from ...platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
     read_status_socket,
 )
-from ...service_units import (
+from jasper.platform.service_units import (
     DOCTOR_UNIT_ROSTER,
     read_unit_property,
     read_unit_states,
@@ -275,7 +275,7 @@ class Evidence:
         caller (``check_ram``) could already be stale by the time that
         lane's turn comes.
         """
-        from ...memory_policy import meminfo_kb
+        from jasper.platform.memory_policy import meminfo_kb
 
         return self.get("mem_total_kb", lambda: meminfo_kb("MemTotal"))
 
@@ -309,7 +309,7 @@ class Evidence:
     def fanin_env(self) -> dict[str, str] | None:
         """``fanin.env``'s parsed mapping, read once per run. None when it
         could not be read (missing or unreadable)."""
-        from ...env_load import FANIN_ENV_PATH  # lazy: tests patch env_load.FANIN_ENV_PATH at call time
+        from jasper.platform.env_load import FANIN_ENV_PATH  # lazy: tests patch env_load.FANIN_ENV_PATH at call time
 
         return self.get("fanin_env", lambda: _read_env_mapping(FANIN_ENV_PATH))
 
@@ -318,7 +318,7 @@ class Evidence:
         file's text, NOT the merged ``outputd_reconciled_env`` three-layer
         stack (see ``audio_runtime_outputd.outputd_reconciled_env``). None
         when it could not be read."""
-        from ...env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
+        from jasper.platform.env_load import OUTPUTD_ENV_PATH  # lazy: tests patch env_load.OUTPUTD_ENV_PATH at call time
 
         return self.get("outputd_env", lambda: _read_env_mapping(OUTPUTD_ENV_PATH))
 

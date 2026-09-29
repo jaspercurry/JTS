@@ -6,7 +6,7 @@
 
 from jasper.audio_control import ring_assets
 from jasper.dsp_control import ring_conf
-from jasper.ring_header import MAX_RING_CHANNELS
+from jasper.platform.ring_header import MAX_RING_CHANNELS
 from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
 from tests.ring_abi import ring_abi
 

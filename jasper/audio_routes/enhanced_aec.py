@@ -35,14 +35,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.atomic_io import advisory_file_lock, atomic_write_json, read_json_mapping
-from jasper.env_file import parse_env_mapping
+from jasper.platform.atomic_io import advisory_file_lock, atomic_write_json, read_json_mapping
+from jasper.platform.env_file import parse_env_mapping
 from jasper.playback_state.install_profile import (
     install_profile_supports_wake_detection,
     read_install_profile,
 )
-from jasper.json_fields import sha256_file, utc_now_iso
-from jasper.log_event import log_event
+from jasper.platform.json_fields import sha256_file, utc_now_iso
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.enhanced_aec")
 

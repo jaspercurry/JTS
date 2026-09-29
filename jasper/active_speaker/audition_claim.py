@@ -15,7 +15,7 @@ import logging
 from contextvars import ContextVar
 from pathlib import Path
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .state_paths import audition_state_path
 

@@ -58,7 +58,7 @@ import os
 import sys
 from collections.abc import Mapping
 
-from jasper.env_load import ACCESSORY_MIC_ENV_FILE as DEFAULT_ACCESSORY_MIC_ENV_FILE
+from jasper.platform.env_load import ACCESSORY_MIC_ENV_FILE as DEFAULT_ACCESSORY_MIC_ENV_FILE
 
 
 

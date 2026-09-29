@@ -39,8 +39,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from ..atomic_io import locked_update_env_file
-from ..env_load import (
+from jasper.platform.atomic_io import locked_update_env_file
+from jasper.platform.env_load import (
     BASE_ENV_PATH,
     VOICE_PROVIDER_ENV_PATH,
     merged_env_files,
@@ -48,7 +48,7 @@ from ..env_load import (
     read_env_file_state,
     VOICE_KEYS_ENV_PATH,
 )
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from . import model_discovery
 from .catalog import (
     PROVIDERS,
@@ -204,7 +204,7 @@ def read_active_model_from_env_files(
     provider: str, paths: "tuple[str, ...] | None" = None,
 ) -> str:
     """The model ``provider`` resolves to from the merged env FILES
-    (:func:`jasper.env_load.merged_env_files`) — never from this
+    (:func:`jasper.platform.env_load.merged_env_files`) — never from this
     process's own ``os.environ``.
 
     The model's documented home is ``jasper.env`` (the operator base
@@ -219,7 +219,7 @@ def read_active_model_from_env_files(
 
     Bypassing ``os.environ`` matters because a calling-shell export of
     ``JASPER_GEMINI_MODEL``/``JASPER_OPENAI_MODEL``/``JASPER_GROK_MODEL``
-    outranks both files there (``jasper.env_load.load_env_files`` uses
+    outranks both files there (``jasper.platform.env_load.load_env_files`` uses
     ``setdefault``), so a reader built on ``Config``/``os.environ`` —
     jasper-doctor invoked as ``sudo -E jasper-doctor``, say — can name a
     model ``jasper-voice`` does not actually run. Same drift class

@@ -59,7 +59,7 @@ def network_wanted() -> bool:
     (``deploy/usbsink/jasper-usbgadget-compose.sh``): a whitespace-decorated
     ``" disabled"`` stays enabled on both sides, because a stray space must
     never silently drop the fallback network. Read from ``os.environ`` on every
-    call — ``jasper.env_load`` unions ``/etc/jasper/jasper.env`` into it at
+    call — ``jasper.platform.env_load`` unions ``/etc/jasper/jasper.env`` into it at
     startup, and a long-lived daemon is not restarted when the switch flips.
     """
 

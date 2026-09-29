@@ -31,7 +31,7 @@ from jasper.control.camilla_rate_storm import (
     STORM_SAMPLE_INTERVAL_SEC,
     CamillaRateStorm,
 )
-from jasper.service_units import CAMILLA_SERVICE
+from jasper.platform.service_units import CAMILLA_SERVICE
 
 logger = logging.getLogger(__name__)
 

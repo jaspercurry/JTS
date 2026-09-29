@@ -14,7 +14,7 @@ from typing import Any
 
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .crossover_v2.record_index import (
     MeasurementCaptureIdentityError, bundle_measurements, record_path, reopen_measurement_record,

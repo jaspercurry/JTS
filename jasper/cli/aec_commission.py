@@ -27,8 +27,8 @@ from typing import Any, TypeVar
 import numpy as np
 
 from jasper.active_speaker.calibration_level import AUDIBLE_RAMP_STEP_DB
-from jasper.volume_latch import fader_matches
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.volume_latch import fader_matches
+from jasper.platform.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play
 from jasper.audio_control.camilla import (
@@ -72,18 +72,18 @@ from jasper.runtime.measurement_window import (
     MEASUREMENT_GATE_COMMAND_TIMEOUT_SEC,
     MEASUREMENT_HOLD_COMMAND_TIMEOUT_SEC,
 )
-from jasper.env_load import merged_env_files
-from jasper.log_event import log_event
+from jasper.platform.env_load import merged_env_files
+from jasper.platform.log_event import log_event
 from jasper.mics import xvf3800
-from jasper.logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
-from jasper.service_units import (
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     AEC_RECONCILE_SERVICE,
     JASPER_VOICE_SERVICE,
     OUTPUTD_SERVICE,
 )
-from jasper import systemd_probe
+from jasper.platform import systemd_probe
 
 logger = logging.getLogger("jasper.aec_commission")
 _T = TypeVar("_T")

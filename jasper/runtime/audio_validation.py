@@ -25,7 +25,7 @@ from jasper.runtime_config.audio_profile_state import (
 from jasper.aec.bridge_telemetry import read_bridge_stats
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_ID
 from jasper.chip_aec.policy import resolve_chip_aec_dac_gate
-from jasper.service_units import (
+from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
     CAMILLA_SERVICE,
     FANIN_SERVICE,

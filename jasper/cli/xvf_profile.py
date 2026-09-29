@@ -17,9 +17,9 @@ import json
 import sys
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 from jasper.mics import xvf3800
-from jasper.shell_env import render_shell_assignments
+from jasper.platform.shell_env import render_shell_assignments
 
 
 DEFAULT_STATE_PATH = Path("/run/jasper-mic-profile/xvf3800.json")

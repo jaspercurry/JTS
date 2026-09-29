@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper import ring_header
-from jasper.ring_header import (
+from jasper.platform import ring_header
+from jasper.platform.ring_header import (
     RING_FLOW_ABSENT,
     RING_FLOW_FLOWING,
     RING_FLOW_IDLE,

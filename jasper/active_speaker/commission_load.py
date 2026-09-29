@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jasper.atomic_io import atomic_write_json
+from jasper.platform.atomic_io import atomic_write_json
 from jasper.dsp_control.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
@@ -20,8 +20,8 @@ from jasper.dsp_control.dsp_apply import (
     same_config_file,
     validate_camilla_config,
 )
-from jasper.json_fields import issue as _issue
-from jasper.log_event import log_event
+from jasper.platform.json_fields import issue as _issue
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology import OutputTopology
 
 from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING

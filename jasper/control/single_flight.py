@@ -10,7 +10,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

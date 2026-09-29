@@ -21,7 +21,7 @@ from jasper.audio_routes.volume_curve import (
     main_mute_for_level,
     percent_to_db,
 )
-from jasper.volume_floor import (
+from jasper.platform.volume_floor import (
     DEFAULT_VOLUME_FLOOR_DB,
     VOLUME_CEILING_DB,
     VOLUME_FLOOR_MAX_DB,

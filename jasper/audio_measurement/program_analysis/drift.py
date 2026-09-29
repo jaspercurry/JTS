@@ -19,7 +19,7 @@ from jasper.audio_measurement.timeline_slip import (
     slip_rejects_capture,
     TimelineStepFit,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from .check import _band_rms_dbfs, _pilot_trim_fade
 from .model import (
     DISCONTINUITY_UNRESOLVED,

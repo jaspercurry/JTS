@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..json_fields import parse_utc_iso
-from ..paths import resolve_state_path
+from jasper.platform.json_fields import parse_utc_iso
+from jasper.platform.paths import resolve_state_path
 from . import park_record
 
 #: Must equal ``PARK_STATE``'s default in

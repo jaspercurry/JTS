@@ -493,7 +493,7 @@ def _channel_pick_check(
         env_path.write_text(env_text)
     import jasper.multiroom.grouping_env as gemod
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_GROUPING_ENV_FILE",
+        "jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE",
         str(env_path) if env_path else "/nonexistent/grouping-outputd.env",
     )
     monkeypatch.setattr(
@@ -745,8 +745,8 @@ def _tts_lane_check(
         f = tmp_path / "grouping-outputd.env"
         f.write_text(outputd_text)
         outputd_path = str(f)
-    monkeypatch.setattr("jasper.env_load.VOICE_GROUPING_ENV_FILE", voice_path)
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_GROUPING_ENV_FILE", outputd_path)
+    monkeypatch.setattr("jasper.platform.env_load.VOICE_GROUPING_ENV_FILE", voice_path)
+    monkeypatch.setattr("jasper.platform.env_load.OUTPUTD_GROUPING_ENV_FILE", outputd_path)
     if resolved_voice_text is None:
         resolved_voice_text = (
             voice_text

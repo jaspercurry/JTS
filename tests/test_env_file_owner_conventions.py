@@ -8,7 +8,7 @@ AGENTS.md's Map section requires every single-writer ``/var/lib/jasper/*.env``
 file to name its writer in a ``# Written by <owner>.`` header. ``write_env_file``,
 ``locked_update_env_file`` and ``locked_transform_env_file`` all accept an
 ``owner=`` kwarg for exactly this (see their docstrings in
-``jasper/env_file.py`` / ``jasper/atomic_io.py``); ``owner`` stays optional
+``jasper/platform/env_file.py`` / ``jasper/platform/atomic_io.py``); ``owner`` stays optional
 rather than required because ``locked_upsert_env_file`` — the text-preserving
 sibling used by the audio-hardware and fan-in coupling reconcilers — has no
 such parameter at all (it folds per-key edits onto raw text rather than
@@ -65,7 +65,7 @@ def test_every_owner_aware_env_writer_names_itself():
     offenders: dict[str, list[int]] = {}
     for path in sorted(_JASPER.rglob("*.py")):
         rel = path.relative_to(_REPO).as_posix()
-        if rel in ("jasper/env_file.py", "jasper/atomic_io.py"):
+        if rel in ("jasper/platform/env_file.py", "jasper/platform/atomic_io.py"):
             continue  # the implementations themselves, not callers
         missing = _missing_owner_calls(ast.parse(path.read_text()))
         if missing:

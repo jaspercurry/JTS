@@ -53,9 +53,9 @@ from typing import Any
 from jasper.control.service_restart import restart_voice_daemon
 from ..platform import systemd
 from jasper.service_state.accounts import ACCOUNT_NAME_PATTERN, valid_account_name
-from ..atomic_io import write_env_file
-from ..env_file import read_env_file
-from ..env_load import GOOGLE_CREDENTIALS_ENV_PATH as CREDS_FILE
+from jasper.platform.atomic_io import write_env_file
+from jasper.platform.env_file import read_env_file
+from jasper.platform.env_load import GOOGLE_CREDENTIALS_ENV_PATH as CREDS_FILE
 from jasper.service_state.google_creds import (
     GOOGLE_SCOPES,
     GoogleAccount,
@@ -64,8 +64,8 @@ from jasper.service_state.google_creds import (
     save_token,
 )
 from jasper.service_state.google_oauth import resolved_google_redirect_uri
-from ..log_event import log_event
-from ..secret_redaction import redact_secrets
+from jasper.platform.log_event import log_event
+from jasper.platform.secret_redaction import redact_secrets
 from ._common import (
     RESTART_CLAUSE,
     access_log_line,

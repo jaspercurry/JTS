@@ -10,7 +10,7 @@ temporarily point voice at ``jasper-outputd`` for member-local playout.
 """
 from collections.abc import Mapping
 
-from jasper.env_load import VOICE_GROUPING_ENV_FILE, parse_env_file
+from jasper.platform.env_load import VOICE_GROUPING_ENV_FILE, parse_env_file
 
 FANIN_TTS_SOCKET = "/run/jasper-fanin/tts.sock"
 

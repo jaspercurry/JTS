@@ -14,7 +14,7 @@ from typing import Any
 
 from ...active_speaker.setup_status import read_active_speaker_setup_status
 from ...local_sources import status as source_status
-from ...log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import MUSIC_SOURCE_SPECS
 from ...platform import wire
 from ...platform.uds import mux_socket_command

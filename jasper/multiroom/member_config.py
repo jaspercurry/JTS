@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..env_load import GROUPING_ENV_FILE
+from jasper.platform.env_load import GROUPING_ENV_FILE
 from . import config
 from .config import GroupingConfig
 from .snapfifo import SNAPFIFO

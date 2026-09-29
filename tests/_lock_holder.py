@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from jasper.atomic_io import env_lock_path
+from jasper.platform.atomic_io import env_lock_path
 
 
 @contextmanager

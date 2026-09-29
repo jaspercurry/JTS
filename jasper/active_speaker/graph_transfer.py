@@ -14,8 +14,8 @@ import math
 from typing import Any, Mapping, Sequence
 
 from jasper.bass_extension.dynamic_graph import PREFIX as DYNAMIC_BASS_PREFIX
-from jasper.json_fields import require_finite
-from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
+from jasper.platform.json_fields import require_finite
+from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ
 
 # Types modelled from configuration alone; FIR convolution needs external data.
 _MODELLED_FILTER_TYPES = frozenset({"Biquad", "BiquadCombo", "Delay", "Gain", "Limiter"})

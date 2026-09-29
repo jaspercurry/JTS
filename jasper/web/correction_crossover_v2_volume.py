@@ -15,7 +15,7 @@ import threading
 from typing import TYPE_CHECKING, Any, Callable
 
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.active_speaker.session_volume_plan import VolumeDoor

@@ -19,7 +19,7 @@ from jasper.audio_measurement.evidence_identity import (
     FingerprintedRecord,
     json_fingerprint,
 )
-from jasper.json_fields import require_finite
+from jasper.platform.json_fields import require_finite
 
 from ..crossover_section import CrossoverSection
 

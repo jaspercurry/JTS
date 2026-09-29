@@ -28,7 +28,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any, Mapping
 
-from jasper.atomic_io import read_regular_bytes_nofollow
+from jasper.platform.atomic_io import read_regular_bytes_nofollow
 
 from .config import (
     GroupingConfig,

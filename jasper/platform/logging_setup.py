@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from .secret_redaction import redact_secrets
+from jasper.platform.secret_redaction import redact_secrets
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 

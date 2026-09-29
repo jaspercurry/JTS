@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.sound.profile import (
     ADVANCED_GAIN_LIMIT_DB,
     CUT_MAX_Q,

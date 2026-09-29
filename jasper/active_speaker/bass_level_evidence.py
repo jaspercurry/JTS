@@ -11,7 +11,7 @@ import numpy as np
 from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, expected_boost_db
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .bass_comparison import bass_curve_on_grid, common_bass_bins
 

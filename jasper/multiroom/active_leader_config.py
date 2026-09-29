@@ -69,8 +69,8 @@ from jasper.active_speaker.graph_types import (
     GRAPH_DRIVER_DOMAIN_BASELINE,
     GRAPH_PROGRAM_BAKE_PIPE,
 )
-from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, crossover_statefile
-from ..log_event import log_event
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR, crossover_statefile
+from jasper.platform.log_event import log_event
 from . import _stash, follower_config
 from .config import GroupingConfig
 from .follower_config import program_channel_for

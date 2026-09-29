@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from jasper import env_load
-from jasper.env_load import (
+from jasper.platform import env_load
+from jasper.platform.env_load import (
     bounded_env_float,
     bounded_env_int,
     parse_bool_value,
     read_env_file_or_warn,
 )
-from jasper.log_event import json_mode_enabled
+from jasper.platform.log_event import json_mode_enabled
 
 
 @pytest.mark.parametrize(

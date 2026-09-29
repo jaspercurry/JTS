@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 
 logger = logging.getLogger("jasper.active_speaker.camilla_yaml")
 

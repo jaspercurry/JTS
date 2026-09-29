@@ -13,7 +13,7 @@ import pytest
 
 from jasper.accessories.mic_env import DEFAULT_ACCESSORY_MIC_ENV_FILE
 from jasper.runtime.mic_capture import InputDeviceUnavailable
-from jasper.env_load import ENV_FILES
+from jasper.platform.env_load import ENV_FILES
 from jasper.audio_control.mic_presence import (
     MIC_ABSENT_NO_LOCAL_OR_ACCESSORY,
 )

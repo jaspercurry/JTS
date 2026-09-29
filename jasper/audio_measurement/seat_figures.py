@@ -27,7 +27,7 @@ from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, UPPER_BAN
 from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS, REASON_NO_ROW,
 )
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 #: Figures are read on 1/6-octave smoothed level; the frozen reference curve
 #: is the one-octave trend of the batch's reference take.

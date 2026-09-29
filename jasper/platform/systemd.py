@@ -68,7 +68,7 @@ import time
 from collections.abc import Iterator
 from http.server import ThreadingHTTPServer
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

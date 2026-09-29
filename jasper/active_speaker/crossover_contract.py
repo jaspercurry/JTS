@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from jasper.json_fields import as_mapping
+from jasper.platform.json_fields import as_mapping
 
 from ._common import coerce_finite_float
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles

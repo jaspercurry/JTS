@@ -21,12 +21,12 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 
 from .commissioning_admission import parse_running_graph
 
-from jasper.volume_latch import fader_matches
+from jasper.platform.volume_latch import fader_matches
 
 logger = logging.getLogger(__name__)
 

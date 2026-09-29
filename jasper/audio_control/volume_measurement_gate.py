@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.audio_resources.volume_owner import VolumeClaimRefused
 

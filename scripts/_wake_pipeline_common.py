@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from jasper.json_fields import sha256_file as sha256_file
+from jasper.platform.json_fields import sha256_file as sha256_file
 
 
 MarkerPredicate = Callable[[Mapping[str, Any]], bool]

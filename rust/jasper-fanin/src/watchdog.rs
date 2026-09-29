@@ -5,7 +5,7 @@
 //! Heartbeat with progress sentinel — the JTS-standard Tier 1/2
 //! watchdog pattern.
 //!
-//! Mirrors `jasper/watchdog.py:Heartbeat` (the Python daemons' shared
+//! Mirrors `jasper/platform/watchdog.py:Heartbeat` (the Python daemons' shared
 //! implementation). The contract:
 //!
 //!   1. The work loop calls `bump_progress()` after every successful

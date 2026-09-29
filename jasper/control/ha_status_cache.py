@@ -15,8 +15,8 @@ from collections.abc import Mapping
 from typing import Any, Callable
 
 from jasper.service_state import home_assistant
-from jasper.json_fields import json_fingerprint
-from jasper.log_event import log_event
+from jasper.platform.json_fields import json_fingerprint
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

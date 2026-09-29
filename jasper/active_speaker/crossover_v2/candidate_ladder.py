@@ -15,7 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.evidence_reasons import REASON_NO_COMPARISON, EvidenceUnavailable
 from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
 from .position_cycle import measured_curve_band, take_curves

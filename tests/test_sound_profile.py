@@ -214,7 +214,7 @@ def test_save_profile_cleans_temp_file_on_publish_failure(tmp_path, monkeypatch)
     def fail_replace(_source, _target):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("jasper.atomic_io.os.replace", fail_replace)
+    monkeypatch.setattr("jasper.platform.atomic_io.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         save_profile(SoundProfile(curve_id="harman"), path)

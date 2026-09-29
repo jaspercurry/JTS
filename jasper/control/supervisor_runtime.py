@@ -21,7 +21,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import Future
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

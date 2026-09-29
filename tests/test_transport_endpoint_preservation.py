@@ -522,7 +522,7 @@ def _ring_transport_state(monkeypatch, tmp_path, *, marker: str):
     outputd_env.write_text(
         f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n", encoding="utf-8"
     )
-    monkeypatch.setattr("jasper.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
+    monkeypatch.setattr("jasper.platform.env_load.OUTPUTD_ENV_PATH", str(outputd_env))
     return outputd_env
 
 
@@ -600,7 +600,7 @@ async def test_the_guarded_load_reads_no_transport_state_off_the_ring(
     ALSA active lane behaves as it did before the wave."""
     topology, preset = commissioning_box
     monkeypatch.setattr(
-        "jasper.env_load.OUTPUTD_ENV_PATH", str(tmp_path / "gone" / "outputd.env")
+        "jasper.platform.env_load.OUTPUTD_ENV_PATH", str(tmp_path / "gone" / "outputd.env")
     )
 
     preflight = _ring_load_preflight(

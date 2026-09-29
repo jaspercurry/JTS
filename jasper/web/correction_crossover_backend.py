@@ -17,7 +17,7 @@ from jasper.active_speaker.setup_status import conductor_status
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
 from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker.timing_status import timing_status_lines
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_routes.output_topology_store import load_output_topology
 
 from . import correction_capture

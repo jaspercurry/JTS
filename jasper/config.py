@@ -14,7 +14,7 @@ from jasper.service_state import home_assistant as _ha_env
 from jasper.service_state import volume_persistence as _volume_persistence
 from jasper.service_state.accounts import legacy_cache_path, registry_path
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CAMILLA_PORT
-from .env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
+from jasper.platform.env_load import VOICE_PROVIDER_ENV_PATH, parse_bool_value
 from jasper.playback_state.librespot_state import DEFAULT_PATH as DEFAULT_LIBRESPOT_STATE
 from jasper.service_state.location_state import (
     WEATHER_DEFAULT_LOCATION_ENV,
@@ -54,7 +54,7 @@ from jasper.service_state.wake_ports import DEFAULT_AEC_ON_PORT, DEFAULT_AEC_UDP
 from jasper.service_state.wake_events import (
     DEFAULT_MAX_AUDIO_BYTES as DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
 )
-from jasper.paths import SOUNDS_DIR, WAKE_EVENTS_DIR
+from jasper.platform.paths import SOUNDS_DIR, WAKE_EVENTS_DIR
 
 
 class VoiceConfigError(RuntimeError):
@@ -112,7 +112,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def env_bool(name: str, default: bool = False) -> bool:
-    """Read a named env var through :func:`jasper.env_load.parse_bool_value`,
+    """Read a named env var through :func:`jasper.platform.env_load.parse_bool_value`,
     falling back to ``default`` when it gives no answer."""
     value = parse_bool_value(os.environ.get(name))
     return default if value is None else value

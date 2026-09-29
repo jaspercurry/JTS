@@ -12,7 +12,7 @@ import struct
 import pytest
 
 from jasper.cli import usb_mic as usb_mic_cli
-from jasper.env_file import read_env_file
+from jasper.platform.env_file import read_env_file
 from jasper.cli.usb_mic import (
     ALSA_BUFFER_FRAMES,
     ALSA_PERIOD_BYTES,

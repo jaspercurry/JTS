@@ -36,7 +36,7 @@ from types import ModuleType
 from typing import Any, Optional
 
 from jasper.platform.control_client import CONTROL_PORT, AsyncControlClient, ControlError
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.device_probe.usbgadget import UAC2_CARD_NAME
 
 logger = logging.getLogger(__name__)

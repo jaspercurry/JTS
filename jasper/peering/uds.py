@@ -34,7 +34,7 @@ import logging
 import os
 from typing import Awaitable, Callable
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
 

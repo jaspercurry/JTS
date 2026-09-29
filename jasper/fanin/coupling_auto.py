@@ -13,17 +13,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
-from jasper.env_file import env_value
-from jasper.env_load import FANIN_ENV_PATH
+from jasper.platform.env_file import env_value
+from jasper.platform.env_load import FANIN_ENV_PATH
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
 from jasper.fanin.latency_mode import (
     DEFAULT_MODE, STATE_ENV_KEY, normalize_mode,
     read_requested_mode as read_usb_latency_mode,
 )
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.playback_state.music_sources import Source
 from jasper.audio_routes.output_hardware import current_usb_data_role
-from jasper.systemd_probe import unit_state
+from jasper.platform.systemd_probe import unit_state
 
 logger = logging.getLogger(__name__)
 

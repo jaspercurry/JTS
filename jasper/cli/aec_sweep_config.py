@@ -25,7 +25,7 @@ from jasper.audio_routes.aec_sweep import (
     validate_aec3_sweep_config_payload,
     write_aec3_sweep_config,
 )
-from jasper.service_units import AEC_BRIDGE_SERVICE
+from jasper.platform.service_units import AEC_BRIDGE_SERVICE
 
 
 BRIDGE_UNIT = AEC_BRIDGE_SERVICE

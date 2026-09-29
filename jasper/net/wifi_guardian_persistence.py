@@ -38,7 +38,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
 DEFAULT_PATH = "/var/lib/jasper/wifi_guardian.env"

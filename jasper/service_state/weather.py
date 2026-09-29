@@ -33,7 +33,7 @@ from dataclasses import dataclass
 import httpx
 from rapidfuzz import fuzz
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 logger = logging.getLogger("jasper.weather")
 

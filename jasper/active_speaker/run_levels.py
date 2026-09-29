@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable, Mapping, Sequence, cast
 
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 
 from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
 from .crossover_v2.capture_plan import position_screen_keys

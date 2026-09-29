@@ -53,7 +53,7 @@ import threading
 from collections.abc import Mapping
 from typing import Any
 
-from ..env_load import parse_env_file
+from jasper.platform.env_load import parse_env_file
 from ..net import http_security
 
 DEFAULT_PATH = "/var/lib/jasper/identity.env"

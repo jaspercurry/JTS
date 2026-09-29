@@ -48,7 +48,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from jasper.service_state.accounts import DEFAULT_CACHE_DIR, legacy_cache_path, registry_path
-from ...env_load import (
+from jasper.platform.env_load import (
     GOOGLE_CREDENTIALS_ENV_PATH,
     SPOTIFY_CREDENTIALS_ENV_PATH,
     GOOGLE_ROUTES_ENV_PATH as GOOGLE_ROUTES_SECRET_FILE,

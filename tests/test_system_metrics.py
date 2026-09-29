@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from jasper.control import system_metrics
-from jasper.memory_policy import MemoryPressure
+from jasper.platform.memory_policy import MemoryPressure
 from jasper.control.server import _make_handler
 from jasper.control.system_metrics import SystemSampler, read_build_info
 from tests.control_server_fixtures import FakeHaStatus

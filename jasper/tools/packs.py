@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from . import PackOutcome, Tool, build_tool
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 from .tool_state import read_tool_state
 from .audio import make_audio_tools
 from .calendar import make_calendar_tools

@@ -12,11 +12,11 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Awaitable, Callable, Mapping
 
-from jasper.atomic_io import read_json_mapping
+from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
-from jasper.speaker_layout import measurement_target_parts
+from jasper.platform.speaker_layout import measurement_target_parts
 
 from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.measure_spec import MeasureSpec

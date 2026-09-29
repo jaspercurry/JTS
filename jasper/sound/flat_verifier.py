@@ -35,7 +35,7 @@ from jasper.active_speaker.output_contract import (
 )
 from jasper.dsp_control.camilla_config_contract import playback_is_pipe
 from jasper.audio_routes.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
-from jasper.json_fields import issue as _issue
+from jasper.platform.json_fields import issue as _issue
 from jasper.multiroom.snapfifo import SNAPFIFO
 from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
 from jasper.audio_routes.output_topology_store import load_output_topology_strict

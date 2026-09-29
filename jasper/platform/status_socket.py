@@ -11,7 +11,7 @@ import socket
 import time
 from typing import Any
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from . import wire
 

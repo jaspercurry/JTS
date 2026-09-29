@@ -22,7 +22,7 @@ from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
 from jasper.audio_measurement.repeated_sweep import average_summed_capture, sweep_ambient_id
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 
 from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import BankedMeasurement, analyzed_measurements

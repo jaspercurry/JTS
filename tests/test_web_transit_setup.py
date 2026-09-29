@@ -22,7 +22,7 @@ import urllib.parse
 
 import pytest
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.web import transit_page, transit_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome
 

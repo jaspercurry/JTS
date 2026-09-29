@@ -10,8 +10,8 @@ import threading
 from functools import cache
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json, read_json_mapping
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_json, read_json_mapping
+from jasper.platform.log_event import log_event
 
 from . import state_paths
 from .audition import MAX_COMPARE_TRIM_DB

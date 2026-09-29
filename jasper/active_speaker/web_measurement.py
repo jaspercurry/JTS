@@ -12,7 +12,7 @@ from jasper.active_speaker.measurement import (
     active_driver_targets,
     active_summed_targets,
 )
-from jasper.json_fields import utc_now_iso as _utc_now
+from jasper.platform.json_fields import utc_now_iso as _utc_now
 from jasper.audio_routes.output_topology_store import load_output_topology
 
 

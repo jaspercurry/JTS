@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from jasper.transition_log import TransitionLog
+from jasper.platform.transition_log import TransitionLog
 
 
 def _log(clock, **kwargs):

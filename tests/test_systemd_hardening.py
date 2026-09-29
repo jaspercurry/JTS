@@ -24,7 +24,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from jasper import source_intent_units as units
+from jasper.platform import source_intent_units as units
 from jasper.accessories import reconcile as accessory_reconcile
 from jasper.accessories import status as accessory_status
 from jasper.audio_hardware.dac import APPLE_DONGLE_USB_ID
@@ -68,7 +68,7 @@ RECONCILE_ONESHOT_TIMEOUTS = {
     # pinned by tests/test_aec_init.py against the aec_init constants.
     "jasper-aec-reconcile": "120",
     # The arithmetic now lives in code, as
-    # jasper.source_intent_units.COUPLING_AUTO_ENUMERATED_WORST_SEC, and the
+    # jasper.platform.source_intent_units.COUPLING_AUTO_ENUMERATED_WORST_SEC, and the
     # unit ships that plus a stated headroom. The unit's hand-kept tally drifted
     # twice before it was derived; cite the constant, never a second copy.
     "jasper-fanin-coupling-auto": str(

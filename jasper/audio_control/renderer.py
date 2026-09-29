@@ -28,7 +28,7 @@ import re
 from typing import Any
 
 from jasper.playback_state import librespot_state
-from jasper.busctl import system_busctl
+from jasper.platform.busctl import system_busctl
 from jasper.playback_state.music_sources import MUSIC_SOURCE_VALUES, SOURCE_TO_ACTIVE_KEY, Source
 from jasper.platform import wire
 from jasper.platform.uds import mux_socket_command

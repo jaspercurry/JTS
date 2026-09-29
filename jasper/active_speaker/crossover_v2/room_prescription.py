@@ -50,8 +50,8 @@ from jasper.audio_measurement.room_limits import (
     spatial_support,
 )
 from jasper.audio_measurement.evidence_reasons import ROOM_NOT_BANKED
-from jasper.biquad import PeqFilter, total_positive_boost_db
-from jasper.json_fields import finite_float
+from jasper.platform.biquad import PeqFilter, total_positive_boost_db
+from jasper.platform.json_fields import finite_float
 
 from .blend_prescription import (
     COMPOSED_BOOST_EXCEEDED,

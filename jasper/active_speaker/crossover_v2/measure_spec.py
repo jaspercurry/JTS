@@ -15,8 +15,8 @@ from dataclasses import dataclass, fields
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.json_fields import require_finite
-from jasper.speaker_layout import measurement_target_id
+from jasper.platform.json_fields import require_finite
+from jasper.platform.speaker_layout import measurement_target_id
 
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS
 from .contracts import (

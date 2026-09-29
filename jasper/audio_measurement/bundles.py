@@ -29,9 +29,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.atomic_io import atomic_write_json
-from jasper.json_fields import sha256_file
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_json
+from jasper.platform.json_fields import sha256_file
+from jasper.platform.log_event import log_event
 
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
 ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"

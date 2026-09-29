@@ -11,7 +11,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping, cast
 
-from jasper.log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.dsp_control.dsp_apply import dsp_writer_lock

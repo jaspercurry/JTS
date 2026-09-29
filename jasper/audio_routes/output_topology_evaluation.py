@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from jasper.json_fields import issue as _issue
-from jasper.speaker_layout import (
+from jasper.platform.json_fields import issue as _issue
+from jasper.platform.speaker_layout import (
     REQUIRED_ROLES_BY_MODE,
     SUB_CROSSOVER_HZ_HI,
     SUB_CROSSOVER_HZ_LO,

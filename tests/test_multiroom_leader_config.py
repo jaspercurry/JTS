@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from jasper.dsp_control.camilla_config_contract import playback_is_pipe
-from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR
+from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR
 from jasper.multiroom.leader_config import (
     BONDED_CONFIG_PATH,
     SOLO_RESTORE_PATH,

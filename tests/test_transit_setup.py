@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io, env_file
+from jasper.platform import atomic_io, env_file
 from jasper.transit import geocode as geocode_mod
 from jasper.web import transit_page, transit_setup, weather_setup
 from tests._log_events import event_records, leaked_lines

@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from http.server import ThreadingHTTPServer
 from typing import Any
 
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 from ..platform import systemd
 
 logger = logging.getLogger(__name__)

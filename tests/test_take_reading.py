@@ -21,7 +21,7 @@ from jasper.active_speaker.crossover_v2.round_captures import PoseCapture
 from jasper.active_speaker.crossover_v2.round_inputs import COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND
 from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.json_fields import parse_utc_iso
+from jasper.platform.json_fields import parse_utc_iso
 from jasper.active_speaker.crossover_v2.take_reading import (
     REFUSE_COMPARE_NO_COMMON_BAND, REFUSE_COMPARE_NO_COMPARAND, TakeRead, compare_preview_report, compare_report,
     decay_report, group_delay_report, read_preview,

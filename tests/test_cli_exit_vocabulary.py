@@ -48,7 +48,7 @@ from tests.crossover_v2_banked_round import (
     bank_seat_round,
     bank_verify_round,
 )
-from jasper.json_fields import sha256_file
+from jasper.platform.json_fields import sha256_file
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median

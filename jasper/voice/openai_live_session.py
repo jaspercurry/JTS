@@ -18,8 +18,8 @@ import time
 from collections import Counter
 from typing import Any, AsyncIterator
 
-from ..backoff import reconnect_delay
-from ..log_event import log_event
+from jasper.platform.backoff import reconnect_delay
+from jasper.platform.log_event import log_event
 from ._base import SESSION_CLOSE_TIMEOUT_SEC, BaseLiveConnection, BaseLiveTurn, ToolCall, upsample_16k_to_24k
 from ._supervisor import http_status, is_transient, openai_error_is_terminal
 from ._tasks import await_cleanup_owned

@@ -32,7 +32,7 @@ from ..audio_measurement import household_mic
 from ..active_speaker.crossover_v2.refusal_copy import (
     CrossoverV2Refused, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_USER_STOPPED,
 )
-from ..log_event import log_event
+from jasper.platform.log_event import log_event
 
 from . import correction_runtime
 from .correction_runtime import logger, refusal_envelope

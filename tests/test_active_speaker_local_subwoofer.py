@@ -29,7 +29,7 @@ from jasper.active_speaker import (
     emit_active_speaker_baseline_config,
     lowest_driver_role,
 )
-from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
+from jasper.platform.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
 from jasper.active_speaker.output_contract import classify_output_contract
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph

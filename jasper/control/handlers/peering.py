@@ -17,7 +17,7 @@ import logging
 import threading
 from typing import Any
 
-from ...log_event import log_event
+from jasper.platform.log_event import log_event
 from ...multiroom import config as grouping_config
 from ...multiroom.effective_role import effective_follower_leader_addr
 from ...platform.control_client import (

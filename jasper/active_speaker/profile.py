@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from jasper.speaker_layout import (
+from jasper.platform.speaker_layout import (
     ADJACENT_PAIRS_BY_MAIN_MODE,
     DEFAULT_SUB_CROSSOVER_HZ,
     MAIN_DRIVER_ROLES_BY_MODE,
@@ -27,7 +27,7 @@ from jasper.speaker_layout import (
     WAY_COUNT_BY_MAIN_MODE,
 )
 from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
-from jasper.json_fields import CodedFieldError, JsonFields
+from jasper.platform.json_fields import CodedFieldError, JsonFields
 
 SCHEMA_VERSION = 1
 ACTIVE_PRESET_KIND = "jts_active_speaker_preset"

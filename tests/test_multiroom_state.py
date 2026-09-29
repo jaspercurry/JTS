@@ -653,7 +653,7 @@ def test_enabled_invalid_does_not_probe(tmp_path):
 def test_real_reader_bounds_its_probe_and_stays_failsoft(monkeypatch):
     # /state must survive a wedged systemd: the reader carries the aggregator's
     # own bound and resolves every unit to "unknown" rather than raising.
-    from jasper import systemd_probe
+    from jasper.platform import systemd_probe
     from jasper.multiroom import state as state_mod
 
     seen: list[float] = []

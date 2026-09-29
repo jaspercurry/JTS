@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.memory_policy import (
+from jasper.platform.memory_policy import (
     ZRAM_OVERSIZE_MARGIN_PERCENT,
     ZRAM_TARGET_PERCENT,
     ZRAM_WARN_PERCENT,

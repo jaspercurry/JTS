@@ -22,7 +22,7 @@ import pytest
 import jasper.playback_state.airplay_session as airplay_session
 import jasper.mux as mux_module
 from jasper.service_state.accounts import Account
-from jasper.busctl import BusctlResult
+from jasper.platform.busctl import BusctlResult
 from jasper.playback_state.music_sources import MUSIC_SOURCES, VolumeMode
 from jasper.mux import Mux, Source
 from jasper.service_state.spotify_router import (

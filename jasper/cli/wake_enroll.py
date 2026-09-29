@@ -67,8 +67,8 @@ from pathlib import Path
 
 import numpy as np
 
-from jasper.atomic_io import atomic_write_bytes
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_bytes
+from jasper.platform.log_event import log_event
 from jasper.service_state.mic_mute_persistence import (
     DEFAULT_PATH as MIC_MUTE_STATE_PATH,
     read_mic_muted,
@@ -80,7 +80,7 @@ from jasper.service_state.wake_ports import (
     DEFAULT_AEC_RAW0_PORT as DEFAULT_AEC_RAW0_PORT,
 )
 
-from ..logging_setup import configure_verbose_logging
+from jasper.platform.logging_setup import configure_verbose_logging
 
 logger = logging.getLogger("jasper-wake-enroll")
 

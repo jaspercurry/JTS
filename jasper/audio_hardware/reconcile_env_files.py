@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jasper.atomic_io import (
+from jasper.platform.atomic_io import (
     ENV_FILE_LOCK_TIMEOUT_SECONDS,
     advisory_file_lock,
     env_key_action,
@@ -193,7 +193,7 @@ def apply_route_env(run: Pass) -> bool:
         resolve_audio_route_profile,
         route_owned_env_actions,
     )
-    from jasper.env_load import read_env_file_state  # lazy: with the plan
+    from jasper.platform.env_load import read_env_file_state  # lazy: with the plan
 
     run.route_fanin_changed = False
     try:

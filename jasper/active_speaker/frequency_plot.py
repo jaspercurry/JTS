@@ -15,7 +15,7 @@ import numpy as np
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import LOW_BANDS_HZ, PLOT_REFERENCE_BAND_HZ
 from jasper.audio_measurement.series_stats import power_mean_db
-from jasper.json_fields import finite_float
+from jasper.platform.json_fields import finite_float
 from .frequency_display import merge_display_intervals, prepare_frequency_curve
 
 DEFAULT_REF_BAND_HZ = PLOT_REFERENCE_BAND_HZ

@@ -20,7 +20,7 @@ import os
 from typing import Any, Mapping
 
 from jasper.control import park_record
-from jasper.service_units import OUTPUTD_SERVICE, unit_failed, unit_unstable
+from jasper.platform.service_units import OUTPUTD_SERVICE, unit_failed, unit_unstable
 
 #: The unit whose ``ExecStopPost=`` writes the record and ``ExecStartPost=``
 #: removes it.
@@ -50,7 +50,7 @@ def snapshot(
     """Fail-soft read of the outputd park record. Never raises.
 
     ``unit_state`` is ``jasper-outputd.service``'s record from
-    :func:`jasper.service_units.read_unit_states`, ``None`` where the caller has
+    :func:`jasper.platform.service_units.read_unit_states`, ``None`` where the caller has
     no systemd view. ``parked`` is True iff the record exists — the helper
     writes one only where it knows outputd is parked, so the record IS the park,
     and the unit view serves only to spot a stale one. ``reason``:

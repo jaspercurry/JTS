@@ -79,8 +79,8 @@ from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
 )
-from jasper.watchdog import Heartbeat
-from jasper.log_event import log_event
+from jasper.platform.watchdog import Heartbeat
+from jasper.platform.log_event import log_event
 from jasper.aec.bridge_engines import (
     Aec3Engine,
     CORPUS_USB_DTLN_ENABLED_ENV,
@@ -135,7 +135,7 @@ from jasper.aec.bridge_telemetry import (
 from jasper.aec.bridge_corpus_lanes import CorpusLanes, build_corpus_lanes
 from jasper.audio_routes.usb_mic import USB_MIC_RAW_XVF_LEG
 from ..mics import xvf3800 as _mic_profile
-from ..logging_setup import configure_logging
+from jasper.platform.logging_setup import configure_logging
 
 OUT_RATE = 16000
 
@@ -1151,7 +1151,7 @@ def main() -> int:
     # `_aec_loop`: if the loop wedges (e.g. the mic InputStream stops
     # invoking its callback after a USB underrun on the XVF UAC2 capture),
     # the daemon stops patting, the unit's `WatchdogSec=` expires, and
-    # systemd revives it. See jasper/watchdog.py.
+    # systemd revives it. See jasper/platform/watchdog.py.
     heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
     heartbeat.start()
 

@@ -135,7 +135,7 @@ def test_write_state_applies_requested_mode_before_publish(tmp_path, monkeypatch
         published_modes.append(stat.S_IMODE(os.stat(source).st_mode))
         real_replace(source, target)
 
-    monkeypatch.setattr("jasper.atomic_io.os.replace", inspect_then_replace)
+    monkeypatch.setattr("jasper.platform.atomic_io.os.replace", inspect_then_replace)
 
     write_state("Kitchen", "Upstairs", path=str(path), mode=0o660)
 
@@ -160,7 +160,7 @@ def test_concurrent_state_writes_use_distinct_complete_tempfiles(
         publish_barrier.wait(timeout=2)
         real_replace(source, target)
 
-    monkeypatch.setattr("jasper.atomic_io.os.replace", synchronized_replace)
+    monkeypatch.setattr("jasper.platform.atomic_io.os.replace", synchronized_replace)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         writes = [
@@ -186,7 +186,7 @@ def test_write_state_cleans_temp_file_on_publish_failure(tmp_path, monkeypatch):
     def fail_replace(_source, _target):
         raise OSError("simulated replace failure")
 
-    monkeypatch.setattr("jasper.atomic_io.os.replace", fail_replace)
+    monkeypatch.setattr("jasper.platform.atomic_io.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
         write_state("Kitchen", "Upstairs", path=str(path))

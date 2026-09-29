@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from ...log_event import log_event
+from jasper.platform.log_event import log_event
 from jasper.audio_resources.volume_owner import (
     ClaimKind,
     VolumeClaimHandle,
@@ -23,7 +23,7 @@ from jasper.audio_resources.volume_owner import (
     VolumeOwner,
 )
 from ..session_volume_plan import RestoreOutcome
-from jasper.volume_latch import GetMainVolumeDb, fader_matches, read_fader_db
+from jasper.platform.volume_latch import GetMainVolumeDb, fader_matches, read_fader_db
 
 logger = logging.getLogger(__name__)
 

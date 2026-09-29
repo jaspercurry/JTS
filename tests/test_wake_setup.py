@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import atomic_io
+from jasper.platform import atomic_io
 from jasper.service_state import wake_models
 from jasper.web import _common, wake_setup
 from jasper.web._common import RESTART_CLAUSE, RestartOutcome

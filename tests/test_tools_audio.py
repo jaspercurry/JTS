@@ -8,7 +8,7 @@ import asyncio
 
 from jasper.tools.audio import make_audio_tools
 from jasper.audio_routes.volume_curve import db_to_percent, percent_to_db
-from jasper.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_CEILING_DB
+from jasper.platform.volume_floor import DEFAULT_VOLUME_FLOOR_DB, VOLUME_CEILING_DB
 from tests.control_server_fixtures import FakeCoordinator
 
 

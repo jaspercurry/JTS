@@ -61,7 +61,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Protocol, Self, TypeVar
 
-from jasper.atomic_io import atomic_write_text
+from jasper.platform.atomic_io import atomic_write_text
 
 logger = logging.getLogger("jasper.accounts")
 

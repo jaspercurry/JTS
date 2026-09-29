@@ -24,7 +24,7 @@ from jasper.audio_routes.aec_sweep import (
     knob_default,
 )
 from jasper.aec.bridge_telemetry import logger
-from jasper.env_load import parse_bool_value
+from jasper.platform.env_load import parse_bool_value
 
 # 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC AEC3's 10 ms frame
 # requirement (160 samples); the binding splits 320 → 2×160 internally per

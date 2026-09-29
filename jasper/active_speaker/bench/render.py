@@ -65,7 +65,7 @@ import numpy as np
 import yaml
 
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.json_fields import sha256_file, sha256_text
+from jasper.platform.json_fields import sha256_file, sha256_text
 
 PINNED_CAMILLADSP_VERSION = "v4.1.3"
 _VERSION_SUBSTRING = "4.1.3"

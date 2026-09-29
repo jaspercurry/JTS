@@ -45,9 +45,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
-from jasper.atomic_io import atomic_write_text, locked_update_env_file
-from jasper.env_load import WAKE_MODEL_ENV_PATH, env_file_path, merged_env_files
-from jasper.log_event import log_event
+from jasper.platform.atomic_io import atomic_write_text, locked_update_env_file
+from jasper.platform.env_load import WAKE_MODEL_ENV_PATH, env_file_path, merged_env_files
+from jasper.platform.log_event import log_event
 
 if TYPE_CHECKING:
     from jasper.audio_resources.model_downloads import StageAsset
