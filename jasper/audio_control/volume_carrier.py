@@ -13,7 +13,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from jasper.log_event import log_event
-from jasper.volume_curve import main_mute_for_db
+from jasper.audio_routes.volume_curve import main_mute_for_db
 from jasper.audio_resources.volume_owner import VolumeOwner
 
 if TYPE_CHECKING:

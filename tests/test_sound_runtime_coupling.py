@@ -28,7 +28,7 @@ from jasper.sound.graph_carrier import ReemitResult
 from tests.sound_camilla_fixtures import FakeCamilla
 
 from .fanin_env_fixtures import declare_fanin_env
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 
 @pytest.fixture(autouse=True)

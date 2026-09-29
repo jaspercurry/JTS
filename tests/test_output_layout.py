@@ -21,7 +21,7 @@ from jasper.active_speaker.playback_route import (
     EXPLICIT_SOURCE,
     MISSING_SOURCE,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )

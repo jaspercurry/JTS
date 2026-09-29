@@ -18,7 +18,7 @@ from jasper.audio_hardware.output_probe import (
     probe_system_cards,
 )
 import jasper.cli.output_hardware as output_hardware_cli
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     OutputHardwareState,
     classify_output_cards,

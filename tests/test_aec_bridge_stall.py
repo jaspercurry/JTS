@@ -773,7 +773,7 @@ def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
     """Corpus USB mode emits cheap-mic raw plus a second WebRTC AEC
     output, without changing the primary XVF AEC/raw/raw0 packets."""
     import socket as real_socket
-    from jasper.aec_sweep import USB_AEC3_CORPUS_OVERRIDES
+    from jasper.audio_routes.aec_sweep import USB_AEC3_CORPUS_OVERRIDES
     OUT_PORT_USB_RAW = leg_default_port("usb_raw")
     OUT_PORT_USB_WEBRTC = leg_default_port("usb_webrtc")
 
@@ -833,7 +833,7 @@ def test_aec_loop_emits_aec3_sweep_variants_when_enabled(monkeypatch):
     """AEC3 corpus sweep runs three independent WebRTC engines on the
     same mic/ref frames and emits each as its own UDP leg."""
     import socket as real_socket
-    from jasper.aec_sweep import AEC3_SWEEP_ENV_FLAG, AEC3_SWEEP_VARIANTS
+    from jasper.audio_routes.aec_sweep import AEC3_SWEEP_ENV_FLAG, AEC3_SWEEP_VARIANTS
 
     OUT_PORT_AEC3_SWEEP = _sweep_ports(AEC3_SWEEP_VARIANTS)
 
@@ -890,7 +890,7 @@ def test_aec_loop_can_feed_aec3_sweep_from_usb_mic(monkeypatch):
     """USB sweep mode reuses the stable variant UDP slots but feeds
     those engines from the cheap USB mic instead of the XVF mic."""
     import socket as real_socket
-    from jasper.aec_sweep import (
+    from jasper.audio_routes.aec_sweep import (
         AEC3_SWEEP_ENV_FLAG,
         AEC3_SWEEP_SOURCE_ENV,
         AEC3_SWEEP_SOURCE_USB,
@@ -1059,7 +1059,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
     """
     import socket as real_socket
     from jasper.aec_engines import dtln as dtln_mod
-    from jasper.aec_sweep import (
+    from jasper.audio_routes.aec_sweep import (
         AEC3_SWEEP_ENV_FLAG,
         AEC3_SWEEP_SOURCE_ENV,
         AEC3_SWEEP_SOURCE_XVF,
@@ -1143,7 +1143,7 @@ def test_configured_legs_route_through_shared_emit_packet(monkeypatch):
 
 def test_aec_loop_selects_timestamped_emitter_for_usb_host(monkeypatch):
     import socket as real_socket
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
+    from jasper.audio_routes.usb_mic import USB_MIC_HEADER_BYTES, USB_MIC_HEADER_STRUCT
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
@@ -1244,7 +1244,7 @@ def test_usb_host_mic_selects_plan_beam_without_changing_voice_gain(
 ):
     import socket as real_socket
     from jasper.mics import xvf3800
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES
+    from jasper.audio_routes.usb_mic import USB_MIC_HEADER_BYTES
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.setenv("JASPER_AEC_MIC_GAIN_DB", "6")
@@ -1318,7 +1318,7 @@ def test_usb_host_mic_routes_existing_raw0_without_changing_managed_voice(
 
     import socket as real_socket
     from jasper.mics import xvf3800
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES
+    from jasper.audio_routes.usb_mic import USB_MIC_HEADER_BYTES
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.setenv("JASPER_AEC_MIC_GAIN_DB", "6")
@@ -1444,7 +1444,7 @@ def test_usb_host_mic_raw0_never_falls_back_to_managed_voice(monkeypatch):
 def test_usb_host_mic_missing_selected_beam_falls_back_to_primary(monkeypatch):
     import socket as real_socket
     from jasper.mics import xvf3800
-    from jasper.usb_mic import USB_MIC_HEADER_BYTES
+    from jasper.audio_routes.usb_mic import USB_MIC_HEADER_BYTES
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
     monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)

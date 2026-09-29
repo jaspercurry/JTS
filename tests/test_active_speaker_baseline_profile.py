@@ -47,8 +47,8 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.audio_measurement import measurement_geometry
-from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
+from jasper.audio_routes.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
     current_research, declared_profile_fixture, declared_graph_fixture, research_design_draft, standard_design_draft,
     mono_output_topology,

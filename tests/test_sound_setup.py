@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from jasper.active_speaker import baseline_record
-from jasper import output_topology_store as topology_mod
+from jasper.audio_routes import output_topology_store as topology_mod
 from jasper.active_speaker.candidate_bank import bank_candidate
 
 import asyncio
@@ -63,7 +63,7 @@ from jasper.dsp_control.dsp_apply import (
     dsp_write_epoch,
     record_dsp_apply_state,
 )
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputCardFact,
@@ -91,7 +91,7 @@ from jasper.sound.settings import (
     load_sound_settings,
 )
 from jasper.audio_control.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_resources.volume_owner import VolumeOwner, install_volume_owner
 from jasper.platform.control_client import ControlError
 from jasper.service_state.volume_persistence import VolumePersistence, configured_path
@@ -118,14 +118,14 @@ from ._web_test_helpers import (
     make_csrf_session,
     request_with_csrf,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_store import new_topology_draft
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import new_topology_draft
+from jasper.audio_routes.output_topology_store import (
     OutputTopologyMutation,
     load_output_topology,
     output_topology_mutation,
@@ -3280,7 +3280,7 @@ def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
 
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
     monkeypatch.setattr(
-        "jasper.output_topology_store.load_output_topology_strict",
+        "jasper.audio_routes.output_topology_store.load_output_topology_strict",
         lambda *a, **kw: (_ for _ in ()).throw(OutputTopologyError("output topology is not valid JSON")),
     )
     document = sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"]

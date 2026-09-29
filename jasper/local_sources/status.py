@@ -36,9 +36,9 @@ from ..fanin.status import (
     read_fanin_status,
 )
 from jasper.playback_state.music_sources import SOURCE_SPECS, Source
-from ..output_hardware import current_usb_data_role
+from jasper.audio_routes.output_hardware import current_usb_data_role
 from ..service_units import read_unit_states, unit_active, unit_activating, unit_loaded
-from ..source_intent import read_source_intents
+from jasper.audio_routes.source_intent import read_source_intents
 from jasper.device_probe.usbgadget import uac2_card_present
 from .markers import local_sources_allowed
 from .registry import local_source_lifecycle
@@ -62,7 +62,7 @@ def _single_unit(units: tuple[str, ...], label: str) -> str:
 
 
 # jasper-usbsink.service is the derived USB lifecycle unit; canonical intent is
-# owned by jasper.source_intent. The composite gadget unit owns the host-visible
+# owned by jasper.audio_routes.source_intent. The composite gadget unit owns the host-visible
 # ConfigFS gadget (default-on network where hardware permits + user-toggled audio).
 USBSINK_UNIT = _intent_unit(Source.USBSINK)
 USBSINK_GADGET_UNIT = _single_unit(

@@ -31,7 +31,7 @@ from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
 from jasper.voice import measurement_hold as voice_measurement
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.audio_control.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_control.volume_observers import VolumeObserver
 from jasper.service_state.volume_persistence import VolumePersistence
 

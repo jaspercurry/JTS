@@ -14,7 +14,7 @@ Structured fields only. The prose beside each class is presentation.
 
 from __future__ import annotations
 
-from jasper import output_topology_store as ot
+from jasper.audio_routes import output_topology_store as ot
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +35,7 @@ from jasper.control.transport_eligibility import (
     PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
 )
 from jasper.dsp_control.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 
 from tests.test_active_speaker_runtime_contract import (
     _active_topology,
@@ -948,7 +948,7 @@ def test_the_active_endpoint_remedy_names_the_overlay_check_only_for_an_unrecogn
     reader of the park record (doctor, /state, the web card) shares this one
     text, read at the snapshot altitude transport_eligibility's docstring makes the
     one place surfaces read the answer from."""
-    from jasper.output_hardware import OutputHardwareState, write_state
+    from jasper.audio_routes.output_hardware import OutputHardwareState, write_state
 
     monkeypatch.setenv(
         "JASPER_OUTPUT_HARDWARE_STATE_PATH", str(tmp_path / "output_hardware.json")

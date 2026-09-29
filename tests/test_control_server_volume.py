@@ -20,8 +20,8 @@ import jasper.active_speaker.applied_tune as applied_tune
 import jasper.active_speaker.baseline_profile as baseline
 import jasper.active_speaker.setup_status as setup
 from jasper.control.server import _make_handler
-from jasper.output_topology_store import save_output_topology
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.volume_curve import percent_to_db
 
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology

@@ -21,7 +21,7 @@ from jasper.cli.doctor import (
 )
 from jasper.cli.doctor._evidence import evidence
 from jasper.doctor_contract import summarize
-from jasper.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
+from jasper.audio_routes.output_hardware import APPLE_USB_C_DONGLE_DEVICE_ID
 
 from ._doctor_audio_runtime_fixtures import (
     _patch_status_reader,

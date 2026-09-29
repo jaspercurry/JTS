@@ -42,7 +42,7 @@ from jasper.service_state.tts_routing import (
     resolved_tts_socket_feeds_post_dsp_outputd,
     resolved_tts_socket_feeds_pre_dsp_fanin,
 )
-from jasper.volume_curve import canonical_target_db, percent_to_db
+from jasper.audio_routes.volume_curve import canonical_target_db, percent_to_db
 from jasper.audio_control.volume_state import VolumeState
 
 if TYPE_CHECKING:

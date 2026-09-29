@@ -6,7 +6,7 @@
 
 Engine configuration arrives as an `overrides` mapping; every knob absent
 from it falls back to the `JASPER_AEC_*` environment variable of the same
-name, and then to the AEC3 lab pack's default (`jasper.aec_sweep`), so one
+name, and then to the AEC3 lab pack's default (`jasper.audio_routes.aec_sweep`), so one
 process can run the production engine off the environment and corpus lanes
 off explicit overrides at the same time.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from typing import Protocol
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AGC1_ENABLED_ENV,
     AGC1_MAX_GAIN_DB_ENV,
     AGC1_TARGET_DBFS_ENV,
@@ -140,7 +140,7 @@ class Aec3V2Engine:
     """WebRTC AEC3 via the jasper_aec3 v2.1 vendored-static binding.
 
     Exposes the deep EchoCanceller3Config knobs the v1 binding cannot reach.
-    Every default comes from the AEC3 lab pack (`jasper.aec_sweep`), which
+    Every default comes from the AEC3 lab pack (`jasper.audio_routes.aec_sweep`), which
     carries the BEST_A canonical config the Aec3V2 constructor's own
     defaults also carry; each knob is individually overridable by the
     `JASPER_AEC_*` env var of the same name.
@@ -293,7 +293,7 @@ def select_engine(
     v2_verified = False
     if pref in {"auto", "v2"}:
         try:
-            from jasper.enhanced_aec import runtime_v2_verified
+            from jasper.audio_routes.enhanced_aec import runtime_v2_verified
 
             v2_verified = runtime_v2_verified()
         except (ImportError, OSError):

@@ -36,7 +36,7 @@ and is free to be more descriptive.
 
 The parametric AEC3 *sweep* variants are intentionally NOT in this
 registry — they are tuning experiments enumerated dynamically in
-``jasper.aec_sweep``, not stable named legs. ``jasper.service_state.wake_ports``
+``jasper.audio_routes.aec_sweep``, not stable named legs. ``jasper.service_state.wake_ports``
 merges them on top of the registry ports for tooling.
 
 """

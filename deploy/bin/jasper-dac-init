@@ -11,7 +11,7 @@
 # The registry owns WHICH controls are pinned and to what, the reconciler's
 # /run record owns WHICH CARD carries them: one interpreter resolves both into
 # ready-made `amixer` arguments — dB targets through the same
-# jasper.output_hardware conversion the doctor verifies with — and this script
+# jasper.audio_routes.output_hardware conversion the doctor verifies with — and this script
 # only runs them.
 
 set -uo pipefail
@@ -40,7 +40,7 @@ pins="$("$PYTHON" - <<'PY'
 import subprocess
 import sys
 
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     load_state,
     mixer_index_for_db,
     mixer_pins_for_state,

@@ -9,8 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from jasper.output_topology import topology_config_fingerprint
-from jasper.output_topology_store import load_output_topology
+from jasper.audio_routes.output_topology import topology_config_fingerprint
+from jasper.audio_routes.output_topology_store import load_output_topology
 
 
 @dataclass(frozen=True)

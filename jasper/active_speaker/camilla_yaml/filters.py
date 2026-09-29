@@ -9,8 +9,8 @@ from typing import Any, Mapping, Sequence
 
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
-from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
-from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.audio_routes.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
+from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec
 from jasper.speaker_layout import SUB_CROSSOVER_ORDER
 
 from ..camilla_names import (
@@ -747,7 +747,7 @@ def _emit_commissioning_filter_definitions(
     # The delay lane: definitions only for the roles the caller named.
     #
     # ONE `fmt` pass over the raw microsecond value and no intermediate
-    # rounding — `_emit_delay_filter` formats through `jasper.camilla_emit.fmt`,
+    # rounding — `_emit_delay_filter` formats through `jasper.audio_routes.camilla_emit.fmt`,
     # which IS `delay_graph.quantized_delay_ms`'s implementation, so a proof
     # recomputing from the same `delay_us` matches by construction.
     delays = dict(measurement_delays_us or {})

@@ -346,7 +346,7 @@ class RingWire:
 def resolve_ring_wire(topology: Any = None) -> RingWire:
     """Resolve the per-box SHM ring wire.
 
-    ``topology`` is an :class:`~jasper.output_topology.OutputTopology` (typed
+    ``topology`` is an :class:`~jasper.audio_routes.output_topology.OutputTopology` (typed
     loosely because this module stays import-cheap for the socket-activated web
     surfaces, so the topology layer is imported lazily). Pass the box's saved
     topology where it is in hand; ``None`` answers for the shipped conf.d

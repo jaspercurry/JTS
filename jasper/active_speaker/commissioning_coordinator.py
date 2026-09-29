@@ -15,8 +15,8 @@ from .applied_identity import applied_identity
 from .calibration_level import load_calibration_level_state
 from .crossover_preview import build_crossover_preview
 from .design_draft import load_design_draft
-from jasper.output_topology import OutputTopology
-from jasper.output_topology_store import load_output_topology
+from jasper.audio_routes.output_topology import OutputTopology
+from jasper.audio_routes.output_topology_store import load_output_topology
 from .measurement_programs import (
     PURPOSE_ROOM, PURPOSE_SPEAKER, PROGRAM_ROWS, near_field_drivers, programs_for_topology,
 )

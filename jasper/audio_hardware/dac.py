@@ -7,7 +7,7 @@
 This module is deliberately IO-free. It describes known output hardware
 capabilities and quirks; it does not probe ALSA, read env files, render
 system config, or restart services. Runtime ownership stays with
-``jasper.output_topology``, ``jasper.output_hardware`` once landed,
+``jasper.audio_routes.output_topology``, ``jasper.audio_routes.output_hardware`` once landed,
 ``jasper-audio-hardware-reconcile``, and ``jasper-outputd``.
 """
 from __future__ import annotations

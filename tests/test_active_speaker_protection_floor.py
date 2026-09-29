@@ -83,7 +83,7 @@ from jasper.active_speaker.test_signal_plan import (
     protective_tweeter_highpass_frequency_hz,
     strictest_crossover_highpass_hz,
 )
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from tests._log_events import event_fields
 from tests.active_speaker_fixtures import (
     mono_output_topology,

@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.aec_sweep import AEC3_LAB_KNOBS, _normalize_knob_value
+from jasper.audio_routes.aec_sweep import AEC3_LAB_KNOBS, _normalize_knob_value
 from jasper.config import Config
 
 _ENV_EXAMPLE = Path(__file__).resolve().parent.parent / ".env.example"

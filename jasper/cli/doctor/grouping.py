@@ -1174,7 +1174,7 @@ def check_crossover_unit_installed() -> CheckResult:
     A missing or unparseable unit on an active leader is a real gap (the
     reconciler PR would have nothing to arm), so it warns."""
     from ...multiroom.config import is_active_leader
-    from ...output_topology import OutputTopologyError
+    from jasper.audio_routes.output_topology import OutputTopologyError
 
     label = "grouping: crossover unit"
     cfg = evidence.grouping_config()

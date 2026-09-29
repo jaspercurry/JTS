@@ -872,7 +872,7 @@ def test_enhanced_aec_post_persists_then_starts_allowlisted_oneshot(
 ):
     base, _ = server_with_coordinator
     import jasper.control.server as srv_mod
-    from jasper import enhanced_aec
+    from jasper.audio_routes import enhanced_aec
 
     statuses = iter([
         {

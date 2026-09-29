@@ -26,7 +26,7 @@ from jasper.active_speaker import (
 )
 from jasper.active_speaker.environment import classify_camilla_config_text
 from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
-from jasper.camilla_emit import MONO_SUM_GAIN_DB
+from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB
 
 # Reuse the canonical preset fixtures.
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset

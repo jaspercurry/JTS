@@ -67,7 +67,7 @@ from ..log_event import log_event
 from ..local_sources import local_source_lifecycle
 from jasper.playback_state.music_sources import Source
 from ..service_units import read_unit_states, unit_active, unit_loaded
-from ..source_intent import (
+from jasper.audio_routes.source_intent import (
     request_source_intent,
     source_intent_enabled,
 )

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper import audio_quality
+from jasper.audio_routes import audio_quality
 
 SCRIPT = Path(__file__).resolve().parent.parent / "deploy/bin/jasper-render-asound-conf"
 

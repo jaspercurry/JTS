@@ -22,7 +22,7 @@ from jasper.dsp_control.dsp_apply import (
 )
 from jasper.json_fields import issue as _issue
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 
 from jasper.dsp_control.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from ._common import gate as _gate

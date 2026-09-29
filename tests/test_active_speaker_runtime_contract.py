@@ -39,7 +39,7 @@ from jasper.active_speaker.environment import (
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
-from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
+from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
 from jasper.active_speaker.output_contract import (
     CONTRACT_ACTIVE_MONO_2WAY,
     CONTRACT_ACTIVE_MONO_3WAY,
@@ -87,8 +87,8 @@ from tests._camilla_readback_double import (
 )
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import driver_domain_graph, mono_output_topology, passive_stereo_output_topology
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import (
     read_topology_fingerprint_stamp,
     statefile_topology_stamp_path,
     topology_fingerprint_stamp,

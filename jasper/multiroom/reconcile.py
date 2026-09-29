@@ -345,7 +345,7 @@ def _systemctl_unit_state(query: str, unit: str) -> bool | None:
     return ``None`` with one warning. Completed commands are classified by their
     explicit state TEXT, not return code alone, so a manager/D-Bus error cannot
     masquerade as disabled or inactive. Classification itself lives in
-    jasper.systemd_probe (shared with jasper.source_intent); this wrapper
+    jasper.systemd_probe (shared with jasper.audio_routes.source_intent); this wrapper
     keeps only the observability this caller wants on an unresolved probe.
     """
     result = unit_state(query, unit, timeout=_SYSTEMCTL_CONTROL_TIMEOUT_SEC)

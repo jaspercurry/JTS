@@ -33,7 +33,7 @@ from jasper.service_state.spotify_router import (
     Router,
 )
 from jasper.audio_control.volume_coordinator import VolumeCoordinator
-from jasper.volume_curve import percent_to_db
+from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_control.volume_handoff import SourceHandoff
 from jasper.service_state.volume_persistence import VolumePersistence
 

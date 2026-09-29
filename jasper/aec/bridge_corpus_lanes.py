@@ -20,7 +20,7 @@ import os
 from queue import Empty, Queue
 from typing import Any, Callable
 
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,

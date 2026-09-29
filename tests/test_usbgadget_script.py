@@ -1045,7 +1045,7 @@ def test_shell_and_python_name_readers_cannot_disagree(tmp_path: Path, body: str
     assert proc.stdout == read_state(str(state)).name
 
 
-# jasper.usb_mic.read_intent's own cap, tighter than the identity reader's
+# jasper.audio_routes.usb_mic.read_intent's own cap, tighter than the identity reader's
 # 64 KiB. The rows either side of it are the shapes a byte count taken after
 # shell mangling (stripped trailing newlines, deleted NULs) would misjudge.
 _INTENT_CAP = 4096
@@ -1073,7 +1073,7 @@ def test_shell_and_python_intent_readers_cannot_disagree(tmp_path: Path, body: b
     """Only an explicit, valid `enabled` composes p_chmask=1; every other
     reading, the over-cap file included, is Off. An unbalanced quote
     (`="enabled`) is the one shape left out — it resolves Off."""
-    from jasper.usb_mic import usb_mic_enabled
+    from jasper.audio_routes.usb_mic import usb_mic_enabled
 
     intent = tmp_path / "usb_mic.env"
     intent.write_bytes(body)

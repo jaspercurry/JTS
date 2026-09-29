@@ -25,7 +25,7 @@ from jasper.aec.bridge_telemetry import (
     BridgeStats,
 )
 from jasper.cli.doctor import aec as doctor_aec
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     USB_MIC_HEADER_BYTES,
     USB_MIC_HEADER_STRUCT,
     USB_MIC_PACKET_MAGIC,

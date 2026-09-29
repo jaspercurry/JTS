@@ -18,7 +18,7 @@
 // drawn curve was up to 1.7 dB off what CamillaDSP played. So this script also
 // checks every shelf case against CamillaDSP's OWN shelf coefficients
 // (v4.1.3 src/filters/biquad.rs) evaluated at fixture.shelf_emission — the
-// exact `q` jasper.camilla_stereo_prefix.emit_filter_spec writes.
+// exact `q` jasper.audio_routes.camilla_stereo_prefix.emit_filter_spec writes.
 //
 // Usage: node scripts/check-peq-parity.mjs   (exit 0 = parity holds)
 // Run it from a maintainer check when touching either implementation.

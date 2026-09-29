@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper import enhanced_aec
+from jasper.audio_routes import enhanced_aec
 from jasper.aec import bridge_engines
 from jasper.cli import enhanced_aec_install
 from jasper.json_fields import sha256_file

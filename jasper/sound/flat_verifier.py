@@ -34,11 +34,11 @@ from jasper.active_speaker.output_contract import (
     topology_allows_flat_dac_graph,
 )
 from jasper.dsp_control.camilla_config_contract import playback_is_pipe
-from jasper.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
+from jasper.audio_routes.camilla_emit import FLAT_PROGRAM_WIDTH, mono_sum_sources
 from jasper.json_fields import issue as _issue
 from jasper.multiroom.snapfifo import SNAPFIFO
-from jasper.output_topology import OutputTopology, OutputTopologyError
-from jasper.output_topology_store import load_output_topology_strict
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology_store import load_output_topology_strict
 from jasper.sound.camilla_yaml import flat_graph_channel_plan
 
 # Callers may add display text, but must never infer policy from it.
@@ -175,7 +175,7 @@ def _flat_hard_muted_outputs(text: str, playback_channels: Any) -> frozenset[int
 
 
 # The flat family's one Mixer step. Its emitter of record,
-# ``jasper.camilla_emit.emit_master_gain_pipeline``, hard-codes the same literal
+# ``jasper.audio_routes.camilla_emit.emit_master_gain_pipeline``, hard-codes the same literal
 # for the same reason: the name IS the byte contract of every flat config in the
 # field, so there is nothing to parameterise.
 _MASTER_GAIN_MIXER = "master_gain"
@@ -214,7 +214,7 @@ def _flat_mono_fold_proved(text: str, fold_output: int) -> bool:
       this one summed, and CamillaDSP skips a ``bypassed:`` step entirely;
     * that mixer feeds ``fold_output`` from BOTH program channels, neither
       source muted, order-free (a mixer is a sum);
-    * each feed carries :data:`~jasper.camilla_emit.MONO_SUM_GAIN_DB` and its
+    * each feed carries :data:`~jasper.audio_routes.camilla_emit.MONO_SUM_GAIN_DB` and its
       polarity: two unity feeds sum 6 dB hotter and a mono track then clips
       against ``volume_limit: 0.0``.
 

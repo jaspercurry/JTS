@@ -24,7 +24,7 @@ from jasper.dsp_control.camilla_config_contract import read_camilla_devices_conf
 from jasper.dsp_control.dsp_apply import CamillaConfigValidationResult, validate_camilla_config
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.paths import CANONICAL_CAMILLA_CONFIG_DIR as DEFAULT_CAMILLA_CONFIG_DIR
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputTopology,
     SpeakerGroup,
     subwoofer_speaker_groups,

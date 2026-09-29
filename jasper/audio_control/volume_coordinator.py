@@ -59,7 +59,7 @@ from jasper.audio_control.volume_carrier import CamillaCarrier
 from jasper.audio_control.volume_measurement_gate import MeasurementGate
 from jasper.audio_resources.volume_owner import VolumeOwner
 from jasper.audio_control.volume_scales import native_to_listening_level
-from jasper.volume_curve import (
+from jasper.audio_routes.volume_curve import (
     canonical_target_db,
     main_mute_for_level,
     percent_to_db,

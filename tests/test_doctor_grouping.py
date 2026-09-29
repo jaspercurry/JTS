@@ -23,7 +23,7 @@ from .doctor_test_support import (
     _make_unit_states_fake,
     _registered_check_names,
 )
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology
 
 _LEADER = dict(enabled=True, role="leader", channel="left", bond_id="x")
 _FOLLOWER = dict(

@@ -22,7 +22,7 @@ from jasper.dsp_control.dsp_apply import (
 )
 from jasper.json_fields import issue as _issue, utc_now_iso as _utc_now
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from jasper.service_units import AUDIO_HARDWARE_RECONCILE_UNIT
 from jasper.active_speaker.crossover_preview import current_crossover_preview
 

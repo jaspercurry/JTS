@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping
 
 from jasper.playback_state import wake_legs
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_ENV,
     AEC3_SWEEP_SOURCE_USB,
@@ -46,7 +46,7 @@ from jasper.mics.xvf3800 import (
     CHIP_AEC_PRIMARY_LEG_ENV,
     CORPUS_CHIP_AEC_ENABLED_ENV,
 )
-from jasper.output_hardware import published_dac_id
+from jasper.audio_routes.output_hardware import published_dac_id
 from . import runtime_probe
 from .runtime_probe import (
     AEC3_SWEEP_LEGS,

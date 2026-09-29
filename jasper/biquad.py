@@ -119,7 +119,7 @@ class FilterSpec:
 
 
 # The floor biquad_coeffs clamps q to, and the smallest Q
-# jasper.camilla_emit.fmt's "%.4f" spells faithfully into CamillaDSP's YAML
+# jasper.audio_routes.camilla_emit.fmt's "%.4f" spells faithfully into CamillaDSP's YAML
 # (below it the emitter writes "q: 0.0000", a document that fails at apply
 # time). Below this floor an evaluated chain is not the filter that was
 # asked for: the evaluator silently widens it and the emitter silently

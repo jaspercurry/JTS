@@ -8,14 +8,14 @@ from dataclasses import replace
 
 import pytest
 
-from jasper import output_topology as output_topology_mod
-from jasper import output_topology_evaluation
+from jasper.audio_routes import output_topology as output_topology_mod
+from jasper.audio_routes import output_topology_evaluation
 from jasper.audio_hardware import dac
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     OutputHardwareState,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     DEFAULT_PAIRING_INTENT,
     OUTPUT_TOPOLOGY_KIND,
     PAIRING_INTENTS,
@@ -28,7 +28,7 @@ from jasper.output_topology import (
     topology_is_subless_passive_mains,
     unknown_output_hardware,
 )
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     new_topology_draft,
     topology_hardware_from_state,
 )

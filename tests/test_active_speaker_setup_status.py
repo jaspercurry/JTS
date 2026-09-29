@@ -20,9 +20,9 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import jasper.active_speaker.applied_tune as applied_tune_mod
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
-from jasper.output_topology import topology_config_fingerprint
-from jasper.output_topology import OutputTopology, OutputTopologyError
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import topology_config_fingerprint
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
+from jasper.audio_routes.output_topology_store import save_output_topology
 from tests.active_speaker_fixtures import (
     mono_output_topology,
 )

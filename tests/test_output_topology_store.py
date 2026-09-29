@@ -12,15 +12,15 @@ from unittest.mock import patch
 
 import pytest
 
-from jasper import output_topology_store as output_topology_mod
+from jasper.audio_routes import output_topology_store as output_topology_mod
 from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     bass_management_corner_hz,
     clear_topology_fingerprint_stamp,
     load_output_topology,

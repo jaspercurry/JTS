@@ -142,7 +142,7 @@ _jasper_usbgadget_env_usb_network() {
 
 jasper_usbgadget_usb_mic_enabled() {
     # True only for an explicit, valid `enabled`, the answer
-    # jasper.usb_mic.read_intent gives without its interpreter; missing or
+    # jasper.audio_routes.usb_mic.read_intent gives without its interpreter; missing or
     # corrupt is Off, which keeps p_chmask=0. 4096 is THAT reader's
     # _MAX_ENV_BYTES, tighter than the 64 KiB default. The one shape the two
     # read differently is an UNBALANCED quote (`="enabled`), which resolves

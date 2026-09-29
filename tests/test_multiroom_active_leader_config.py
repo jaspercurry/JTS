@@ -11,7 +11,7 @@ re-using the shared follower_config ladder)."""
 from __future__ import annotations
 
 from jasper import atomic_io
-from jasper import output_topology_store as output_topology_mod
+from jasper.audio_routes import output_topology_store as output_topology_mod
 from tests.active_speaker_fixtures import declared_profile_fixture
 
 from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
@@ -53,7 +53,7 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 
 @pytest.fixture(autouse=True)

@@ -32,7 +32,7 @@ from jasper.dsp_control.camilla_config_contract import (
 )
 from jasper.biquad import PeqFilter
 from jasper.dsp_control.camilla_latency import resolve_camilla_latency_for_devices
-from jasper.camilla_emit import (
+from jasper.audio_routes.camilla_emit import (
     FLAT_PROGRAM_WIDTH,
     MONO_SUM_GAIN_DB,
     emit_devices_block,
@@ -41,7 +41,7 @@ from jasper.camilla_emit import (
     fmt,
     mono_sum_sources,
 )
-from jasper.camilla_stereo_prefix import build_stereo_prefix
+from jasper.audio_routes.camilla_stereo_prefix import build_stereo_prefix
 from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
@@ -50,9 +50,9 @@ from .profile import (
     build_sound_filter_slots,
 )
 
-if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
+if TYPE_CHECKING:  # `jasper.audio_routes.output_topology` has no jasper imports, but keep
     # the runtime edge out of this hot emitter module all the same.
-    from jasper.output_topology import OutputTopology
+    from jasper.audio_routes.output_topology import OutputTopology
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ def _master_gain_mixer_yaml(
     channels onto that one output: a mono cabinet declares one full-range
     output on a 2-channel amp, so an identity mixer drops the program's other
     channel into an output it never declared. The feeds come from
-    :func:`~jasper.camilla_emit.mono_sum_sources`, which owns the clip-safe
+    :func:`~jasper.audio_routes.camilla_emit.mono_sum_sources`, which owns the clip-safe
     L+R recipe and the reason for its gain — and is PROGRAM-bounded, so a wider
     graph still sums exactly two. The complement dest keeps its identity route
     and its terminal hard mute, which :func:`_normalize_mono_fold_output`
@@ -525,7 +525,7 @@ def emit_sound_config(
             "fold collapses the program the map is spreading"
         )
     program_dests = _program_dests(dest_map)
-    # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
+    # The shared stereo-prefix builder (jasper.audio_routes.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the list once
     # and reuse it for the summary log below.
     sound_filters = build_sound_filter_slots(profile)
@@ -729,8 +729,8 @@ def flat_graph_channel_plan(
         flat_graph_muted_outputs,
         flat_graph_program_dest_map,
     )
-    from jasper.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
+    from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: keep topology off the base emitter path
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: keep topology off the base emitter path
 
     try:
         if topology is None:
@@ -904,7 +904,7 @@ def render_flat_cutover_configs(
         # Explicitly, so a corrupt artifact raises HERE rather than being
         # swallowed downstream into "mute nothing". A missing file returns an
         # empty draft (the golden case) and does not raise.
-        from jasper.output_topology_store import load_output_topology_strict  # lazy: topology needed only for cutover
+        from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: topology needed only for cutover
 
         topology = load_output_topology_strict()
     directory = Path(config_dir) if config_dir is not None else BASE_CONFIG_PATH.parent

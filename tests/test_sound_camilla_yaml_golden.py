@@ -6,7 +6,7 @@
 
 PR-2 extracts the program-domain room-PEQ → preference →
 headroom assembly out of ``jasper.sound.camilla_yaml`` into the neutral
-``jasper.camilla_stereo_prefix.build_stereo_prefix``. The refactor must be
+``jasper.audio_routes.camilla_stereo_prefix.build_stereo_prefix``. The refactor must be
 **behavior-neutral**: every existing case must emit the SAME BYTES.
 
 These goldens pin the full emitted YAML for a representative set of

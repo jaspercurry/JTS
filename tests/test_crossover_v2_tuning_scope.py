@@ -64,8 +64,8 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.biquad import FilterSpec
-from jasper.camilla_emit import emit_gain_filter
-from jasper.camilla_stereo_prefix import emit_filter_spec
+from jasper.audio_routes.camilla_emit import emit_gain_filter
+from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec
 from jasper.sound.camilla_yaml import extract_room_peqs_from_config_text
 from jasper.sound.profile import (
     CURVE_PRESETS,

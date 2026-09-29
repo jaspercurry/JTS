@@ -22,7 +22,7 @@ from jasper.dsp_control import ring_conf
 from ... import ring_header
 from ...audio_hardware.dac import latency_floor_for
 from jasper.dsp_control.fanin_coupling import RING_SLOT_FRAMES
-from ...output_hardware import active_dac_profile_id
+from jasper.audio_routes.output_hardware import active_dac_profile_id
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult, PROBE_FRAMES, run

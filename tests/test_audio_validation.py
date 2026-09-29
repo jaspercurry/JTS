@@ -8,7 +8,7 @@ from jasper import audio_validation
 from jasper.audio_resources import audio_validation_artifacts as artifacts
 from jasper.audio_control import audio_validation_hardware_checks
 from jasper.runtime_config.audio_profile_state import MicProbe
-from jasper.audio_validation_route import route_live_state_issues
+from jasper.audio_routes.audio_validation_route import route_live_state_issues
 from tests.audio_validation_fixtures import (
     _active_chip_inputs,
     _bridge_sample,

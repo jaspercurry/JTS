@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.biquad import RESPONSE_SAMPLE_RATE_HZ
-from jasper.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
+from jasper.audio_routes.camilla_emit import DEFAULT_VOLUME_LIMIT_DB
 from jasper.dsp_control.fanin_coupling import (
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,

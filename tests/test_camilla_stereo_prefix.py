@@ -4,7 +4,7 @@
 
 """Unit tests for the neutral stereo-prefix builder.
 
-``build_stereo_prefix`` (jasper.camilla_stereo_prefix) is the shared
+``build_stereo_prefix`` (jasper.audio_routes.camilla_stereo_prefix) is the shared
 program-domain assembly: room PEQs -> worst-case-boost headroom -> optional
 preamp -> preference filters, returning filter DEFINITIONS plus per-channel
 chain NAMES (not the mixer/pipeline). These tests exercise it directly on
@@ -18,7 +18,7 @@ tests/test_sound_camilla_yaml_golden.py.
 from __future__ import annotations
 
 from jasper.biquad import FilterSpec, PeqFilter
-from jasper.camilla_stereo_prefix import build_stereo_prefix, emit_filter_spec
+from jasper.audio_routes.camilla_stereo_prefix import build_stereo_prefix, emit_filter_spec
 
 
 def test_solo_cuts_only_adds_no_headroom_and_an_inert_preamp():

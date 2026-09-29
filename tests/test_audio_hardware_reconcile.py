@@ -43,14 +43,14 @@ from tests.reconcile_fixtures import (
     fake_systemctl as _fake_systemctl,
     systemctl_log as _systemctl_log,
 )
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     save_output_topology,
     load_output_topology_strict,
     read_topology_fingerprint_stamp,
     statefile_unproved_stamp_path,
     topology_fingerprint_stamp,
 )
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2121,7 +2121,7 @@ def _assert_publications_agree(tmp_path: Path) -> None:
     """After one reconcile pass, JASPER_AUDIO_DAC_ID names what the record's
     ``active_profile_id`` names — the one contract between the two."""
     from jasper.env_load import parse_env_file
-    from jasper.output_hardware import active_dac_profile_id, published_dac_id
+    from jasper.audio_routes.output_hardware import active_dac_profile_id, published_dac_id
 
     env = parse_env_file(str(tmp_path / "jasper.env"))
     recorded = active_dac_profile_id(tmp_path / "output_hardware.json")
@@ -3734,7 +3734,7 @@ def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
 ):
     """A skipped probe leaves an owned value unwritten, so --changed must
     rerun even when the physical inputs match the last successful stamp."""
-    from jasper.output_hardware import degraded_marker_path
+    from jasper.audio_routes.output_hardware import degraded_marker_path
 
     patches, expected_rc = _PROBE_FAILURES[probe]
     state_path = tmp_path / "output_hardware.json"
@@ -3757,7 +3757,7 @@ def test_a_probe_that_could_not_answer_marks_the_pass_degraded(
 def test_a_pass_whose_probes_all_answered_is_not_marked_degraded(
     monkeypatch, tmp_path: Path
 ):
-    from jasper.output_hardware import degraded_marker_path
+    from jasper.audio_routes.output_hardware import degraded_marker_path
 
     state_path = tmp_path / "output_hardware.json"
     result = _run_reconcile(

@@ -68,7 +68,7 @@ from . import household_credential
 from . import restart_broker
 from . import state_aggregate as _state_aggregate
 from . import volume_ops as _volume_ops
-from ..volume_curve import percent_to_db
+from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from ..watchdog import Heartbeat
 from .audio_incidents import IncidentStore

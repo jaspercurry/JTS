@@ -29,7 +29,7 @@ from .dac_content_ring import (
     dac_content_ring_servable,
 )
 from .tts_route import VOICE_PARK_ENV, expected_grouping_tts_route
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +257,7 @@ def output_topology_state() -> tuple[bool | None, bool]:
             classify_output_contract,
             topology_allows_flat_dac_graph,
         )  # lazy: import cost — same active_speaker tree
-        from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
+        from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_reconcile pins the store lookup
 
         topology = load_output_topology_strict()
         active = active_playback_route_capability(topology).active_group_count > 0

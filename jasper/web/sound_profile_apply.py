@@ -492,7 +492,7 @@ async def _live_draft_profile(
     # match_loudness does move the trim, at one swap; the property this buys
     # is only "not draft-derived". Safe because the trim is comfort accounting,
     # not a clip guard — `devices.volume_limit` stays the hard ceiling regardless
-    # (`jasper.camilla_stereo_prefix`). The cost is that match-loudness stops
+    # (`jasper.audio_routes.camilla_stereo_prefix`). The cost is that match-loudness stops
     # tracking the draft until save.
     output_trim_db = _output_trim(load_profile(profile_path), settings)
     sound_filter_count = len(build_sound_filters(profile))

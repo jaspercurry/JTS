@@ -4,12 +4,12 @@
 
 """Shared topology declarations and observed hardware inputs."""
 
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     OutputCardFact,
     OutputHardwareState,
     classify_output_cards,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_ACTIVE_DEVICE_ID,
     OUTPUT_TOPOLOGY_KIND,

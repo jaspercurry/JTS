@@ -39,7 +39,7 @@ from jasper.runtime_config.audio_profile_state import (
     build_audio_profile_status,
     runtime_env_from_mapping,
 )
-from jasper.aec_sweep import (
+from jasper.audio_routes.aec_sweep import (
     AEC3_SWEEP_SOURCE_USB,
     AEC3_SWEEP_SOURCE_XVF,
 )

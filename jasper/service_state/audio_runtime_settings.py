@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence, TypedDict
 
 from jasper.audio_hardware.dac import latency_floor_for
-from jasper.audio_runtime_overrides import (
+from jasper.audio_routes.audio_runtime_overrides import (
     DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH,
     RuntimeOverrideEntry,
 )

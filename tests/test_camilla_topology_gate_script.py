@@ -5,7 +5,7 @@
 """Hardware-free coverage for deploy/bin/jasper-camilla-topology-gate.
 
 Covers the shell gate and the Python surfaces on both sides of it: the stamps
-jasper.output_topology publishes, the record
+jasper.audio_routes.output_topology publishes, the record
 jasper.control.camilla_topology_gate_state reads back, and jasper-doctor's
 check_camilla_topology_gate.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from jasper.control import camilla_topology_gate_state as gate_state
-from jasper.output_topology_store import (
+from jasper.audio_routes.output_topology_store import (
     STATEFILE_TOPOLOGY_STAMP_SUFFIX,
     STATEFILE_UNPROVED_STAMP_SUFFIX,
 )

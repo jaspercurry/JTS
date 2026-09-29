@@ -19,19 +19,19 @@ import struct
 import time
 from typing import Any, Callable, Mapping
 
-from .atomic_io import (
+from jasper.atomic_io import (
     locked_update_env_file,
     read_json_mapping,
     read_regular_bytes_nofollow,
 )
-from .json_fields import as_float, as_mapping as _mapping
-from .env_file import read_value
-from .env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
+from jasper.json_fields import as_float, as_mapping as _mapping
+from jasper.env_file import read_value
+from jasper.env_load import SOURCE_INTENT_ENV, USB_MIC_ENV_FILE as INTENT_PATH
 from jasper.playback_state.music_sources import Source
-from .identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
-from .source_intent import source_intent_enabled
-from .service_units import USBGADGET_SERVICE
-from .systemd_probe import unit_active
+from jasper.identity.speaker_name import DEFAULT_SPEAKER_NAME, runtime_name
+from jasper.audio_routes.source_intent import source_intent_enabled
+from jasper.service_units import USBGADGET_SERVICE
+from jasper.systemd_probe import unit_active
 from jasper.device_probe.usbgadget import GADGET_CONFIGFS_PATH
 
 INTENT_ENV_OWNER = "JTS /aec USB mic control"
@@ -172,7 +172,7 @@ def usb_mic_leg_choices(env: Mapping[str, str]) -> list[dict[str, Any]]:
         "label": "Same as JTS voice",
         "description": "Follows the microphone stream JTS uses for voice.",
     }]
-    from .mics import xvf3800  # lazy: import cost, the XVF profile stays out of jasper-usbmic
+    from jasper.mics import xvf3800  # lazy: import cost, the XVF profile stays out of jasper-usbmic
 
     plan = xvf3800.chip_beam_plan_from_env(env)
     if plan is None:

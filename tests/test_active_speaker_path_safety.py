@@ -29,7 +29,7 @@ from jasper.active_speaker.path_safety import (
 )
 from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.active_speaker.startup_load import build_startup_load_preflight
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from tests.active_speaker_fixtures import (
     mono_output_topology,
     valid_camilla_config as _valid_config,

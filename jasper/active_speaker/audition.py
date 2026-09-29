@@ -387,7 +387,7 @@ async def start_audition(
         prove_desired_graph,
     )
     from jasper.dsp_control.dsp_apply import dsp_writer_lock  # lazy: test_active_speaker_audition patches dsp_apply.dsp_writer_lock
-    from jasper.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology  # lazy: test_active_speaker_audition pins the store lookup
 
     _refuse_if_graph_is_claimed()
     applied = load_applied_baseline_profile_state()

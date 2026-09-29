@@ -54,7 +54,7 @@ from jasper.active_speaker.program_admission import (
 from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
 from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
-from jasper.camilla_emit import emit_gain_filter, emit_linkwitz_riley
+from jasper.audio_routes.camilla_emit import emit_gain_filter, emit_linkwitz_riley
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
     KIND_SUMMED_SWEEP,

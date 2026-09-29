@@ -48,7 +48,7 @@ from ..paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefile
 from ..log_event import log_event
 from .config import GroupingConfig
 from .role_stash import RoleStash
-from jasper.output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ async def precheck_active_follower(
     from jasper.active_speaker.profile import ActiveSpeakerConfigError
     from .active_profile import build_grouped_profile  # lazy: optional tuning dependencies
     from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     program_channel = program_channel_for(cfg.channel)
 
@@ -307,7 +307,7 @@ async def restore_active_camilla_solo(
     """
     from jasper.active_speaker.graph_selector import safe_graph_for_current_topology
     from jasper.dsp_control.dsp_apply import apply_dsp_config, dsp_writer_lock
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     cam = camilla_factory()
     async with dsp_writer_lock(
@@ -458,7 +458,7 @@ async def prove_live_bass_extension_graph(
         classify_active_bass_extension_graph,
     )
     from jasper.active_speaker.staging import staged_metadata_path
-    from jasper.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology_strict  # lazy: test_multiroom_follower_config pins the store lookup
 
     deadline = asyncio.get_running_loop().time() + settle_timeout_s
     while True:

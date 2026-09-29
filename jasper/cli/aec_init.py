@@ -25,7 +25,7 @@ from typing import Any
 
 from jasper.chip_aec import health as chip_aec_health
 from jasper.chip_aec import shipped as shipped_alignment
-from jasper import output_hardware
+from jasper.audio_routes import output_hardware
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
 from jasper.config import env_bool

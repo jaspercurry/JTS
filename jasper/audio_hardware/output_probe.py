@@ -12,7 +12,7 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     APPLE_USB_VENDOR_ID,
     APPLE_USB_PRODUCT_ID,

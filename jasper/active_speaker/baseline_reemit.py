@@ -15,7 +15,7 @@ from jasper import atomic_io
 from jasper.active_speaker import baseline_apply, candidate_parts, measurement_emit
 from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 from jasper.sound import settings
 
 

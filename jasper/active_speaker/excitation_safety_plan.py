@@ -32,7 +32,7 @@ from jasper.audio_measurement.admission.excitation_admission import (
 from jasper.audio_measurement.room_boundary import AUDIO_BAND_TOP_HZ
 from jasper.json_fields import finite_float, require_finite, require_sha256_hex
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology
+from jasper.audio_routes.output_topology import OutputTopology
 
 from .driver_protection import (
     FULL_RANGE_ROLES,

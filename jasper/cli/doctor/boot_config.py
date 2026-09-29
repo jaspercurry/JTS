@@ -25,7 +25,7 @@ from ...audio_hardware.i2s_hat import (
     managed_i2s_hat_block_present,
 )
 from ...control.transport_eligibility import I2S_DAC_OVERLAY_CHECK_NAME as CHECK_NAME
-from ...output_topology import OutputTopologyError
+from jasper.audio_routes.output_topology import OutputTopologyError
 from ._evidence import evidence
 from ._registry import doctor_check
 from ._shared import CheckResult

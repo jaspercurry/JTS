@@ -91,7 +91,7 @@ def _cmd_render_flat_cutover(args: argparse.Namespace) -> int:
     """
 
     from jasper.dsp_control.camilla_config_contract import parse_camilla_devices_config
-    from jasper.output_topology import OutputTopologyError
+    from jasper.audio_routes.output_topology import OutputTopologyError
     from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
     try:

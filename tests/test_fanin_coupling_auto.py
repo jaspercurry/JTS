@@ -36,7 +36,7 @@ from jasper.dsp_control.fanin_coupling import (
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
 )
-from jasper.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology_store import save_output_topology
 from tests._log_events import event_field_maps
 
 
@@ -69,7 +69,7 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
 
 
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
     from jasper.local_sources import markers
     from jasper.playback_state.music_sources import Source
 
@@ -89,7 +89,7 @@ def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatc
 def test_usbsink_desired_on_but_follower_parked_disarms_effective_gate(
     monkeypatch,
 ):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
     from jasper.local_sources import markers as markers
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
@@ -110,7 +110,7 @@ def test_usbsink_desired_on_but_follower_parked_disarms_effective_gate(
 def test_usbsink_desired_on_but_derived_lifecycle_not_ready_disarms(
     monkeypatch,
 ):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
     from jasper.local_sources import markers as markers
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: True)
@@ -121,7 +121,7 @@ def test_usbsink_desired_on_but_derived_lifecycle_not_ready_disarms(
 
 
 def test_usbsink_canonical_off_dominates_stale_enabled_mirror(monkeypatch):
-    from jasper import source_intent
+    from jasper.audio_routes import source_intent
 
     monkeypatch.setattr(source_intent, "source_intent_enabled", lambda _source: False)
     monkeypatch.setattr(

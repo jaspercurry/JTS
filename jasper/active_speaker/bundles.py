@@ -52,7 +52,7 @@ from jasper.audio_measurement.admission.excitation_artifacts import (
 )
 from jasper.json_fields import sha256_file
 from jasper.log_event import log_event
-from jasper.output_topology import OutputTopology, canonical_fingerprint
+from jasper.audio_routes.output_topology import OutputTopology, canonical_fingerprint
 from jasper.paths import resolve_state_path
 
 from . import measurement as _measurement

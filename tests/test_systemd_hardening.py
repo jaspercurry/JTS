@@ -374,7 +374,7 @@ def _blocking_start_cost_sec(name: str, active: set[str]) -> float:
 
     PID 1 completes the start job only once the named unit *and* every unit it
     pulls with Wants=/Requires=/BindsTo= while ordering itself After= them have
-    reported terminal, recursively -- the rule jasper.source_intent already
+    reported terminal, recursively -- the rule jasper.audio_routes.source_intent already
     models for the USB gadget and AirPlay. Each unit's own ceiling is its
     declared TimeoutStartSec, or the manager default when it declares none;
     Type= does not shorten that, because an ExecStartPre= can hang a Type=simple

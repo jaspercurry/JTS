@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterable
 from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 from jasper.percentiles import nearest_rank_percentile
-from jasper.usb_mic import (
+from jasper.audio_routes.usb_mic import (
     RELAY_STATUS_PATH,
     USB_HOST_MIC_UDP_PORT,
     USB_MIC_HEADER_BYTES,

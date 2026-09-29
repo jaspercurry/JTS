@@ -74,7 +74,7 @@ source "${REPO_DIR}/deploy/lib/install/journald.sh"
 source "${REPO_DIR}/deploy/lib/install/cues.sh"
 source "${REPO_DIR}/deploy/lib/install/doctor.sh"
 # Hash-pinned vendored source for the optional enhanced AEC engine. This file
-# is also parsed by jasper.enhanced_aec; do not duplicate these values here.
+# is also parsed by jasper.audio_routes.enhanced_aec; do not duplicate these values here.
 # shellcheck source=jasper_aec3/enhanced-aec-source.env
 source "${REPO_DIR}/jasper_aec3/enhanced-aec-source.env"
 

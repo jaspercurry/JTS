@@ -17,7 +17,7 @@ from jasper.active_speaker.path_safety import (
 )
 from jasper.active_speaker.staging import stage_protected_startup_config
 from jasper.active_speaker.startup_load import build_startup_load_preflight
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     OutputTopology,
 )
 from tests._log_events import event_fields, event_records

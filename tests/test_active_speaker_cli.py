@@ -393,8 +393,8 @@ from tests.active_speaker_fixtures import (
 from tests.test_active_speaker_startup_load import (
     _staged,
 )
-from jasper.output_topology_store import save_output_topology
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.audio_routes.output_topology_store import save_output_topology
+from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
 
 class _FakeController:

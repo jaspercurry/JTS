@@ -30,7 +30,7 @@ from .refusal_copy import (
     CrossoverV2Refused,
     driver_sensitivity_undeclared_message,
 )
-from jasper.output_topology import topology_is_subless_passive_mains
+from jasper.audio_routes.output_topology import topology_is_subless_passive_mains
 from jasper.speaker_layout import measurement_target_id
 from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
 from jasper.active_speaker.design_inputs import declared_by_target
@@ -196,7 +196,7 @@ def resolve_conductor_context(
     from jasper.active_speaker.session_volume_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches session_volume_plan
         LevelUnresolved, session_measurement_volume_db,
     )
-    from jasper.output_topology_store import load_output_topology  # lazy: test_correction_crossover_v2_conductor_context pins the store lookup
+    from jasper.audio_routes.output_topology_store import load_output_topology  # lazy: test_correction_crossover_v2_conductor_context pins the store lookup
 
     topology = topology if topology is not None else load_output_topology()
     # A subless passive main has no active crossover, so the gates below — all

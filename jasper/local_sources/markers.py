@@ -24,8 +24,8 @@ from ..multiroom.effective_role import (
     effective_local_sources_park_reason,
     read_effective_role_status,
 )
-from ..output_hardware import current_usb_data_role
-from ..source_intent import source_intent_enabled
+from jasper.audio_routes.output_hardware import current_usb_data_role
+from jasper.audio_routes.source_intent import source_intent_enabled
 from .registry import local_source_lifecycles
 
 logger = logging.getLogger(__name__)

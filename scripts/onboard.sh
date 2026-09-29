@@ -532,7 +532,7 @@ PI_MODEL="$(
 )"
 [[ -n "$PI_MODEL" ]] || PI_MODEL="unknown Raspberry Pi model"
 
-OUTPUT_STATUS_CMD="/opt/jasper/.venv/bin/python -c 'from jasper.output_hardware import load_state; s = load_state(); print(\"\" if s is None else s.status)'"
+OUTPUT_STATUS_CMD="/opt/jasper/.venv/bin/python -c 'from jasper.audio_routes.output_hardware import load_state; s = load_state(); print(\"\" if s is None else s.status)'"
 OUTPUT_STATUS="$(
     ssh -o BatchMode=yes "${PI_USER}@${HOST}" "$OUTPUT_STATUS_CMD" \
         2>/dev/null | tr -d '\r' | head -n1 || true

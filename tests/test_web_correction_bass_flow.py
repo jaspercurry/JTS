@@ -32,7 +32,7 @@ def test_render_page_escapes_hostname_in_back_link():
 
 def _corner(monkeypatch, corner_hz=None):
     monkeypatch.setattr(
-        "jasper.output_topology_store.bass_management_corner_hz", lambda: corner_hz
+        "jasper.audio_routes.output_topology_store.bass_management_corner_hz", lambda: corner_hz
     )
 
 

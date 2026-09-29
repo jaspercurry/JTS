@@ -10,7 +10,7 @@ import json
 import subprocess
 from types import SimpleNamespace
 
-from jasper.aec_sweep import aec3_sweep_config_payload
+from jasper.audio_routes.aec_sweep import aec3_sweep_config_payload
 from jasper.cli import aec_sweep_config
 
 

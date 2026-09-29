@@ -18,7 +18,7 @@ from jasper.audio_hardware.dac import (
     percent_pinned_control_for,
 )
 from jasper.json_fields import issue as _issue
-from jasper.output_hardware import (
+from jasper.audio_routes.output_hardware import (
     ObservedOutput,
     OutputCardFact,
     OutputHardwareState,
@@ -27,7 +27,7 @@ from jasper.output_hardware import (
     detected_hardware_adoption_precondition,
     normalize_output_device_id,
 )
-from jasper.output_topology import (
+from jasper.audio_routes.output_topology import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     SCHEMA_VERSION,
@@ -36,7 +36,7 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
 )
-from jasper.output_topology_store import load_output_topology, topology_path
+from jasper.audio_routes.output_topology_store import load_output_topology, topology_path
 
 CLOCK_DOMAIN_REPORT_KIND = "jts_output_clock_domain_report"
 

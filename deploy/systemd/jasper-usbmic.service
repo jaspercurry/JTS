@@ -13,7 +13,7 @@ RuntimeDirectoryMode=0755
 # Inline sh rather than the venv CLI: PartOf= two units plus
 # Restart=on-failure re-runs this gate many times per boot, and importing
 # the relay CLI just to answer it costs ~25 MB against MemoryMax=48M.
-# The intent match mirrors jasper.usb_mic.read_intent (last assignment
+# The intent match mirrors jasper.audio_routes.usb_mic.read_intent (last assignment
 # wins; whitespace then surrounding ' and " stripped) but not its 4 KiB /
 # UTF-8 limits, which is safe only because jasper-usbgadget-up composes
 # p_chmask through the same policy: a file Python calls corrupt reaches

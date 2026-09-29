@@ -321,7 +321,7 @@ bash scripts/audit-wake-corpus.sh data/enrollment_positives --expect-raw0
   target distribution and are reviewed separately).
 - `--expect-leg <leg>` repeated for cheap-USB sessions (`ref`, `usb_raw`,
   `usb_webrtc`; `usb_dtln` only where USB DTLN was enabled). AEC3 sweep pilots
-  discover their legs from `jasper/aec_sweep.py` and still accept legacy sweep
+  discover their legs from `jasper/audio_routes/aec_sweep.py` and still accept legacy sweep
   legs so same-day recordings stay auditable.
 
 It checks session metadata and `include_raw_mic_0` flags, missing legs,

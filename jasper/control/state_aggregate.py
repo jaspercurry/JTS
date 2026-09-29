@@ -25,7 +25,7 @@ from ..fanin.status import (
     FANIN_INPUT_SOURCE_DIRECT,
     fanin_usbsink_input,
 )
-from ..output_hardware import load_state as load_output_hardware_state
+from jasper.audio_routes.output_hardware import load_state as load_output_hardware_state
 from jasper.audio_control.renderer import PROBE_ORDER
 from jasper.playback_state.source_state import usbsink_direct_audible
 from ..active_speaker.setup_status import read_active_speaker_setup_status
@@ -39,7 +39,7 @@ from ..platform.status_socket import (
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
 )
-from ..volume_diagnostics import build_volume_policy_snapshot
+from jasper.audio_routes.volume_diagnostics import build_volume_policy_snapshot
 from jasper.service_state.volume_persistence import VolumePersistence, configured_path as volume_state_path
 from jasper.audio_control.volume_state import VolumeState
 from . import (

@@ -55,7 +55,7 @@ tree's only ``systemctl``. Direct calls elsewhere are the design, not drift:
 - **Root oneshots and CLIs** (``deploy/bin/*``, the ``jasper-*-reconcile``
   units, ``jasper.cli.*`` under sudo): they hold the privilege themselves and
   are outside the client set. This is also where the un-brokerable verbs live —
-  ``jasper.source_intent`` runs ``enable``/``disable`` directly because the
+  ``jasper.audio_routes.source_intent`` runs ``enable``/``disable`` directly because the
   non-root broker deliberately cannot (see the closed-vocabulary note above).
   Such helpers may still call :func:`manage_units` for the allowlist and audit
   trail; the root fallback below keeps them working when the broker is down.
@@ -191,7 +191,7 @@ START_ONLY_UNITS = frozenset({
     # stop/restart the reconciler (mirrors jasper-wifi-scan-repair).
     USB_COUPLING_UNIT,
     # Root oneshot that persists /sources enable/disable intent
-    # (jasper.source_intent). enable/disable is manage-unit-files, which the
+    # (jasper.audio_routes.source_intent). enable/disable is manage-unit-files, which the
     # non-root broker deliberately cannot run (can't be unit-scoped; systemctl
     # restart consults it → would re-open restart-of-any-unit). So the /sources/
     # wizard (jasper-web, non-root) records intent in source_intent.env and

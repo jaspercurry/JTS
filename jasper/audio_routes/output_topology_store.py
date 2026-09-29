@@ -16,15 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .audio_hardware.dac import (
+from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
     label_for as _dac_label_for,
 )
-from .atomic_io import advisory_file_lock, atomic_write_text
-from .log_event import log_event
-from .output_hardware import OutputHardwareState, load_state as load_output_hardware_state
-from .output_topology import (
+from jasper.atomic_io import advisory_file_lock, atomic_write_text
+from jasper.log_event import log_event
+from jasper.audio_routes.output_hardware import OutputHardwareState, load_state as load_output_hardware_state
+from jasper.audio_routes.output_topology import (
     OutputHardware,
     OutputTopology,
     OutputTopologyError,
@@ -33,11 +33,11 @@ from .output_topology import (
     topology_config_fingerprint,
     unknown_output_hardware,
 )
-from .paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
-from .speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
-from .transition_log import TransitionLog
+from jasper.paths import OUTPUT_TOPOLOGY_PATH as DEFAULT_TOPOLOGY_PATH
+from jasper.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ
+from jasper.transition_log import TransitionLog
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("jasper.output_topology_store")
 
 OUTPUT_TOPOLOGY_LOCK_TIMEOUT_SEC = 15.0
 

@@ -27,7 +27,7 @@ from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
-from jasper import output_topology_store as output_topology
+from jasper.audio_routes import output_topology_store as output_topology
 from ._prescription_common import PRESCRIPTION_MALFORMED
 
 from . import alignment_prescription as alignment

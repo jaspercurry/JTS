@@ -4,7 +4,7 @@
 
 """Runtime output contract of the saved speaker topology.
 
-``jasper.output_topology`` owns the declarative physical-output contract; this
+``jasper.audio_routes.output_topology`` owns the declarative physical-output contract; this
 leaf classifies it and derives the flat-DAC and roleful predicates and the ring
 widths, plus the emitted-graph source names the verifier recognises. It reads
 no CamillaDSP graph (graph legality is
@@ -17,10 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from jasper.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
+from jasper.audio_routes.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup
 from jasper.speaker_layout import LOWEST_DRIVER_ROLE_BY_MAIN_MODE, cardioid_cabinet_channels
 
-from jasper.camilla_emit import FLAT_PROGRAM_WIDTH
+from jasper.audio_routes.camilla_emit import FLAT_PROGRAM_WIDTH
 from jasper.json_fields import issue as _issue
 from jasper.ring_header import MAX_RING_CHANNELS, MIN_RING_CHANNELS
 
