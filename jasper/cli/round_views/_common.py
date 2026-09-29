@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
-    resolve_set as resolve_set, ROUND_INPUT_ERRORS as _ROUND_TOOL_ERRORS,
+    resolve_set as resolve_set, ROUND_INPUT_ERRORS,
     default_out as default_out, set_artifact_name as set_artifact_name,
     round_artifact_dir as round_artifact_dir, subject as subject,
     RoundViewsError, round_inputs,
@@ -48,6 +48,7 @@ from jasper.cli._refusal import (
 from jasper.cli._report import write_report
 
 AUTHORITY_TIER = "advisory (analysis views save artifacts)"
+_ROUND_TOOL_ERRORS = ROUND_INPUT_ERRORS
 
 #: What every round-directory positional takes, said once. Both shapes: the
 #: live one is what a round leaves on the speaker, the banked one is what the
