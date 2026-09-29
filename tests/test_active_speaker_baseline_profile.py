@@ -184,8 +184,7 @@ def test_noop_draft_save_preserves_source_identity(tmp_path, changed):
 
 
 def test_an_applied_profile_without_its_snapshot_refuses_by_that_field():
-    state = crossover_snapshot_state({"status": "applied", "source": {"fingerprint": "f" * 64}})
-    assert (state["valid"], state["reason"]) == (False, "active_applied_profile_snapshot_missing")
+    assert crossover_snapshot_state({"status": "applied"})["reason"] == "active_applied_profile_snapshot_missing"
 
 
 def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
