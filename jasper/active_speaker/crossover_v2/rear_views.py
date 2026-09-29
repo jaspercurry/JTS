@@ -222,8 +222,8 @@ def _declared_references(packet: Mapping[str, Any]) -> set[str]:
 
 
 def _rear_takes(round_dir: Path) -> tuple[dict[str, tuple[str, Mapping[str, Any], SeatTake]], dict[str, Any] | None]:
-    """A banked round's analysed rear takes by id, each with its candidate and
-    record; or, for a round whose takes this build cannot read, none and the
+    """A banked round's kept, analysed rear takes by id, each with its candidate
+    and record; or, for a round whose takes this build cannot read, none and the
     gap a disclosure carries rather than refusing (ADR-0101). The reader raises
     a plain error for a take banked under a superseded schema (#2902)."""
     try:
@@ -255,8 +255,8 @@ def _previous_reference(
     """Each scored position's reference against the newest earlier banked
     round's reference there, by ADR-0391's rule (#5404 09-20 item 7): a
     disclosure, never a refusal (ADR-0101). Each side is its round's reference
-    as the rear view reads it: every analysed rear take of the reference
-    candidate at the place, a deselected retake included."""
+    as the rear view reads it: every kept, analysed rear take of the reference
+    candidate at the place, so a deselected retake is on neither side."""
     listed = {take["take_id"]: group for row in view_sets(manifest)
               if _candidate_key(row["capture_basis"].get("candidate_id")) == candidate
               for group in [SetTakes.from_row(row)] for take in group.takes}

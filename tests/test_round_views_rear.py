@@ -50,7 +50,7 @@ from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BAN
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
-    REASON_REFERENCE_NOT_IN_SET, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
+    REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
 )
 from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
 from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
@@ -678,10 +678,11 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
 ):
     """ADR-0391: at each position, the reference against the newest earlier
     banked round's reference there, on the whole ``rear_level`` ladder. Both
-    sides are built as the rear view builds its own reference, a deselected
-    retake included. A position without one names its reason, an earlier
-    reference this build cannot read names its round, and the rear view
-    writes either way."""
+    sides are built as the rear view builds its own reference, from the takes
+    its round kept: a deselected retake is on neither side, and a take its set
+    does not list leaves that position unscored. A position without an earlier
+    reference names its reason, an earlier reference this build cannot read
+    names its round, and the rear view writes either way."""
     # The real reader, so an earlier round's takes refuse or are passed over as they are on a speaker.
     monkeypatch.setattr(room_selection, "analyzed_measurements", measurement_analysis.analyzed_measurements)
     at = {deg: doc_pose_key({"position_deg": deg, "vertical_deg": 0, "mark_distance_m": 1.0}) for deg in (0, -20, 20)}
@@ -704,11 +705,12 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
                       unlisted={_MUTED: (-20,)}, band_hz=(40.0, 20_000.0))
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": "2026-09-21T12:00:00Z"}))
 
-    previous = packet_of(root)[0]["rear"][0]["comparison"]["previous_reference"]
+    comparison = packet_of(root)[0]["rear"][0]["comparison"]
+    previous = comparison["previous_reference"]
     on_axis = previous.pop(at[0])
 
-    assert previous == {at[-20]: {"status": "unavailable", "reason": REASON_REFERENCE_NOT_IN_SET},
-                        at[20]: {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE}}
+    assert comparison["positions_unscored"] == {at[-20]: "no_reference_take"}
+    assert previous == {at[20]: {"status": "unavailable", "reason": REASON_NO_EARLIER_REFERENCE}}
     named = {"round_id": "earlier", "set_id": _MUTED}
     if earlier != "banked":
         assert {key: value for key, value in on_axis.items() if key != "detail"} == (
@@ -718,7 +720,7 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
     bands = {tuple(band["band_hz"]): band for band in on_axis["bands"]}
     assert {key: on_axis[key] for key in ("status", "round_id", "set_id", "ladder")} == {
         "status": "available", **named, "ladder": "rear_level"}
-    assert sorted(on_axis["take_ids"]) == [f"{_MUTED}-0-{repeat}" for repeat in (1, 2, 3)]
+    assert sorted(on_axis["take_ids"]) == [f"{_MUTED}-0-{repeat}" for repeat in (1, 2)]
     assert list(bands) == list(LEVEL_BANDS_HZ)
     # The later round swept from 40 Hz, so the shared band leaves (30, 60) Hz uncovered.
     assert bands.pop((30.0, 60.0)) == {"status": "unavailable", "reason": REASON_COVERAGE_SHORT,
@@ -895,7 +897,7 @@ def test_a_pair_take_that_banked_no_curve_refuses_by_field(tmp_path, banked_cand
 
     row = next(view for view in views if view["view"] == "rear")
     assert (row["status"], row["reason"], row["detail"]["field"], row["detail"]["role"]) == (
-        "unavailable", "take_curves_not_banked", "curves", rear_views.PAIR_ROLES[0])
+        "unavailable", TAKE_CURVES_NOT_BANKED, "curves", rear_views.PAIR_ROLES[0])
 
 
 def test_a_pair_round_never_asks_the_summed_analyzer(tmp_path, banked_candidates, monkeypatch):
