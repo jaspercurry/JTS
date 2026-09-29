@@ -11,6 +11,7 @@ bundle's banked take records and the identity its ``info.json`` states.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from . import bundles
 from .frequency_view import FrequencyRun
 from .measurement_analysis import banked_document
 from .measurement_document import frequency_run_from_documents
-from .crossover_v2.record_index import has_banked_take, measurement_documents
+from .crossover_v2.record_index import Measurement, has_banked_take, measurement_documents
 
 
 @dataclass(frozen=True)
@@ -72,12 +73,17 @@ def _bundle_identity(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
-def load_measurement(run: ArchivedMeasurement, *, run_reference_db: float | None = None) -> FrequencyRun:
-    """Load one archive entry from its banked take records."""
+def load_measurement(
+    run: ArchivedMeasurement, *, run_reference_db: float | None = None,
+    documents: Iterable[tuple[Measurement, Mapping[str, Any]]] | None = None,
+) -> FrequencyRun:
+    """Load one archive entry from its banked take records, or from ``documents``
+    when the caller already read them (:func:`measurement_documents`)."""
 
     direct = frequency_run_from_documents(
         run_id=run.id,
-        documents=[banked_document(document) for _, document in measurement_documents(run.bundle_dir)],
+        documents=[banked_document(document) for _, document in (
+            measurement_documents(run.bundle_dir) if documents is None else documents)],
         started_at=run.started_at,
         state=run.state,
         run_reference_db=run_reference_db,

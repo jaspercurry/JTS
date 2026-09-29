@@ -536,7 +536,8 @@ def _pair_segments(
     """
     parsed = {}
     for role in PAIR_ROLES:
-        curve = take_curve(record, role)
+        # A take that banked an empty list banked no segment, so it refuses by field (#2902).
+        curve = take_curve(record, role, required=record.get("curves") == [])
         found = parse_curve_complex(curve) if curve is not None else None
         if found is None:
             return None

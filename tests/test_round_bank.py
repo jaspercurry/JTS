@@ -153,7 +153,6 @@ def test_a_round_with_no_walk_to_index_is_banked_without_one(tmp_path):
     session_dir, state_path = _live_session(tmp_path)
     for take in session_dir.rglob("positions/lateral_*.json"):
         take.unlink()
-    write_manifest(session_dir)
 
     banked = bank_round(
         session_dir,
@@ -537,7 +536,7 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
     monkeypatch.chdir(tmp_path)
     if purpose == "bass":
         target, _, _, bank = request.getfixturevalue("summed_capture_bundle")
-        asyncio.run(bank("baseline"))
+        asyncio.run(bank("baseline", measurement_purpose=purpose))
         write_manifest(target, program=purpose)
     elif purpose == "room":
         target = bank_seat_round(tmp_path)
@@ -565,7 +564,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
         source = bank_seat_round(tmp_path / "source")
     else:
         source, _, _, bank = request.getfixturevalue("summed_capture_bundle")
-        asyncio.run(bank("baseline"))
+        asyncio.run(bank("baseline", measurement_purpose=purpose))
         write_manifest(source, program=purpose)
     inputs = round_inputs(source)
     mark_state(inputs.session_dir, "applied")

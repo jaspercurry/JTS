@@ -67,7 +67,9 @@ def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,
     try:
         atomic_write_json(path, {**payload, "schema": row.schema})
         if view == "frequency":
-            summary.update(frequency_image(payload, target / "frequency.png", low_end=True))
+            kept = [f"{run['slot']}:{curve['id']}" for run in payload["runs"] for curve in run["series"]
+                    if curve.get("selected")]
+            summary.update(frequency_image(payload, target / "frequency.png" if kept else None, series=kept, low_end=True))
     except OSError as exc:
         return {"view": view, **unavailable(REASON_UNWRITABLE, str(exc))}
     return {**summary, "view": view, "status": "written", "out": str(path), "bytes": path.stat().st_size}

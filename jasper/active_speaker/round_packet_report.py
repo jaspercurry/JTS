@@ -207,7 +207,8 @@ def packet_index(
     lines.append("## Decisions")
     lines += [f"{name}: " + "; ".join(f"sets {', '.join(ids)}: {summary}" for summary, ids in values.items())
               for name, values in decisions.items()]
-    takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"] for take in group["takes"]}
+    takes = {(group["set_id"], take["take_id"], take["role"]): take for group in packet["sets"]
+             for take in group["takes"] if take["selected"]}
     by_role: dict[str, list[Mapping[str, Any]]] = {}
     for (_set_id, _take_id, role), take in takes.items():
         by_role.setdefault(role, []).append(take)
@@ -217,7 +218,7 @@ def packet_index(
                 ("window ms", "gate_window_ms"), ("validity floor Hz", "validity_floor_hz"),
                 ("trusted floor Hz", "trusted_floor_hz"), ("source", "floor_source")))
             + f" ({len(rows)} takes)")
-    for series in packet["series"]:
+    for series in (series for series in packet["series"] if series["selected"]):
         stats = []
         for name, rows in series["stats"].items():
             for label, row in ([(name, rows)] if "value" in rows else [(f"{name}[{key}]", value) for key, value in rows.items()]):

@@ -12,7 +12,7 @@ from itertools import combinations, product
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.active_speaker.crossover_v2.round_inputs import SetTakes
+from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, take_records
 from jasper.active_speaker.round_verdicts import common_measured_band, held_pairs, mark_takes, pair_spread
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.platform.json_fields import finite_float
@@ -32,7 +32,7 @@ def _cmd_repeat_set(args: argparse.Namespace) -> int:
     if len(args.round_dirs) != 1:
         raise RoundViewsError("repeat --set needs one round")
     inputs = round_inputs(Path(args.round_dirs[0]))
-    selected = resolve_set(inputs, args.set)
+    selected = resolve_set(inputs, args.set).with_records(inputs.session_dir)
     takes = selected.on_axis
     if len(takes) < 2:
         raise RoundViewsError("repeat needs two selected takes at the mark")
@@ -86,9 +86,10 @@ def _cmd_repeat_rounds(args: argparse.Namespace) -> int:
               for path in args.round_dirs]
     marks: dict[tuple[Any, Any], list[tuple[int, str, list[Mapping[str, Any]]]]] = {}
     for index, (_path, inputs) in enumerate(rounds):
+        joined = take_records(inputs.session_dir)
         for row in view_sets(read_run_manifest(inputs)):
             basis = row["capture_basis"]
-            takes = mark_takes(SetTakes.from_row(row), basis.get("role"))
+            takes = [joined(take) for take in mark_takes(SetTakes.from_row(row), basis.get("role"))]
             if takes:
                 marks.setdefault((basis.get("side"), basis.get("role")), []).append((index, row["set_id"], takes))
     drivers = []

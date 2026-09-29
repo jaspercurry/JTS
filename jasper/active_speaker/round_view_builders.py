@@ -20,6 +20,7 @@ from .measurement_bass import bass_view
 from .measurement_programs import PURPOSE_ROOM, run_purposes
 from .crossover_v2.gate_sweep import reference_gated_measurement
 from .crossover_v2.rear_views import rear_document
+from .crossover_v2.record_index import measurement_documents, take_purpose
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
@@ -46,10 +47,13 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                 raise
             manifest = {}
         info = json.loads((inputs.session_dir / "info.json").read_text())
+        documents = list(measurement_documents(inputs.session_dir))
         run = load_measurement(ArchivedMeasurement(info["session_id"], inputs.session_dir, info.get("started_at"),
-                                                   info.get("state")), run_reference_db=run_reference_db)
+                                                   info.get("state")), run_reference_db=run_reference_db,
+                               documents=documents)
         if unbanked := run.metadata.get("curves"):
             raise EvidenceUnavailable(unbanked["reason"], {"bundle_dir": str(inputs.session_dir)})
+        by_take = {document.get("take_id"): (row, document) for row, document in documents}
         rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [
             (group, take) for group in manifest.get("sets", ()) for take in group["takes"]]
         series = []
@@ -63,9 +67,12 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                                            **gate_fields(curve.details),
                                            "window": "gated" if curve.details.get("gate_window_ms") else "ungated"})
             series.append(curve)
-            if take.get("measurement_purpose") != PURPOSE_ROOM or not take.get("selected") or role != "summed":
+            if not take.get("selected") or role != "summed":
                 continue
-            record_path = take["record_id"]
+            row, document = by_take[take["take_id"]]
+            if take_purpose(row, document) != PURPOSE_ROOM:
+                continue
+            record_path = row.path
             if record_path not in derived:
                 derived[record_path] = reference_gated_measurement(inputs.session_dir, record_path,
                                                                  calibration_root=calibration_root)

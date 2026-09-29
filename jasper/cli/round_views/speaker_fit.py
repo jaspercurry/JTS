@@ -6,6 +6,7 @@
 import argparse
 from pathlib import Path
 
+from jasper.active_speaker.crossover_v2.round_inputs import with_records
 from jasper.active_speaker.linearization_budget import DEFAULT_FIT_BUDGET
 from jasper.active_speaker.speaker_fit import SpeakerFitUnreadable, speaker_fit
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -15,7 +16,8 @@ from ._common import ANSWER_SCHEMAS, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, answer
 def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     inputs = round_inputs(Path(args.round_dir))
     budget = {key: getattr(args, key) for key in DEFAULT_FIT_BUDGET if getattr(args, key) is not None}
-    result = stage(EXIT_UNREADABLE, (SpeakerFitUnreadable,), speaker_fit, inputs, read_run_manifest(inputs), args.set,
+    manifest = with_records(inputs.session_dir, read_run_manifest(inputs))
+    result = stage(EXIT_UNREADABLE, (SpeakerFitUnreadable,), speaker_fit, inputs, manifest, args.set,
                    args.take, budget=budget)
     return answer(args.command, schema=ANSWER_SCHEMAS[args.command],
                   subject=subject(inputs, set_id=result["set_id"], take_ids=[result["take_id"]]),

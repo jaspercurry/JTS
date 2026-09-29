@@ -143,14 +143,16 @@ def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
     return [curve for curve in curves if isinstance(curve, Mapping)] or None
 
 
-def take_curve(record: Mapping[str, Any], role: str) -> Mapping[str, Any] | None:
+def take_curve(record: Mapping[str, Any], role: str, *, required: bool = False) -> Mapping[str, Any] | None:
     """The curve a take record banked for ``role``; ``None`` when it banked none
     for it, as a take whose analysis failed banks none (ADR-0383). A record that
-    banked neither refuses by that field (#2902)."""
-    if "curves" not in record and "analysis_error" not in record:
+    banked neither, or none for a ``required`` role, refuses by that field,
+    naming the role (#2902)."""
+    curve = next((curve for curve in record.get("curves") or () if curve.get("role") == role), None)
+    if curve is None and (required or ("curves" not in record and "analysis_error" not in record)):
         raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {
-            "record": record.get("record_id"), "take_id": record.get("take_id"), "field": "curves"})
-    return next((curve for curve in record.get("curves") or () if curve.get("role") == role), None)
+            "record": record.get("record_id"), "take_id": record.get("take_id"), "field": "curves", "role": role})
+    return curve
 
 
 def parse_curve_magnitude(

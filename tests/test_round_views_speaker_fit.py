@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, exception_detail
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    RoundViewsError, prescription_sources, read_run_manifest, round_artifact_dir, round_inputs,
+    RoundViewsError, prescription_sources, read_run_manifest, round_artifact_dir, round_inputs, with_records,
 )
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands, analysis_curve_records
@@ -75,6 +75,11 @@ def _bank_candidate(directory: Path, analysis: dict, preset: ActiveSpeakerPreset
     candidate = replace(_candidate(preset=preset, trims=trims), analysis=analysis).to_dict()
     (directory / "candidate.json").write_text(json.dumps(candidate))
     return candidate
+
+
+def _joined(inputs) -> dict:
+    """The round's run manifest as speaker-fit reads it: each kept take with its record."""
+    return with_records(inputs.session_dir, read_run_manifest(inputs))
 
 
 @pytest.fixture
@@ -185,7 +190,7 @@ def test_speaker_fit_discloses_handover_level_shift(speaker_round, monkeypatch, 
     root, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    manifest = read_run_manifest(inputs)
+    manifest = _joined(inputs)
     _bank_candidate(directory, json.loads((directory / "candidate.json").read_text())["analysis"], fc_hz=fc_hz)
     original = fit_branches
 
@@ -215,7 +220,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["record_id"])
+    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["artifacts"]["record_id"])
     for curve in record["curves"]:
         response = response_from_banked_curve(curve)[0]
         level = 10 if curve["role"] == "tweeter" else 0
@@ -233,7 +238,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
             if role == "tweeter" and cut_db else ())) for role, fit in branches.fits.items()})
 
     path.write_text(json.dumps(record))
-    manifest = read_run_manifest(inputs)
+    manifest = _joined(inputs)
     manifest["sets"][0]["capture_basis"].update(gating_applied=True, role="tweeter")
     monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", controlled_fit)
     rows = _fits(inputs, manifest, prescription_sources(inputs), {})
@@ -249,7 +254,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
 @pytest.mark.parametrize("changes", [
     {"poses": 1}, {"poses": 2}, {}, {"role": "woofer"}, {"role": "main"},
     {"verifies": False}, {"verifies": False, "cloud_planned": False}, {"floor": 100.0}, {"floor": 8000.0},
-    {"horn_positions": 3}, {"horn_positions": 1}, {"disagree": True}, {"stimulus": "reference_axis"}, {"basis_role": "summed"}, {"missing_curve": True},
+    {"horn_positions": 3}, {"horn_positions": 1}, {"disagree": True}, {"stimulus": "reference_axis"}, {"basis_role": "summed"},
 ])
 def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsys, changes):
     root, record, program, *_ = speaker_round
@@ -290,16 +295,14 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
         analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
                                   driver_responses=(replace(measured, repeat_responses=(measured, measured)),))
         curves = [c for c in record["curves"] if c["role"] != role and role != "main"] + analysis_curve_records(analysis, program)
-        if changes.get("missing_curve") and index == 2:
-            curves = [c for c in curves if c["role"] != role]
-        take = {**record, "curves": curves, "take_id": f"design-{index}", "position_deg": deg, "pose_kind": kind, "phase": phase}
+        take ={**record, "curves": curves, "take_id": f"design-{index}", "position_deg": deg, "pose_kind": kind, "phase": phase}
         path = directory / "positions" / f"{take['take_id']}.json"
         path.write_text(json.dumps(take))
         rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
     group = manifest_set(rows, set_id=role, selected={r["take_id"] for _, r in rows[:poses] + rows[3:6]})
     group["capture_basis"].update(role=changes.get("basis_role", role), stimulus=changes.get("stimulus"))
     write_manifest(root, groups=[group])
-    manifest = read_run_manifest(inputs)
+    manifest = _joined(inputs)
     flags = ["--boost-floor-hz", str(changes["floor"])] if "floor" in changes else []
     assert round_views.main(["speaker-fit", str(root), "--set", role, "--take", "design-0", *flags]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -327,7 +330,7 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
                           if f["role"] == role and f["take_id"] == "design-0")
         assert packet_fit["position_spread_db"] == fit["position_spread_db"]
         assert packet_fit["class_prior_hz"] == fit["class_prior_hz"]
-    if changes.get("missing_curve") or changes.get("basis_role") or poses < 2:
+    if changes.get("basis_role") or poses < 2:
         assert fit["position_spread_db"] is None
 
 
@@ -467,7 +470,7 @@ def test_speaker_fit_reads_the_rounds_candidate_or_applied_profile(speaker_round
     assert looked_up == ([] if trial else ["base-fp"])
     proposal = json.loads(capsys.readouterr().out)["linearization"]["woofer"]["fit"]
     inputs = round_inputs(root)
-    fit, = _fits(inputs, read_run_manifest(inputs), prescription_sources(inputs), {})
+    fit, = _fits(inputs, _joined(inputs), prescription_sources(inputs), {})
     assert fit["filters"] == proposal["filters"] and fit["filters"]
     assert fit["residual_rms_db"] == proposal["residual_rms_db"] is not None
 
@@ -479,7 +482,7 @@ def test_packet_preserves_missing_round_base_error(speaker_round):
     (directory / "candidate.json").unlink()
     (root / "applied-profile.json").unlink(missing_ok=True)
     with pytest.raises(RoundViewsError) as exc:
-        speaker_fit(inputs, read_run_manifest(inputs), "speaker-set")
+        speaker_fit(inputs, _joined(inputs), "speaker-set")
     fit, = write_round_packet(root, str(directory / "run_manifest.json"), [])["fits"]
     assert fit["reason_summary"] == {"unavailable": exception_detail(exc.value)}
     assert fit["filters"] is fit["residual_rms_db"] is None
@@ -495,18 +498,37 @@ def test_unknown_set_uses_registry_refusal(speaker_round, capsys):
     assert result["detail"]["set_id"] == "unknown"
 
 
-@pytest.mark.parametrize("field", ["curves", "validity_floor_hz", "repeat_curves"])
-def test_a_take_banked_without_a_fit_input_refuses_by_that_field(speaker_round, capsys, field):
-    """#2902: every banked take carries its curves, and every curve both fit
-    inputs, so one without refuses by name; the run manifest's copy is never read."""
+@pytest.mark.parametrize("damaged,field", [
+    ("take", "curves"), ("take", "woofer"), ("take", "validity_floor_hz"), ("take", "repeat_curves"),
+    ("design_pose", "woofer"),
+])
+def test_a_take_banked_without_a_fit_input_refuses_by_that_field(speaker_round, capsys, damaged, field):
+    """#2902: every banked take carries a curve for each role it swept, and every
+    curve both fit inputs, so the fitted take or a design pose beside it without
+    one refuses by that field and role; the run manifest's copy is never read."""
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    del (record if field == "curves" else record["curves"][0])[field]
-    take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
-    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_REFUSED
+    broken = json.loads(json.dumps(record))
+    if field == "woofer":
+        broken["curves"] = [curve for curve in broken["curves"] if curve["role"] != field]
+    else:
+        del (broken if field == "curves" else broken["curves"][0])[field]
+    rows = [(row.path, broken if damaged == "take" else record)]
+    if damaged == "design_pose":
+        rows += [(str(Path(row.path).with_name(f"pose{deg}.json")), {**pose, "take_id": f"pose{deg}", "position_deg": deg})
+                 for deg, pose in ((-20, record), (20, broken))]
+    for path, take in rows:
+        take_artifact_path(inputs.session_dir, path).write_text(json.dumps(take))
+    group = manifest_set(rows, set_id="speaker-set")
+    group["capture_basis"].update(role="woofer")
+    write_manifest(root, groups=[group])
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", record["take_id"]]) == (
+        round_views.EXIT_REFUSED)
     refusal = json.loads(capsys.readouterr().out)
-    assert (refusal["reason"], json.loads(refusal["detail"])["field"]) == (TAKE_CURVES_NOT_BANKED, field)
+    detail = json.loads(refusal["detail"])
+    assert (refusal["reason"], detail["field"], detail["role"]) == (
+        TAKE_CURVES_NOT_BANKED, "curves" if field == "woofer" else field, "woofer")
 
 
 @pytest.mark.parametrize("applied", [False, True])
@@ -631,7 +653,7 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
     other = {**group, "set_id": "other", "capture_basis": {**group["capture_basis"], **other_identity},
              "takes": [own_record(original, record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0})]}
     write_manifest(root, groups=[retake, group, stale, other])
-    manifest = read_run_manifest(inputs)
+    manifest = _joined(inputs)
     clouds = design_clouds(manifest)
     assert {key: cloud.n_positions for key, cloud in clouds.items()} == (
         {"first": 2, "retaken": 1, "older": 1, "other": 1} if anonymous else {"first": 3, "retaken": 3, "older": 3, "other": 1})
@@ -705,7 +727,7 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     assert off_axis["pose"]["deg"] == 20
     assert off_axis["committed"]["delay_us"] == 900
     inputs = round_inputs(root)
-    fit = speaker_fit(inputs, read_run_manifest(inputs), "timing", take["take_id"])
+    fit = speaker_fit(inputs, _joined(inputs), "timing", take["take_id"])
     for answer in (pair, json.loads(json.dumps(fit["alignment"]))):
         assert {key: answer[key] for key in expected} == expected
         assert answer["applied"]["candidate"] == "applied-candidate"
@@ -849,11 +871,10 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         count = pose_count if group["base"] else candidate_count
         command = ["jasper-round-views", "sweep", str(banked.path), "--scope", "round", "--set", group["set_id"]]
         assert (command in tools) == (count >= 2)
-        for take in group["takes"]:
-            assert {key: take[key] for key in ("gate_window_ms", "validity_floor_hz", "trusted_floor_hz", "floor_source")} == {
-                "gate_window_ms": 7.0, "validity_floor_hz": 142.9,
-                "trusted_floor_hz": f_trusted_floor_hz(.007), "floor_source": FLOOR_SEARCH_BOUND,
-            }
+        for take in group["takes"]:  # a deselected take's record is never read, so it states no gate
+            gates = {"gate_window_ms": 7.0, "validity_floor_hz": 142.9,
+                     "trusted_floor_hz": f_trusted_floor_hz(.007), "floor_source": FLOOR_SEARCH_BOUND}
+            assert {key: take[key] for key in gates} == (gates if take["selected"] else dict.fromkeys(gates))
     for series in drawn:
         stats = series["stats"]
         if series["role"] == "woofer":

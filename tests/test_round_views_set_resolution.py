@@ -26,7 +26,7 @@ from jasper.cli.round_views import build_parser, main
 from jasper.cli.round_views._common import RoundSetRefused, resolve_set
 from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
-from tests.run_manifest_fixture import manifest_set, own_record, write_manifest
+from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 
 
@@ -43,8 +43,8 @@ def two_sets(tmp_path):
             take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
             records.append((row.path, record))
         group = manifest_set(records)
-        group["takes"].append(own_record(group["takes"][0], records[0][1], take_id=f"refused-{number}",
-                                         quality={"status": "refused", "fault": "clipped"}, selected=False))
+        group["takes"].append({**group["takes"][0], "take_id": f"refused-{number}",
+                               "quality": {"status": "refused", "fault": "clipped"}, "selected": False})
         groups.append(group)
     manifest = write_manifest(root, program="room", groups=groups)
     return root, manifest
@@ -63,7 +63,7 @@ def test_set_selects_manifest_takes_and_files_its_own_artifact(two_sets, capsys,
     group = manifest["sets"][index]
     selected = resolve_set(round_inputs(root), group["set_id"])
     assert selected.capture_basis == group["capture_basis"]
-    assert [take["take_id"] for take in selected.takes] == [take["take_id"] for take in group["takes"]]
+    assert selected.takes == tuple(group["takes"])
     assert selected.selected_ids == tuple(take["take_id"] for take in group["takes"] if take["selected"])
     assert main(["room", str(root), "--set", group["set_id"]]) == 0
     answer, document = artifact_answer(capsys)

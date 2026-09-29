@@ -31,7 +31,7 @@ from ._common import (
 def _cmd_directivity(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
-    selected = resolve_set(inputs, args.set)
+    selected = resolve_set(inputs, args.set).with_records(inputs.session_dir)
     document = set_directivity(selected)
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(

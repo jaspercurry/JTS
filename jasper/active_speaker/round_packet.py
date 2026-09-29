@@ -115,9 +115,10 @@ def store_banked_evidence(round_dir: Path) -> Exception | None:
 
 def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
     destination = round_dir / PACKET_FILENAME
-    manifest = with_records(round_inputs(round_dir).session_dir, json.loads(manifest_path.read_text()))
+    manifest = json.loads(manifest_path.read_text())
     if len({run["level"]["run"]["level_db"] for run in manifest.get("runs", ())}) < 2:
         return destination
+    manifest = with_records(round_inputs(round_dir).session_dir, manifest, disclose=True)
     candidates = sorted({row["capture_basis"]["candidate_id"] for row in manifest["sets"] if not row["base"]})
     try:
         table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
@@ -153,7 +154,7 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
                                          clouds_by_set=clouds, sources=sources)
                     computed[take_id] = {role: {**proposal, "trim_decision": result["trim_decision"]}
                                          for role, proposal in result["linearization"].items()}
-                except ROUND_INPUT_ERRORS as exc:
+                except ROUND_INPUT_ERRORS + (EvidenceUnavailable,) as exc:
                     computed[take_id] = {set_role: {"fit": unavailable_fit(
                         set_role, _refusal_code(exc, exception_detail(exc)))}}
             for role, proposal in computed[take_id].items():
@@ -170,16 +171,19 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
 
 
 def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """A set's takes as the packet carries them; a take that banked no record has no gate."""
+    """A set's takes as the packet carries them; only a kept take's record is read, for its gate."""
     role = SetTakes.from_row(group).role
     return [{**{key: take.get(key) for key in ("take_id", "pose", "selected", "alignment")}, "role": role,
              "screens": take.get("screens", []), "fault": take.get("fault") or (take.get("quality") or {}).get("fault"),
-             **gate_fields(take_curve(take, role) if take["record_id"] else None)} for take in group["takes"]]
+             **({"record": take["record"]} if "record" in take else {}),
+             **gate_fields(take_curve(take, role) if take["selected"] else None)} for take in group["takes"]]
 
 
 def write_round_packet(target: Path, manifest_path: str | None, views: list[dict[str, Any]]) -> dict[str, Any]:
     inputs = round_inputs(target)
-    manifest = with_records(inputs.session_dir, json.loads(Path(manifest_path).read_text())) if manifest_path else {}
+    # A kept take whose record cannot be read is disclosed, never the reason a round is not banked.
+    manifest = with_records(inputs.session_dir, json.loads(Path(manifest_path).read_text()),
+                            disclose=True) if manifest_path else {}
     purpose = run_purpose(manifest.get("program"))
     errors: list[dict[str, Any]] = []
     series: list[dict[str, Any]] = []
@@ -196,8 +200,9 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                     curve["plot"] = plot
                     group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.get("take_id")
                                         and (not curve.get("set_id") or g["set_id"] == curve["set_id"])), ({}, {}))
-                    gates = gate_fields({**((take_curve(take, curve.get("role")) if take else None) or {}), **curve})
+                    gates = gate_fields(curve)
                     series.append({"set_id": curve.get("set_id", group.get("set_id")), "take_id": curve.get("take_id"),
+                                   "selected": bool(curve.get("selected")),
                                    "candidate_id": curve.get("candidate_id") or group.get("capture_basis", {}).get("candidate_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role"),
                                    "window": curve.get("window", "gated" if gates["gate_window_ms"] else "ungated"),

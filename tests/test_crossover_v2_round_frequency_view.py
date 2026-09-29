@@ -1117,7 +1117,6 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 record = take['record']
                 if record['run_id'] != f'run-{volume}':
                     continue
-                (directory.parent.parent / take['record_path']).write_text(json.dumps(record))
                 key = record.get('candidate_id'), record.get('level_db')
                 groups.setdefault(key, []).append(take)
             manifest_groups = []
@@ -1191,10 +1190,7 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(
         verify = copy.deepcopy(manifest['sets'][-1])
         verify['set_id'] = 'd0b471e20e39'
         verify['capture_basis'].update(stimulus_id='verify', stimulus_dbfs=-30)
-        entry, artifacts = verify['takes'][0], path.parents[2]
-        record = json.loads((artifacts / entry['artifacts']['record_id']).read_text())
-        (artifacts / 'entry.json').write_text(json.dumps({**record, 'take_id': 'entry', 'phase': ignored_phase}))
-        entry.update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose, artifacts={'record_id': 'entry.json'})
+        verify['takes'][0].update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose)
         manifest['sets'].insert(0, verify)
         path.write_text(json.dumps(manifest))
     if missing_set:
