@@ -30,14 +30,12 @@ import numpy as np
 
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.level import piston_step_db
-from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
 from jasper.audio_measurement.trusted_band import TrustedBand, within_trusted
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
-from .capture_provenance import take_trusted_band
-from .position_cycle import OWN_WINDOW, take_curve
+from .position_cycle import OWN_WINDOW, curve_band, take_curve
 from .spatial import MARK_DISTANCE_M
 
 #: Where the distance step is read: above a port, below cone breakup (#5684),
@@ -116,18 +114,16 @@ def nearest_raw(driver: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 def nearfield_view(
     takes: Iterable[Mapping[str, Any]], *, radiating_diameter_mm_by_target: Mapping[str, float],
-    room: DeclaredGeometry | None = None, played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
-    banked_bands: Mapping[str, TrustedBand] = MappingProxyType({}),
+    played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),
 ) -> dict[str, Any]:
     """The kept one-driver takes of a round's run manifest, each read as its
     record (its driver's curve, purpose, level and verdict), band by band, and
     each driver's placements, raw curves and distance steps. Each placement
-    states the trusted band its take banked (``banked_bands``, by take id), or
-    else one from its distance, the declared cone and ``room``, the round's
-    declared room (ADR-0366). ``played_graphs`` is each take's played
-    CamillaDSP config by take id; a take without a graph the walker can model,
-    without its fader, or on another frequency grid than its placement's first
-    stays out of the raw curve."""
+    states the trusted band its take banked on the curve read (ADR-0366 §3).
+    ``played_graphs`` is each take's played CamillaDSP config by take id; a
+    take without a graph the walker can model, without its fader, or on
+    another frequency grid than its placement's first stays out of the raw
+    curve."""
     rows: list[dict[str, Any]] = []
     reads: list[tuple[np.ndarray, np.ndarray, tuple[float, float]]] = []
     take_bands: list[TrustedBand] = []
@@ -142,9 +138,7 @@ def nearfield_view(
         stated_m = take["pose"].get("distance_m")
         # A pose at the mark banks no distance of its own.
         distance_m = MARK_DISTANCE_M if stated_m is None else float(stated_m)
-        trusted = banked_bands.get(take["take_id"]) or take_trusted_band(
-            purpose=take.get("measurement_purpose"), kind=take["pose"].get("kind"), distance_m=stated_m, driver=driver,
-            roles=(), diameters_mm_by_target=radiating_diameter_mm_by_target, room=room)
+        trusted = curve_band(take, curve)
         graph, fader_db = played_graphs.get(take["take_id"]), (take.get("level") or {}).get("level_db")
         path_db = None if graph is None or fader_db is None else played_path_db(graph, freqs)
         # The first sweep can catch an amplifier still waking (#5684).

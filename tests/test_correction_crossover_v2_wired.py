@@ -1084,18 +1084,19 @@ def test_host_binds_session_level_only_to_check_priors(
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
 
 
-@pytest.mark.parametrize("pose,purpose,readable,band", [
-    ({"pose_kind": "bearing", "mark_distance_m": None}, "speaker", True, ("gate_floor", "far_field_ceiling", ())),
-    ({"pose_kind": "close", "mark_distance_m": 0.015, "pose_driver": "woofer:rear"}, "reference", True,
-     (None, "near_field_limit", ())),
-    ({"pose_kind": "seat", "mark_distance_m": None}, "room", True, (None, None, ())),
-    ({"pose_kind": "bearing", "mark_distance_m": None}, "speaker", False, None),
+@pytest.mark.parametrize("pose,readable,high", [
+    ({"pose_kind": "bearing", "mark_distance_m": None}, True, "far_field_ceiling"),
+    ({"pose_kind": "close", "mark_distance_m": 0.015, "pose_driver": "woofer:rear"}, True, "near_field_limit"),
+    ({"pose_kind": "seat", "mark_distance_m": None}, True, None),
+    ({"pose_kind": "bearing", "mark_distance_m": None}, False, None),
 ])
-def test_each_banked_take_carries_the_band_it_trusts(monkeypatch, caplog, pose, purpose, readable, band):
-    """A banked take carries the band it trusts, from its pose, the declared
-    cone of the drivers that played and the declared room; an unreadable room
-    banks the take without one and says so (ADR-0366 §3)."""
+def test_each_banked_curve_carries_the_band_its_window_trusts(monkeypatch, caplog, pose, readable, high):
+    """Each banked curve carries the band its window trusts, from its take's
+    pose, the declared cone of the drivers that played and the declared room:
+    a gated curve's floor is the gate's, and an ungated curve has none. An
+    unreadable room banks the curves without one and says so (ADR-0366 §3)."""
     records = SimpleNamespace(enrich=None, after_bank=None)
+    conductor = _conductor(FlowSeams(), index_phase_map={1: "verify"})
 
     def declared_room():
         if not readable:
@@ -1109,16 +1110,19 @@ def test_each_banked_take_carries_the_band_it_trusts(monkeypatch, caplog, pose, 
     correction_run_host.bind_run_door(
         host=SimpleNamespace(session_volume_plan=lambda: None),
         device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
-        production=SimpleNamespace(graph=None), conductor=_conductor(FlowSeams(), index_phase_map={1: "verify"}),
+        production=SimpleNamespace(graph=None), conductor=conductor,
         refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
         context=SimpleNamespace(radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": 114.0, "tweeter": 25.0}),
     )
 
     record = records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
-                                   "measurement_purpose": purpose, **pose})
+                                   "program": conductor.program_for_phase("verify").to_dict(), **pose})
 
-    banked = record["trusted_band"]
-    assert (None if banked is None else (banked["low_source"], banked["high_source"], banked["undeclared"])) == band
+    assert {curve["window"]: (band["low_source"], band["high_source"], band["undeclared"])
+            if (band := curve.get("trusted_band")) is not None else None for curve in record["curves"]} == (
+        {"gated": ("gate_floor", high, []), "ungated": (None, high, [])} if readable
+        else {"gated": None, "ungated": None})
+    assert "trusted_band" not in record
     assert [event["error_type"] for event in event_field_maps(caplog, "correction.take_band_not_banked")] == (
         [] if readable else ["ValueError"])
 
@@ -1287,9 +1291,10 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     assert "analysis_error" not in record
     program = ExcitationProgram.from_dict(record["program"])
     analysis = _verify_analysis(program)
-    # Every take banks its curves and analysis (ADR-0383).
-    assert (record["curves"], record["analysis"]) == (analysis_curve_records(analysis, program),
-                                                      {**analysis_json(analysis), "bass": None, "distortion": None})
+    # Every take banks its curves, each with its window's band, and its analysis (ADR-0383).
+    assert ([{key: value for key, value in curve.items() if key != "trusted_band"} for curve in record["curves"]],
+            record["analysis"]) == (analysis_curve_records(analysis, program),
+                                    {**analysis_json(analysis), "bass": None, "distortion": None})
     calibration = record["capture_calibration"]
     assert calibration["applied"] is True
     assert isinstance(calibration["calibration_id"], str)
@@ -1326,8 +1331,8 @@ _TAKE_RECORD_KEYS = frozenset({
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
     "pose", "pose_driver", "pose_index", "pose_kind", "position_axis", "position_deg", "preset", "program",
     "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
-    "stimulus_dbfs", "stimulus_id", "stimulus_ordinal", "stimulus_wav_sha256", "take_id", "targets", "trusted_band",
-    "verdict", "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
+    "stimulus_dbfs", "stimulus_id", "stimulus_ordinal", "stimulus_wav_sha256", "take_id", "targets", "verdict",
+    "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
 })
 
 

@@ -123,6 +123,9 @@ MODE_WAY1 = "full_range_passive"
 #: the compared span without re-deriving a union.
 SOLO_BAND_HZ = (200.0, 12000.0)
 SOLO_GRID_HZ = np.linspace(SOLO_BAND_HZ[0], SOLO_BAND_HZ[1], 256)
+#: The solos' gate, ms: a speaker reader reads the gated window, and its
+#: trusted floor (2.5 / T) sits under the solos' band.
+_SOLO_GATE_MS = 15.0
 
 #: The grid the VERIFY capture's own banked curve sits on. Deliberately NOT
 #: the solos' grid: the persisted VERIFY pair is on the capture's own
@@ -164,7 +167,7 @@ def _pose_curves(mode: str) -> tuple[spatial.LateralPoseCurve, ...]:
     )
     return tuple(
         spatial.LateralPoseCurve(
-            role=role, freqs_hz=SOLO_GRID_HZ, complex_tf=tf, band_hz=SOLO_BAND_HZ,
+            role=role, freqs_hz=SOLO_GRID_HZ, complex_tf=tf, band_hz=SOLO_BAND_HZ, gate_window_ms=_SOLO_GATE_MS,
         )
         for role, tf in branches
     )
@@ -193,7 +196,7 @@ def _tilted(
                 db_per_octave
                 * np.log2(curve.freqs_hz / curve.band_hz[0]) / 20.0
             ),
-            band_hz=curve.band_hz,
+            band_hz=curve.band_hz, gate_window_ms=curve.gate_window_ms,
         )
         for curve in curves
     )

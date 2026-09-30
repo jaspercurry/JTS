@@ -100,7 +100,8 @@ def speaker_round(tmp_path):
     for role, center in (("woofer", 700), ("tweeter", 5000)):
         db = 7 * np.exp(-0.5 * (np.log2(grid / center) / 0.18) ** 2)
         response = DriverResponse(role=role, freqs_hz=grid, magnitude_db=db,
-                                  complex_tf=10 ** (db / 20) + 0j, gating={}, snr=None, validity_floor_hz=180)
+                                  complex_tf=10 ** (db / 20) + 0j, gating={"window_ms": 50.0}, snr=None,
+                                  validity_floor_hz=180)
         responses.append(replace(response, repeat_responses=(response, response)))
     analysis = ProgramAnalysis(
         phase="measure", stimulus_id=program.stimulus_id, locations=(), driver_responses=tuple(responses),
@@ -291,7 +292,8 @@ def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsy
             )
             if changes["horn_positions"] == 1 and deg:
                 db = np.zeros_like(db)
-        measured = replace(response, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j)
+        measured = replace(response, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j,
+                           gating={**response.gating, "window_ms": 50.0})
         analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
                                   driver_responses=(replace(measured, repeat_responses=(measured, measured)),))
         curves = [c for c in record["curves"] if c["role"] != role and role != "main"] + analysis_curve_records(analysis, program)
@@ -389,7 +391,7 @@ def test_speaker_fit_respects_banked_trusted_floor(speaker_round, capsys, truste
           + 6 * np.exp(-0.5 * (np.log2(grid / 900) / 0.18) ** 2))
     response = DriverResponse(
         role="woofer", freqs_hz=grid, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j,
-        gating={"f_trusted_hz": trusted_floor_hz}, snr=None, validity_floor_hz=143,
+        gating={"f_trusted_hz": trusted_floor_hz, "window_ms": 50.0}, snr=None, validity_floor_hz=143,
     )
     analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
                               driver_responses=(replace(response, repeat_responses=(response, response)),))

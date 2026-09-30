@@ -16,6 +16,7 @@ import numpy as np
 
 from jasper.platform.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.trusted_band import TrustedBand, banked_band
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from ..measurement_programs import PURPOSE_SPEAKER
@@ -189,6 +190,18 @@ def take_curve(
     return curve
 
 
+def curve_band(record: Mapping[str, Any], curve: Mapping[str, Any]) -> TrustedBand:
+    """The band ``record`` banked on ``curve``, its window's own (ADR-0366
+    §3). A curve banked without one refuses by that field, naming the take,
+    role and window (#2902)."""
+    band = curve.get("trusted_band")
+    if not isinstance(band, Mapping):
+        raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {
+            "record": record.get("record_id"), "take_id": record.get("take_id"), "field": "trusted_band",
+            "role": curve.get("role"), "window": curve.get("window")})
+    return banked_band(band)
+
+
 def parse_curve_magnitude(
     curve: Mapping[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, tuple[float, float]] | None:
@@ -255,8 +268,8 @@ def select_pose_curve_pair(
     roles: tuple[str, str], vertical_deg: int = 0, take_id: str | None = None,
     search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
-    """Newest matching speaker take the round kept, with both curves through its
-    own window (:func:`take_window`) and their recorded request facts.
+    """Newest matching speaker take the round kept, with both gated curves
+    and their recorded request facts.
 
     Both roles must ride ONE take: combining transfers from different captures
     would sum across whatever moved between them. Take ids are zero-padded
@@ -274,7 +287,7 @@ def select_pose_curve_pair(
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_id is not None and document.get("take_id") != take_id)):
             continue
-        curves = take_curves(document, OWN_WINDOW)
+        curves = take_curves(document, WINDOW_GATED)
         if search_detail is not None:
             search_detail["takes_seen"] += 1
             search_detail["roles_per_take"][row.path] = dict(Counter(

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT
@@ -12,11 +13,12 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
-from jasper.audio_measurement.trusted_band import TrustedBand, trusted_band
+from jasper.audio_measurement.trusted_band import trusted_band
 from jasper.platform.json_fields import finite_float
-from ..measurement_programs import POSE_KIND_SEAT, gate_exemption
+from ..measurement_programs import POSE_KIND_SEAT
 from .measure_spec import CANDIDATE_SCOPES
 from .planning import analysis_json
+from .pose_curve import WINDOW_GATED, WINDOW_UNGATED
 from .spatial import MARK_DISTANCE_M, analysis_curve_records
 
 
@@ -36,14 +38,19 @@ def finite_json(value: Any) -> Any:
     return value
 
 
-def analysis_blocks(analysis: Any, program: ExcitationProgram) -> dict[str, Any]:
+def analysis_blocks(
+    analysis: Any, program: ExcitationProgram, bands: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """What one analysis leaves on its banked take, beside its provenance: its
     ``curves`` and ``analysis``, which a round's readers read from the take
-    itself (ADR-0395). The evidence packet's ``capture_snr`` block publishes the SNR
-    columns of ``diagnostic``.
+    itself (ADR-0395). Each curve carries the trusted band of its window from
+    ``bands`` (:func:`take_trusted_bands`); none when the take has none. The
+    evidence packet's ``capture_snr`` block publishes the SNR columns of
+    ``diagnostic``.
     """
+    curves = analysis_curve_records(analysis, program)
     return finite_json({
-        "curves": analysis_curve_records(analysis, program),
+        "curves": [{**curve, "trusted_band": bands[curve["window"]]} for curve in curves] if bands else curves,
         "analysis": {**analysis_json(analysis), "bass": getattr(analysis, "bass", None),
                      "distortion": getattr(analysis, "distortion", None)},
         "diagnostic": analysis_diagnostic_summary(analysis),
@@ -76,18 +83,19 @@ def take_distance_m(kind: str | None, distance_m: float | None) -> float | None:
     return None if kind == POSE_KIND_SEAT else MARK_DISTANCE_M if distance_m is None else float(distance_m)
 
 
-def take_trusted_band(
-    *, purpose: str | None, kind: str | None, distance_m: float | None, driver: str,
+def take_trusted_bands(
+    *, kind: str | None, distance_m: float | None, driver: str,
     roles: Sequence[str], diameters_mm_by_target: Mapping[str, float], room: DeclaredGeometry | None,
-) -> TrustedBand:
-    """The band a take trusts, from its pose, the drivers that played (its
-    ``driver`` alone, or every one of ``roles``) and the declared room
-    (ADR-0366 §3), at :func:`take_distance_m`."""
+) -> dict[str, dict[str, Any]]:
+    """The band each window of a take trusts, from its pose, the drivers that
+    played (its ``driver`` alone, or every one of ``roles``) and the declared
+    room (ADR-0366 §3), at :func:`take_distance_m`: the gated window's floor is
+    the gate's, and an ungated reading has none."""
     distance = take_distance_m(kind, distance_m)
-    return trusted_band(
-        distance_m=distance, driver=driver, room=room,
-        gated=gate_exemption(purpose, driver=driver, distance_m=distance) is None,
-        diameters_mm=tuple(diameters_mm_by_target.get(target) for target in ((driver,) if driver else roles)))
+    diameters = tuple(diameters_mm_by_target.get(target) for target in ((driver,) if driver else roles))
+    return {window: asdict(trusted_band(distance_m=distance, driver=driver, room=room,
+                                        gated=window == WINDOW_GATED, diameters_mm=diameters))
+            for window in (WINDOW_GATED, WINDOW_UNGATED)}
 
 
 def enrich_capture_record(record: Mapping[str, Any], *, layout: str | None) -> dict[str, Any]:

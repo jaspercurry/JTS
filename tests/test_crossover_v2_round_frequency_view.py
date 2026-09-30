@@ -810,7 +810,8 @@ def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monk
     analysis = analyze_program_capture(program, samples, rate, calibration=calibration.curve,
                                        geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
                                        capture_report=record["capture_integrity"])
-    decoded = analysis_blocks(replace(analysis, bass=bass_evidence(program, analysis, samples, calibration.curve)), program)
+    decoded = analysis_blocks(replace(analysis, bass=bass_evidence(program, analysis, samples, calibration.curve)), program,
+                              {curve["window"]: curve["trusted_band"] for curve in record["curves"]})
     reading = record["analysis"]["bass"]
     assert (record["curves"], reading) == (decoded["curves"], decoded["analysis"]["bass"])
     assert {curve["window"] for curve in record["curves"]} == {"ungated"}
