@@ -37,13 +37,13 @@ const state = stage => ({
   applied: {config_path: '/var/lib/camilladsp/private-config.yml', candidate_fingerprint: 'opaque-identity'},
   programs: [{id: 'speaker', title: 'Driver linearization', description: 'Fit the drivers.'}, {id: 'room', title: 'Room', description: 'Fit the room.'}],
 });
-function setup(initial = state('research'), handler = async () => ({setup: state('apply')}), clipboard = {ok: true}) {
+function setup(initial = state('research'), handler = async () => ({setup: state('apply')}), clipboard = {ok: true}, confirm = async () => true) {
   const root = make('view-body'), status = make('status'), requests = [], copies = [];
   const document = {body: make('body'), getElementById: id => id === 'view-body' ? root : status, createElement: make,
     createTextNode: textContent => ({textContent})};
   start(document, async path => path === './setup' ? initial : {prompt: 'Tune this speaker using /opt/jasper'},
     async (path, body) => { requests.push({path, body: structuredClone(body)}); return handler(path, body); },
-    async input => { assert.ok(document.body.children.includes(input)); copies.push(input.value); return clipboard.ok; }, async () => true);
+    async input => { assert.ok(document.body.children.includes(input)); copies.push(input.value); return clipboard.ok; }, confirm);
   const button = label => nodes(root).find(n => n.tag === 'button' && text(n) === label);
   return {root, status, requests, copies, button, document};
 }
@@ -108,6 +108,30 @@ test('a refused draft shows its refusal once, in the open driver details card', 
   assert.match(visible(card), /Enter this driver in its card\./);
   assert.equal(nodes(ui.root).filter(n => n.tag === 'p' && text(n) === initial.issues[0].message).length, 1);
 });
+
+for (const [stage, programs, links] of [
+  ['tune', ['speaker', 'room'], ['crossover/']],
+  ['tune', ['bass', 'room'], []],
+  ['apply', ['speaker', 'room'], []],
+]) test(`the ${stage} stage with ${programs.join(' and ')} links the measurement page ${links.length} time(s)`, async () => {
+  const initial = state(stage);
+  initial.programs = programs.map(id => ({id, title: id, description: ''}));
+  const ui = setup(initial);
+  await flush();
+  assert.deepEqual(nodes(ui.root).filter(n => n.tag === 'a').map(n => n.href), links);
+});
+
+for (const [stage, answer, asked, applied] of [['tune', false, 1, 0], ['tune', true, 1, 1], ['apply', false, 0, 1]]) {
+  test(`save to speaker in the ${stage} stage asks ${asked} time(s) and applies ${applied} time(s)`, async () => {
+    let asks = 0;
+    const ui = setup(state(stage), async () => ({result: {status: 'applied'}, setup: state('tune')}), undefined,
+      async () => { asks += 1; return answer; });
+    await flush();
+    await ui.button('Save to speaker').click();
+    assert.equal(asks, asked);
+    assert.deepEqual(ui.requests.map(request => request.path), Array(applied).fill('./setup/apply'));
+  });
+}
 
 test('failed import keeps pasted text; failed apply never reports an active setup', async () => {
   const ui = setup(undefined, async () => { throw new Error('Wrong driver target'); });
