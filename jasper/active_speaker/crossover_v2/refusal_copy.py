@@ -506,7 +506,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "bass_evidence_unavailable": "The round banked no bass reading or bass level for this prescription.",
     },
     ("register_mic_calibration", "Register microphone calibration"): {
-        "mic_calibration_file_unreadable": "The calibration file cannot be read, or holds no calibration curve.",
+        "mic_calibration_file_unreadable": "The calibration file cannot be read, is too large, or holds no calibration curve.",
         "mic_calibration_lookup_invalid": "The model and serial name no calibration that the vendor can look up.",
         "mic_calibration_none_registered": "No household microphone is registered.",
         "mic_calibration_store_unwritable": "The speaker's calibration folder cannot be written. Writing it needs sudo.",
@@ -604,7 +604,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("run_as_root", "Run it on the speaker as root"): {
         "dry_run_requires_local_host": "Dry-run reads this machine's facts. Run it on the speaker.",
         "local_state_unreadable": "The speaker's local state cannot be read by this user.",
-        "not_root": "Settings change only as root.",
+        "not_root": "This tool runs only as root.",
     },
     ("name_value", "Name a value the tool accepts"): {
         "threshold_out_of_range": "The wake threshold is not a number from 0 to 1.",
@@ -619,10 +619,10 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "restart_refused": "The setting is saved, and the restart of the voice service was refused.",
     },
     ("run_program", "Name the program to run"): {
-        "trial_program_unknown": "No measurement program measures the sections that this candidate changes.",
+        "trial_program_unknown": "No measurement program covers a section that this candidate changes.",
     },
     ("check_speaker", "Check that the speaker answers, then read its state"): {
-        "answer_lost": "The speaker's answer was lost, so the outcome is unknown.",
+        "answer_lost": "The speaker gave no usable answer.",
     },
     ("stop_audition", "Put the full graph back with jasper-audition stop"): {
         "audition_not_restored": "The audition ended, and the speaker is not back on its full graph.",
