@@ -277,6 +277,22 @@ def test_compare_with_one_take_reads_its_comparand_by_the_one_rule(
                                     "mismatched_fields", "unknown_fields"}
 
 
+def test_a_kept_record_the_rule_cannot_read_is_no_comparand(tmp_path):
+    """The rule reads each kept take with its record (ADR-0395), and one it
+    cannot read, in B's own round too, is no candidate, never the reason the
+    rule fails (ADR-0101)."""
+    store = tmp_path / "campaigns"
+    earlier = _banked(store, "e", "2026-09-20T12:00:00Z", {"base": [("e0", 0)]})
+    this = _banked(store, "r", "2026-09-21T12:00:00Z", {"base": [("r0", 0)], "cand": [("c0", 0)]})
+    for record in (this / "bundle" / "r").glob("summed/*.json"):
+        if json.loads(record.read_text())["position_id"] == "r0":
+            record.write_text("{")
+
+    found = comparand(this, "cand", "c0", "summed")
+
+    assert found is not None and (found.source, found.round_dir, found.take_id) == (COMPARAND_EARLIER_ROUND, earlier, "e0")
+
+
 def _rewritten(change):
     """A damage that edits a round's run manifest with ``change``."""
     def damage(root):

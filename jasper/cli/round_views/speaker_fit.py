@@ -16,7 +16,8 @@ from ._common import ANSWER_SCHEMAS, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, answer
 def _cmd_speaker_fit(args: argparse.Namespace) -> int:
     inputs = round_inputs(Path(args.round_dir))
     budget = {key: getattr(args, key) for key in DEFAULT_FIT_BUDGET if getattr(args, key) is not None}
-    manifest = with_records(inputs.session_dir, read_run_manifest(inputs))
+    # A named take the run did not keep refuses with its record's verdict (#6067).
+    manifest = with_records(inputs.session_dir, read_run_manifest(inputs), every_take=args.take is not None)
     result = stage(EXIT_UNREADABLE, (SpeakerFitUnreadable,), speaker_fit, inputs, manifest, args.set,
                    args.take, budget=budget)
     return answer(args.command, schema=ANSWER_SCHEMAS[args.command],

@@ -20,7 +20,9 @@
      record once, and only for the takes that reader reads: kept takes; or every take for the
      packet's take list, the round's coverage lines, and a set whose take a view names (an unkept one
      refuses with its verdict). `read_run_manifest` and `resolve_set` return rows; a reader of their
-     takes' facts joins them.
+     takes' facts joins them. A record that cannot be read refuses that reader by name
+     (`capture_unreadable_sidecar`), except in the comparand rule, which passes over the take
+     (ADR-0101), and in the packet and its coverage lines, which disclose it.
   3. The record banks the three facts only a row held: `pose_index` and `stimulus_ordinal`, from the
      stop, and `level.alignment`, the alignment levels with the shortfall carried from the stop's
      earlier attempt and `capped_by`. The run's retake count is the manifest's `honoured.retakes`.
@@ -30,8 +32,9 @@
      `jts_round_show/2`). `program` elsewhere keeps its meaning, the tuning program, and the
      `--program` filters stay.
   5. A row with no `record_id` key was banked before this, and refuses `take_curves_not_banked` with
-     `detail.field: record_id` (#2902; #6059's refusal by field). It is a `RoundSetRefused`, so the
-     round readers' error handlers still catch it.
+     `detail.field: record_id` (#2902; #6059's refusal by field). `read_run_manifest` and the bank
+     check every row of the manifest they read, so such a manifest refuses before a reader reads its
+     `preset`. It is a `RoundSetRefused`, so the round readers' error handlers still catch it.
   6. The manifest writes no planned rows. `asked`, `not_measured` and `honoured.stops_planned` state
      the plan.
   7. A take the run did not keep is `selected: false`, beside the manifest's `not_measured`, `reason`
@@ -48,10 +51,11 @@
 - **Consequences:**
   - A reader of a set's takes reads one record per take, fewer bytes than the copying rows held. A
     packet reads every take's record once; each contract-source read joins its kept takes.
-  - Every round banked before this stops loading in the round views after its deploy; each answers
-    `take_curves_not_banked` with `field: record_id`. The measurements page, `frequency <round>` and
-    `jasper-round list` read no take's facts from the rows, so they still read those rounds;
-    `jasper-round show` refuses them. Measuring again replaces them (#5926 session C).
+  - Every round banked before this stops loading after its deploy: every round view, `jasper-round
+    show` and the bank answer `take_curves_not_banked` with `field: record_id`, and `jasper-round
+    list` shows its `sets` as `null`. The measurements page and `frequency <round>` read the take
+    records without the manifest, so they still draw those rounds. Measuring again replaces them
+    (#5926 session C).
   - The copy pin (`test_every_take_banks_one_record_shape`) asserts every row of a plain and a merged
     ladder manifest is exactly `{take_id, record_id, selected}`.
   - Rejected: a flat `takes` list with sets naming their member ids, which moves set identity off the

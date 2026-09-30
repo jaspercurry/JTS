@@ -341,7 +341,7 @@ def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_rou
     curve = record["curves"][0]
     poses = [(0, 0)] * 4 + [(h, 0) for h in horizontal] + [(0, v) for v in vertical]
     takes = [{"take_id": f"baseline-{i}", "selected": True, "phase": "measure",
-              "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "timing": {"ended_s": i},
+              "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "captured_at": f"2026-09-29T12:00:{i:02d}Z",
               "curves": [{**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()}]}
              for i, (h, v) in enumerate(poses)]
     manifest = {"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]}
@@ -556,6 +556,28 @@ def test_a_design_cloud_that_refuses_is_disclosed_and_its_takes_fit_nothing(spea
         "speaker-set", TAKE_CURVES_NOT_BANKED, "pose20", "woofer")
     assert len(packet["fits"]) == 3 and all(
         (fit["reason_summary"], fit["filters"]) == ({"unavailable": TAKE_CURVES_NOT_BANKED}, None) for fit in packet["fits"])
+
+
+def test_a_named_take_the_round_did_not_keep_refuses_with_its_verdict(speaker_round, capsys):
+    """#6067: a take the operator names that the run banked but did not keep
+    refuses ``round_take_not_kept`` with its record's status, fault and next
+    action, so the view joins every take of the set it names (ADR-0395)."""
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    refused = {**record, "take_id": "refused", "measurement_status": "captured",
+               "verdict": {"ok": False, "fault": "level_off_target", "next": "retake_louder"}}
+    path = str(Path(row.path).with_name("refused.json"))
+    take_artifact_path(inputs.session_dir, path).write_text(json.dumps(refused))
+    group = manifest_set([(row.path, record), (path, refused)], set_id="speaker-set", selected={record["take_id"]})
+    group["capture_basis"].update(role="woofer")
+    write_manifest(root, groups=[group])
+
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", "refused"]) == (
+        round_views.EXIT_REFUSED)
+    refusal = json.loads(capsys.readouterr().out)
+    assert (refusal["reason"], {key: refusal["detail"][key] for key in ("status", "fault", "next")}) == (
+        "round_take_not_kept", {"status": "captured", "fault": "level_off_target", "next": "retake_louder"})
 
 
 @pytest.mark.parametrize("applied", [False, True])
@@ -950,12 +972,13 @@ def test_first_speaker_round_banks_its_timing_read_and_no_candidate(
     group.update(base=not trial)
     group["capture_basis"].update(candidate_id=declared.fingerprint if trial else None)
     group["takes"] = [own_record(group["takes"][0], record, analysis=analysis, attempt=2,
-                                 timing={"started_s": 190, "ended_s": 200},
+                                 captured_at="2026-09-29T12:00:02Z",
                                  pose={"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1})]
     off_axis = {**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 30},
-                "timing": {"ended_s": 400}, "analysis": {**analysis, "delay_us": 999}}
-    unselected = {**group["takes"][0], "take_id": "unselected", "selected": False, "timing": {"ended_s": 300}}
-    older = {**group, "set_id": "older-set", "takes": [{**group["takes"][0], "take_id": "older", "attempt": 1, "timing": {"ended_s": 200},
+                "captured_at": "2026-09-29T12:00:04Z", "analysis": {**analysis, "delay_us": 999}}
+    unselected = {**group["takes"][0], "take_id": "unselected", "selected": False, "captured_at": "2026-09-29T12:00:03Z"}
+    older = {**group, "set_id": "older-set", "takes": [{**group["takes"][0], "take_id": "older", "attempt": 1,
+                                                       "captured_at": "2026-09-29T12:00:02Z",
              "analysis": {**analysis, "delay_us": 75, "alignment_seed_delay_us": 75, "trim_db": {"woofer": 0, "tweeter": -6}}}]}
     group["takes"].extend([off_axis, unselected, {**off_axis, "take_id": "verify", "phase": "verify",
                                                 "pose": group["takes"][0]["pose"]}])

@@ -133,7 +133,7 @@ def _preview_document(
         evidence = _document_evidence(args, document, inputs)
         if kind == "emitted_graph" and inputs is not None:
             selected = selected or resolve_set(inputs, args.set)
-            capture_id = selected.with_records(inputs.session_dir).take_id(args.take)
+            capture_id = selected.with_records(inputs.session_dir, every_take=args.take is not None).take_id(args.take)
         result = preview_prescription_document(document, round_dir=Path(args.round) if args.round else None,
                                                base=base, evidence=evidence, capture_id=capture_id, cabinet=cabinet)
     except (RoundSetRefused, EvidenceUnavailable) as exc:

@@ -218,14 +218,14 @@ def _bookkeeping(
 ) -> tuple[str | None, list[dict[str, Any]]]:
     from .measurement_programs import PURPOSE_SPEAKER, run_purposes  # lazy: bank-only program registry
     from .round_view_artifacts import bookkeeping_views  # lazy: the view table imports NumPy
-    from .run_manifest import RUN_MANIFEST_FILENAME, room_sets, view_sets  # lazy: measurement types
+    from .run_manifest import RUN_MANIFEST_FILENAME, pointer_rows, room_sets, view_sets  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 
     artifacts, _ = round_artifact_dir(bundle)
     manifest = artifacts / RUN_MANIFEST_FILENAME if artifacts else None
     if manifest is None or not manifest.is_file():
         return None, []
-    document = json.loads(manifest.read_text())
+    document = pointer_rows(json.loads(manifest.read_text()))
     purposes = run_purposes(document["preset"])
     room_groups = room_sets(document)
     views = bookkeeping_views(purposes, has_room=bool(room_groups))

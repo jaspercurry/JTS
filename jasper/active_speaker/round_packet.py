@@ -125,7 +125,7 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
         table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
         table = json.loads(table_path.read_text())
     except (CrossoverV2Refused, OSError, ValueError, KeyError) as exc:
-        table = {**unavailable(getattr(exc, "code", "bass_fit_inputs_missing")), "error_type": type(exc).__name__}
+        table = {**unavailable(_refusal_code(exc, "bass_fit_inputs_missing")), "error_type": type(exc).__name__}
     packet = json.loads(destination.read_text())
     packet["bass_table"] = table
     atomic_write_json(destination, packet)

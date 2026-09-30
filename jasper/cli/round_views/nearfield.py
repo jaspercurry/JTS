@@ -36,7 +36,8 @@ from ._common import (
 def _cmd_nearfield(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
-    manifest = with_records(inputs.session_dir, stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_run_manifest, inputs))
+    # The run manifest refuses by name, as every round view's does.
+    manifest = with_records(inputs.session_dir, read_run_manifest(inputs))
     draft = (read_json_mapping(inputs.design_draft_path) if inputs.design_draft_path else None) or {}
     takes = [take for row in view_sets(manifest) for take in row["takes"]
              if take["selected"] and (take.get("pose") or {}).get("driver")]

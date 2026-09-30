@@ -18,13 +18,15 @@ from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
-from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_artifact_dir, round_inputs
+from jasper.active_speaker.bundles import mark_state
+from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, default_out, round_artifact_dir, round_inputs, with_records
+from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, kept_measurements
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.cli._refusal import EXIT_REFUSED
 from jasper.cli._report import render_report
-from jasper.cli.round_views import build_parser, main
+from jasper.cli.round_views import build_parser, main, run_bookkeeping
 from jasper.cli.round_views._common import RoundSetRefused, resolve_set
 from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
@@ -374,21 +376,26 @@ def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested
         assert resolved.take_id(requested) == expected
 
 
-def test_set_selection_excludes_timing_takes(two_sets):
+def test_a_joined_timing_take_is_no_take_of_its_set(two_sets):
+    """The packet index walks every set of its joined manifest, so a joined take
+    of the timing phase (ADR-0319) is no take of its set."""
     root, manifest = two_sets
     group = manifest["sets"][0]
-    group["takes"][0]["phase"] = "timing"
+    session = round_inputs(root).session_dir
+    record = take_artifact_path(session, group["takes"][0]["record_id"])
+    record.write_text(json.dumps({**json.loads(record.read_text()), "phase": "timing"}))
 
-    selected = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
+    joined = SetTakes.from_row(with_records(session, manifest)["sets"][0])
 
-    assert group["takes"][0]["take_id"] not in selected.selected_ids
+    assert group["takes"][0]["take_id"] not in joined.selected_ids
 
 
-def test_a_round_banked_before_pointer_rows_refuses_by_that_field(tmp_path, capsys):
-    """A row banked before the rows became pointers names its record under
-    ``artifacts``, and no reader reads that shape (#2902): the round's kept
-    takes and its views refuse ``take_curves_not_banked`` by the row's missing
-    ``record_id`` (ADR-0395)."""
+@pytest.mark.parametrize("reader", ["kept_measurements", "bank", "room", "inventory"])
+def test_a_round_banked_before_pointer_rows_refuses_by_that_field(tmp_path, capsys, reader):
+    """A manifest banked before the rows became pointers names its preset
+    ``program`` and each record under ``artifacts``, and no reader reads that
+    shape (#2902): the round's kept takes, its bank and its views refuse
+    ``take_curves_not_banked`` by the rows' missing ``record_id`` (ADR-0395)."""
     root = bank_seat_round(tmp_path)
     session = round_inputs(root).session_dir
     directory, _ = round_artifact_dir(session)
@@ -397,11 +404,19 @@ def test_a_round_banked_before_pointer_rows_refuses_by_that_field(tmp_path, caps
     for group in manifest["sets"]:
         group["takes"] = [{"take_id": take["take_id"], "selected": take["selected"],
                            "artifacts": {"record_id": take["record_id"]}} for take in group["takes"]]
-    path.write_text(json.dumps({**manifest, "schema_version": 2}))
+    old = {"program" if key == "preset" else key: value for key, value in manifest.items()}
+    path.write_text(json.dumps({**old, "schema_version": 2}))
 
-    with pytest.raises(RoundSetRefused) as refused:
-        list(kept_measurements(session, phases=("lateral",), purposes=("room",)))
-    assert (refused.value.reason, refused.value.detail["field"]) == (TAKE_CURVES_NOT_BANKED, "record_id")
-    assert main(["room", str(root)]) == EXIT_REFUSED
-    answer = json.loads(capsys.readouterr().out)
-    assert (answer["reason"], answer["detail"]["field"]) == (TAKE_CURVES_NOT_BANKED, "record_id")
+    if reader in ("room", "inventory"):
+        assert main([reader, str(root)]) == EXIT_REFUSED
+        answer = json.loads(capsys.readouterr().out)
+        refusal = answer["reason"], answer["detail"]["field"]
+    else:
+        with pytest.raises(RoundSetRefused) as refused:
+            if reader == "bank":
+                mark_state(session, "applied")
+                bank_round(session, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping)
+            else:
+                list(kept_measurements(session, phases=("lateral",), purposes=("room",)))
+        refusal = refused.value.reason, refused.value.detail["field"]
+    assert refusal == (TAKE_CURVES_NOT_BANKED, "record_id")

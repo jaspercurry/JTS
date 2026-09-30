@@ -20,7 +20,7 @@ from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Named
 from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, row_record_id, view_sets
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_TIMING
 from .position_cycle import take_artifact_path
@@ -449,6 +449,8 @@ class SetTakes(NamedTuple):
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> SetTakes:
+        """A joined timing take (ADR-0319) is no take of its set: the packet index
+        walks every set of its joined manifest, timing sets too."""
         takes = tuple(take for take in row["takes"] if take.get("phase") != PHASE_TIMING)
         return cls(row["set_id"], row["capture_basis"], takes)
 
@@ -540,7 +542,7 @@ def read_run_manifest(
     assert manifest is not None
     if manifest.get("finalized") is not True:
         raise RoundSetRefused("round_manifest_unfinalized", run_id=manifest.get("run_id"))
-    return manifest
+    return pointer_rows(manifest)
 
 
 def resolve_set(
@@ -605,8 +607,10 @@ def _comparand_key(group: SetTakes, take: Mapping[str, Any], role: str | None = 
 
 
 def _kept_view_sets(inputs: RoundInputs, named: Collection[str] | None = None) -> list[dict[str, Any]]:
-    """A round's view sets, or only those ``named``, each kept take read with its record."""
-    joined = take_records(inputs.session_dir)
+    """A round's view sets, or only those ``named``, each kept take read with its
+    record; a record that cannot be read leaves its take unkept, never the
+    reason the rule fails (ADR-0101)."""
+    joined = take_records(inputs.session_dir, disclose=True)
     return [{**row, "takes": [joined(take) for take in row["takes"]]}
             for row in view_sets(read_run_manifest(inputs)) if named is None or row["set_id"] in named]
 

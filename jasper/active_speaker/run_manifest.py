@@ -83,6 +83,15 @@ def row_record_id(row: Mapping[str, Any]) -> str:
     return str(row["record_id"])
 
 
+def pointer_rows(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``manifest``, once every take row points at its record: one banked before
+    the rows became pointers refuses by that field (#2902, ADR-0395 §5)."""
+    for group in manifest.get("sets", ()):
+        for take in group["takes"]:
+            row_record_id(take)
+    return manifest
+
+
 def _kept_record_ids(bundle_dir: Path) -> frozenset[str]:
     manifests = (bundle_dir / EVIDENCE_ROOT / "artifacts").glob(f"crossover_v2/*/{RUN_MANIFEST_FILENAME}")
     return frozenset(
