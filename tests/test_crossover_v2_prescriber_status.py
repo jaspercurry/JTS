@@ -464,6 +464,22 @@ def test_a_round_status_cannot_read_is_a_gap_with_a_registered_code(tmp_path, ca
     assert gap["detail"] and gap["reason"] in REASON_REGISTRY
 
 
+def test_a_bank_input_the_currency_check_cannot_read_is_a_gap_with_a_registered_code(tmp_path, capsys, monkeypatch):
+    """``packet_contracts.error`` is the one gap shape (#5928), and its code has registry copy."""
+    session, draft = _speaker_dirs(tmp_path, draft=_draft())
+
+    def unreadable(*_args, **_kwargs):
+        raise OSError("no such design draft")
+
+    monkeypatch.setattr(evidence_packet, "_contract_digests", unreadable)
+    _, payload = _status([str(session), "--drivers", str(draft)], capsys)
+
+    currency = payload["packet_contracts"]
+    gap = currency["error"]
+    assert (currency["contract_current"], gap["status"], gap["detail"]) == (None, "unavailable", "no such design draft")
+    assert gap["reason"] in REASON_REGISTRY
+
+
 @pytest.mark.parametrize(
     "reader, replacement, section, expected",
     [

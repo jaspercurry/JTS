@@ -27,7 +27,7 @@ from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
-from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED, unavailable
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE, load_declared_geometry
 from jasper.platform.json_fields import as_mapping
 
@@ -66,6 +66,7 @@ from .incumbent import (
 from .offline_reads import (
     CLASSIFICATION_ARTIFACT,
     HARMONICS_ARTIFACT,
+    SOURCE_UNREADABLE,
     _derived_views_block,
     absence,
     copy_allowed,
@@ -515,7 +516,8 @@ def contract_currency(inputs: RoundInputs) -> dict[str, Any] | None:
     """Whether the contract digests a banked round's packet stores are the ones its bank's
     inputs give under the code that runs now.
 
-    ``None`` when no bank stored the round's contracts.
+    ``None`` when no bank stored the round's contracts. A bank input that cannot be read leaves
+    ``contract_current`` null beside an ``error`` gap.
     """
     # See ADR-0371
     bank = bank_of(inputs)
@@ -528,7 +530,7 @@ def contract_currency(inputs: RoundInputs) -> dict[str, Any] | None:
         draft = read_json(banked.design_draft_path)[0] if banked.design_draft_path else None
         now = _contract_digests(banked, round_dir, as_mapping(draft), applied_profile_source(banked.applied_profile_path)[0])
     except ROUND_INPUT_ERRORS as exc:
-        return {"contract_current": None, "stored": stored, "now": None, "error": str(exc)}
+        return {"contract_current": None, "stored": stored, "now": None, "error": unavailable(SOURCE_UNREADABLE, str(exc))}
     return {"contract_current": stored == now, "stored": stored, "now": now}
 
 
