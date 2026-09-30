@@ -148,10 +148,10 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
     fits = []
     for group in manifest.get("sets", ()):
         set_role = group["capture_basis"].get("role")
-        if group["capture_basis"].get("gating_applied") is False or set_role in (None, "summed"):
+        if set_role in (None, "summed"):
             continue
         for take in group["takes"]:
-            if not take["selected"]:
+            if not take["selected"] or take.get("gating_applied") is False:
                 continue
             take_id = take["take_id"]
             if take_id in unclouded:

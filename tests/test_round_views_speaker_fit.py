@@ -240,7 +240,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
 
     path.write_text(json.dumps(record))
     manifest = _joined(inputs)
-    manifest["sets"][0]["capture_basis"].update(gating_applied=True, role="tweeter")
+    manifest["sets"][0]["capture_basis"].update(role="tweeter")
     monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", controlled_fit)
     rows = _fits(inputs, manifest, prescription_sources(inputs), {})
     assert rows
@@ -547,7 +547,7 @@ def test_a_design_cloud_that_refuses_is_disclosed_and_its_takes_fit_nothing(spea
     for path, take in rows:
         take_artifact_path(inputs.session_dir, path).write_text(json.dumps(take))
     group = manifest_set(rows, set_id="speaker-set")
-    group["capture_basis"].update(role="woofer", gating_applied=True)
+    group["capture_basis"].update(role="woofer")
     write_manifest(root, groups=[group])
     directory, _ = round_artifact_dir(inputs.session_dir)
 

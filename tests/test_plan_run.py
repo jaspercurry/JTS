@@ -614,15 +614,16 @@ def test_a_take_banked_as_its_run_is_cancelled_is_never_assessed():
 
 
 @pytest.mark.parametrize("changed", [
-    {}, {"candidate_id": "candidate"}, {"graph_fingerprint": "other"}, {"stimulus_id": "other"},
+    {}, {"pose_kind": "seat", "gating_applied": False}, {"candidate_id": "candidate"}, {"graph_fingerprint": "other"}, {"stimulus_id": "other"},
     {"level_db": -12.0}, {"stimulus_dbfs": -24.0},
     {"capture_calibration": {"applied": True, "calibration_id": "other", "curve_fingerprint": "curve"}},
     {"regime": "other"}, {"side": "right"}, {"role": "tweeter"},
 ])
 def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
+    """Neither a pose nor the window it picks (ADR-0400) is a set boundary."""
     manifest = RunManifest("run", _Store(FakeSeams().records))
     record = {"candidate_id": "", "graph_fingerprint": "graph", "stimulus_id": "program",
-              "level_db": -20.0, "stimulus_dbfs": -18.0,
+              "level_db": -20.0, "stimulus_dbfs": -18.0, "pose_kind": "bearing", "gating_applied": True,
               "regime": "summed", "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
@@ -631,9 +632,10 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
                                   TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
     groups = manifest.to_dict()["sets"]
-    assert len(groups) == (2 if changed else 1)
+    split = bool(set(changed) - {"pose_kind", "gating_applied"})
+    assert len(groups) == (2 if split else 1)
     poses = {take["take_id"]: take["pose"]["deg"] for take in manifest.takes}
-    assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if changed else {0, 10, 20})
+    assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if split else {0, 10, 20})
 
 
 def test_manifest_names_emitted_role_levels():
