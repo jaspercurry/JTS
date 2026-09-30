@@ -120,7 +120,6 @@ __all__ = [
     "request_for_preset",
     "per_driver_at",
     "summed_at",
-    "both_at",
     "resolve_request",
     "program_for_stop",
     "index_phase_map",
@@ -723,7 +722,7 @@ def stop_specs(
 
 
 # --------------------------------------------------------------------------- #
-# the three constructors -- "per-angle, per-driver, both, whatever we want"
+# the constructors -- per-driver or summed at each angle
 # --------------------------------------------------------------------------- #
 
 
@@ -747,20 +746,6 @@ def summed_at(
         stops=tuple(AngleStop(a, REGIME_SUMMED, purpose=PURPOSE_SPEAKER) for a in angles_deg),
         mover=mover,
     )
-
-
-def both_at(
-    angles_deg: Sequence[int], *, mover: str = MOVER_HUMAN,
-) -> AngleCaptureRequest:
-    """Both regimes at each angle, PAIRED so the microphone moves once per angle. Per-driver
-    first at each stop, then summed from the same position -- the two are only
-    comparable if nothing moved between them.
-    """
-    stops: list[AngleStop] = []
-    for angle in angles_deg:
-        stops.append(AngleStop(angle, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER))
-        stops.append(AngleStop(angle, REGIME_SUMMED, purpose=PURPOSE_SPEAKER))
-    return AngleCaptureRequest(stops=tuple(stops), mover=mover)
 
 
 def default_run_level(

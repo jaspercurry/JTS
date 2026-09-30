@@ -16,7 +16,7 @@ from .frequency_view import FrequencyRun, build_frequency_view
 from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_frequency_view
 from .measurement_archive import ArchivedMeasurement, load_measurement
 from .measurement_bass import bass_view
-from .measurement_programs import PURPOSE_ROOM, run_purposes
+from .measurement_programs import run_purposes
 from .crossover_v2.rear_views import rear_document
 from .crossover_v2.record_index import measurement_documents
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
@@ -112,7 +112,7 @@ def room_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
     manifest = read_run_manifest(inputs)
     selected = resolve_set(inputs, set_id, manifest=manifest)
     selection = select_seat_takes(
-        inputs.session_dir, purposes=(*run_purposes(manifest["preset"]), PURPOSE_ROOM),
+        inputs.session_dir, purposes=run_purposes(manifest["preset"]),
         take_ids=selected.selected_ids, basis=selected.capture_basis,
     )
     if not selection.takes:
