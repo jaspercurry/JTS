@@ -104,7 +104,7 @@ _PROGRAM_SECTIONS = (
          CandidateField("trim_decision", dict, False), CandidateField("exclusion_evidence", dict, False),
          CandidateField("blend_correction", list)),
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
-        "Driver linearization", "Measure each driver and refine its response and crossover.",
+        "Driver linearization and crossover", "Measure each driver and refine its response and crossover.",
         "Measure the baseline", "driver", trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend")),
     ),
     TuningProgram(
