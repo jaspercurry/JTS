@@ -533,6 +533,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
     "set_required": ReasonSpec("set_required", TEMPLATE_HARD_STOP, 0, "", "Name --set with one of the listed set ids."),
     "round_take_unknown": ReasonSpec("round_take_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set."),
+    "round_take_not_kept": ReasonSpec(
+        "round_take_not_kept", TEMPLATE_HARD_STOP, 0, "",
+        "Select a kept take, in this set or another; a refused attempt or level probe is banked, never read."),
     "round_take_selection_required": ReasonSpec("round_take_selection_required", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set with the take selector."),
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",

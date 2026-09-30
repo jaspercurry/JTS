@@ -473,9 +473,12 @@ class SetTakes(NamedTuple):
     def take_id(self, requested: str | None = None) -> str:
         ids = self.selected_ids
         if requested is not None:
-            if requested not in ids:
-                raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested, take_ids=ids)
-            return requested
+            if requested in ids:
+                return requested
+            if held := next((take for take in self.takes if take["take_id"] == requested), None):
+                raise RoundSetRefused("round_take_not_kept", set_id=self.set_id, take_id=requested, take_ids=ids,
+                                      status=held["quality"]["status"], fault=held.get("fault"), next=held.get("next"))
+            raise RoundSetRefused("round_take_unknown", set_id=self.set_id, take_id=requested, take_ids=ids)
         if len(ids) == 1:
             return ids[0]
         on_axis = [take["take_id"] for take in self.on_axis]
@@ -648,11 +651,11 @@ def comparands(
         try:
             earlier = [row for row in view_sets(read_run_manifest(round_inputs(Path(directory))))
                        if named is None or row["set_id"] in named]
+            for index, key in enumerate(keys):
+                if found[index] is None and (hit := _newest(earlier, key, take_order)):
+                    found[index] = Comparand(COMPARAND_EARLIER_ROUND, Path(directory), hit[0], hit[1], wanted[index][2])
         except ROUND_INPUT_ERRORS:
             continue
-        for index, key in enumerate(keys):
-            if found[index] is None and (hit := _newest(earlier, key, take_order)):
-                found[index] = Comparand(COMPARAND_EARLIER_ROUND, Path(directory), hit[0], hit[1], wanted[index][2])
         if all(found):
             break
     return found
