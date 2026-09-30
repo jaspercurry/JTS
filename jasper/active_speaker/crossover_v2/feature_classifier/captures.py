@@ -19,6 +19,7 @@ from ..journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
+from ..pose_curve import WINDOW_GATED
 from ..position_cycle import (
     parse_curve_magnitude,
     take_curves,
@@ -30,7 +31,7 @@ ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
 
 @dataclass(frozen=True)
 class RoundPoseCurve:
-    """One banked speaker take's one driver-role curve at its pose, magnitude only.
+    """One banked speaker take's one driver-role gated curve at its pose, magnitude only.
 
     Read from :func:`~.spatial.pose_curve_record`'s magnitude+phase bank
     (ruling S3) through the same reader :mod:`.delay_landscape` and
@@ -74,7 +75,7 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     out: list[RoundPoseCurve] = []
     for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
         pose_id = Path(row.path).stem
-        for curve in take_curves(record) or ():
+        for curve in take_curves(record, WINDOW_GATED) or ():
             role = curve.get("role")
             if not isinstance(role, str):
                 continue

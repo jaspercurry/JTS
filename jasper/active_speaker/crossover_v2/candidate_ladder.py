@@ -18,7 +18,7 @@ from jasper.audio_measurement.series_stats import curve_difference, deviation_su
 from jasper.platform.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
-from .position_cycle import measured_curve_band, take_curves
+from .position_cycle import measured_curve_band, take_curves, take_window
 from .record_index import Measurement
 from .round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key, document_capture_id
 from .round_inputs import RoundInputs
@@ -93,7 +93,7 @@ def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
                 yield _Take(take_id, row, record, f"{frequency_path}#{take_id}", viewed.get(take_id))
             return
     for take_id, (row, record) in records.items():
-        yield _Take(take_id, row, record, row.path, take_curves(record))
+        yield _Take(take_id, row, record, row.path, take_curves(record, take_window(record)))
 
 
 def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:

@@ -26,6 +26,8 @@ from jasper.audio_measurement.sweep_levels import sweep_band_levels
 from jasper.audio_measurement.repeated_sweep import average_summed_capture, sweep_ambient_id
 from jasper.platform.log_event import log_event
 
+from .crossover_v2.pose_curve import WINDOW_UNGATED
+from .crossover_v2.position_cycle import take_curve
 from .crossover_v2.record_index import measurement_documents, record_path
 from .measurement_analysis import BankedMeasurement, analyzed_measurements
 
@@ -146,7 +148,7 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
                 "qualified": mask.tolist(), "timing_valid": timing_valid,
                 "clearance_s": silence - required,
             }
-    curve = next(curve for curve in document["curves"] if curve["role"] == "summed")
+    curve = take_curve(document, "summed", WINDOW_UNGATED, required=True) or {}
     frequencies = np.asarray(curve["freqs_hz"], dtype=float)
     bass = (frequencies >= BASS_BAND_HZ[0]) & (frequencies <= BASS_BAND_HZ[1])
     frequencies = frequencies[bass]

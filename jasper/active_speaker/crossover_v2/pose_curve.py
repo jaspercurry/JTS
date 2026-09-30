@@ -13,9 +13,13 @@ from typing import Any, Mapping
 import numpy as np
 
 __all__ = [
-    "LATERAL_EVIDENCE_BAND_HZ", "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
+    "LATERAL_EVIDENCE_BAND_HZ", "LATERAL_EVIDENCE_POINTS_PER_OCTAVE", "WINDOW_GATED", "WINDOW_UNGATED",
     "LateralPoseCurve", "lateral_evidence_grid_hz", "lateral_pose_curve", "pose_curve_record",
 ]
+
+#: The two windows a banked curve names (ADR-0383 §2).
+WINDOW_GATED = "gated"
+WINDOW_UNGATED = "ungated"
 
 # One fixed log-spaced basis for every retained pose curve: fixed rather than
 # per-role so both branches land on the SAME frequencies and a consumer can sum
@@ -79,24 +83,26 @@ def nearest_native_bins(freqs: np.ndarray, grid: np.ndarray) -> np.ndarray:
 
 
 def lateral_pose_curve(
-    response: Any, band_hz: tuple[float, float],
+    response: Any, band_hz: tuple[float, float], *, ungated: bool = False,
 ) -> LateralPoseCurve:
-    """Sample one analyzed driver response onto the shared basis."""
+    """Sample one analyzed driver response onto the shared basis; ``ungated``
+    samples its ``ungated_tf`` instead, a reading no gate floors."""
     freqs = np.asarray(response.freqs_hz, dtype=np.float64)
-    tf = np.asarray(response.complex_tf, dtype=np.complex128)
+    tf = np.asarray(response.ungated_tf if ungated else response.complex_tf, dtype=np.complex128)
+    gating = {} if ungated else response.gating or {}
     take = nearest_native_bins(freqs, lateral_evidence_grid_hz())
     return LateralPoseCurve(
         role=str(response.role),
         freqs_hz=freqs[take],
         complex_tf=tf[take],
         band_hz=(float(band_hz[0]), float(band_hz[1])),
-        validity_floor_hz=response.validity_floor_hz,
-        trusted_floor_hz=(response.gating or {}).get("f_trusted_hz"),
-        gate_window_ms=(response.gating or {}).get("window_ms"),
-        floor_source=(response.gating or {}).get("floor_source"),
+        validity_floor_hz=None if ungated else response.validity_floor_hz,
+        trusted_floor_hz=gating.get("f_trusted_hz"),
+        gate_window_ms=gating.get("window_ms"),
+        floor_source=gating.get("floor_source"),
         late_energy=response.late_energy,
         repeat_curves=tuple(
-            lateral_pose_curve(occurrence, band_hz)
+            lateral_pose_curve(occurrence, band_hz, ungated=ungated)
             for occurrence in response.repeat_responses
         ),
     )
@@ -141,7 +147,7 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         # repeat_curves, validity_floor_hz, trusted_floor_hz.
         "validity_floor_hz": curve.validity_floor_hz,
         "trusted_floor_hz": curve.trusted_floor_hz,
-        "window": "ungated" if curve.gate_window_ms is None else "gated",
+        "window": WINDOW_UNGATED if curve.gate_window_ms is None else WINDOW_GATED,
         "gate_window_ms": curve.gate_window_ms,
         "floor_source": curve.floor_source,
         "late_energy": curve.late_energy,

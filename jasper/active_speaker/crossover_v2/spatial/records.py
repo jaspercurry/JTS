@@ -147,25 +147,30 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
     analysis fills ``summed_response``. A union rather than a branch, so an
     analysis that grows the other half starts banking it. CHECK fills neither.
 
-    One record per PRIMARY response; a role's repeat occurrences ride nested on
-    their own primary (:func:`pose_curve_record`) rather than as rows of their
-    own, so a reader counting curves still counts roles. They remain diagnostic
+    One record per PRIMARY response and window: each response's own curve,
+    then, for each response its gate windowed, that arrival read ungated
+    (ADR-0383 §2), so a reader picks a role's curve by its window. A role's
+    repeat occurrences ride nested on their own primary (:func:`pose_curve_record`)
+    rather than as rows of their own. They remain diagnostic
     and feed no candidate/trim/alignment math. A role whose band the
     program does not declare is SKIPPED rather than banked on a guessed band,
     since outside the driven band the samples are noise. An empty list
     therefore means NO CURVE WAS BANKED, never "this capture was clean".
     """
     bands = _primary_sweep_bands(program)
-    records = [
-        pose_curve_record(lateral_pose_curve(response, bands[response.role]))
-        for response in analysis.driver_responses
+    primaries = [
+        (response, bands[response.role]) for response in analysis.driver_responses
         if response.repeat_index is None and response.role in bands
     ]
     summed = analysis.summed_response
     summed_band = _summed_sweep_band_hz(program)
     if summed is not None and summed_band is not None:
-        records.append(pose_curve_record(lateral_pose_curve(summed, summed_band)))
-    return records
+        primaries.append((summed, summed_band))
+    return [
+        pose_curve_record(lateral_pose_curve(response, band, ungated=ungated))
+        for ungated in (False, True) for response, band in primaries
+        if not ungated or response.ungated_tf is not None
+    ]
 
 
 # The named question each prompted position answers. Persisted with the

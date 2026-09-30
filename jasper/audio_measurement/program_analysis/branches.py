@@ -35,9 +35,11 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
             geometry=geometry,
         )
         # Remove accumulated clock drift, retaining physical branch delay.
-        response = replace(response, complex_tf=response.complex_tf * np.exp(
-            2j * np.pi * response.freqs_hz * shift / sample_rate
-        ), impulse=recorded_impulse(ir, pre, seg, sample_rate, clock_shift_samples=shift))
+        drift = np.exp(2j * np.pi * response.freqs_hz * shift / sample_rate)
+        response = replace(
+            response, complex_tf=response.complex_tf * drift,
+            ungated_tf=None if response.ungated_tf is None else response.ungated_tf * drift,
+            impulse=recorded_impulse(ir, pre, seg, sample_rate, clock_shift_samples=shift))
         responses.append(response)
         records.append({
             "role": role, "segment_id": seg.segment_id,

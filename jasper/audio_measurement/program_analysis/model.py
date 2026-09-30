@@ -617,6 +617,9 @@ class DriverResponse:
     repeat_index: int | None = None
     late_energy: Mapping[str, float] | None = None
     impulse: RecordedImpulse | None = None
+    #: The same arrival read ungated, on this grid, wherever the gate windowed
+    #: it (ADR-0383 §2); ``None`` for a response no gate windowed.
+    ungated_tf: np.ndarray | None = None
 
     @property
     def fit_floor_hz(self) -> float | None:

@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import Any
 
 from .crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from .crossover_v2.position_cycle import take_curves, take_window
 from .crossover_v2.record_index import played_graph_fingerprint
 from .crossover_v2.round_captures import doc_pose_key
 from .frequency_reference import band_limited_curve, share_run_reference
@@ -91,6 +92,9 @@ def frequency_run_from_documents(
     poses: set[str] = set()
 
     for document_index, document in enumerate(documents):
+        if document.get("kind") == POSITION_EVIDENCE_KIND:
+            # A take draws the window its own analysis graded (ADR-0383 §2).
+            document = {**document, "curves": take_curves(document, take_window(document)) or []}
         take_id = str(document.get("take_id") or document.get("id") or "")
         source_id = take_id or f"document_{document_index + 1}"
         if take_id:

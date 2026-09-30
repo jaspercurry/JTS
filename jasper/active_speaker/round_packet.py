@@ -21,7 +21,7 @@ from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
 from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fingerprinted
 from .crossover_v2.intervention import CloudFitTerms
-from .crossover_v2.position_cycle import take_curve
+from .crossover_v2.position_cycle import take_curve, take_window
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
     INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, SetTakes, round_inputs,
@@ -186,7 +186,7 @@ def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
              "alignment": (take.get("level") or {}).get("alignment"), "screens": verdict.get("screens", []),
              "fault": verdict.get("fault") or take.get("incident") or None,
              **({"record": take["record"]} if "record" in take else {}),
-             **gate_fields(take_curve(take, role) if take["selected"] else None)}
+             **gate_fields(take_curve(take, role, take_window(take)) if take["selected"] else None)}
             for take in group["takes"] for verdict in [take.get("verdict") or {}]]
 
 
