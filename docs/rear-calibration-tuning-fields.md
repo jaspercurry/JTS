@@ -20,10 +20,9 @@ baseline-profile apply (`jasper-round apply <fingerprint>`) is the only
 path that carries a banked candidate onto the box, and the wizard's
 editing panel calls that same judge/compose/apply path in-process rather
 than writing around it. See [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md).
-The branch filters themselves can be fitted from a target table, or re-fitted
-from measured front-alone and rear-alone responses, with
-[`scripts/fit-rear-branches.py`](../scripts/fit-rear-branches.py) — its
-`--help` carries the input shapes and the phase/sign conventions.
+`jasper-round-views rear-fit` fits the branch filters: it turns an
+`acoustic_targets` document into branches on one banked `rear/pair` take's
+measured woofers. Its `--help` carries the inputs.
 
 ## Fields and bounds
 

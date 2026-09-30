@@ -1,48 +1,32 @@
-#!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fit a cardioid ``jts_rear_calibration`` document to a rear/front target.
+"""Fit a cardioid rear stage's two branches to a rear/front target.
 
-    scripts/fit-rear-branches.py --target cardioid_target_full.csv \\
-        --out rear_calibration.json --report fit.md
-
-Target CSV: ``frequency_hz``, ``rear_front_ratio_mag_db``,
-``rear_front_ratio_phase_dsp_deg``, ``rear_motion_zero`` (true, or a blank
-magnitude, means the rear is silent there). Measured CSVs, one mic position and
-one timing reference on one frequency grid: ``frequency_hz``, ``magnitude_db``,
-``phase_deg``. Given both, the fitted ELECTRICAL target becomes
-``T * H_front / H_rear``; without them the acoustic-to-electrical transfer is
-taken as the identity (ADR-0318 calls it unknown). Every phase is
-``positive_delay_has_negative_phase`` -- a delay of T seconds reads -360*f*T
-degrees -- so CAD/BEM data solved as exp(-iwt) must have its angle negated.
-Exits non-zero when the fit misses the suppression floor.
+The target is an ADR-0318 ``acoustic_targets`` document's rear/front ratio.
+The front and rear woofers measured alone at one position turn it into the
+ELECTRICAL ratio the filters must realize, ``T * H_front / H_rear``. Every
+phase is ``positive_delay_has_negative_phase`` -- a delay of T seconds reads
+-360*f*T degrees -- so CAD/BEM data solved as exp(-iwt) must have its angle
+negated.
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
-import json
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 from scipy.optimize import least_squares
 
-from jasper.active_speaker.branch_chain import (
-    camilla_filter_response, rear_stage_chain_response, rear_stage_peak_db, rear_stage_response,
-)
-from jasper.active_speaker.rear_calibration import (
-    KIND,
-    MAX_ALLPASS_Q,
-    MIN_CHAIN_GAIN_DB,
-    PHASE_CONVENTION,
-    compile_rear_stage,
-    read_rear_calibration,
-)
+from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.rear_evidence import magnitude_db
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
+
+from .branch_chain import camilla_filter_response, rear_stage_chain_response, rear_stage_response
+from .rear_calibration import (
+    KIND, MAX_ALLPASS_Q, MIN_CHAIN_GAIN_DB, PHASE_CONVENTION, RearCalibrationError, read_rear_calibration,
+)
 
 FIT_BAND_HZ = (40.0, 800.0)
 FIT_POINTS = 160
@@ -77,64 +61,32 @@ SEED_POINTS = 6
 SEED_STARTS = 3
 ALLPASS_STARTS = 5
 ALLPASS_SEED_Q = 1.0
+# A row this far under its own 1/3-octave level sits at a magnitude null,
+# where a well-sampled response's phase still turns fast (#5404 comment
+# 5746999024, item 6).
+NULL_DEPTH_DB = 6.0
+
+#: What every fitted document assumes, stated in it.
+ASSUMPTIONS = (
+    "The fitted electrical ratio is the target acoustic ratio times measured front over measured rear.",
+    "SEED, NOT A TUNE: rear_muted is true and the forward response is not verified.",
+)
 
 Table = tuple[np.ndarray, np.ndarray]
 
 
-def _complex_from_db_deg(magnitude_db: Any, phase_deg: Any) -> np.ndarray:
-    return 10.0 ** (np.asarray(magnitude_db, dtype=float) / 20.0) * np.exp(
-        1j * np.radians(np.asarray(phase_deg, dtype=float))
-    )
-
-
-def _rows(path: Path) -> list[dict[str, str]]:
-    return list(csv.DictReader(path.read_text().splitlines()))
-
-
-def _cell(row: dict[str, str], name: str, path: Path) -> float:
-    """One required number; blank refuses, because a missing phase read as 0
-    degrees enters the fit at full weight.
-    """
-    text = (row.get(name) or "").strip()
-    if not text:
-        raise ValueError(f"{path.name} leaves {name} blank")
-    return float(text)
-
-
-def _frequencies(rows: list[dict[str, str]], path: Path) -> np.ndarray:
-    values = np.array([_cell(row, "frequency_hz", path) for row in rows], dtype=float)
-    if np.any(np.diff(values) <= 0.0):
-        raise ValueError(f"{path.name} frequencies must increase")
-    return values
-
-
-def read_target(path: Path) -> Table:
-    """``(frequency_hz, complex rear/front ratio)`` from a cardioid target table."""
-    rows = _rows(path)
-    # The one legitimate blank: a blank magnitude says what ``rear_motion_zero``
-    # says, that the rear is silent there and carries no phase either.
-    silent = [
-        (row.get("rear_motion_zero") or "").strip().lower() == "true"
-        or not (row.get("rear_front_ratio_mag_db") or "").strip()
-        for row in rows
-    ]
-    values = np.array([
-        0j if quiet else _complex_from_db_deg(
-            _cell(row, "rear_front_ratio_mag_db", path),
-            _cell(row, "rear_front_ratio_phase_dsp_deg", path),
-        )
-        for row, quiet in zip(rows, silent)
-    ])
-    return _frequencies(rows, path), values
-
-
-def read_response(path: Path) -> Table:
-    """``(frequency_hz, complex response)`` from a measured magnitude/phase table."""
-    rows = _rows(path)
-    return _frequencies(rows, path), _complex_from_db_deg(
-        [_cell(row, "magnitude_db", path) for row in rows],
-        [_cell(row, "phase_deg", path) for row in rows],
-    )
+def acoustic_target(raw: Any) -> Table:
+    """``(frequency_hz, rear/front ratio)`` from an ``acoustic_targets`` document
+    (ADR-0318). A ``[0, 0]`` rear is silent there and carries no phase."""
+    document = read_rear_calibration(raw)
+    if document["case"] != "acoustic_targets":
+        raise RearCalibrationError("the target must be an acoustic_targets document")
+    targets = document["targets"]
+    front, rear = (np.array([complex(*pair) for pair in targets[side]]) for side in ("front", "rear"))
+    if np.any((front == 0) & (rear != 0)):
+        raise RearCalibrationError("a moving rear target needs a moving front target")
+    ratio = np.divide(rear, front, out=np.zeros_like(rear), where=front != 0)
+    return np.asarray(targets["frequency_hz"], dtype=float), ratio
 
 
 def interpolate(table: Table, grid: np.ndarray) -> np.ndarray:
@@ -156,30 +108,34 @@ def check_measured_pair(front: Table, rear: Table) -> None:
 
     One capture, so one frequency grid. Past a quarter turn of front/rear phase
     per row the rotation between rows is ambiguous and no interpolation recovers
-    it: a 1/3-octave pair a millisecond apart interpolates to 24 dB of error.
+    it: a 1/3-octave pair a millisecond apart interpolates to 24 dB of error. A
+    step touching a row at a magnitude null (:data:`NULL_DEPTH_DB`) of either
+    response is not that sign, so it is not read.
     """
-    if front[0].shape != rear[0].shape or not np.allclose(front[0], rear[0]):
+    freqs = front[0]
+    if freqs.shape != rear[0].shape or not np.allclose(freqs, rear[0]):
         raise ValueError("measured front and rear must share one frequency grid")
-    band = (front[0] >= FIT_BAND_HZ[0]) & (front[0] <= FIT_BAND_HZ[1])
+    null = np.zeros(freqs.shape, dtype=bool)
+    for values in (front[1], rear[1]):
+        level = magnitude_db(values)
+        null |= level < smooth_fractional_octave(freqs, level, fraction=3) - NULL_DEPTH_DB
+    band = (freqs >= FIT_BAND_HZ[0]) & (freqs <= FIT_BAND_HZ[1])
     relative = np.diff(np.angle(front[1][band] / rear[1][band]))
     step = np.abs((relative + np.pi) % (2.0 * np.pi) - np.pi)
+    step[null[band][:-1] | null[band][1:]] = 0.0
     if step.size and step.max() > np.pi / 2:
-        worst = front[0][band][1:][step.argmax()]
+        worst = freqs[band][1:][step.argmax()]
         raise ValueError(
             f"measured front/rear phase steps {np.degrees(step.max()):.0f} degrees per row "
             f"at {worst:g} Hz; 90 is the most this can unwrap"
         )
 
 
-def electrical_target(
-    target: Table, measured: tuple[Table, Table] | None, grid: np.ndarray,
-) -> np.ndarray:
-    """The rear/front ratio the FILTERS must realize, on ``grid``."""
-    values = interpolate(target, grid)
-    if measured is None:
-        return values
+def electrical_target(target: Table, measured: tuple[Table, Table], grid: np.ndarray) -> np.ndarray:
+    """The rear/front ratio the FILTERS must realize, on ``grid``: the target
+    times the measured front over the measured rear."""
     check_measured_pair(*measured)
-    return values * interpolate(measured[0], grid) / interpolate(measured[1], grid)
+    return interpolate(target, grid) * interpolate(measured[0], grid) / interpolate(measured[1], grid)
 
 
 def _weights(grid: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -224,42 +180,42 @@ def _chain(gain_db: float, delay_ms: float, filters: list[dict], inverted: bool 
     }
 
 
-def _combo(kind: str, freq: float, order: int) -> dict[str, Any]:
+def combo(kind: str, freq: float, order: int) -> dict[str, Any]:
     return {"type": "BiquadCombo", "parameters": {"type": kind, "freq": float(freq), "order": order}}
 
 
 def _branches(params: np.ndarray, allpass: bool) -> tuple[dict[str, Any], dict[str, Any]]:
     """The ``(bass, cancellation)`` chains a parameter vector describes."""
     cancellation = [
-        _combo("ButterworthHighpass", params[2], HIGHPASS_ORDER),
-        _combo("ButterworthLowpass", params[3], LOWPASS_ORDER),
+        combo("ButterworthHighpass", params[2], HIGHPASS_ORDER),
+        combo("ButterworthLowpass", params[3], LOWPASS_ORDER),
     ]
     if allpass:
         cancellation.append(
             {"type": "Biquad", "parameters": {"type": "Allpass", "freq": float(params[7]), "q": float(params[8])}}
         )
     return (
-        _chain(params[5], params[1], [_combo("ButterworthLowpass", params[0], BASS_ORDER)]),
+        _chain(params[5], params[1], [combo("ButterworthLowpass", params[0], BASS_ORDER)]),
         _chain(params[6], params[4], cancellation, inverted=True),
     )
 
 
-def _model(params: np.ndarray, grid: np.ndarray, allpass: bool) -> np.ndarray:
+def branch_ratio(params: np.ndarray, grid: np.ndarray, allpass: bool) -> np.ndarray:
     """The rear/front ratio a parameter vector realizes; the front is unity."""
-    return sum(
-        rear_stage_chain_response(chain, grid, delay_ms=chain["delay_ms"])
-        for chain in _branches(params, allpass)
+    bass, cancellation = (
+        rear_stage_chain_response(chain, grid, delay_ms=chain["delay_ms"]) for chain in _branches(params, allpass)
     )
+    return bass + cancellation
 
 
 def _residual(
     params: np.ndarray, grid: np.ndarray, target: np.ndarray,
     weights: tuple[np.ndarray, ...], allpass: bool,
 ) -> np.ndarray:
-    return _rows_for(_model(params, grid, allpass), target, weights)
+    return _rows_for(branch_ratio(params, grid, allpass), target, weights)
 
 
-def _group_delay_ms(response: np.ndarray, grid: np.ndarray, freq_hz: float) -> float:
+def group_delay_ms(response: np.ndarray, grid: np.ndarray, freq_hz: float) -> float:
     """Group delay of an already-computed response, at the nearest grid point."""
     index = min(max(int(np.argmin(np.abs(grid - freq_hz))), 1), grid.size - 2)
     phase = np.unwrap(np.angle(response[index - 1:index + 2]))
@@ -304,7 +260,7 @@ def _seed(
     def response(kind: str, freq: float, order: int) -> np.ndarray:
         key = (kind, float(freq), order)
         if key not in cache:
-            cache[key] = camilla_filter_response([_combo(kind, freq, order)], grid)
+            cache[key] = camilla_filter_response([combo(kind, freq, order)], grid)
         return cache[key]
 
     def turn(delay_ms: float) -> np.ndarray:
@@ -314,7 +270,7 @@ def _seed(
     found: list[tuple[float, np.ndarray]] = []
     for bass_corner in np.geomspace(FIT_BAND_HZ[0], 200.0, SEED_POINTS):
         bass_shape = response("ButterworthLowpass", bass_corner, BASS_ORDER)
-        bass_delay = -_group_delay_ms(bass_shape, grid, BASS_SEED_HZ)
+        bass_delay = -group_delay_ms(bass_shape, grid, BASS_SEED_HZ)
         bass = bass_shape * turn(bass_delay)
         for highpass in np.geomspace(FIT_BAND_HZ[0], 200.0, SEED_POINTS):
             for lowpass in np.geomspace(150.0, FIT_BAND_HZ[1], SEED_POINTS):
@@ -322,7 +278,7 @@ def _seed(
                     response("ButterworthHighpass", highpass, HIGHPASS_ORDER)
                     * response("ButterworthLowpass", lowpass, LOWPASS_ORDER)
                 )
-                delay = cardioid_delay - _group_delay_ms(shape, grid, np.mean(DELAY_SLOPE_BAND_HZ))
+                delay = cardioid_delay - group_delay_ms(shape, grid, float(np.mean(DELAY_SLOPE_BAND_HZ)))
                 cancellation = shape * turn(delay)
                 gains = _solve_gains(target, weights[0], (bass, cancellation))
                 linear = 10.0 ** (gains / 20.0)
@@ -415,110 +371,30 @@ def build_document(
     }
 
 
-def report_lines(
-    document: dict[str, Any], target: Table, measured: tuple[Table, Table] | None,
-) -> tuple[list[str], bool]:
-    """``(report, whether it clears the suppression floor)``, read back from the
-    VALIDATED document rather than from the fit vector.
+def fit_report(document: dict[str, Any], target: Table, measured: tuple[Table, Table]) -> dict[str, Any]:
+    """How near a VALIDATED document comes to the electrical target, and the
+    rear's worst level against the front over :data:`SUPPRESSION_SWEEP_HZ`.
+
+    The rows stand at the target's OWN in-band frequencies: interpolating the
+    fit grid back onto them would smear a silent row into a tiny non-zero
+    target to score against. A silent row has no target level or error.
     """
     freqs = target[0][(target[0] >= FIT_BAND_HZ[0]) & (target[0] <= FIT_BAND_HZ[1])]
-    # At the table's OWN frequencies: interpolating the fit grid back onto them
-    # would smear a silent row into a tiny non-zero target to score against.
     wanted = electrical_target(target, measured, freqs)
     unmuted = {**document, "rear_muted": False}
     summed, front = rear_stage_response(unmuted, freqs)
     achieved = summed / front
-
-    def row(*cells: str) -> str:
-        return "| " + " | ".join(cells) + " |"
-
-    lines = [
-        "# Rear-branch fit residuals",
-        "",
-        row("Hz", "target dB", "target deg", "achieved dB", "achieved deg", "mag err dB", "phase err deg"),
-        "|---|---|---|---|---|---|---|",
-    ]
+    rows = []
     for freq, want, got in zip(freqs, wanted, achieved):
-        level, angle = 20.0 * np.log10(abs(got)), np.degrees(np.angle(got))
-        if abs(want) == 0.0:
-            cells = ["zero", "—", f"{level:+.2f}", "—", "—", "—"]
-        else:
-            want_db, want_deg = 20.0 * np.log10(abs(want)), np.degrees(np.angle(want))
-            cells = [
-                f"{want_db:+.2f}", f"{want_deg:+.1f}", f"{level:+.2f}", f"{angle:+.1f}",
-                f"{level - want_db:+.2f}", f"{(angle - want_deg + 180.0) % 360.0 - 180.0:+.1f}",
-            ]
-        lines.append(row(f"{freq:g}", *cells))
+        level, angle = float(magnitude_db(got)), float(np.degrees(np.angle(got)))
+        row: dict[str, float | None] = {"hz": float(freq), "achieved_db": level, "achieved_deg": angle,
+                                        "target_db": None, "target_deg": None, "error_db": None, "error_deg": None}
+        if want != 0:
+            want_db, want_deg = float(magnitude_db(want)), float(np.degrees(np.angle(want)))
+            row.update(target_db=want_db, target_deg=want_deg, error_db=level - want_db,
+                       error_deg=(angle - want_deg + 180.0) % 360.0 - 180.0)
+        rows.append({key: None if value is None else round(value, 3) for key, value in row.items()})
     loud, quiet = rear_stage_response(unmuted, SUPPRESSION_SWEEP_HZ)
-    worst = float(np.max(20.0 * np.log10(np.abs(loud / quiet))))
-    met = worst <= -SUPPRESSION_FLOOR_DB
-    lines += [
-        "",
-        f"- suppression {worst:.2f} dB over {SUPPRESSION_SWEEP_HZ[0]:g}-{SUPPRESSION_SWEEP_HZ[-1]:g} Hz:"
-        f" {'meets' if met else 'MISSES'} the {SUPPRESSION_FLOOR_DB:g} dB floor",
-        f"- common_delay_ms {document['common_delay_ms']:g} ms;"
-        f" front chain gain {document['front']['gain_db']:+.2f} dB",
-        f"- rear stage's own peak as written / unmuted: {rear_stage_peak_db(document):.3f}"
-        f" / {rear_stage_peak_db(unmuted):.3f} dB",
-    ]
-    return lines, met
-
-
-def _provenance(dataset: str, measured: bool) -> tuple[dict[str, Any], list[str]]:
-    """The document's ``(conditions, assumptions)``: what was fitted to what."""
-    return (
-        {
-            "dataset": dataset, "fit_band_hz": [*FIT_BAND_HZ], "fit_tool": Path(__file__).name,
-            "measured": measured, "timing_reference": "front output of this stage",
-        },
-        [
-            "The fitted electrical ratio is the target acoustic ratio times measured front "
-            "over measured rear."
-            if measured
-            else "Both woofers are ASSUMED identical on identical amplifier channels, so "
-            "equal voltage gives equal motion; ADR-0318 states that transfer is unknown.",
-            "SEED, NOT A TUNE: rear_muted is true and the forward response is not verified.",
-        ],
-    )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--target", type=Path, required=True, help="cardioid target table (CSV)")
-    parser.add_argument("--out", type=Path, help="where to write the fitted document (JSON)")
-    parser.add_argument("--report", type=Path, help="where to write the residual report")
-    parser.add_argument("--measured-front", type=Path, help="measured front-alone response (CSV)")
-    parser.add_argument("--measured-rear", type=Path, help="measured rear-alone response (CSV)")
-    args = parser.parse_args()
-    if bool(args.measured_front) != bool(args.measured_rear):
-        parser.error("a measured re-fit needs both --measured-front and --measured-rear")
-
-    target = read_target(args.target)
-    measured = args.measured_front and (
-        read_response(args.measured_front), read_response(args.measured_rear)
-    )
-    grid = np.geomspace(*FIT_BAND_HZ, FIT_POINTS)
-    params = fit(grid, electrical_target(target, measured, grid))
-    conditions, assumptions = _provenance(args.target.name, measured is not None)
-    document = read_rear_calibration(
-        build_document(params, conditions=conditions, assumptions=assumptions),
-        sample_rate=DEFAULT_SAMPLE_RATE,
-    )
-    # Proof that the document compiles; the report reads the document itself.
-    compile_rear_stage(document, front_channel=0, rear_channel=2, channel_count=3, tweeter_channel=1)
-    lines, met = report_lines(document, target, measured)
-    print("\n".join(lines))
-    if args.report:
-        args.report.write_text("\n".join(lines) + "\n")
-    if args.out:
-        args.out.write_text(json.dumps(document, indent=4) + "\n")
-    # The document and report are written either way — the owner inspects a
-    # miss — but a fit under the floor is not a pass.
-    if not met:
-        raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    main()
+    worst = float(np.max(magnitude_db(loud / quiet)))
+    return {"residuals": rows,
+            "suppression": {"max_ratio_db": round(worst, 3), "meets_floor": worst <= -SUPPRESSION_FLOOR_DB}}

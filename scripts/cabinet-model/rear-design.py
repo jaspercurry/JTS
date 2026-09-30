@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fit the rear stage for the smoothest response at the seat, back wall included.
 
-fit-rear-branches.py's branch structure and bounds (bass low-pass + cancellation band-pass, no
-all-pass) with a seat objective in place of a cardioid target, per unit front drive:
+jasper/active_speaker/rear_fit.py's branch structure and bounds (bass low-pass + cancellation
+band-pass, no all-pass) with a seat objective in place of a cardioid target, per unit front drive:
   - seat 45-650 Hz at 2 m (0/20/30 deg) and 1.5/2.5 m (0 deg): deviation from its own 1-octave
     trend, holes weighted x2;
   - 30-80 Hz: at most 1 dB under both woofers in phase;
@@ -26,7 +26,6 @@ woofer/tweeter balance holds and the headroom charge pays for the boost.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 
@@ -34,18 +33,18 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from _cabinet import Cabinet, db, rear_ratio, roughness_db, seat_deviation
+from jasper.active_speaker import rear_fit
 from jasper.active_speaker.branch_chain import camilla_filter_response, rear_stage_peak_db, rear_stage_response
 from jasper.active_speaker.crossover_v2.prescription_document import DOCUMENT_KIND, read_prescription_document
 from jasper.active_speaker.rear_calibration import compile_rear_stage, read_rear_calibration
+from jasper.active_speaker.rear_fit import (
+    branch_ratio as branch_model, build_document, combo, group_delay_ms, target_delay_ms,
+)
+from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
-_spec = importlib.util.spec_from_file_location("fit_rear_branches", Path(__file__).resolve().parents[1] / "fit-rear-branches.py")
-_fitrb = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_fitrb)
-branch_model, build_document, target_delay_ms = _fitrb._model, _fitrb.build_document, _fitrb.target_delay_ms
-combo, group_delay_ms = _fitrb._combo, _fitrb._group_delay_ms
-LOWER, UPPER, SAMPLE_RATE = np.array(_fitrb.PARAM_LOWER[:7]), np.array(_fitrb.PARAM_UPPER[:7]), _fitrb.DEFAULT_SAMPLE_RATE
-ORDERS = (_fitrb.BASS_ORDER, _fitrb.HIGHPASS_ORDER, _fitrb.LOWPASS_ORDER)
-SEED_HZ = (_fitrb.BASS_SEED_HZ, float(np.mean(_fitrb.DELAY_SLOPE_BAND_HZ)))
+LOWER, UPPER, SAMPLE_RATE = np.array(rear_fit.PARAM_LOWER[:7]), np.array(rear_fit.PARAM_UPPER[:7]), DEFAULT_SAMPLE_RATE
+ORDERS = (rear_fit.BASS_ORDER, rear_fit.HIGHPASS_ORDER, rear_fit.LOWPASS_ORDER)
+SEED_HZ = (rear_fit.BASS_SEED_HZ, float(np.mean(rear_fit.DELAY_SLOPE_BAND_HZ)))
 
 SEATS = ((2.0, 0), (2.0, 20), (2.0, 30), (1.5, 0), (2.5, 0))  # (listener m, bearing deg)
 TABLE_HZ = (30, 40, 50, 63, 80, 100, 125, 160, 200, 315, 500, 800)
@@ -89,7 +88,7 @@ def main() -> None:
     cardioid_delay = target_delay_ms(-cab.A["front"][:, behind] / cab.A["rear"][:, behind], grid)
 
     def start(bass, hp, lp):
-        """A start whose branch delays cancel each branch's own group delay, as fit-rear-branches seeds."""
+        """A start whose branch delays cancel each branch's own group delay, as rear_fit seeds."""
         low = camilla_filter_response([combo("ButterworthLowpass", bass, ORDERS[0])], grid)
         band = -camilla_filter_response([combo("ButterworthHighpass", hp, ORDERS[1]),
                                          combo("ButterworthLowpass", lp, ORDERS[2])], grid)

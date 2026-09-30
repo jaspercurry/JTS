@@ -225,6 +225,12 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         needs="each driver's takes alone: near field at 15 and 30 mm (nearfield/each) or at the mark (drivers/each)",
         avoid="far-field takes; frequency reads those",
         answer_fields=("drivers", "level_mismatches")),
+    "rear-fit": CatalogRow("rear_fit.json", (*TAKES_ONE_TAKE, "--target", "<acoustic_targets.json>"),
+                           programs=(PURPOSE_REAR,), schema="jts_rear_fit/1", per_take=True,
+        question="Which rear branches realize an acoustic rear/front target on one pair take's two woofers?",
+        needs="one rear/pair take (each woofer alone at one pose) and an acoustic_targets rear calibration document",
+        avoid="grading a rear document; judge --preview predicts one on the pair round",
+        answer_fields=("document", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
                        builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3"),
