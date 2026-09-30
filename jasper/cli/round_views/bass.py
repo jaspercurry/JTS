@@ -12,13 +12,16 @@ from typing import Any
 
 from jasper.active_speaker.bass_table_report import bass_table_markdown, bass_table_rows
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
+from jasper.active_speaker.crossover_v2.round_inputs import comparand
+from jasper.active_speaker.crossover_v2.take_reading import REFUSE_COMPARE_NO_COMPARAND
 from jasper.active_speaker.round_view_builders import bass_payload
 from jasper.audio_measurement.band_ladders import BASS_FIT_REFERENCE_BAND_HZ
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 from ._common import (
     ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    _write, add_set_argument, answer, calibration_id, default_out, read_run_manifest, resolve_set, round_inputs, subject,
+    _write, add_set_argument, answer, calibration_id, default_out, read_run_manifest, resolve_set, resolved_out,
+    round_inputs, subject,
 )
 
 
@@ -30,8 +33,13 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         parser.add_argument("--out", help="artifact destination")
         parser.set_defaults(func=_cmd)
         if name == "bass-compare":
-            parser.add_argument("before", type=Path, metavar="<before-round>", help=f"the round before the change: {_ROUND_DIR_HELP}")
-            parser.add_argument("after", type=Path, metavar="<after-round>", help=f"the round after it: {_ROUND_DIR_HELP}")
+            parser.add_argument("before", type=Path, metavar="<before-round>",
+                                help=f"the round before the change: {_ROUND_DIR_HELP}. Named alone with no --before-* "
+                                     "flag, it is the after take's round, and the before take is that take's comparand "
+                                     "(ADR-0391): the round's base take at its place, else the newest earlier banked "
+                                     "take at the same place, side, role and graph scope")
+            parser.add_argument("after", type=Path, nargs="?", metavar="<after-round>",
+                                help="the round after it; default: the before round")
             add_set_argument(parser, name="--before-set", take=True)
             add_set_argument(parser, name="--after-set", take=True)
             parser.add_argument("--change", required=True, choices=("candidate", "volume", "demand", "diagnostic"),
@@ -52,23 +60,39 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
 
 def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[str, Any]]]:
     from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take  # lazy: laptop array analysis
+    from jasper.active_speaker.bass_table_inputs import bass_view_path  # lazy: laptop array analysis
 
-    manifests, paths, takes, read = {}, [], [], []
-    for root, set_id, take_id in ((args.before, args.before_set, args.before_take),
-                                  (args.after, args.after_set, args.after_take)):
+    manifests: dict[Path, Any] = {}
+
+    def side(root: Path, set_id: str | None, take_id: str | None) -> tuple[Any, ...]:
+        """One side's bass take, the view it is read from, what it read, its set and its take id."""
         inputs = round_inputs(root)
         key = inputs.session_dir.resolve()
         if key not in manifests:
             manifests[key] = read_run_manifest(inputs)
         selected = resolve_set(inputs, set_id, manifest=manifests[key]).with_records(
             inputs.session_dir, every_take=take_id is not None)
-        selected_id = selected.take_id(take_id)
-        path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
-        takes.append(selected_take(json.loads(path.read_text()), selected_id))
-        paths.append(str(path))
-        read.append(subject(inputs, selected, take_ids=[selected_id]))
-    return ({**compare_bass_takes(*takes, change=args.change), "source_views": paths},
-            default_out(inputs, args.after, ARTIFACT_BY_VIEW[args.command].artifact, args.after_set), read)
+        take_id = selected.take_id(take_id)
+        path = bass_view_path(inputs, root, selected.set_id, manifests[key])
+        return (selected_take(json.loads(path.read_text()), take_id), str(path),
+                subject(inputs, selected, take_ids=[take_id]), selected, take_id)
+
+    after_round = args.after or args.before
+    source = None
+    if args.after is None and args.before_set is None and args.before_take is None:
+        after = side(after_round, args.after_set, args.after_take)
+        group, take_id = after[3:]
+        found = comparand(after_round, group.set_id, take_id, group.role)
+        if found is None:
+            raise CrossoverV2Refused({"set_id": group.set_id, "take_id": take_id, "role": group.role},
+                                     code=REFUSE_COMPARE_NO_COMPARAND)
+        source, before = found.source, side(found.round_dir, found.set_id, found.take_id)
+    else:
+        before = side(args.before, args.before_set, args.before_take)
+        after = side(after_round, args.after_set, args.after_take)
+    return ({**compare_bass_takes(before[0], after[0], change=args.change), "comparand": source,
+             "source_views": [before[1], after[1]]},
+            resolved_out(after_round, ARTIFACT_BY_VIEW[args.command].artifact, args.after_set), [before[2], after[2]])
 
 
 def _cmd(args: argparse.Namespace) -> int:
@@ -76,7 +100,7 @@ def _cmd(args: argparse.Namespace) -> int:
     try:
         if args.command == "bass-compare":
             payload, destination, read = _compare(args)
-            summary: dict[str, Any] = {key: payload[key] for key in ("comparison", "context", "ladder", "bands")}
+            summary: dict[str, Any] = {key: payload[key] for key in ("comparison", "comparand", "context", "ladder", "bands")}
             parameters: dict[str, Any] = {"change": args.change}
         else:
             root = args.round_dir if args.command == "bass" else args.round_dir[-1]

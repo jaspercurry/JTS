@@ -1387,12 +1387,6 @@ def test_bass_table_refuses_invalid_descriptors_by_code(bass_run, capsys, fault)
     assert answer['next_action'] == REASON_REGISTRY[answer['code']].next_action
 
 
-def test_bass_compare_requires_two_rounds():
-    with pytest.raises(SystemExit) as refused:
-        build_parser().parse_args(['bass-compare', 'round', '--change', 'candidate'])
-    assert refused.value.code == 2
-
-
 @pytest.mark.parametrize('verb', ['bass-compare', 'bass-fit-table'])
 def test_bass_verbs_read_one_manifest_snapshot(bass_run, monkeypatch, capsys, verb):
     bass_run.write()

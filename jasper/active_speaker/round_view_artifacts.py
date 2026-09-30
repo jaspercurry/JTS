@@ -198,9 +198,10 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
                                                         "--after-set", "<set-id>", "--change", "<change>"),
                                programs=(PURPOSE_BASS,), packet="bass", schema="jts_bass_comparison/3",
         question="How did the bass change between two sets, across one candidate, volume, demand or diagnostic change?",
-        needs="two bass sets whose bass views are filed, before and after the change",
+        needs=("two bass sets whose bass views are filed, before and after the change; or one bass take and its "
+               "comparand (no --before-* flag)"),
         avoid="sets whose bass views are not filed yet; run bass on each first",
-        answer_fields=("bands", "comparison", "context", "ladder")),
+        answer_fields=("bands", "comparand", "comparison", "context", "ladder")),
     "bass-fit-table": CatalogRow("bass_table.json", (TAKES_THIS_ROUND, "--candidate", "<candidate.json>"),
                                  programs=(PURPOSE_BASS,), packet="bass", schema="jts_bass_run_table/2",
         question="How much reach, drive and headroom does each bass candidate have at each level?",
