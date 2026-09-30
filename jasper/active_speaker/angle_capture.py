@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, fields, replace
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
@@ -30,7 +29,7 @@ from jasper.audio_measurement.program import RoleBand
 
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
-from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
+from .seat_level_reference import ResolvedLevel
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.contracts import (
@@ -112,7 +111,6 @@ __all__ = [
     "walk_template",
     "design_axis_spec",
     "stop_specs",
-    "default_run_level",
     "request_for_preset",
     "per_driver_at",
     "summed_at",
@@ -397,20 +395,6 @@ class LevelPolicy:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "reference volume must be non-positive")
         if self.resolved.mic_serial is not None and not isinstance(self.resolved.mic_serial, str):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "mic_serial must be text")
-
-    @property
-    def volume_db(self) -> float | None:
-        return self.level_db if self.level_db is not None else self.resolved.reference_volume_db if self.resolved else None
-
-    @property
-    def offset_db(self) -> float:
-        if self.resolved is None or self.volume_db is None:
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
-        return self.volume_db - self.resolved.reference_volume_db
-
-    @property
-    def predicted_db_spl(self) -> float | None:
-        return self.resolved.db_spl_at(self.level_db if self.level_db is not None else self.resolved.reference_volume_db) if self.resolved else None
 
     def to_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "level_db": self.level_db, **(asdict(self.resolved) if self.resolved is not None else {
@@ -760,18 +744,6 @@ def summed_at(
                     for a in angles_deg),
         mover=mover,
     )
-
-
-def default_run_level(
-    program: Preset | AngleCaptureRequest,
-    *,
-    state_path: str | Path | None = None,
-) -> tuple[LevelPolicy, str]:
-    """Choose the scalar default only when the run has no level ladder."""
-    reference_volume_db = seat_level_reference_volume_db(state_path=state_path)
-    if program.levels is None and reference_volume_db is not None:
-        return LevelPolicy(level_db=reference_volume_db), "seat_reference"
-    return LevelPolicy(), "program_default"
 
 
 def request_for_preset(

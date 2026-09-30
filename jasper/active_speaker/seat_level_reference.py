@@ -12,19 +12,17 @@ import math
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
-from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
-from jasper.platform.biquad import PeqFilter, peaking_cascade_response_db
 from jasper.platform.atomic_io import atomic_write_json
-from jasper.platform.json_fields import finite_float, utc_now_iso as _utc_now
+from jasper.platform.json_fields import utc_now_iso as _utc_now
 from jasper.platform.log_event import log_event
 from jasper.platform.paths import resolve_state_path
 
 from ._common import coerce_finite_float
 from .anchor_provenance import provenance_mismatches, read_graph, read_pose
-from .profile import SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
+from .profile import spl_raise_bound_db_spl
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 
 if TYPE_CHECKING:
@@ -55,80 +53,6 @@ def validate_commissioning_spl(level_db_spl: float, *, ceiling_db_spl: float, ma
 
 def validate_ramp_target_spl(level_db_spl: float, *, ceiling_db_spl: float) -> None:
     validate_commissioning_spl(level_db_spl, ceiling_db_spl=ceiling_db_spl, margin_db=RAMP_MARGIN_DB)
-
-
-def rung_lift_bound_db(candidate: Mapping[str, Any], applied: Mapping[str, Any]) -> float:
-    return max(0.0, dynamic_bass_gain_reserve_db(candidate) - dynamic_bass_gain_reserve_db(applied))
-
-
-def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, float], *, charge_db: float) -> float:
-    """The most a graph without ``room_peqs`` plays above one with them across
-    ``band_hz``: ``charge_db``, what they add to the program charge, less their
-    lowest response there (ADR-0385). Never negative."""
-    if not room_peqs:
-        return 0.0
-    return max(0.0, charge_db - min(peaking_cascade_response_db(room_peqs, *band_hz)[1]))
-
-
-def predicted_rung_admission(
-    fader_db: float, anchor: ResolvedLevel, candidates: Mapping[str, Mapping[str, Any]], *,
-    applied: Mapping[str, Any], ceiling_db_spl: float, tolerance_db: float, room_off_rise_db: float | None = None,
-) -> dict[str, Any]:
-    """``room_off_rise_db`` is how much louder a take with the room layer cleared
-    plays than the anchor's graph, for a plan that clears it (ADR-0370)."""
-    lift, name = max((rung_lift_bound_db(descriptor, applied), name) for name, descriptor in candidates.items())
-    margin = tolerance_db + lift + (room_off_rise_db or 0.0)
-    bound = spl_raise_bound_db_spl(ceiling_db_spl, margin_db=margin)
-    predicted = anchor.db_spl_at(fader_db)
-    # 1e-9 dB clears db_spl_at's rounding; a one-ulp fader step can round back above the bound.
-    level = fader_db - (predicted - bound) - 1e-9 if predicted > bound else fader_db
-    return {"level_db": level, "admitted_db_spl": anchor.db_spl_at(level), "candidate_id": name,
-            "anchor_tolerance_db": tolerance_db, "lift_bound_db": lift,
-            **({"room_off_rise_db": room_off_rise_db} if room_off_rise_db is not None else {}),
-            "margin_db": margin, "margin_bound_db_spl": bound,
-            **({"bound_by": "commissioning_margin"} if level < fader_db else {})}
-
-
-class RungMeasurementUnavailable(SeatLevelTargetError):
-    def __init__(self, fields: Sequence[str], observation_index: int | None = None,
-                 previous_level_db: float | None = None) -> None:
-        self.evidence: dict[str, Any] = {"unavailable": list(fields), "observation_index": observation_index,
-                                         "previous_level_db": previous_level_db}
-        super().__init__("The previous rung has no usable SPL window measurement")
-
-
-def measured_rung_admission(
-    fader_db: float, observations: Sequence[Mapping[str, Any]], *, ceiling_db_spl: float, tolerance_db: float,
-) -> dict[str, Any]:
-    bounds = []
-    margin = max(tolerance_db, SPL_RAISE_MARGIN_DB)
-    levels = [finite_float(observation.get("level_db")) for observation in observations]
-    lowest = min((level for level in levels if level is not None), default=None)
-    for index, (observation, previous) in enumerate(zip(observations, levels), 1):
-        spl = observation.get("spl") or {}
-        window = finite_float(spl.get("max_window_db_spl"))
-        half_second = finite_float(spl.get("loudest_half_second_db_spl"))
-        stop = finite_float(spl.get("ceiling_db_spl"))
-        if previous is None or window is None or half_second is None or stop is None:
-            raise RungMeasurementUnavailable([name for name, value in (
-                ("level_db", previous), ("max_window_db_spl", window),
-                ("loudest_half_second_db_spl", half_second), ("ceiling_db_spl", stop)) if value is None], index, lowest)
-        bound = spl_raise_bound_db_spl(ceiling_db_spl, measured_stop_db_spl=stop, margin_db=margin)
-        bounds.append((previous + (bound - window), previous, window, half_second, bound))
-    if not bounds:
-        raise RungMeasurementUnavailable(["previous_rung"])
-    cap, previous, window, half_second, bound = min(bounds)
-    admitted = min(fader_db, cap)
-    return {"requested_level_db": fader_db, "level_db": admitted,
-            "previous_level_db": previous, "max_window_db_spl": window,
-            "loudest_half_second_db_spl": half_second, "window_crest_db": window - half_second,
-            "predicted_max_window_db_spl": window + (admitted - previous),
-            "bound_db_spl": bound, "anchor_tolerance_db": tolerance_db, "margin_db": margin,
-            "bound_by": "measured_window_crest" if admitted < fader_db else None}
-
-
-def stimulus_mismatch(anchor_stimulus_id: str | None, stimulus_id: str | None) -> bool | None:
-    return anchor_stimulus_id != stimulus_id if anchor_stimulus_id and stimulus_id else None
 
 
 @dataclass(frozen=True)
@@ -320,9 +244,6 @@ class ResolvedLevel:
     session_id: str = ""
     leveled_at: str = ""
     target_db_spl: float = DEFAULT_TARGET_DB_SPL
-
-    def db_spl_at(self, fader_db: float) -> float:
-        return self.anchor_db_spl + (fader_db - self.reference_volume_db)
 
     def session(self) -> dict[str, Any]:
         return {"session_id": self.session_id, "gain_db": self.reference_volume_db,

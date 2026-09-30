@@ -591,7 +591,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2state, "persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
-    request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(request or _walk([0, 20]), level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.pose.azimuth_deg,), program_phase=phase))
         for stop in request.stops) if phase else plan_run.prepare_plan_captures(request)
@@ -805,7 +805,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
     request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),), repeats=repeats,
-                                  level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")), program="speaker/mark")
+                                  level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")), program="speaker/mark")
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
     manifest = RunManifest("check-exhaustion", _Store(fakes.records))
@@ -1278,7 +1278,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = replace(_walk([0]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(_walk([0]), level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")))
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
                        program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
     manifest = RunManifest("two-rungs", _Store(fakes.records))
@@ -1325,7 +1325,7 @@ async def test_a_rung_asking_louder_rearms_only_once_its_capture_has_played(monk
     graded = iter([refusal_copy.TakeVerdict(True, next="retake_louder", charge="speaker", next_gain_db=-20.0,
                                             evidence={"next_gain_db.tweeter": -20.0})])
     monkeypatch.setattr(correction_run_host, "assess", lambda *_a, **_k: next(graded, refusal_copy.TakeVerdict(True)))
-    request = replace(_walk([0]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(_walk([0]), level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")))
     result = await plan_run.run_plan(request, door=_run_door(tmp_path, box, fakes, manifest, records), manifest=manifest,
                                      analyze=analyze, assessor=assessor, aborts={},
                                      captures=(plan_run.PlanCapture(request.stops[0], spec),))
@@ -1447,8 +1447,10 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     rows = [take for manifest in manifests for group in manifest["sets"] for take in group["takes"]]
     assert {manifest["schema_version"] for manifest in manifests} == {3}
     assert rows and all(set(take) == {"take_id", "record_id", "selected"} for take in rows)
-    assert {json.loads(take_artifact_path(session, take["record_id"]).read_text())["take_id"] for take in rows} == {
-        record["take_id"] for record in takes}
+    # A ladder's first rung probes first; its probe's row is an attempt no view keeps (ADR-0403 §4).
+    assert {json.loads(take_artifact_path(session, take["record_id"]).read_text())["take_id"]
+            for take in rows if take["selected"]} == {record["take_id"] for record in takes}
+    assert all(take["selected"] for take in rows) is (ladder is None)
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):

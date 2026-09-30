@@ -198,7 +198,8 @@ def test_way1_summed_full_band_is_admitted(tmp_path, scope, probe):
         -20, None, {"full_range": 4}, (20, 20000),
     )
     program = (compose_summed_probe(excitation, MeasureSpec(kind="baseline", graph_scope="candidate",
-                                                            candidate_id="way1", level_probe=True))
+                                                            candidate_id="way1", level_probe=True),
+                                    safety_profile=safety, role_targets=targets)
                if probe else excitation.verify_program())
     wav = tmp_path / "way1.wav"
     write_program_wav(wav, program)

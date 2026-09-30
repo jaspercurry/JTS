@@ -201,7 +201,6 @@ def prepare_v2_session(
     if issue is not None:
         raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
     request = report.plan
-    assert request.level.resolved is not None
     captures = (prepare_level_captures if request.levels else prepare_plan_captures)(
         request, roles_bands=context.roles_bands,
     )
@@ -317,7 +316,7 @@ def prepare_v2_session(
             host=host, device=device, evidence_store=evidence_store,
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
-            ceiling_db_spl=report.spl_ceiling_db_spl,
+            ceiling_db_spl=report.spl_ceiling_db_spl, margin_db=report.rung_admission.get("run_margin_db", 0.0),
             ladder=report if isinstance(report, LevelLadder) else None,
         )
         nonlocal held

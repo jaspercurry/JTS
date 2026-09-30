@@ -16,7 +16,7 @@ from jasper.active_speaker.bass_stimulus import BASS_PASSES, BassStimulusRefused
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks
-from jasper.active_speaker.crossover_v2.programs import SessionExcitation
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
@@ -32,7 +32,9 @@ from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, rea
 from jasper.audio_measurement.deconv import required_pre_guard_s
 from jasper.audio_measurement.program import segment_sweep_meta
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
-from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, render_program_pcm, write_program_wav
+from jasper.audio_measurement.program import (
+    KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, is_level_probe, render_program_pcm, write_program_wav,
+)
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture, repeat_summed_program, sweep_ambient_id
@@ -167,6 +169,20 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     ).capture_plan
     assert plan.capture_target == 1
     assert plan.entries[0].duration_ms == 20199 + CAPTURE_ENTRY_MARGIN_MS
+
+
+@pytest.mark.parametrize("floor", [20, 30])
+def test_a_bass_takes_probe_sweeps_the_band_its_take_sweeps(bass_fixture, floor):
+    """A bass take's level probe plays its bursts over the band its take sweeps,
+    the bass driver's floor to the stimulus's ceiling (ADR-0403 §4)."""
+    _, safety, targets, excitation = bass_fixture
+    next(target for target in safety["targets"] if target["role"] == "woofer")["hard_excitation_band_hz"][0] = floor
+    row = preset("bass/axis")
+    capture, = prepare_plan_captures(request_for_preset(row, mover=row.mover, candidates=("trial",)))
+    probe = program_for_spec(replace(capture.spec, level_probe=True), excitation, None,
+                             safety_profile=safety, role_targets=targets)
+    take = {(s.f1_hz, s.f2_hz) for s in _bass(bass_fixture).segments if s.kind == KIND_SUMMED_SWEEP}
+    assert is_level_probe(probe) and {(s.f1_hz, s.f2_hz) for s in probe.stimulus_segments()} == take == {(floor, 1100)}
 
 
 def test_coherent_noise_gain_and_replayed_fundamental(bass_fixture):

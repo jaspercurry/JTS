@@ -15,7 +15,7 @@ from .angle_capture import (
 )
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
-from .crossover_v2.measure_spec import MeasureSpec
+from .crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec
 from .measurement_programs import (
     BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
     Pose, UnknownPresetError, candidate_identity, preset,
@@ -74,6 +74,15 @@ def prepare_plan_captures(
     return tuple(replace(capture, spec=replace(capture.spec, level_probe=True))
                  if start is not None and (capture.stop.pose.driver or start == index) else capture
                  for index, (capture, start) in enumerate(zip(captures, starts)))
+
+
+def run_probe_index(takes: Sequence[tuple[str, bool]]) -> int | None:
+    """The take a run probes to find its fader: its first summed take that plays
+    at the run's fader, or ``None`` when every take levels itself (ADR-0403 §4).
+    Each take is its graph scope and whether it shares a level
+    (``angle_capture.level_sets``)."""
+    return next((index for index, (scope, levelled) in enumerate(takes)
+                 if scope in CANDIDATE_SCOPES and not levelled), None)
 
 
 def takes_timing(request: AngleCaptureRequest) -> bool:

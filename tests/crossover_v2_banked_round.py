@@ -938,7 +938,11 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))
         seams = TwinSeams(play=FakePlay(wav_path=answer.wav_path))
 
-        def assessor(*_args, **_kwargs):
+        def assessor(*_args, program=None, pose_level=None, **_kwargs):
+            # A ladder's first rung probes for its level and lands 6 dB under its probe (ADR-0403 §4).
+            if pose_level is not None and ladder is not None:
+                return TakeVerdict(False, next="retake_quieter",
+                                   next_gain_db=max(segment.gain_db for segment in program.stimulus_segments()) - 6.0)
             return TakeVerdict(True)
 
         def bound(run):
@@ -961,7 +965,9 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
                 def prepare(plan):
                     runs.append(RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet))
                     records, analyze = bound(runs[-1])
-                    return LevelRun(runs[-1], door(runs[-1], seams, records), analyze, assessor,
+                    rung = door(runs[-1], seams, records)
+                    rung.caps_dbfs = conductor.caps_dbfs if plan.level.level_db is None else None
+                    return LevelRun(runs[-1], rung, analyze, assessor,
                                     prepare_level_captures(plan, roles_bands=conductor.roles_bands))
                 await run_levels(ladder, hold=door(manifest, seams, None).hold, prepare=prepare, gate=gate,
                                  aborts={Exception: "internal_error"}, save_ladder=packet.update_schedule)

@@ -19,6 +19,7 @@ from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
+from jasper.platform.json_fields import finite_float
 from jasper.platform.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
@@ -32,7 +33,7 @@ from .angle_capture import (
     AngleCaptureRequest, LateralWalkRefused,
     level_sets, resolve_request,
 )
-from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures
+from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
@@ -52,7 +53,7 @@ from .crossover_v2.session import TuningSession
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
 from .measurement_programs import BASE_CANDIDATE, PoseLevel, run_level
-from .crossover_v2.programs import predictive_program_for_spec, probe_fader_db, run_fader_db
+from .crossover_v2.programs import predictive_program_for_spec, probe_backoff_db, probe_fader_db, run_fader_db
 from .run_manifest import RunManifest, driver_level_mismatches
 from .round_copy import PLACE_MICROPHONE, take_counts
 
@@ -153,6 +154,9 @@ class RunDoor:
     program_for_spec: Callable[..., ExcitationProgram] | None = None
     #: The session's driver caps; a door that states them finds its run's fader (ADR-0403 §4).
     caps_dbfs: Mapping[str, float] | None = None
+    #: dB a take of the run may play over the take it probed: the largest bass lift
+    #: and room-off rise against the probe's graph (ADR-0403 §4).
+    margin_db: float = 0.0
 
     @property
     def is_open(self) -> bool:
@@ -179,17 +183,14 @@ def _first_play(spec: MeasureSpec) -> MeasureSpec:
     return next(iter(branch_probes(spec)), spec)
 
 
-def run_probe_index(takes: Sequence[tuple[Any, str, bool]]) -> int | None:
-    """The take a run probes to find its fader: its first placement's first
-    summed take that plays at the run's fader, or ``None`` when every take there
-    levels itself (ADR-0403 §4). Each take is its placement, graph scope and
-    whether it shares a level (``angle_capture.level_sets``)."""
-    for index, (place, scope, levelled) in enumerate(takes):
-        if place != takes[0][0]:
-            break
-        if scope in CANDIDATE_SCOPES and not levelled:
-            return index
-    return None
+def _landed_db_spl(verdict: TakeVerdict, rule: PoseLevel, probe: ExcitationProgram) -> float:
+    """Where the take a probe levelled lands: 1 dB under its target, or less where its
+    raise or its ceiling held it (ADR-0365)."""
+    target, heard = (finite_float(verdict.evidence.get(key)) for key in ("level_target_db_spl", "level_db_spl"))
+    aim = (rule.target_db_spl if target is None else target) - rule.tolerance_db / 2
+    ceiling = max(segment.gain_db for segment in probe.stimulus_segments())
+    return ((aim if heard is None else min(aim, heard + rule.max_raise_db))
+            - max(0.0, (verdict.next_gain_db or 0.0) - ceiling))
 
 
 def _pose(stop: Any) -> dict[str, Any]:
@@ -255,8 +256,7 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
 def preview_schedule(request: AngleCaptureRequest, captures: Sequence[PlanCapture], context: Any) -> dict[str, Any]:
     specs = [capture.spec for capture in captures]
     shared = level_sets([capture.stop for capture in captures])
-    probed = None if request.levels else run_probe_index(
-        [(capture.stop.pose.place, capture.spec.graph_scope, start is not None) for capture, start in zip(captures, shared)])
+    probed = run_probe_index([(capture.spec.graph_scope, start is not None) for capture, start in zip(captures, shared)])
     if probed is not None:
         specs[probed] = replace(specs[probed], level_probe=True)
     return schedule_facts([(_pose(c.stop), spec) for c, spec in zip(captures, specs)], predictive_program_for_spec(context),
@@ -331,16 +331,15 @@ async def run_plan(
     places = [stop.pose.place for stop in angle_stops]
     level_starts = level_sets(angle_stops)
     anchor = request.level.resolved
-    level = request.level.volume_db
+    level = request.level.level_db
     if level is None and session is not None:
         level = session.measurement_level_db
-    if level is None or (door is None and (session is None or level != session.measurement_level_db)):
+    finds = door is not None and bool(door.caps_dbfs)
+    if (level is None and not finds) or (door is None and (session is None or level != session.measurement_level_db)):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
     manifest.level = {
         **({"session": anchor.session()} if anchor is not None else {}),
-        "run": {"level_db": level,
-                "offset_db": request.level.offset_db if anchor is not None else None,
-                "level_source": request.level_source},
+        "run": {"level_db": level, "level_source": request.level_source},
     }
     expanded = []
     planned: list[dict[str, Any]] = []
@@ -477,28 +476,32 @@ async def _run(
     playing = [_first_play(item.spec) for item in work]
     branch_levels: dict[int, list[float]] = {}
     unlevelled: set[int] = set()
-    # A run finds its fader by probing its first spot's first summed take before its first
-    # take, the probe banking as that take's attempts; a first spot where every take levels
-    # itself holds the probe's fader. The request's level caps the fader held (ADR-0403 §4).
-    caps, cap, probe_at = (door.caps_dbfs if door is not None else None), level, None
+    # A run finds its fader with a probe of its first summed take that plays at the run's
+    # fader, before the first take of that take's placement, banked as that take's attempts.
+    # Until then it plays at the probe fader, where every take levels itself. The fader held
+    # is the probe's, turned down by what its margins pass the stop by, never above the level
+    # the plan states (ADR-0403 §4).
+    caps, cap = (door.caps_dbfs if door is not None else None), level
+    probe_at = probe_start = None
+    other_graphs = False
 
     def hold_fader(found: float, source: str) -> float:
-        assert cap is not None
-        held = min(found, cap)
+        held = found if cap is None else min(found, cap)
         manifest.level["run"].update(level_db=held,
                                      source=source if held == found else manifest.level["run"]["level_source"])
         return held
 
     if caps:
-        opening = probe_fader_db(caps)
-        manifest.level["run"]["probe_fader_db"] = opening
-        probe_at = run_probe_index([(item.pose_index, item.spec.graph_scope, item.level_set is not None)
-                                    for item in work])
-        if probe_at is None:
-            level = hold_fader(opening, "probe_fader")
-        else:
-            level, offset, manifest.level["run"]["level_db"] = opening, probe_at, None
+        probe_at = run_probe_index([(item.spec.graph_scope, item.level_set is not None) for item in work])
+        level = hold_fader(probe_fader_db(caps), "probe_fader")
+        manifest.level["run"]["probe_fader_db"] = level
+        if probe_at is not None:
+            probe_start = next(index for index, item in enumerate(work) if item.pose_index == work[probe_at].pose_index)
+            manifest.level["run"]["level_db"] = None
             playing[probe_at] = replace(work[probe_at].spec, level_probe=True)
+            probed = (work[probe_at].spec.graph_scope, work[probe_at].spec.candidate_id)
+            other_graphs = any((item.spec.graph_scope, item.spec.candidate_id) != probed for item in work
+                               if item.spec.graph_scope in CANDIDATE_SCOPES and item.level_set is None)
 
     def solved_level(offset: int, pending: TakeVerdict) -> float | None:
         """The last level solved for a take that levels itself, never above the last it
@@ -534,8 +537,9 @@ async def _run(
             if signals.retake.is_set():
                 signals.retake.clear()
                 pose = work[offset].pose_index
-                offset = probe_at if probe_at is not None else next(
-                    i for i, row in enumerate(work) if row.pose_index == pose)
+                offset = next(i for i, row in enumerate(work) if row.pose_index == pose)
+                if offset == probe_start and probe_at is not None:
+                    offset = probe_at
                 retry = TakeVerdict(True, next="fix_and_retake", charge="operator")
                 retry_was_measured = False
                 manifest.discard_pose(pose)
@@ -548,6 +552,8 @@ async def _run(
                 elif work[offset].pose_level is not None:
                     # A pose that levels itself starts over with its retries, so its redo is free (ADR-0361).
                     ledgers[pose] = SlotAttempts(retries_per_pose=retries)
+            if offset == probe_start and probe_at is not None:
+                offset = probe_at
             if offset in unlevelled:
                 # A take of a set that found no level plays at none, never at the run's fader (ADR-0361 §3).
                 manifest.mark_not_measured(work[offset].stop["index"], REASON_LEVEL_UNSOLVED)
@@ -618,7 +624,7 @@ async def _run(
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
                         "budget": ledger.to_payload(), "sweep": before + 1, "measurement": offset + 1,
                         "level_mismatches": driver_level_mismatches(manifest.joined())}
-            placed = 0 if offset == probe_at else offset
+            placed = probe_start if offset == probe_at and probe_start is not None else offset
             entry = work[placed].entry
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": f"{REASON_REGISTRY[retry.fault].message} {PLACE_MICROPHONE}"})
@@ -709,16 +715,20 @@ async def _run(
                     retry = verdict
                     retry_was_measured = outcome.complete and any(record_id for _, record_id in records)
                     if offset == probe_at and verdict.next in _LEVEL_RETAKES and verdict.next_gain_db is not None:
-                        # The run holds the fader its probe found and plays from its first take (ADR-0403 §4).
-                        assert caps is not None
-                        solved = run_fader_db(ExcitationProgram.from_dict(next(
-                            record["program"] for record, _ in records if record.get("program"))),
-                            verdict.next_gain_db, caps)
+                        # The run holds the fader its probe found and plays its placement from its
+                        # first take (ADR-0403 §4).
+                        assert caps is not None and door is not None and door.ceiling_db_spl is not None
+                        assert item.pose_level is not None and probe_start is not None
+                        probe = ExcitationProgram.from_dict(next(
+                            record["program"] for record, _ in records if record.get("program")))
+                        rise = door.margin_db + (probe_backoff_db(probe, caps) if other_graphs else 0.0)
+                        solved = run_fader_db(probe, verdict.next_gain_db, caps, cut_db=max(0.0, _landed_db_spl(
+                            verdict, item.pose_level, probe) + item.pose_level.tolerance_db + rise - door.ceiling_db_spl))
                         level = hold_fader(solved, "probe")
                         manifest.level["run"]["probe_level_db"] = solved
                         await window.aclose()
                         session, playing[offset], probe_at = None, work[offset].spec, None
-                        offset, retry, retry_was_measured = 0, None, False
+                        offset, retry, retry_was_measured = probe_start, None, False
                         continue
                     probes = branch_probes(item.spec)
                     if spec in probes and verdict.next in _LEVEL_RETAKES and verdict.next_gain_db is not None:
@@ -735,6 +745,10 @@ async def _run(
                     continue
                 retry = None
                 retry_was_measured = False
+                if offset == probe_at:
+                    # A probe is never kept (ADR-0365): the run found no fader, so nothing else plays.
+                    manifest.reason = REASON_LEVEL_UNSOLVED
+                    break
                 if item.pose_level is not None:
                     # The rest of this take's set plays at the level it landed (ADR-0361, ADR-0403).
                     for index in range(offset + 1, len(work)):

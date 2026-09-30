@@ -8,8 +8,7 @@ from dataclasses import dataclass, fields, replace
 from typing import Any, Callable, Mapping, Sequence
 
 from .angle_capture import (
-    AngleCaptureRequest, LateralWalkRefused, LevelPolicy, WALK_LEVEL_POLICY_INVALID,
-    default_run_level, request_for_preset,
+    AngleCaptureRequest, LateralWalkRefused, LevelPolicy, WALK_LEVEL_POLICY_INVALID, request_for_preset,
 )
 from .measurement_programs import PURPOSE_SPEAKER, run_preset
 from .movers import MOVER_HUMAN
@@ -63,13 +62,10 @@ def resolve_plan(source: RunRequest | AngleCaptureRequest, *,
 
     A request plays its preset's poses with each driver role expanded to
     ``targets``, the outputs this speaker plays alone, its candidates (a rear
-    pair's parent is the applied base, ADR-0386), and at its stated level or the
-    seat reference. A stated plan at the program default plays the seat reference."""
+    pair's parent is the applied base, ADR-0386), and at its stated level, or at
+    the level its run finds (ADR-0403 §4)."""
     if isinstance(source, AngleCaptureRequest):
-        if source.level_source != "program_default":
-            return source, None
-        level, level_source = default_run_level(source)
-        return replace(source, level=level, level_source=level_source), None
+        return source, None
     preset = run_preset(source.program, source.layout, source.poses)
     if source.repeats is not None:
         try:
@@ -77,7 +73,7 @@ def resolve_plan(source: RunRequest | AngleCaptureRequest, *,
         except ValueError as exc:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, str(exc)) from exc
     level, level_source = ((LevelPolicy(level_db=source.level_db), "operator") if source.level_db is not None
-                           else default_run_level(preset))
+                           else (LevelPolicy(), "program_default"))
     plan = request_for_preset(preset, candidates=source.candidates, level=level, level_source=level_source,
                               mover=source.mover or preset.mover or MOVER_HUMAN, targets=targets(),
                               driver=source.driver)

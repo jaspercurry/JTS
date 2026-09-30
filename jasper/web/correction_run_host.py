@@ -197,7 +197,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, provenance: Any = None,
-                  ladder: LevelLadder | None = None, finds_fader: bool = True,
+                  ladder: LevelLadder | None = None, finds_fader: bool = True, margin_db: float = 0.0,
                   capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
@@ -225,7 +225,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
                        action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
-        program_for_spec=predictive_program_for_spec(context) if context else None,
+        program_for_spec=predictive_program_for_spec(context) if context else None, margin_db=margin_db,
     )
     if ladder is None or ladder.plan.levels is None:
         door.caps_dbfs = conductor.caps_dbfs if finds_fader else None
@@ -244,7 +244,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
                 production=production, conductor=conductor, refs=refs, trims=trims,
                 ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
-                provenance=provenance, finds_fader=False, context=context,
+                provenance=provenance, finds_fader=plan.level.level_db is None, margin_db=margin_db, context=context,
                 capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
             )
             bound = LevelRun(child, child_door, child_analyze, child_assessor, selected)
