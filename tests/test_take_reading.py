@@ -24,12 +24,12 @@ from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.platform.json_fields import parse_utc_iso
 from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_COMPARE_NO_COMMON_BAND, REFUSE_COMPARE_NO_COMPARAND, TakeRead, compare_preview_report, compare_report,
-    decay_report, group_delay_report, read_preview,
+    REFUSE_COMPARE_NO_COMMON_BAND, REFUSE_COMPARE_NO_COMPARAND, REFUSE_TAKE_BAND_TOO_NARROW, TakeRead,
+    compare_preview_report, compare_report, decay_report, group_delay_report, read_preview, read_take,
 )
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_REFUSED
-from tests.crossover_v2_fixtures import CAPTURE_RECORDS, bank_capture_round
+from tests.crossover_v2_fixtures import CAPTURE_RECORDS, bank_capture_round, capture_record
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_audio_measurement_decay import _decay
 from tests.test_take_impulses import _response
@@ -147,6 +147,28 @@ def test_a_read_says_which_window_it_used_and_bands_only_what_it_read():
 
     assert (compared["window_ms"] < 20.0, compared["window_source"]) == (True, "shorter take window (argument, retained)")
     assert all(lo <= band["hz"] <= hi for band in timing["summary"]["bands"])
+
+
+def test_a_bass_take_at_a_bearing_reads_the_window_its_program_reads(tmp_path):
+    """A bass take at a bearing banks both windows, and its views read the
+    ungated one over its whole sweep. Its gate, read only when named, leaves
+    too narrow a band (ADR-0400 §2)."""
+    ir = np.zeros(36_000)
+    ir[480], ir[480 + round(3.5 * RATE / 1000)] = 1.0, 0.5
+    round_dir = bank_capture_round(tmp_path, [ir], capture_ids=["b0"], radiated_band_hz=(20.0, 1100.0))
+    record = capture_record(round_dir, "b0")
+    doc = json.loads(record.read_text())
+    doc.update(measurement_purpose="bass", curves=[
+        {"role": "summed", "band_hz": [20.0, 1100.0], "window": window, "gate_window_ms": gate}
+        for window, gate in (("gated", 3.27), ("ungated", None))])
+    record.write_text(json.dumps(doc))
+    read = read_take(round_dir, take_id="b0", role="summed")
+
+    parameters = group_delay_report(read)["parameters"]
+    assert (parameters["window_source"], parameters["band_hz"]) == ("ungated", [20.0, 1100.0])
+    with pytest.raises(EvidenceUnavailable) as refused:
+        group_delay_report(read, window_ms=3.27)
+    assert refused.value.reason == REFUSE_TAKE_BAND_TOO_NARROW
 
 
 def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:

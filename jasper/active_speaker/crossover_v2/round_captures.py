@@ -26,7 +26,7 @@ from jasper.platform.json_fields import finite_float
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import BANKED_TAKE_GLOB
-from .position_cycle import OWN_WINDOW, take_curve
+from .position_cycle import OWN_WINDOW, program_window, take_curve
 from .record_index import measurement_documents, played_graph_fingerprint, take_pose_kind
 from .round_inputs import (
     NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
@@ -67,8 +67,8 @@ class PoseCapture:
     preprocessing: Mapping[str, Any] = field(default_factory=dict)
     record_path: Path | None = None
     record_document: Mapping[str, Any] = field(default_factory=dict, repr=False)
-    #: This role's banked curve (its gate window, floors and band); empty on a
-    #: record banked without one.
+    #: This role's banked curve in the window its program reads (its gate
+    #: window, floors and band); empty on a record banked without one.
     curve: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
@@ -301,7 +301,10 @@ def record_captures(
         kept = take_impulses(root, doc) if isinstance(doc.get(IMPULSES_KEY), Mapping) else None
     except TakeImpulsesUnreadable as exc:
         raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
-    curves = {role: take_curve(doc, role, OWN_WINDOW) or {} for role in roles}
+    # A speaker role whose gate found no window banked only its ungated curve,
+    # which still carries the role's band (ADR-0400 §2).
+    curves = {role: take_curve(doc, role, program_window(doc)) or take_curve(doc, role, OWN_WINDOW) or {}
+              for role in roles}
     responses = [_capture_response(doc, role, wav, kept=kept, curve=curves[role]) for role in roles]
     pose_kind, seat_offset_m = _doc_pose_category(doc)
     return [

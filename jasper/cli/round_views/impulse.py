@@ -66,7 +66,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     group_delay = sub.add_parser("group-delay", help="a take's phase, group delay and excess group delay by band")
     _take_arguments(group_delay)
     group_delay.add_argument("--window-ms", type=float,
-                             help="read through this window after the peak; default: the take's own gate")
+                             help="read through this window after the peak; default: the window its program reads")
     group_delay.add_argument("--points-per-octave", type=int, default=24,
                              help="artifact grid density (default: 24)")
     group_delay.set_defaults(func=_cmd_group_delay)

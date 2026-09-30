@@ -4,8 +4,9 @@
 """One take's impulse, read the way a person reads it in Room EQ Wizard: the
 impulse itself, its timing by frequency, and its decay. See ADR-0355 and ADR-0357.
 
-By default a take is read through the span its own analysis gated at; a
-caller may name another.
+By default a take is read through the window its program reads (ADR-0400):
+a speaker take through its gate, a room, bass or rear take ungated. A caller
+may name another.
 """
 
 from __future__ import annotations
@@ -74,8 +75,8 @@ class TakeRead:
 
     def window(self, window_ms: float | None = None) -> tuple[float, str]:
         """The window to read through, and whose it is: ``argument``, ``take``
-        (the analysis's own gate), ``ungated`` (a take the analysis did not
-        gate) or ``retained`` (an impulse that ends sooner than any of those)."""
+        (the gate of the window its program reads), ``ungated`` (a take read
+        ungated) or ``retained`` (an impulse that ends sooner than any of those)."""
         gate = self.capture.curve.get("gate_window_ms")
         wanted, source = ((float(window_ms), "argument") if window_ms is not None
                           else (float(gate), "take") if isinstance(gate, (int, float)) and gate > 0
