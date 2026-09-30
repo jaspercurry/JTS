@@ -151,11 +151,11 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
     then, for each response its gate windowed, that arrival read ungated
     (ADR-0383 §2), so a reader picks a role's curve by its window. A role's
     repeat occurrences ride nested on their own primary (:func:`pose_curve_record`)
-    rather than as rows of their own. They remain diagnostic
-    and feed no candidate/trim/alignment math. A role whose band the
-    program does not declare is SKIPPED rather than banked on a guessed band,
-    since outside the driven band the samples are noise. An empty list
-    therefore means NO CURVE WAS BANKED, never "this capture was clean".
+    rather than as rows of their own. They remain diagnostic and feed no
+    candidate/trim/alignment math. A role whose band the program does not
+    declare is SKIPPED rather than banked on a guessed band, since outside the
+    driven band the samples are noise. An empty list therefore means NO CURVE
+    WAS BANKED, never "this capture was clean".
     """
     bands = _primary_sweep_bands(program)
     primaries = [
