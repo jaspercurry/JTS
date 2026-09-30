@@ -22,7 +22,7 @@ import pytest
 
 from jasper.active_speaker import rear_fit
 from jasper.active_speaker.branch_chain import rear_stage_response
-from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
+from jasper.audio_measurement.evidence_grid import lateral_evidence_grid_hz
 from jasper.active_speaker.crossover_v2.rear_views import PAIR_ROLES
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
