@@ -58,6 +58,8 @@ class CatalogRow(NamedTuple):
     ``packet`` is the analysis family carrying it in ``packet.json``.
     ``per_take`` marks a view that files one artifact per take it reads
     (:func:`~.crossover_v2.round_inputs.take_artifact_name`).
+    ``driver_sets`` marks a tool that reads only a set that measured one
+    driver, never a summed set.
     """
 
     artifact: str = ""
@@ -70,6 +72,7 @@ class CatalogRow(NamedTuple):
     packet: str | None = None
     schema: str = ""
     per_take: bool = False
+    driver_sets: bool = False
     question: str = ""
     needs: str = ""
     avoid: str = ""
@@ -104,7 +107,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
                "take lacks); --set narrows them to one set"),
         avoid="one take's response; --scope take reads one take",
         answer_fields=("bands", "features", "ladder", "omitted", "poses", "rungs_ms", "scope")),
-    "sweep --scope take": CatalogRow("window_view.json", TAKES_ONE_TAKE, schema=FREQUENCY_VIEW_SCHEMA,
+    "sweep --scope take": CatalogRow("window_view.json", TAKES_ONE_TAKE, schema=FREQUENCY_VIEW_SCHEMA, per_take=True,
         question="How does one take's response change through each gate of the ladder?",
         needs="one take by its id (jasper-round show lists them); --role picks a driver it recorded",
         avoid="the room-or-speaker verdict over poses; --scope round gives it",
@@ -230,7 +233,8 @@ CATALOG: dict[str, CatalogRow] = {
         needs="one set with two or more takes at one 0°/0° pose, each with its banked analysis (speaker/mark)",
         avoid="comparing rounds; repeat without --set reads those",
         answer_fields=("floor", "mark_pairs", "roles", "set_id", "take", "take_ids")),
-    f"{PROG} speaker-fit": CatalogRow(argv=TAKES_ONE_TAKE, programs=(PURPOSE_SPEAKER,), schema=ANSWER_SCHEMAS["speaker-fit"],
+    f"{PROG} speaker-fit": CatalogRow(argv=TAKES_ONE_TAKE, programs=(PURPOSE_SPEAKER,), driver_sets=True,
+                                      schema=ANSWER_SCHEMAS["speaker-fit"],
         question="Which driver filters does the fit propose, and which alignment and trims did the round bank?",
         needs="one speaker/mark set with each driver's take at the mark (per_driver)",
         avoid="a set with no per-driver take at the mark",

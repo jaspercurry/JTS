@@ -16,7 +16,7 @@ import pytest
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.measurement_programs import PURPOSES, available_presets, preset
-from jasper.active_speaker.round_catalog import catalog_command
+from jasper.active_speaker.round_catalog import catalog_command, round_calls
 from jasper.active_speaker.round_view_artifacts import CATALOG, PROG, READS, READS_LAPTOP, bookkeeping_views
 from jasper.cli import crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import bank_seat_round
@@ -89,7 +89,8 @@ def _catalog(capsys, *argv: str) -> dict:
 def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(tmp_path, capsys):
     """The index names the catalog call, then each call the catalog fills from the round
     alone. A call that needs another input keeps it as a placeholder, a one-set round's
-    call names the file the bank wrote, and a call runs as given and files what it names."""
+    view the bank publishes names the bank's file, the frequency call reads the bank's
+    view and leaves it as it is, and a call runs as given and files what it names."""
     root = bank_seat_round(tmp_path / "rounds 'quoted' $(x)")
     write_manifest(root, program="room")
     packet_of(root)
@@ -107,12 +108,39 @@ def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(
     assert (calls[PROG, "repeat", str(root), "<other-round>"]["needs"], calls[PROG, "room", str(root)]["present"]) == (
         ["<other-round>"], True)
 
-    frequency = calls[PROG, "frequency", str(root)]
-    Path(frequency["out"]).unlink()
-    assert round_views.main(frequency["argv"][1:]) == round_views.EXIT_OK
+    view = Path(calls[PROG, "frequency", str(root)]["out"])
+    banked = view.read_bytes()
+    assert round_views.main([PROG, "frequency", str(root)][1:]) == round_views.EXIT_OK
+    assert "out" not in json.loads(capsys.readouterr().out) and view.read_bytes() == banked
+    grade = calls[PROG, "room-grade", str(root)]
+    Path(grade["out"]).unlink()
+    assert round_views.main(grade["argv"][1:]) == round_views.EXIT_OK
     capsys.readouterr()
     again = next(call for tool in _catalog(capsys, str(root))["tools"] for call in tool["calls"]
-                 if call["argv"] == frequency["argv"])
-    assert (again["present"], again["bytes"]) == (True, Path(frequency["out"]).stat().st_size)
+                 if call["argv"] == grade["argv"])
+    assert (again["present"], again["bytes"]) == (True, Path(grade["out"]).stat().st_size)
     assert _catalog(capsys, str(root), "--program", "bass")["tools"] == []
     assert round_views.main(["catalog", str(root), "--set", "unknown"]) == round_views.EXIT_REFUSED
+
+
+def _one_set(preset: str, role: str) -> dict:
+    """A one-set round of ``preset`` whose set measured ``role``: one kept take in front and one behind."""
+    return {"preset": preset, "sets": [{"set_id": "s", "capture_basis": {"role": role, "gating_applied": role != "summed"},
+            "takes": [{"take_id": kind, "selected": True, "pose": {"kind": kind, "deg": 0, "elevation_deg": 0},
+                       "curves": [{"role": role}]} for kind in ("bearing", "behind")]}]}
+
+
+@pytest.mark.parametrize("preset,role", [("speaker/mark", "woofer"), ("speaker/mark", "summed"), ("room/seat", "summed")])
+def test_a_one_set_rounds_calls_parse_name_their_set_and_file_apart(preset, role):
+    """Only a view the bank publishes leaves out a one-set round's --set: speaker-fit
+    requires it, and the round ladder reads other takes without it. speaker-fit reads
+    only a set that measured one driver, and each take's call files its own artifact."""
+    ready = [call for call in round_calls(Path("round"), _one_set(preset, role)) if not call["needs"]]
+    for call in ready:
+        _PARSERS[call["argv"][0]].parse_args(call["argv"][1:])
+        row = CATALOG[call["tool"]]
+        assert ("--set" in call["argv"]) == ("<set-id>" in row.argv and not row.bookkeeping)
+    artifacts = [call["artifact"] for call in ready if call["take_id"] and call["artifact"]]
+    assert artifacts and len(set(artifacts)) == len(artifacts)
+    assert {call["take_id"] for call in ready if call["tool"] == f"{PROG} speaker-fit"} == (
+        {"bearing", "behind"} if preset == "speaker/mark" and role != "summed" else set())

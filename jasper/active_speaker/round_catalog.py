@@ -38,7 +38,7 @@ def _call(command: str, row: CatalogRow, round_dir: Path, *, set_id: str | None 
           needs: Sequence[str] = ()) -> dict[str, Any]:
     """One call of ``row``, and the file its argv writes beside the round."""
     words = list(row.argv)
-    if one_set and "--set" in words:
+    if one_set and row.bookkeeping and "--set" in words:
         at = words.index("--set")
         del words[at:at + 2]
     fill = {TAKES_THIS_ROUND: str(round_dir), "<set-id>": set_id, "<take-id>": take_id, "<program>": program}
@@ -55,11 +55,14 @@ def round_calls(round_dir: Path, manifest: Mapping[str, Any], *, purposes: Colle
     """Every call of a catalog tool that reads this round, its argv filled from the round.
 
     ``<this-round>`` is the round; ``<set-id>`` each set whose purpose the tool's
-    programs read, less the base for a tool that grades against it; ``<take-id>``
-    that set's :func:`_first_takes`; ``<program>`` each program the round serves.
-    A one-set round's ``--set`` is left out, so a view files what the bank filed.
-    A tool that also needs an input no round holds (another round, a document) is
-    one call, those inputs left in ``needs``. ``manifest`` is joined with its
+    programs read, less the base for a tool that grades against it and a summed
+    set for one that reads ``driver_sets``; ``<take-id>`` that set's
+    :func:`_first_takes`; ``<program>`` each program the round serves. On a
+    one-set round a view the bank publishes leaves out ``--set``, so it files
+    what the bank filed; every other call names its set, since some views read
+    other takes without one.
+    A tool that also needs an input no round holds (another round, a document)
+    is one call, those inputs left in ``needs``. ``manifest`` is joined with its
     records; ``purposes`` and ``set_id`` narrow the calls.
     """
     if not manifest.get("preset"):
@@ -84,6 +87,7 @@ def round_calls(round_dir: Path, manifest: Mapping[str, Any], *, purposes: Colle
             calls += [_call(command, row, round_dir, set_id=group.set_id, take_id=take["take_id"] if take else None,
                             role=group.role, one_set=len(sets) == 1)
                       for group, of, base, firsts in groups if reads & of and not (base and row.grades_against_base)
+                      and not (row.driver_sets and group.role == "summed")
                       for take in (firsts if "<take-id>" in holes else [None])]
         else:
             calls.append(_call(command, row, round_dir))
