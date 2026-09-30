@@ -88,6 +88,7 @@ class _RunnableDoctorCheck:
     check: Callable[[], Any]
     is_async: bool = False
     exclusive_group: str = ""
+    timeout_s: float = 0.0
 
 
 def _already_decided(result: CheckResult) -> CheckResult:
@@ -117,6 +118,7 @@ def _build_doctor_checks(
                 partial(entry.func, cfg) if entry.needs_cfg else entry.func,
                 is_async=entry.is_async,
                 exclusive_group=entry.exclusive_group,
+                timeout_s=entry.timeout_s,
             )
         )
     return checks
@@ -161,6 +163,7 @@ async def _run_runnable_bounded(
     exclusive_locks: dict[str, asyncio.Lock],
     timeout: float,
 ) -> CheckResult:
+    timeout = max(runnable.timeout_s, timeout)
     async with semaphore:
         if runnable.exclusive_group:
             async with exclusive_locks[runnable.exclusive_group]:
@@ -181,11 +184,12 @@ async def run_async(
     Checks run concurrently (most are subprocess/socket/file probes) but
     results are gathered in registry order so CLI and dashboard output stay
     stable. ``exclusive_group=`` serializes hardware-sensitive probes within
-    that lane while unrelated checks continue. ``only``, when given,
-    restricts the run to that one module (see ``registered_checks``).
+    that lane while unrelated checks continue. ``check_timeout`` is every
+    row's hang guard; a check registered with ``timeout_s=`` runs under the
+    longer of the two. ``only``, when given, restricts the run to that one
+    module (see ``registered_checks``).
     """
     evidence.reset()
-    evidence.set_check_timeout(check_timeout)
     install_profile = read_install_profile()
     checks = _build_doctor_checks(
         cfg, install_profile, core_only=core_only, only=only,

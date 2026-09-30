@@ -404,6 +404,41 @@ def test_run_async_serializes_checks_in_same_exclusive_group(monkeypatch):
     assert max_active == 1
 
 
+@pytest.mark.parametrize(
+    "run_guard, slow_row_guard",
+    [(1.0, 30.0), (15.0, 30.0), (60.0, 60.0)],
+    ids=["shorter-run-guard", "default-run-guard", "longer-run-guard"],
+)
+def test_a_rows_own_guard_is_a_floor_under_the_run_guard(
+    monkeypatch, run_guard, slow_row_guard,
+):
+    """A row registered with ``timeout_s`` never runs under less than it and
+    still takes a longer run guard; a row without one runs under the run's."""
+    guards: dict[str, float] = {}
+
+    async def record(runnable, timeout):
+        guards[runnable.name] = timeout
+        return doctor.CheckResult(runnable.name, "ok")
+
+    def plain():
+        raise AssertionError("the guard is read, not the check")
+
+    def slow():
+        raise AssertionError("the guard is read, not the check")
+
+    monkeypatch.setattr(_harness, "_run_runnable_with_timeout", record)
+    monkeypatch.setattr(_harness, "read_install_profile", lambda: "full")
+    monkeypatch.setattr(
+        _harness,
+        "registered_checks",
+        lambda **_scope: [_reg(plain), _reg(slow, timeout_s=30.0)],
+    )
+
+    asyncio.run(doctor.run_async(SimpleNamespace(), check_timeout=run_guard))
+
+    assert guards == {"plain": run_guard, "slow": slow_row_guard}
+
+
 def _summary_line(results, capsys) -> tuple[int, str]:
     exit_code = doctor.render(results)
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]

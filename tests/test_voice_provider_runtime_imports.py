@@ -34,7 +34,6 @@ import pytest
 
 import jasper.cli.doctor as doctor_pkg
 from jasper.cli.doctor import _shared, voice as doctor_voice
-from jasper.cli.doctor._evidence import evidence as doctor_evidence
 from jasper.cli.doctor._registry import registered_checks
 from jasper.voice.catalog import PROVIDERS, ProviderCatalogEntry
 from jasper.voice.provider_state import ActiveProviderState
@@ -323,50 +322,28 @@ def test_probe_timeout_warns(monkeypatch, probe):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "row_timeout",
-    [0.5, 1, 1.5, 3, 6, 7, 10, 15, 20, 120],
-)
-def test_probe_timeout_stays_under_the_row_guard(row_timeout):
-    """The doctor's per-row guard is DOCTOR_CHECK_TIMEOUT_SECONDS (15 s by
-    default), and the import probe must finish strictly inside it.
-
-    It has to hold at *every* row timeout the harness could be given, not
-    just the shipped 15 s: subtraction alone goes negative on a small row
-    value, and a probe timeout at or above the row guard means the row is
-    cancelled first — which makes this check's could-not-verify warn
-    unreachable AND releases the memory-sample lock while subprocess.run's
-    child is still resident.
-    """
-    row = float(row_timeout)
-    doctor_evidence.set_check_timeout(row)
-    probe = doctor_voice._import_probe_timeout()
-    assert probe > 0, f"probe timeout must be positive, got {probe}"
-    assert probe < row, (
-        f"probe timeout {probe} is not below the row guard {row} — the row "
-        "would be cancelled first and leave the child running"
-    )
-
-
-def test_probe_timeout_at_the_shipped_default_matches_the_doctor_ceiling():
-    """At the shipped 15 s row guard the probe gets 10 s — the same ceiling
-    the doctor's other subprocess probes already use."""
-    assert doctor_pkg.DOCTOR_CHECK_TIMEOUT_SECONDS == 15.0
-    assert doctor_voice._import_probe_timeout() == 10.0
-
-
-def test_check_passes_the_derived_timeout_to_the_probe(monkeypatch, probe):
-    """The value derived from *this run's* row guard is what reaches
-    subprocess.run — not the shipped constant the check would otherwise
-    recompute and ignore."""
+def test_the_probe_outlasts_a_default_row_and_ends_inside_its_own(
+    monkeypatch, probe,
+):
+    """The import child needs longer than a default row guard on a Pi Zero
+    2 W, so the check registers its own guard — and the timeout reaching
+    subprocess.run stays strictly below it. A row cancelled first leaves the
+    child resident and holds the memory-sample lock; the harness never gives
+    a row less than its own guard (test_doctor_core)."""
+    [entry] = [
+        c for c in registered_checks()
+        if c.func is doctor_voice.check_provider_importable
+    ]
     monkeypatch.setattr(
         doctor_voice,
         "read_active_provider_state",
         lambda: _state("configured", "gemini"),
     )
-    doctor_evidence.set_check_timeout(20.0)
+
     doctor_voice.check_provider_importable()
-    assert probe["timeouts"] == [15.0]
+
+    [timeout] = probe["timeouts"]
+    assert doctor_pkg.DOCTOR_CHECK_TIMEOUT_SECONDS < timeout < entry.timeout_s
 
 
 # ---------------------------------------------------------------------------

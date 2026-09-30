@@ -237,22 +237,15 @@ _IMPORT_PROBE = (
 # broken adapter. The probe needs nothing from cwd.
 _PROBE_INTERPRETER_FLAGS = ("-P",)
 
-# The probe must finish inside the row guard this run is using: a row
-# cancelled first releases the memory-sample lock with subprocess.run's child
-# still resident (see check_provider_importable's exclusive_group below) and
-# makes this check's own could-not-verify warn unreachable.
+# This row's hang guard, in seconds. Measured on a Pi Zero 2 W: the gemini
+# adapter imports in 6-7 s alone and takes over 10 s while the rest of the
+# doctor runs.
+_IMPORT_PROBE_ROW_GUARD_SEC = 30.0
+# The probe must finish inside the row guard: a row cancelled first releases
+# the memory-sample lock with subprocess.run's child still resident (see
+# check_provider_importable's exclusive_group below) and makes this check's
+# own could-not-verify warn unreachable.
 _IMPORT_PROBE_MARGIN_SEC = 5.0
-_IMPORT_PROBE_MIN_TIMEOUT_SEC = 1.0
-
-
-def _import_probe_timeout() -> float:
-    """Subprocess timeout for the import probe: strictly below the doctor's
-    per-row guard, so the child is always killed by its own timeout first."""
-    row = evidence.check_timeout()
-    return max(
-        min(_IMPORT_PROBE_MIN_TIMEOUT_SEC, row / 2),
-        row - _IMPORT_PROBE_MARGIN_SEC,
-    )
 
 
 # Shares the "memory-sample" exclusive lane with check_memory_headroom: the
@@ -260,7 +253,9 @@ def _import_probe_timeout() -> float:
 # adapter peaks near 83 MB RSS, dropping MemAvailable by ~70 MB for ~1.5 s),
 # and check_memory_headroom warns below 100 MB available on a 1 GB Pi, so an
 # unserialized probe could trip that threshold itself.
-@doctor_check(exclusive_group="memory-sample")
+@doctor_check(
+    exclusive_group="memory-sample", timeout_s=_IMPORT_PROBE_ROW_GUARD_SEC,
+)
 def check_provider_importable() -> CheckResult:
     """Check that the *configured* voice provider's adapter and its
     lazily-imported SDK can actually be imported in this venv.
@@ -296,7 +291,7 @@ def check_provider_importable() -> CheckResult:
     assert provider is not None  # read_active_provider_state validated it
     modules = list(provider.runtime_imports)
     joined = ", ".join(modules)
-    timeout = _import_probe_timeout()
+    timeout = _IMPORT_PROBE_ROW_GUARD_SEC - _IMPORT_PROBE_MARGIN_SEC
     try:
         proc = run(
             [sys.executable, *_PROBE_INTERPRETER_FLAGS, "-c", _IMPORT_PROBE,
