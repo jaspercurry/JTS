@@ -11,10 +11,13 @@ from importlib import import_module
 
 import pytest
 
+import jasper
 from jasper.active_speaker.angle_capture import WALK_REFUSAL_REASONS
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import refusal_copy, take_reading
+from jasper.active_speaker.crossover_v2 import evidence_packet, intervention, prescription_document, refusal_copy, take_reading
+from jasper.active_speaker.crossover_v2.evidence_packet import offline_reads
 from jasper.audio_measurement import evidence_reasons
+from jasper.cli.round_views._common import refused_by_name
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
     "refusal_copy": (
@@ -161,3 +164,65 @@ def test_every_analysis_reason_is_one_evidence_code_with_a_next_action(module_na
     for code in codes:
         spec = refusal_copy.REASON_REGISTRY[code]
         assert spec.code == code and spec.message and spec.next_action
+
+
+#: Codes a gap forwards through a variable: no raise site names them, so the scan below cannot see them.
+_FORWARDED_CODES = {
+    evidence_packet.NO_CANDIDATE_TAKES, evidence_packet.REPEAT_FLOOR_UNMEASURED,
+    evidence_packet.REPEAT_FLOOR_UNREADABLE, evidence_packet.REPEAT_FLOOR_UNUSABLE,
+    offline_reads.FIELD_MALFORMED, offline_reads.SOURCE_UNREADABLE,
+    prescription_document.REASON_EVIDENCE_UNREADABLE, intervention.NonFiniteTrimError.refusal_reason,
+    "room_incumbent_set_ambiguous", "room_incumbent_set_unavailable",
+}
+_GAP_ENTRY_POINTS = (evidence_reasons.EvidenceUnavailable, evidence_reasons.unavailable, refused_by_name)
+
+
+def _resolved(node: ast.expr, namespace: dict[str, object]) -> object:
+    """What ``node`` names in a module: a literal, a module constant or an attribute chain of
+    them. ``None`` for a local or any other expression."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Name):
+        return namespace.get(node.id)
+    if isinstance(node, ast.Attribute):
+        return getattr(_resolved(node.value, namespace), node.attr, None)
+    return None
+
+
+def _named_codes(node: ast.expr, namespace: dict[str, object]) -> set[str]:
+    if isinstance(node, ast.IfExp):
+        return _named_codes(node.body, namespace) | _named_codes(node.orelse, namespace)
+    code = _resolved(node, namespace)
+    return {code} if isinstance(code, str) else set()
+
+
+def _codes_raised_by_name() -> dict[str, str]:
+    """Each code that a raise site or a gap names outright, and the first place it does."""
+    root = pathlib.Path(jasper.__file__).parent
+    raised: dict[str, str] = {}
+    for path in sorted(root.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if not any(needle in text for needle in ("unavailable(", "EvidenceUnavailable(", "refused_by_name(")):
+            continue
+        calls = [call for call in ast.walk(ast.parse(text)) if isinstance(call, ast.Call) and call.args]
+        parts = list(path.relative_to(root.parent).with_suffix("").parts)
+        module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        namespace = vars(import_module(module))
+        for call in calls:
+            entry = _resolved(call.func, namespace)
+            if any(entry is known for known in _GAP_ENTRY_POINTS):
+                for code in _named_codes(call.args[0], namespace):
+                    raised.setdefault(code, f"{module}:{call.lineno}")
+    return raised
+
+
+def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action():
+    """Guards a recurrence: the scan behind #5928 found dozens of codes raised through the gap
+    shape or the evidence exception with no registry row, so a reader got a code with neither
+    copy nor a next action. A code that reaches a gap through a variable is listed above."""
+    raised = _codes_raised_by_name()
+    assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED,
+            "alignment_no_crossover_region"} <= set(raised), "the scan no longer reads a literal, a name and an attribute"
+    lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
+               if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}
+    assert not lacking

@@ -360,6 +360,15 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
                                                       "frequency grids, so they cannot be pooled.",
         evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank a field this view reads.",
         "measurement_captures_missing": "No take in the measurement was captured and analysed.",
+        "measurement_capture_identity_mismatch": "A take's recording does not match the identity its record banked.",
+        "measurement_program_manifest_missing": "A take's record banked no program manifest.",
+        "no_admissible_captures": "The round banked no measure or branch take this view can read.",
+        "region_unavailable": "The round measured no blend band, so a blend prescription has no band to check against.",
+        "round_capture_unreadable": "A take's banked record, recording or impulse cannot be read.",
+        "round_no_captures": "The round banked no take record this view can read.",
+        "round_radiated_band_missing": "A take banked no curve, so the band its driver radiates is unknown.",
+        "round_role_not_recorded": "A take banked no impulse for the driver this view reads.",
+        "trim_not_finite": "A fitted trim term is not a finite number, so no trim is resolved.",
     },
     ("measure_repeats", "Measure repeat takes at the mark"): {
         evidence_reasons.REASON_FIT_BAND_UNAVAILABLE: "The fit reports no band to compare the mark pairs over.",
@@ -369,17 +378,23 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REASON_NO_REPEATS: "Fewer than two usable repeats are available to measure repeat spread.",
         evidence_reasons.REASON_NO_SHARED_MARK_TAKES: "No driver has mark takes in two of the compared rounds, so nothing "
                                                       "compares between rounds.",
+        "unmeasured": "The speaker has no banked repeat floor.",
+        "unreadable": "The banked repeat floor cannot be read.",
+        "unusable": "The banked repeat floor gives no stopping thresholds.",
     },
     ("measure_positions", "Measure more positions"): {
         evidence_reasons.REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
         evidence_reasons.REASON_NO_ROW: "This position has no measured row.",
         evidence_reasons.REASON_NON_BEARING: "The pose is not a bearing at which the requested figure can be measured.",
         evidence_reasons.REASON_TOO_FEW_POSITIONS: "Too few usable positions support the requested cross-position statistic.",
+        "gate_sweep_single_pose": "The gate sweep has one pose, and its spread across poses needs two.",
     },
     ("measure_candidates", "Measure the incumbent and another candidate"): {
         evidence_reasons.REASON_NO_COMPARISON: "One candidate was played, so there is no candidate comparison or repeat "
                                                "spread for it.",
         evidence_reasons.REFUSE_NO_INCUMBENT: "The rear comparison has no usable incumbent set.",
+        "candidates_no_ladder": "No pose played two candidates, so the round has no candidate ladder.",
+        "no_candidate_takes": "No banked take of the round names a candidate, so the round played none.",
     },
     ("measure_rear", "Measure another rear round"): {
         evidence_reasons.REASON_NO_EARLIER_REFERENCE: "No earlier rear round banked a reference at this position "
@@ -395,6 +410,8 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
                                                  "played alone and raw.",
         evidence_reasons.REFUSE_PAIR_UNDERSAMPLED: "The two woofers' relative phase turns more than a quarter turn "
                                                    "between two readings, so the fit cannot follow it.",
+        "rear_preview_needs_pair_round": "The rear preview needs a banked pair round, and there is none.",
+        "level_error": "The rear level could not be computed.",
     },
     ("name_target", "Name a target that covers the fit band"): {
         evidence_reasons.REFUSE_TARGET_BAND_SHORT: "The target document's valid band does not cover the band the "
@@ -406,22 +423,31 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("measure_classification_round", "Measure a verify or lateral round"): {
         evidence_reasons.NO_KEPT_TAKES: "The round kept none of its verify or lateral takes for the speaker.",
         evidence_reasons.ROUND_SHAPE_INADMISSIBLE: "The round banked no recording shape that feature classification can use.",
+        "measurement_analysis_program_unsupported": "A take's program is not a one-channel verify sweep on a candidate "
+                                                    "graph, so no banked analysis covers it.",
     },
     ("bank_round", "Bank this round again from its session"): {
         evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
         evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
+        "view_runner_unavailable": "The bank ran with no view runner, so it filed no round views.",
     },
     ("select_round", "Select the round these takes belong to"): {
         evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
     },
     ("name_round", "Name a banked round or a live session bundle"): {
         evidence_reasons.REASON_UNREADABLE: "The round view could not read its input round.",
+        "close_reference_unreadable_round": "The round directory named for the take is not a directory.",
+        "evidence_unreadable": "The round's evidence could not be read.",
     },
     ("name_frequencies", "Name the frequencies to classify"): {
         evidence_reasons.NO_FEATURES_DETECTED: "No feature in the pooled response rises above the scatter between recordings.",
     },
     ("measure_common_band", "Measure takes that cover a common band"): {
         evidence_reasons.REASON_COVERAGE_SHORT: "The captured takes do not cover the band this figure is read over.",
+        "gate_sweep_reference_band_empty": "A take radiates nothing in the reference band, so its windows cannot share "
+                                           "one level.",
+        "handover_band_unmeasured": "The drivers were not measured across the handover band, so no trim is solved.",
+        "no_common_frequency_support": "The candidate and incumbent room medians share no frequency range.",
     },
     ("name_comparand", "Name the take or forecast to compare with"): {
         "bass_comparand_view_not_filed": "The take the comparand rule found has no filed bass view: it is not a bass "
@@ -444,9 +470,59 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
     ("review_evidence", "Review the evidence the view read"): {
         evidence_reasons.REASON_REFUSED: "The round view declined the evidence it read.",
+        "field_malformed": "The artifact was read, and its field holds a value of the wrong type.",
+        "field_null": "The artifact was read, and the field this block reads is empty.",
+        "source_absent": "The artifact this block reads was never supplied or banked.",
+        "source_unreadable": "The artifact this block reads is there and cannot be read.",
     },
     ("choose_output", "Choose a writable output path"): {
         evidence_reasons.REASON_UNWRITABLE: "The round view could not write its output artifact.",
+        "output_unwritable": "The prescriber could not write its output artifact.",
+    },
+    ("name_take", "Name a take this round banked"): {
+        "close_reference_no_capture": "The round has no take with the named id, or more than one.",
+        "room_capture_not_found": "No room take matches the named take id.",
+        "room_capture_selection_required": "The round holds more than one room set, so a take id must choose one.",
+    },
+    ("measure_room", "Measure a new room round"): {
+        "incompatible_measurement_basis": "The candidate and incumbent room medians were measured on different bases.",
+        "room_incumbent_set_ambiguous": "More than one set of the run is a base, so the room has no one incumbent.",
+        "room_incumbent_set_unavailable": "The run has no base set to grade the room against.",
+        "room_no_seat_takes": "The round has no readable room take at a seat, so no room median exists.",
+    },
+    ("select_candidate", "Select a candidate with one banked identity"): {
+        "gate_sweep_mixed_graphs": "The takes played more than one candidate or graph, so their windows cannot compare.",
+    },
+    ("match_bass_capture", "Measure both graphs at the same pose and settings"): {
+        "capture_context_changed": "The two bass takes were captured under different conditions.",
+    },
+    ("measure_bass", "Measure a bass round"): {
+        "bass_evidence_unavailable": "The round banked no bass reading or bass level for this prescription.",
+    },
+    ("identify_mic", "Select a known measurement microphone"): {
+        "mic_calibration_unavailable": "The speaker has no remembered calibrated microphone, or its calibration file is gone.",
+    },
+    ("speaker_setup", "Finish the protected speaker setup"): {
+        "driver_passband_unavailable": "The speaker declares no band for its drivers, so a per-driver prescription "
+                                       "has nothing to check against.",
+        "prescription_fc_unknown": "The crossover corner is unknown, so an alignment cannot be checked at it.",
+        "topology_malformed": "The declared drivers give no crossover range, so a topology has no corner to check.",
+    },
+    ("speaker_setup", "Review speaker outputs"): {
+        "aplay_failed": "The aplay tool failed, so the speaker cannot list its playback devices.",
+        "aplay_missing": "The aplay tool is missing, so the speaker cannot list its playback devices.",
+        "aplay_timeout": "The aplay tool timed out, so the speaker cannot list its playback devices.",
+    },
+    ("omit_section", "Leave this section out of a one-way speaker's document"): {
+        "alignment_no_crossover_region": "A one-way speaker has no crossover, so there is nothing to align.",
+        "topology_no_crossover_region": "A one-way speaker has no crossover corner to change.",
+    },
+    ("write_cuts", "Write the blend as cuts, or propose the boost per driver"): {
+        "boost_route_unavailable": "The blend stage carries no boost.",
+    },
+    ("read_catalog", "Read the tool catalog for the view and its inputs"): {
+        "inputs_required": "This view needs inputs that the bank does not supply, so the bank did not run it.",
+        "verb_not_registered": "No artifact row registers this view, so the bank did not run it.",
     },
 }
 
