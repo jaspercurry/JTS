@@ -359,24 +359,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REASON_SWEEP_GRIDS_DISAGREE: "One driver's sweeps in a take were read on different "
                                                       "frequency grids, so they cannot be pooled.",
         evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank a field this view reads.",
-        "commissioning_evidence_insufficient_space": "The speaker has too little free space to save this evidence, so free "
-                                                     "space before measuring again.",
-        "commissioning_evidence_integrity_mismatch": "An evidence file's bytes do not match the identity recorded for it, "
-                                                     "or the file cannot be read.",
-        "commissioning_evidence_invalid_path": "An evidence path is not a plain path inside its session bundle.",
-        "commissioning_evidence_malformed": "An evidence file is not a valid JSON object of finite values.",
-        "commissioning_evidence_missing": "An evidence file the round names is missing.",
-        "commissioning_evidence_not_canonical": "An evidence file is not in the exact canonical JSON form the store writes.",
-        "commissioning_evidence_not_regular": "An evidence entry is a link or another kind of entry, not a regular file.",
-        "commissioning_evidence_path_conflict": "An evidence path already holds different bytes, and evidence is written "
-                                                "only once.",
-        "commissioning_evidence_persist_failed": "The store could not save this evidence.",
-        "commissioning_evidence_persist_outcome_unknown": "The store could not confirm that this evidence was saved and "
-                                                          "reads back exactly.",
-        "commissioning_evidence_too_large": "An evidence file is larger than its size limit.",
-        "commissioning_evidence_total_too_large": "The session's evidence is at its total size limit.",
-        "commissioning_evidence_wrong_authority": "The evidence belongs to another session bundle, or the bundle cannot be "
-                                                  "opened as this session's.",
         "measurement_captures_missing": "No take in the measurement was captured and analysed.",
         "measurement_capture_identity_mismatch": "A take's recording does not match the identity its record banked.",
         "measurement_program_manifest_missing": "A take's record banked no program manifest.",
@@ -607,6 +589,27 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
 }
 
+#: The evidence store's failure codes. ``plan_run.failure_reason`` keeps the registered code of an exception that
+#: stops a run, so the household reads these, and the failure envelope answers a session restart with Start over.
+_STORE_COPY: dict[str, str] = {
+    "commissioning_evidence_insufficient_space": "The speaker has too little free space to save this measurement, so free "
+                                                 "space before measuring again.",
+    "commissioning_evidence_integrity_mismatch": "A saved measurement file does not match its record, or cannot be read.",
+    "commissioning_evidence_invalid_path": "A saved measurement file has a path the speaker does not accept.",
+    "commissioning_evidence_malformed": "A saved measurement file is not valid.",
+    "commissioning_evidence_missing": "A saved measurement file is missing.",
+    "commissioning_evidence_not_canonical": "A saved measurement file is not in the exact form the speaker writes.",
+    "commissioning_evidence_not_regular": "A saved measurement entry is a link or another kind of entry, not a regular file.",
+    "commissioning_evidence_path_conflict": "A saved measurement file already holds different data, and a saved file is "
+                                            "written only once.",
+    "commissioning_evidence_persist_failed": "The speaker could not save this measurement.",
+    "commissioning_evidence_persist_outcome_unknown": "The speaker could not confirm that this measurement was saved.",
+    "commissioning_evidence_too_large": "A saved measurement file is larger than its size limit.",
+    "commissioning_evidence_total_too_large": "This session's saved measurements are at their total size limit.",
+    "commissioning_evidence_wrong_authority": "The saved measurements belong to another session, or the session cannot "
+                                              "be opened.",
+}
+
 
 # The §5.10 table, as data. The envelope and the session both read it, so
 # copy and budget never drift between the verdict and its screen.
@@ -678,6 +681,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
                         next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
+                        next_action={"id": "measure_again", "label": "Measure this round again",
+                                     "href": "/sound/speaker/crossover/"})
+       for code, message in _STORE_COPY.items()},
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
