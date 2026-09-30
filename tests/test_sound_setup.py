@@ -5254,6 +5254,8 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         "declaration_url",
         "crossover_url",
         "design_draft_revision",
+        "components",
+        "one_driver_presets",
         "applied_candidate_fingerprint",
         "applied_record",
         "applied_at",
@@ -5271,36 +5273,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     assert "jts7.local" in prompt
     assert DEFAULT_HOSTNAME not in prompt
     assert str(payload["binding"]["design_draft_revision"]) in prompt
-    # The pointer targets: the orientation verb and the program door, by their
-    # installed paths. Their behaviour is theirs to own; the prompt only names
-    # them, and must keep naming ones that exist.
-    assert tuning_handoff.ORIENTATION_COMMAND in prompt
-    assert tuning_handoff.PROGRAM_DOOR_COMMAND in prompt
-    assert "jasper-round trial" not in prompt  # rear-only guidance
     assert len(prompt.split()) < 250
-
-
-def test_tuning_handoff_prompt_for_rear_adds_the_trial_commands(monkeypatch):
-    """Rear alone carries the trial/packet guidance, naming the real commands."""
-    from jasper.active_speaker import tuning_handoff
-
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
-        lambda **_kwargs: [],
-    )
-    payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": {
-            "exists": True, "stands": True, "candidate_fingerprint": "fp",
-        }},
-        design_draft={"revision": 1},
-        program_id="rear",
-    )
-    prompt = tuning_handoff.build_tuning_handoff_prompt(payload["binding"], "rear")
-
-    assert "--program rear" in prompt
-    assert "--section rear" in prompt
-    assert "jasper-round trial" in prompt
 
 
 @pytest.mark.parametrize("banked", [True, False])

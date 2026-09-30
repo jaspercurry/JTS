@@ -2,13 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device-bound entry prompts for the shared tuning programs."""
+"""Device-bound entry prompts for the shared tuning programs, built from the program and preset rows."""
 from __future__ import annotations
 
-from typing import Any, Mapping
+import json
+from typing import Any, Collection, Mapping
 
 from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQUIRED
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, PROGRAM_ENTRIES
+from jasper.active_speaker.design_inputs import declared_by_target
+from jasper.active_speaker.measurement_programs import (
+    PROGRAM_ENTRIES, RUNNABLE_PROGRAMS, available_presets, offered_here, preset,
+)
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
     CROSSOVER_PAGE_PATH,
@@ -26,9 +30,40 @@ NO_APPLIED_BASELINE = "no_applied_baseline"
 #: ``EnvironmentFile=`` and /opt/jasper/.venv is not on the default PATH.
 _BIN = "/opt/jasper/.venv/bin"
 ORIENTATION_COMMAND = f"sudo {_BIN}/jasper-crossover-prescriber status"
-PROGRAM_DOOR_COMMAND = (
-    f"sudo {_BIN}/jasper-round run --help"
-)
+
+
+def pointer_commands(program_id: str) -> tuple[str, str, str]:
+    """Where tuning stands, what the agent can ask, and what a document may write (#5928 TB6)."""
+    return (ORIENTATION_COMMAND,
+            f"sudo {_BIN}/jasper-round-views catalog --program {program_id}",
+            f"sudo {_BIN}/jasper-crossover-prescriber contract --section {program_id}")
+
+
+def _declared_components(design_draft: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Each declared driver output, by the id ``jasper-round run --driver`` takes: its role, its
+    output, its role's passband as ``status`` reports it, its diameter (ADR-0384) and its
+    sensitivity after its pad."""
+    from jasper.active_speaker.crossover_v2.driver_prescription import driver_passbands_from_safety_profile  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+
+    profile = design_draft.get("driver_safety_profile") or {}
+    passbands = driver_passbands_from_safety_profile(profile)
+    diameters = declared_by_target(design_draft, "radiating_diameter_mm")
+    components = []
+    for target in profile.get("targets") or ():
+        driver = target["target_id"].removeprefix(f"{target['speaker_group_id']}:")
+        band = passbands.get(target["role"])
+        components.append({
+            "driver": driver, "role": target["role"], "physical_output_index": target.get("physical_output_index"),
+            "passband_hz": list(band) if band else None, "radiating_diameter_mm": diameters.get(driver),
+            "effective_sensitivity_db_2v83_1m": target.get("effective_sensitivity_db_2v83_1m"),
+        })
+    return components
+
+
+def _one_driver_presets(programs: Collection[str], drivers: Collection[str]) -> list[str]:
+    """The presets whose every pose plays one driver alone, among those this speaker runs."""
+    return [row.preset for row in map(preset, available_presets())
+            if all(pose.driver for pose in row.poses) and offered_here(row, programs=programs, targets=drivers)]
 
 
 def build_tuning_handoff_binding(
@@ -53,33 +88,14 @@ def build_tuning_handoff_binding(
         "declaration_url": speaker_url(SPEAKER_SETUP_PAGE_PATH),
         "crossover_url": speaker_url(CROSSOVER_PAGE_PATH),
         "design_draft_revision": revision if isinstance(revision, int) else 0,
+        "components": _declared_components(design_draft),
+        "one_driver_presets": _one_driver_presets(commissioning_view.get("programs") or (),
+                                                  commissioning_view.get("near_field_drivers") or ()),
         "applied_candidate_fingerprint": applied.get("candidate_fingerprint") if has_applied else None,
         "applied_record": applied.get("record") if has_applied else None,
         "applied_at": applied.get("applied_at") if has_applied else None,
         "latest_round_dir": str(banked_round_of(rounds[0]) or rounds[0]) if rounds else None,
     }
-
-
-#: The steps the playbook's loops add per program (playbook, Seat and Rear);
-#: bass's default layout pins the arm.
-_PROGRAM_PROMPT_LINES = {
-    "rear": (
-        "Rear previews read the pair model: bank it at the mark with "
-        f"sudo {_BIN}/jasper-round run --program rear/pair --layout speaker_mark --wait, "
-        f"then preview with sudo {_BIN}/jasper-crossover-prescriber judge --preview <doc> --round <pair round>.",
-        "Compose the rear-muted copy and the variants as ordinary "
-        f"candidates (playbook, Rear), then: sudo {_BIN}/jasper-round trial "
-        "<fingerprint> --candidates base,<muted>,<variant> (the trial picks "
-        "the rear positions).",
-        'Read packet["rear"] as the playbook says; the arm reaches 45 degrees, '
-        "a person any bearing.",
-    ),
-    "bass": (
-        f"Without the arm: sudo {_BIN}/jasper-round run --program bass --layout seat_express "
-        "--mover human (microphone at the seat).",
-    ),
-}
-
 
 
 def _program_entry(program_id: str) -> dict[str, Any]:
@@ -102,6 +118,9 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         else "no baseline applied"
     )
     latest_round = binding.get("latest_round_dir")
+    components = binding.get("components") or ()
+    presets = binding.get("one_driver_presets") or ()
+    status, catalog, contract = pointer_commands(program_id)
     return "\n".join((
         "Read these documents in this order:",
         documents,
@@ -112,6 +131,8 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         f"declaration: {binding.get('declaration_url') or ''}",
         f"crossover: {binding.get('crossover_url') or ''}",
         f"declaration revision: {binding.get('design_draft_revision')}",
+        *(("declared components:", *map(json.dumps, components)) if components else ()),
+        *(("one-driver presets:", *(f"{name}: {preset(name).use_when}" for name in presets)) if presets else ()),
         "",
         applied,
         (f"Latest round directory: {latest_round}" if latest_round
@@ -122,12 +143,11 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         f"Program: {entry['title']}",
         entry["description"],
         f"Run: sudo {_BIN}/jasper-round run --program {program_id}",
-        f"Prescription contract: sudo {_BIN}/jasper-crossover-prescriber contract --round <dir> --section {program_id}",
-        *_PROGRAM_PROMPT_LINES.get(program_id, ()),
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
-        f"Orient with {ORIENTATION_COMMAND}.",
-        f"Inspect available measurement plans with {PROGRAM_DOOR_COMMAND}.",
+        f"Where tuning stands: {status}",
+        f"What you can ask: {catalog}",
+        f"What a document may write: {contract}",
         "Create the measurement session, then give me its returned link. Explain the next step briefly; I place the microphone and start each batch. Measure the change, show its limits, and get my choice before saving.",
     ))
 

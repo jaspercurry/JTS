@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import MISSING, fields, replace
 from importlib import import_module
 from pathlib import Path
@@ -24,12 +25,13 @@ from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.crossover_v2 import prescription_document as pd, prescription_contract as pc
+from jasper.active_speaker.design_draft import design_draft_view
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
 from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT
 from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M
-from jasper.cli import round as round_cli
+from jasper.cli import crossover_prescriber, round as round_cli, round_views
 
 
 @pytest.mark.parametrize("actual,expected", [
@@ -206,22 +208,68 @@ def test_a_layout_passed_as_poses_refuses_by_name():
         mp.POSES_NAME_A_LAYOUT, {"poses": "seat_express", "use": "--layout"})
 
 
-def test_the_bass_handoff_names_a_layout_a_person_can_walk():
-    """The default bass layout pins the arm, so the prompt names the hand one (#5632 F4)."""
-    preset, layout, mover = re.search(r"--program (\S+) --layout (\S+) --mover (\S+)",
-                                      th.build_tuning_handoff_prompt({}, "bass")).groups()
-    assert (mp.run_preset(preset).mover, mp.run_preset(preset, layout).mover, mover) == ("arm", "human", "human")
+def test_every_programs_prompt_is_one_template_that_lists_the_declared_components(monkeypatch):
+    """The copied prompt comes from the rows (#5737 P11): it lists each declared output as its
+    owners resolve it (the rear woofer's size is the front's, its sensitivity is after its pad;
+    ADR-0384) and the one-driver presets this speaker runs, and blanking the program row's own
+    fields leaves one text for every program."""
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [])
+    topology = mono_output_topology(card_id=None)
+    group, = topology.speaker_groups
+    rear = replace(group.channels[0], output_variant="rear", physical_output_index=2)
+    topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, rear)),))
+    woofer = {"role": "woofer", "model": "W", "measurement_band_hz": [40, 3000], "sensitivity_db_2v83_1m": 86.0}
+    manual = {"drivers": [
+        {**woofer, "target_id": "mono:woofer", "radiating_diameter_mm": 115},
+        {"target_id": "mono:tweeter", "role": "tweeter", "model": "T", "measurement_band_hz": [2000, 20000],
+         "recommended_highpass_hz": 2000, "radiating_diameter_mm": 25, "sensitivity_db_2v83_1m": 91.0},
+        {**woofer, "target_id": "mono:woofer:rear", "pad": {"kind": "direct_db", "attenuation_db": -3.0}},
+    ], "crossover_candidates": []}
+    draft = design_draft_view({"revision": 3, "topology": topology.to_dict(), "manual_settings": manual},
+                              topology=topology)
+    view = cc.build_commissioning_view(topology, design_draft=draft, applied_profile={"candidate_fingerprint": "fp"})
+    components = [
+        {"driver": "woofer", "role": "woofer", "physical_output_index": 0, "passband_hz": [40.0, 3000.0],
+         "radiating_diameter_mm": 115, "effective_sensitivity_db_2v83_1m": 86.0},
+        {"driver": "tweeter", "role": "tweeter", "physical_output_index": 1, "passband_hz": [2000.0, 20000.0],
+         "radiating_diameter_mm": 25, "effective_sensitivity_db_2v83_1m": 91.0},
+        {"driver": "woofer:rear", "role": "woofer", "physical_output_index": 2, "passband_hz": [40.0, 3000.0],
+         "radiating_diameter_mm": 115, "effective_sensitivity_db_2v83_1m": 83.0},
+    ]
+    templates = set()
+    for row in mp.PROGRAM_ROWS:
+        handoff = th.build_tuning_handoff(commissioning_view=view, design_draft=draft, program_id=row.purpose)
+        lines = handoff["prompt"].splitlines()
+        assert (handoff["binding"]["components"], handoff["binding"]["one_driver_presets"]) == (
+            components, ["drivers/each", "nearfield/each"])
+        assert {*map(json.dumps, components), "drivers/each: " + mp.preset("drivers/each").use_when,
+                "nearfield/each: " + mp.preset("nearfield/each").use_when} <= set(lines)
+        template = handoff["prompt"]
+        for field, blank in ((row.title, "<title>"), (row.description, "<description>"),
+                             (f"--program {row.purpose}", "--program <p>"), (f"--section {row.purpose}", "--section <p>")):
+            assert field in template
+            template = template.replace(field, blank)
+        templates.add(template)
+    assert len(templates) == 1
 
 
-def test_the_rear_handoff_names_the_pair_model_its_previews_read():
-    """The seat loop previews rear documents against the front/rear pair take (#5632 F11)."""
-    preset, layout = re.search(r"--program (\S+) --layout (\S+) --wait", th.build_tuning_handoff_prompt({}, "rear")).groups()
-    row = mp.run_preset(preset, layout)
-    assert (row.regime, row.branch_pair) == (mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
+@pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
+def test_the_prompt_points_at_status_the_catalog_and_the_contract(program):
+    """Where tuning stands, what the agent can ask and what a document may write (#5928 TB6),
+    each a call its tool's own parser accepts."""
+    parsers = {module.PROG: module.build_parser() for module in (crossover_prescriber, round_views)}
+    prompt = th.build_tuning_handoff_prompt({}, program)
+    calls = []
+    for command in th.pointer_commands(program):
+        _sudo, path, *argv = shlex.split(command)
+        args = vars(parsers[Path(path).name].parse_args(argv))
+        calls.append((command in prompt, Path(path).name, args["command"], args.get("program") or args.get("section")))
+    assert calls == [(True, crossover_prescriber.PROG, "status", None), (True, round_views.PROG, "catalog", program),
+                     (True, crossover_prescriber.PROG, "contract", program)]
 
 
 def test_run_help_names_every_registry_pose_set(capsys):
-    """The hand-off sends the agent to ``jasper-round run --help`` for the plans (#5632 F11)."""
+    """``jasper-round run --help`` names every preset its ``--program`` takes (#5632 F11)."""
     with pytest.raises(SystemExit):
         round_cli.main(["run", "--help"])
     words = set(re.split(r"[\s,()]+", capsys.readouterr().out))
