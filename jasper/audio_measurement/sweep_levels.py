@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 
+from .quality_model import DRIVER
 from .snr_policy import band_levels_dbfs
 from .sweep import SweepMeta
 
@@ -58,3 +59,9 @@ def sweep_band_levels(
             "window_ms": 1000 * size / sample_rate, "resolution_hz": sample_rate / size,
         })
     return rows
+
+
+def snr_trusted(band: Mapping[str, Any]) -> bool:
+    """Whether a :func:`sweep_band_levels` row's SNR reaches ``DRIVER.snr_warn_db``."""
+    snr = band["estimated_snr_db"]
+    return snr is not None and snr >= DRIVER.snr_warn_db

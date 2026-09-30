@@ -40,7 +40,14 @@ from tests.test_round_views_rear import _branch_diagnostic, _pair_curves
 
 def test_ladder_edges_are_frozen_at_the_measured_values():
     assert BAND_LADDERS == {
-        "rear_upper": ((350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0)),
+        "rear_front_guard": (
+            (356.3594872561357, 448.9848193237492), (445.44935907016963, 561.2310241546866),
+            (561.2661924284138, 707.151090434905), (712.7189745122714, 897.9696386474984),
+            (890.8987181403393, 1122.4620483093731), (1113.623397675424, 1403.0775603867162),
+            (1425.4379490245428, 1795.9392772949968), (1781.7974362806785, 2244.9240966187463),
+            (2227.246795350848, 2806.1551207734324), (2806.3309621420685, 3535.755452174525),
+            (3563.594872561357, 4489.8481932374925),
+        ),
         "rear_level": ((30.0, 60.0), (60.0, 100.0), (90.0, 350.0), (200.0, 300.0),
                        (350.0, 700.0), (700.0, 1500.0), (1500.0, 5000.0)),
         "rear_late_energy": ((90.0, 250.0),),
@@ -73,7 +80,7 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
 
 
 @pytest.mark.parametrize("builder,ladder,rows_key,edge_keys", [
-    ("rear_upper", "rear_upper", "upper_bands", ("band_hz",)),
+    ("rear_front_guard", "rear_front_guard", "front_guard", ("band_hz",)),
     ("rear_level", "rear_level", "bands", ("band_hz",)),
     ("rear_pair", "third_octave_bass", "bands", ("band_hz",)),
     ("bass_take", "bass", "bands", ("band_hz",)),
@@ -96,14 +103,14 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
 ])
 def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_keys, request, tmp_path, capsys):
     expected = BAND_LADDERS[ladder]
-    if builder in ("rear_upper", "rear_level"):
+    if builder in ("rear_front_guard", "rear_level"):
         grid = np.geomspace(20, 5000, 600)
         zero = np.zeros_like(grid)
         take = SeatTake("take", "pose", grid, zero, (20, 5000))
         payload = rear_views._position_rows(
             {"pose": [take]}, {"pose": (grid, zero)}, {}, {"pose": zero},
             band_hz=(90, 250), coverage_hz=(20, 5000), handover_hz=None,
-            swept_hz=(20, 5000), bearing={"pose"} if builder == "rear_upper" else set(),
+            swept_hz=(20, 5000), bearing={"pose"} if builder == "rear_front_guard" else set(),
         )["pose"]
     elif builder in ("rear_pair", "rear_preview"):
         result = rear_views._pair_position([{"curves": _pair_curves()}], ceiling_hz=500)

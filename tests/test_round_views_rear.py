@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from unittest.mock import Mock
 
 import numpy as np
@@ -45,14 +45,18 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
-from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.band_ladders import (
+    ARRIVAL_GAP_BAND_HZ, BASS_BANDS_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ, UPPER_BANDS_HZ,
+)
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
-    REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
+    REASON_SNR_SHORT, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
 )
-from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
-from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
+from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED, POLARITY_SAME, POLARITY_UNCLEAR
+from jasper.audio_measurement.seat_figures import (
+    BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP, band_level_changes,
+)
 from jasper.cli import round_views
 from tests.crossover_v2_banked_round import (
     SEAT_BAND_HZ, SEAT_GRID_HZ, _reopen, bank_seat_round,
@@ -265,12 +269,15 @@ def _pulse(arrival_s: float, *, gain: float = 1.0, inverted: bool = False) -> li
     return (pulse * (-gain if inverted else gain)).tolist()
 
 
-def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ) -> list[dict]:
+def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ, *, noise_below_hz: float | None = None) -> list[dict]:
     """The three segments a pair take banks, in the product's own curve shape:
-    each woofer alone and their exact sum, so the trust number reads zero."""
+    each woofer alone and their exact sum, so the trust number reads zero.
+    ``noise_below_hz`` puts the woofers in phase, with an inverted rear below it,
+    as the rumble in jts3's 22–45 Hz bands read (#5404 item 3)."""
     gain = 10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0)
     front = np.ones_like(SEAT_GRID_HZ, dtype=np.complex128)
-    rear = -gain * np.exp(-2j * np.pi * SEAT_GRID_HZ * _PAIR_GAP_MS / 1000.0)
+    sign = -1.0 if noise_below_hz is None else np.where(SEAT_GRID_HZ < noise_below_hz, -1.0, 1.0)
+    rear = sign * gain * np.exp(-2j * np.pi * SEAT_GRID_HZ * _PAIR_GAP_MS / 1000.0)
     return [pose_curve_record(LateralPoseCurve(role=role, freqs_hz=SEAT_GRID_HZ,
                                                complex_tf=transfer,
                                                band_hz=(band_hz[0], band_hz[1])))
@@ -312,11 +319,18 @@ def test_pair_takes_clamp_the_window_and_skip_incomplete_solos():
         assert rear_views.pair_takes([{"branch_diagnostic": missing}]) == []
 
 
+def _band_snr(snr_db: Callable[[float], float]) -> dict:
+    """The band SNR a take's summed sweep banks on the bass ladder (#5737 C4), by band floor."""
+    return {"segment_id": "sweep_verify", "quiet_samples": [0, _SAMPLE_RATE_HZ],
+            "bands": [{"band_hz": list(band), "estimated_snr_db": snr_db(band[0])} for band in BASS_BANDS_HZ]}
+
+
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                applied: str = BASE_CANDIDATE, diagnostic: bool = True,
                swept_hz: Sequence[float] = SEAT_BAND_HZ,
                off_axis_gap_ms: float | None = None,
-               behind_gap_ms: float | None = None) -> Path:
+               behind_gap_ms: float | None = None, noise_below_hz: float | None = None,
+               snr_db: Callable[[float], float] | None = lambda lo_hz: 40.0) -> Path:
     """One banked ``rear/pair`` round: its parent at every pose,
     each take banking both woofers alone, their sum and the branch diagnostic.
 
@@ -332,15 +346,18 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     from a single shared gap. ``behind_gap_ms`` additionally banks one pose
     behind the cabinet (kind ``behind``, 0.1 m) with its own gap — the
     ``rear/pair_behind`` shape (#5362) — to pin that a document-level figure
-    pools bearing positions only (review, PR #5362).
+    pools bearing positions only (review, PR #5362). ``noise_below_hz`` shapes
+    the woofers as :func:`_pair_curves` does, and ``snr_db`` banks each take's
+    band SNR by band floor, ``None`` none.
     """
     root = bank_seat_round(tmp_path / "pair")
     source, store = _round_source(root)
     branch_program = _branch_program(source["program"])
+    snr = {} if snr_db is None else {"analysis": {"bass": _band_snr(snr_db)}}
     records = []
     for degrees, repeat in _poses(repeats):
         take_id = f"{_PARENT}-{degrees}-{repeat}"
-        curves = source["curves"] if degrees in missing else _pair_curves(swept_hz)
+        curves = source["curves"] if degrees in missing else _pair_curves(swept_hz, noise_below_hz=noise_below_hz)
         gap_ms = off_axis_gap_ms if degrees != 0 and off_axis_gap_ms is not None else _PAIR_GAP_MS
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
                         "pose_kind": "bearing", "position_deg": degrees, "vertical_deg": 0,
@@ -351,7 +368,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(gap_ms)} if diagnostic else {}),
-                        "curves": curves})
+                        **snr, "curves": curves})
     if behind_gap_ms is not None:
         take_id = f"{_PARENT}-behind-1"
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
@@ -364,7 +381,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(behind_gap_ms)}
                            if diagnostic else {}),
-                        "curves": _pair_curves(swept_hz)})
+                        **snr, "curves": _pair_curves(swept_hz, noise_below_hz=noise_below_hz)})
     banked = _banked(store, records)
     groups = []
     # Role order as the runner banks it, the SUM first — so a reader that kept
@@ -556,9 +573,8 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     row = variant["positions"][on_axis]
     assert row["late_energy"]["early_late_change_db"] == 3.0
     assert row["late_energy"]["arrival_shift_ms"] == -1.0
-    assert len(row["upper_bands"]) == 3
     assert comparison["coverage_hz"][1] == comparison["ceiling"]["ceiling_hz"]
-    assert [band["change_db"] for band in row["upper_bands"]] == pytest.approx([-3.0] * 3)
+    assert [band["change_db"] for band in row["front_guard"]] == pytest.approx([-3.0] * len(FRONT_GUARD_BANDS_HZ))
     assert variant["positions"][on_axis]["handover"]["hole_db"] > (
         incumbent["positions"][on_axis]["handover"]["hole_db"] + 5.0)
     assert variant["positions"][on_axis]["band_level_db"] == pytest.approx(
@@ -568,6 +584,22 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     assert {row["view"] for row in views if row["status"] == "written"} == {"rear", "frequency"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
+
+
+def test_the_front_guard_shows_a_narrow_dip_the_band_mean_hid(tmp_path, banked_candidates):
+    """A 1.2 dB dip at 500 Hz in front, as the cancellation branch's delay dug on jts3 (#5404
+    item 4): the 350–700 Hz band mean reads it inside the playbook's 0.4 dB; its third octave does not."""
+    dip = 1.2 * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / 500.0) / 0.1) ** 2)
+    curves = {**_CURVES, BASE_CANDIDATE: (np.asarray(_CURVES[BASE_CANDIDATE]) - dip).tolist()}
+    entry, = packet_of(rear_round(tmp_path, curves=curves))[0]["rear"]
+    incumbent = next(row for row in entry["candidates"] if row["candidate_id"] == BASE_CANDIDATE)
+
+    band_mean, = band_level_changes(SEAT_GRID_HZ, curves[BASE_CANDIDATE], reference_db=curves[_MUTED],
+                                    coverage_hz=SEAT_BAND_HZ, bands_hz=UPPER_BANDS_HZ[:1])
+    for row in incumbent["positions"].values():
+        guard = {tuple(band["band_hz"]): band["change_db"] for band in row["front_guard"]}
+        assert band_mean["change_db"] > -0.4 > guard.pop(FRONT_GUARD_BANDS_HZ[1]) + 0.2
+        assert max(map(abs, guard.values())) < 0.1
 
 
 @pytest.mark.parametrize("summed_capture_bundle,covered_bands", [(20000, 7), (200, 2)], indirect=["summed_capture_bundle"])
@@ -603,13 +635,13 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
         placed, = (row for key, row in positions.items() if key.startswith(f"{pose_kind}_"))
         front, = (row for key, row in positions.items() if not key.startswith(f"{pose_kind}_"))
         assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "own_trend_ripple_db", "handover", "low_bass",
-                              "band_level_db", "late_energy", "upper_bands", "ladder"}
-        assert [band["band_hz"] for band in front["upper_bands"]] == (
-            [list(band) for band in LEVEL_BANDS_HZ[-3:]] if covered_bands == 7 else [])
-        for band in front["upper_bands"]:
-            assert set(band) == {"band_hz", "level_db", "reference_db", "change_db"}
-            assert band["change_db"] == pytest.approx(0.0, abs=0.01)
-        assert placed["upper_bands"] == []
+                              "band_level_db", "late_energy", "front_guard", "ladder"}
+        assert [band["band_hz"] for band in front["front_guard"]] == [list(band) for band in FRONT_GUARD_BANDS_HZ]
+        for band in front["front_guard"]:
+            assert band == ({"status": "available", "band_hz": band["band_hz"], "change_db": pytest.approx(0.0, abs=0.01)}
+                            if covered_bands == 7 else
+                            {"status": "unavailable", "reason": REASON_COVERAGE_SHORT, "band_hz": band["band_hz"]})
+        assert placed["front_guard"] == []
         assert placed["reason"] == ""
         assert isinstance(placed["ripple_db"], float)
         assert isinstance(placed["own_trend_ripple_db"], float)
@@ -762,7 +794,7 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
         for row in candidate["positions"].values():
             assert row["late_energy"]["reason"] == REASON_NO_COMPARISON
             assert row["late_energy"]["early_late_change_db"] is None
-            assert row["upper_bands"] == []
+            assert row["front_guard"] == []
     assert set(entry["comparison"]["repeat_spread"]["spread_db"].values()) == {None}
     assert all(row["across_positions"]["worst_regression"]["exceeds_repeat_spread"] is None
                for row in entry["candidates"])
@@ -782,7 +814,7 @@ def test_a_non_bearing_take_has_figures_without_becoming_the_on_axis_reference(
         assert row["reason"] == ""
         assert isinstance(row["ripple_db"], float)
         assert (row["ripple_db"], row["dip"]) == (bearing["ripple_db"], bearing["dip"])
-        assert row["upper_bands"] == []
+        assert row["front_guard"] == []
         assert row["trough_fill_db"] is None
         assert row["trough_fill_reason"] == rear_views.REASON_NON_BEARING
 
@@ -834,6 +866,25 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "frequency"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
+
+
+@pytest.mark.parametrize("snr_db,state,bands_hz,reason", [
+    (lambda lo_hz: 40.0, POLARITY_INVERTED, [22.27, 44.9], ""),
+    (lambda lo_hz: 10.0 if lo_hz < 50.0 else 40.0, POLARITY_SAME, [56.13, 112.25], ""),
+    (lambda lo_hz: 10.0, POLARITY_UNCLEAR, None, REASON_SNR_SHORT),
+    (None, POLARITY_UNCLEAR, None, TAKE_CURVES_NOT_BANKED),
+], ids=["noise_trusted", "noise_untrusted", "none_trusted", "not_banked"])
+def test_rear_polarity_reads_only_the_bands_whose_snr_the_take_trusts(
+    tmp_path, banked_candidates, snr_db, state, bands_hz, reason,
+):
+    """Two woofers in phase whose 22–45 Hz bands are rumble that reads inverted (#5404 item 3):
+    the rumble decides only where the take's banked SNR calls those bands trusted."""
+    entry, = packet_of(pair_round(tmp_path, noise_below_hz=45.0, snr_db=snr_db))[0]["rear"]
+
+    for row in entry["pair"]["positions"].values():
+        polarity = row["rear_polarity"]
+        assert (polarity["state"], polarity["reason"]) == (state, reason)
+        assert polarity["bands_hz"] == (None if bands_hz is None else pytest.approx(bands_hz, abs=0.01))
 
 
 def test_a_muted_rear_is_the_whole_ideal_gradient_away_from_one(tmp_path, banked_candidates):

@@ -55,15 +55,17 @@ from jasper.active_speaker.rear_calibration import (
 )
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
-from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ
 from jasper.audio_measurement.rear_evidence import (
     arrival_gap_ms, confident_arrival_gap_s, gradient_residual_db,
     pair_band_levels, rear_polarity, superposition_residual_db,
 )
 from jasper.audio_measurement.seat_figures import (
-    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, across_positions, band_level_changes,
-    comparison_band, late_energy_change, position_figures, reference_curve_db, repeat_spread,
+    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, across_positions, band_level_changes, comparison_band,
+    figure_level_db, late_energy_change, position_figures, reference_curve_db, repeat_spread,
 )
+from jasper.audio_measurement.series_stats import band_change_db
+from jasper.audio_measurement.sweep_levels import snr_trusted
 from jasper.platform.json_fields import finite_float
 
 from .evidence_packet.incumbent import applied_profile_source
@@ -176,6 +178,17 @@ def _applied_stack(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     return applied_layer_names(profile)
 
 
+def _front_guard(grid: np.ndarray, curve_db: np.ndarray, reference_db: np.ndarray,
+                 swept_hz: Sequence[float]) -> list[dict[str, Any]]:
+    """Each :data:`FRONT_GUARD_BANDS_HZ` band's change of the 1/6-octave level, candidate minus
+    rear-muted, by :func:`band_change_db` (ADR-0358); a band the takes did not sweep is a gap."""
+    curve, reference = (figure_level_db(grid, side) for side in (curve_db, reference_db))
+    return [{"status": "available", "band_hz": list(band), "change_db": change}
+            if swept_hz[0] <= band[0] and band[1] <= swept_hz[1]
+            and (change := band_change_db(grid, curve, reference, band)) is not None
+            else {**unavailable(REASON_COVERAGE_SHORT), "band_hz": list(band)} for band in FRONT_GUARD_BANDS_HZ]
+
+
 def _position_rows(
     poses: Mapping[str, Sequence[SeatTake]], zeros: Mapping[str, tuple[np.ndarray, np.ndarray]],
     reference_late: Mapping[str, Sequence[Mapping[str, float]]],
@@ -199,10 +212,10 @@ def _position_rows(
         rows[key]["late_energy"] = late_energy_change(
             [take.late_energy for take in takes if take.late_energy], reference_late.get(key, []),
         )
-        rows[key]["upper_bands"] = band_level_changes(
-            grid, curve_db, reference_db=reference_curve[key], coverage_hz=swept_hz,
+        rows[key]["front_guard"] = _front_guard(
+            grid, curve_db, reference_curve[key], swept_hz,
         ) if key in bearing and key in reference_curve else []
-        rows[key]["ladder"] = "rear_upper" if key in bearing else "rear_level"
+        rows[key]["ladder"] = "rear_front_guard" if key in bearing else "rear_level"
         if key not in bearing:
             rows[key].update(trough_fill_db=None, trough_fill_reason=REASON_NON_BEARING)
             measured = band_level_changes(
@@ -556,10 +569,10 @@ def _pair_position(
     non-linearity it exists to report. The coverage is the band this take
     itself drove, under the room ceiling.
     """
-    read = [found for record in records if (found := _pair_segments(record)) is not None]
+    read = [(record, found) for record in records if (found := _pair_segments(record)) is not None]
     if not read:
         return None
-    grid, transfers, swept_hz = read[0]
+    first, (grid, transfers, swept_hz) = read[0]
     front, rear, summed = (transfers[role] for role in PAIR_ROLES)
     coverage_hz = [swept_hz[0], min(ceiling_hz, swept_hz[1])]
     bands = pair_band_levels(grid, front_tf=front, rear_tf=rear, pair_tf=summed,
@@ -586,8 +599,14 @@ def _pair_position(
         "ladder": "third_octave_bass",
         "superposition_residual_db": residual,
         "rear_polarity": rear_polarity(grid, front_tf=front, rear_tf=rear, band_hz=band_hz,
-                                       arrival_gap=gap),
+                                       arrival_gap=gap, trusted_hz=_trusted_snr_hz(first)),
     }, grid
+
+
+def _trusted_snr_hz(record: Mapping[str, Any]) -> list[list[float]] | None:
+    """The bands whose SNR the take's summed sweep banked as trusted (#5737 C4), or ``None`` when it banked none."""
+    reading = (record.get("analysis") or {}).get("bass")
+    return None if reading is None else [band["band_hz"] for band in reading["bands"] if snr_trusted(band)]
 
 
 def _pair_document(
