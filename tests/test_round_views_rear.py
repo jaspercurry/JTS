@@ -207,7 +207,8 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                curves: Mapping[str, list[float] | None] = _CURVES, retake: Mapping[str, float] = {},
                unlisted: Mapping[str, Sequence[int]] = {}, failed: Mapping[str, Sequence[int]] = {},
                band_hz: Sequence[float] | None = None, superseded: bool = False,
-               behind: Mapping[str, tuple[Sequence[float], Sequence[tuple[float, float]] | None]] = {}) -> Path:
+               behind: Mapping[str, tuple[Sequence[float], Sequence[tuple[float, float]] | None]] = {},
+               probe: bool = False) -> Path:
     """One banked ``rear`` round, ``name`` in the one rear store: every
     candidate at every pose, on-axis repeated, each playing its ``curves``
     over ``band_hz`` (the seat round's by default). A candidate's ``None``
@@ -224,7 +225,8 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
     pose, for the on-axis-reference guard (review, PR #5362). ``behind`` adds
     one take behind the cabinet per candidate it names: its ungated curve,
     and the ``(seconds, dB)`` arrivals its kept impulse holds, which only the
-    windowed read sees (``None`` keeps no impulse).
+    windowed read sees (``None`` keeps no impulse). ``probe`` banks the run's
+    probe of the first take first, in a set of its own.
     """
     root = bank_seat_round(tmp_path / "rear", name=name)
     source, store = _round_source(root)
@@ -274,7 +276,7 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
         group["takes"] = [dict(take, selected=take["selected"] and take["take_id"] != f"{candidate}-0-{repeats + 1}")
                           for take in group["takes"] if take["pose"]["deg"] not in unlisted.get(candidate, ())]
         groups.append(group)
-    write_manifest(root, program="rear/express", groups=groups)
+    write_manifest(root, program="rear/express", groups=groups, probe=probe)
     _round_environment(root, applied=_SECTIONS[BASE_CANDIDATE])
     return root
 
@@ -546,11 +548,16 @@ def test_pair_round_walk_continues_after_refusal(tmp_path, monkeypatch, error):
     assert reads.call_count == 2
 
 
-def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banked_candidates):
-    root = rear_round(tmp_path)
+@pytest.mark.parametrize("probe", [False, True], ids=["", "probed"])
+def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banked_candidates, probe):
+    """The packet names the rear view's first measured set, never the run
+    probe's, which banks first (ADR-0403 §4)."""
+    root = rear_round(tmp_path, probe=probe)
 
     packet, views = packet_of(root)
     entry, = packet["rear"]
+    unnamed = [{key: value for key, value in row.items() if key != "set_id"} for row in views]
+    assert write_round_packet(root, packet["artifacts"]["manifest"], unnamed)["rear"][0]["set_id"] == BASE_CANDIDATE
     comparison = entry["comparison"]
     by_candidate = {row["candidate_id"]: row for row in entry["candidates"]}
     incumbent, muted, variant = (by_candidate[name] for name in (BASE_CANDIDATE, _MUTED, _VARIANT))

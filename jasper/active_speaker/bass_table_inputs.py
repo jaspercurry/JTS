@@ -18,6 +18,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.measurement_programs import PURPOSE_BASS
+from jasper.active_speaker.run_manifest import view_sets
 
 from jasper.platform.atomic_io import atomic_write_json
 from .round_view_artifacts import ARTIFACT_BY_VIEW
@@ -28,9 +29,9 @@ from .crossover_v2.round_inputs import (
 
 def bass_view_path(inputs: RoundInputs, root: Path, set_id: str, manifest: Mapping[str, Any]) -> Path:
     """Where set ``set_id``'s bass view is filed: under the set's name, else, in
-    a one-set round, under none, as the bank files it."""
+    a round of one view set, under none, as the bank files it."""
     path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
-    if len(manifest["sets"]) == 1 and not path.is_file():
+    if len(view_sets(manifest)) == 1 and not path.is_file():
         path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact)
     return path
 
@@ -59,7 +60,7 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
             raise CrossoverV2Refused({"run_id": manifest["run_id"], "round_dir": str(root)},
                                     code="bass_fit_run_mismatch")
         run_ids.append(manifest["run_id"])
-        for row in manifest["sets"]:
+        for row in view_sets(manifest):
             selected = SetTakes.from_row(row)
             entries = [take for take in selected.takes if take["selected"]
                        and take.get("phase") == PHASE_LATERAL and take.get("measurement_purpose") == PURPOSE_BASS]

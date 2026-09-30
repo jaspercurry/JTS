@@ -650,11 +650,10 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
 def test_manifest_names_emitted_role_levels():
     manifest = RunManifest("run", _Store(FakeSeams().records))
     manifest.begin({"index": 1, "repeat": 1, "pose": {"deg": 0}}, attempt=1, pose_index=0)
-    record = {"take_id": manifest.allocate_take_id(), "stimulus_dbfs": -12, "program": {"segments": [
-        {"kind": "pilot", "role": "pilot_only", "gain_db": -6},
-        {"kind": "sweep", "role": "woofer", "gain_db": -18},
-        {"kind": "sweep", "role": "tweeter", "gain_db": -24},
-    ]}, "curves": [{"role": "woofer", "band_hz": [20, 2000], "validity_floor_hz": 100}]}
+    program = build_measure_program({"woofer": -18.0, "tweeter": -24.0}, [
+        RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))])
+    record = {"take_id": manifest.allocate_take_id(), "stimulus_dbfs": -12, "program": program.to_dict(),
+              "curves": [{"role": "woofer", "band_hz": [20, 2000], "validity_floor_hz": 100}]}
     asyncio.run(manifest.append(record, "record", TakeVerdict(True), complete=True, level_observation={}))
     groups = manifest.to_dict()["sets"]
     assert {group["capture_basis"]["role"]: group["capture_basis"]["stimulus_dbfs"]
@@ -1317,16 +1316,36 @@ def _run_chain_analysis(record):
     return replace(_measure_analysis(program), stimulus_levels=tuple(LevelReading(*level) for level in record["levels"]))
 
 
-async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals=None):
+class _PlacementLog(AnsweredGate):
+    """A gate that logs each placement it grants in ``events``."""
+
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+
+    def gate(self, index, attempt, entry):
+        granted = len(self.grants)
+        super().gate(index, attempt, entry)
+        if len(self.grants) > granted:
+            self.events.append("placement")
+
+
+async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals=None, events=None):
     """A run through a door that finds its fader, on a fake chain; each take that
     does not level itself is accepted. Answers the result, the plays and the
-    fader of each level window, in order."""
+    fader of each level window, in order. ``events`` logs each fader a window
+    sets and the household level (None) it leaves when it closes."""
     windows = []
+    events = [] if events is None else events
 
     @asynccontextmanager
     async def window(level_db, *, hold, spl_monitor):
         windows.append(level_db)
-        yield SimpleNamespace(measurement_volume_db=level_db, spl_monitor=spl_monitor)
+        events.append(level_db)
+        try:
+            yield SimpleNamespace(measurement_volume_db=level_db, spl_monitor=spl_monitor)
+        finally:
+            events.append(None)
 
     monkeypatch.setattr(plan_run, "level_window", window)
     fakes = FakeSeams(volume=_Fader())
@@ -1405,15 +1424,20 @@ def test_a_run_whose_first_spot_is_a_seat_lands_it_under_74_db(monkeypatch):
 
 
 def test_a_run_probe_that_finds_no_level_ends_the_run_before_any_take(monkeypatch):
-    """A probe the room buries asks for the microphone again, and one that never
-    finds a level ends the run: nothing plays at a fader no probe found (ADR-0403 §4)."""
+    """A probe the room buries asks for the microphone again. The fader is back at
+    the household level before each placement, so it sits at the probe fader only
+    while the probe plays. A probe that never finds a level ends the run: nothing
+    plays at a fader no probe found (ADR-0403 §4)."""
     request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), level=ac.LevelPolicy(level_db=0.0))
+    events: list = []
 
-    result, plays, windows = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 50.0}))
+    result, plays, _ = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 50.0},
+        gate=_PlacementLog(events), events=events))
 
-    assert result.reason == REASON_SNR_FLOOR and windows == [0.0]
-    assert len(plays) > 1 and all(call["spec"].level_probe and call["spec"].graph_scope == "timing" for call in plays)
+    assert result.reason == REASON_SNR_FLOOR and len(plays) > 1
+    assert events == ["placement", 0.0, None] * len(plays)
+    assert all(call["spec"].level_probe and call["spec"].graph_scope == "timing" for call in plays)
     assert result.level["run"]["level_db"] is None
 
 

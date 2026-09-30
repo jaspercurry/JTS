@@ -120,7 +120,7 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     if len({run["level"]["run"]["level_db"] for run in manifest.get("runs", ())}) < 2:
         return destination
     manifest = with_records(round_inputs(round_dir).session_dir, manifest, disclose=True)
-    candidates = sorted({row["capture_basis"]["candidate_id"] for row in manifest["sets"] if not row["base"]})
+    candidates = sorted({row["capture_basis"]["candidate_id"] for row in view_sets(manifest) if not row["base"]})
     try:
         table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
         table = json.loads(table_path.read_text())
@@ -237,7 +237,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             if row["view"] == "room":
                 document.pop("limits", None)
             analysis[spec.packet].append({**document, "out": row["out"],
-                                     "set_id": row.get("set_id") or manifest["sets"][0]["set_id"]})
+                                     "set_id": row.get("set_id") or view_sets(manifest)[0]["set_id"]})
     try:
         sources = prescription_sources(inputs)
     except ROUND_INPUT_ERRORS:

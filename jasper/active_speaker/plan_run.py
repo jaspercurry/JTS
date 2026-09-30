@@ -496,10 +496,10 @@ async def _run(
     # itself holds the probe's fader. The request's level caps the fader held (ADR-0403 §4).
     caps, cap, probe_at = (door.caps_dbfs if door is not None else None), level, None
 
-    def hold_fader(found: float, source: str, **found_as: float) -> float:
+    def hold_fader(found: float, source: str) -> float:
         assert cap is not None
         held = min(found, cap)
-        manifest.level["run"].update(level_db=held, **found_as,
+        manifest.level["run"].update(level_db=held,
                                      source=source if held == found else manifest.level["run"]["level_source"])
         return held
 
@@ -598,6 +598,10 @@ async def _run(
                     if gate is None:
                         manifest.reason = retry.fault or "placement_required"
                         break
+                    if probe_at is not None and session is not None:
+                        # The fader sits at the probe fader only while the probe plays (ADR-0403 §4).
+                        await window.aclose()
+                        session = None
                     grant_epoch += 1
                     if gate:
                         gate.abandon_hold()
@@ -724,7 +728,8 @@ async def _run(
                         solved = run_fader_db(ExcitationProgram.from_dict(next(
                             record["program"] for record, _ in records if record.get("program"))),
                             verdict.next_gain_db, caps)
-                        level = hold_fader(solved, "probe", probe_level_db=solved)
+                        level = hold_fader(solved, "probe")
+                        manifest.level["run"]["probe_level_db"] = solved
                         await window.aclose()
                         session, playing[offset], probe_at = None, work[offset].spec, None
                         offset, retry, retry_was_measured = 0, None, False

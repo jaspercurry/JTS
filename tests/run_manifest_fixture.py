@@ -17,15 +17,16 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.platform.json_fields import canonical_json_bytes, sha256_file
 
 
-def write_manifest(round_dir: Path, *, program: str = "speaker", groups=None) -> dict:
-    return write_bundle_manifest(round_inputs(round_dir).session_dir, program=program, groups=groups)
+def write_manifest(round_dir: Path, *, program: str = "speaker", groups=None, probe: bool = False) -> dict:
+    return write_bundle_manifest(round_inputs(round_dir).session_dir, program=program, groups=groups, probe=probe)
 
 
 def write_bundle_manifest(
-    session_dir: Path, *, program: str = "speaker", groups=None, selected=None, refused=(),
+    session_dir: Path, *, program: str = "speaker", groups=None, selected=None, refused=(), probe: bool = False,
 ) -> dict:
     """The round's finalized run manifest: ``groups``, else one set of every
-    banked take (:func:`manifest_set`)."""
+    banked take (:func:`manifest_set`). With ``probe``, the run's probe of the
+    first set's first take banks first, in a set of its own (:func:`probe_set`)."""
     directory, _ = round_artifact_dir(session_dir)
     if directory is None:
         directory = session_dir / "evidence/v1/artifacts/crossover_v2/wired-test"
@@ -33,11 +34,24 @@ def write_bundle_manifest(
     if groups is None:
         records = [(row.path, record) for row, record in measurement_documents(session_dir)]
         groups = [manifest_set(records, selected=selected, refused=refused)]
+    if probe and groups:
+        groups = [probe_set(groups[0]), *groups]
     manifest = {"kind": "jts_run_manifest", "schema_version": 3, "preset": program,
                 "run_id": "fixture", "finalized": True, "status": "complete", "honoured": {"retakes": 0},
                 "sets": [_banked(session_dir, index, group) for index, group in enumerate(groups)]}
     (directory / RUN_MANIFEST_FILENAME).write_text(json.dumps(manifest))
     return manifest
+
+
+def probe_set(group: dict) -> dict:
+    """The set a run's probe of ``group``'s first take banks (ADR-0403 §4): the
+    same basis marked a level probe, and one take the run never selects, banked
+    as its own record."""
+    first = group["takes"][0]
+    return {**group, "set_id": f"probe-{group['set_id']}", "base": False,
+            "capture_basis": {**group["capture_basis"], "level_probe": True},
+            "takes": [{"take_id": f"probe-{first['take_id']}", "phase": first.get("phase"),
+                       "pose": first.get("pose"), "selected": False}]}
 
 
 def _banked(session_dir: Path, index: int, group: dict) -> dict:

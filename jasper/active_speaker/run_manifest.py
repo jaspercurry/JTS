@@ -16,7 +16,7 @@ from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.platform.json_fields import finite_float
-from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP, LEVEL_PROBE_SEGMENT_PREFIX
+from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP, ExcitationProgram, is_level_probe
 from jasper.platform.speaker_layout import measurement_target_parts
 
 from .commissioning_evidence_store import EVIDENCE_ROOT
@@ -44,7 +44,7 @@ def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[st
     if gains:
         # The composer can cap the requested rung; report the emitted sweep gain.
         basis["stimulus_dbfs"] = max(gains)
-    if any(str(segment.get("segment_id", "")).startswith(LEVEL_PROBE_SEGMENT_PREFIX) for segment in segments):
+    if record.get("program") and is_level_probe(ExcitationProgram.from_dict(record["program"])):
         basis["level_probe"] = True
     return basis
 

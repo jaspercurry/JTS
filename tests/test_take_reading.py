@@ -171,7 +171,7 @@ def test_a_bass_take_at_a_bearing_reads_the_window_its_program_reads(tmp_path):
     assert refused.value.reason == REFUSE_TAKE_BAND_TOO_NARROW
 
 
-def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:
+def _banked(store: Path, name: str, banked_at: str, sets: dict, probe: bool = False) -> Path:
     """One banked round of bare-delta takes under its own session. A set is its
     takes, ``(take_id, bearing[, run_id, second[, selected]])``, each record
     banking its run and the second of the minute it was captured, or
@@ -207,7 +207,7 @@ def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:
         for row, (*_, selected) in zip(group["takes"], set_takes):
             row.update(selected=selected)
         groups.append(group)
-    write_manifest(root, groups=groups)
+    write_manifest(root, groups=groups, probe=probe)
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": banked_at}))
     return root
 
