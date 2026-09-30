@@ -4,19 +4,13 @@
 
 """The angle-capture seam: {per-driver | summed} x {angles} x {arm | human}.
 
-Four things are pinned here, and the third is the one that matters most for
-review: this feature is NOT a route around the retired lateral-walk statistic.
-
 1. the angle round trip -- degrees in, degrees back out of the shipped derivation;
-2. the seam's dispatch -- each combination resolves to the right program object,
-   pose and advance policy, mutation-checked so a collapsed branch fails;
-3. **the ruling** -- the seam never mints ``PHASE_LATERAL`` itself, so it cannot
-   be a route back to the retired statistic;
-4. mover parity, and the record/receipt shape the shipped consumers read;
-5. the ELEVATION axis -- the same construction one plane over, its per-mover
+2. the seam's dispatch -- each stop resolves to its pose's prompt and advance policy;
+3. mover parity, and the record/receipt shape the shipped consumers read;
+4. the ELEVATION axis -- the same construction one plane over, its per-mover
    reach, and the one clause it adds to what a household reads;
-6. the PROGRAM door -- a named table becomes a walk, in the table's order;
-7. CATEGORIZED poses -- a seat or close take says where it was stated from,
+5. the PROGRAM door -- a named table becomes a walk, in the table's order;
+6. CATEGORIZED poses -- a seat or close take says where it was stated from,
    and every bearing resolves byte-identically to before they existed.
 """
 
@@ -42,11 +36,7 @@ from jasper.active_speaker.seat_level_reference import ResolvedLevel
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import spatial
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CLOUD_VERIFY,
-    PHASE_LATERAL,
-    PHASE_MEASURE,
-)
+from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_BATCH_CONFIG_KEY,
     POSITION_BATCH_SIZE_KEY,
@@ -58,10 +48,8 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.position_gate import PositionGate
-from jasper.active_speaker.crossover_v2.programs import NoProgramForPhaseError
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
@@ -80,7 +68,7 @@ _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 def _both_at(angles_deg, *, mover: str = ac.MOVER_HUMAN) -> ac.AngleCaptureRequest:
     """Both regimes at each angle, per-driver first."""
     return ac.AngleCaptureRequest(stops=tuple(
-        ac.AngleStop(angle, regime, purpose="speaker")
+        ac.AngleStop(mp.Pose(angle, 0), regime, purpose="speaker")
         for angle in angles_deg for regime in (ac.REGIME_PER_DRIVER, ac.REGIME_SUMMED)), mover=mover)
 
 _FC_HZ = 2000.0
@@ -98,13 +86,14 @@ _ROLES_BANDS = (
 def test_pose_at_angle_is_the_exact_inverse_of_position_angle_deg() -> None:
     """Every whole degree the seam accepts survives the round trip.
 
-    This is the contract that lets degrees be an INPUT without minting a second
-    statement of the geometry: the pose banks in centimetres, exactly as a
-    hand-walked pose does, and reads back as the angle that was asked for.
+    The prompt words the move in centimetres, exactly as a hand-walked pose
+    does, and that move reads back as the bearing of the pose it carries.
     """
     for degrees in range(-ac.MAX_ANGLE_DEG, ac.MAX_ANGLE_DEG + 1):
-        pose = ac.pose_at_angle(degrees)
-        assert capture_plan.position_angle_deg(pose) == degrees, degrees
+        prompt = ac.pose_at_angle(mp.Pose(degrees, 0))
+        worded = round(prompt.lateral_sign * math.degrees(
+            math.atan2(prompt.offset_cm / 100.0, prompt.mark_distance_m)))
+        assert (capture_plan.position_angle_deg(prompt), worded) == (degrees, degrees), degrees
 
 
 def test_pose_at_angle_reproduces_the_shipped_bearings() -> None:
@@ -118,11 +107,11 @@ def test_pose_at_angle_reproduces_the_shipped_bearings() -> None:
     cuts the chord, while an angle is the constant-radius arc. Asserting the arc
     is correct here -- it is the geometry both the arm and a taut string have.
     """
-    assert ac.pose_at_angle(7).offset_cm == pytest.approx(12.278, abs=0.01)
-    assert ac.pose_at_angle(22).offset_cm == pytest.approx(40.403, abs=0.01)
-    assert ac.pose_at_angle(-7).lateral_sign == -1
-    assert ac.pose_at_angle(7).lateral_sign == 1
-    assert ac.pose_at_angle(0).lateral_sign == 0
+    assert ac.pose_at_angle(mp.Pose(7, 0)).offset_cm == pytest.approx(12.278, abs=0.01)
+    assert ac.pose_at_angle(mp.Pose(22, 0)).offset_cm == pytest.approx(40.403, abs=0.01)
+    assert ac.pose_at_angle(mp.Pose(-7, 0)).lateral_sign == -1
+    assert ac.pose_at_angle(mp.Pose(7, 0)).lateral_sign == 1
+    assert ac.pose_at_angle(mp.Pose(0, 0)).lateral_sign == 0
 
 
 def test_pose_role_derives_from_the_shipped_wide_class() -> None:
@@ -132,8 +121,8 @@ def test_pose_role_derives_from_the_shipped_wide_class() -> None:
     40/60 cm offax) and a divergence here would make an angle-requested pose
     answer a different question than the hand-walked pose at the same place.
     """
-    inside = ac.pose_at_angle(7)
-    outside = ac.pose_at_angle(22)
+    inside = ac.pose_at_angle(mp.Pose(7, 0))
+    outside = ac.pose_at_angle(mp.Pose(22, 0))
     assert inside.offset_cm < capture_plan.WIDE_OFFSET_MIN_CM <= outside.offset_cm
     assert inside.role == spatial.POSITION_ROLE_ONAX and not inside.wide
     assert outside.role == spatial.POSITION_ROLE_OFFAX and outside.wide
@@ -143,14 +132,16 @@ def test_pose_role_derives_from_the_shipped_wide_class() -> None:
 def test_pose_at_angle_refuses_an_unmeasurable_bearing(bad: int) -> None:
     """The tangent's own bound, refused loudly rather than banked absurdly."""
     with pytest.raises(contracts.CrossoverV2FlowError, match="design axis"):
-        ac.pose_at_angle(bad)
+        ac.pose_at_angle(mp.Pose(bad, 0))
 
 
-@pytest.mark.parametrize("bad", [7.5, "7"])
-def test_angle_stop_refuses_a_non_whole_degree(bad: object) -> None:
-    """Whole degrees is the resolution the placement is honest at."""
-    with pytest.raises(contracts.CrossoverV2FlowError):
-        ac.AngleStop(angle_deg=bad, regime=ac.REGIME_PER_DRIVER, purpose="speaker")  # type: ignore[arg-type]
+@pytest.mark.parametrize("bad", [7.5, "7", np.float64(22.0), True])
+def test_the_one_pose_record_refuses_a_non_whole_degree(bad: object) -> None:
+    """Whole degrees is the resolution the placement is honest at, and every
+    door takes the one pose record, so one validator judges it (ADR-0366 §1)."""
+    for axis in ("azimuth_deg", "elevation_deg"):
+        with pytest.raises(ValueError):
+            mp.Pose(**{"azimuth_deg": 0, "elevation_deg": 0, axis: bad})
 
 
 # --- the whole-degree contract binds EVERY door, not just two --------------- #
@@ -198,8 +189,8 @@ def test_every_door_accepts_a_numpy_integer(door: object) -> None:
     """
     request = door(np.int64(45))  # type: ignore[operator]
     stop = ac.resolve_request(request)[0]
-    assert stop.angle_deg == 45
-    assert type(stop.angle_deg) is int
+    assert stop.prompt.pose.azimuth_deg == 45
+    assert type(stop.prompt.pose.azimuth_deg) is int
     assert capture_plan.position_angle_deg(stop.prompt) == 45
 
 
@@ -215,64 +206,15 @@ def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
         door(bad)  # type: ignore[operator]
 
 
-def test_angle_stop_and_pose_share_the_numpy_and_bool_rules() -> None:
-    """The other two doors agree with the constructors -- one validator, not three."""
-    assert ac.AngleStop(np.int64(22), ac.REGIME_SUMMED, purpose="speaker").angle_deg == 22
-    assert capture_plan.position_angle_deg(ac.pose_at_angle(np.int64(22))) == 22
-    for bad in (np.float64(22.0), True, 22.5, "22"):
-        with pytest.raises(contracts.CrossoverV2FlowError):
-            ac.AngleStop(bad, ac.REGIME_SUMMED, purpose="speaker")  # type: ignore[arg-type]
-        with pytest.raises(contracts.CrossoverV2FlowError):
-            ac.pose_at_angle(bad)  # type: ignore[arg-type]
-
-
 # --------------------------------------------------------------------------- #
-# 2. the seam's dispatch: program x angle x mover
+# 2. the seam's dispatch: angle x mover
 # --------------------------------------------------------------------------- #
-
-
-def test_regime_selects_the_program_phase() -> None:
-    """Per-driver plays MEASURE's object; summed plays the position groups'.
-
-    The mutation this guards: collapsing `_REGIME_PROGRAM_PHASE` to one arm.
-    Both directions are asserted, so a collapse in either direction fails.
-    """
-    per_driver, = ac.resolve_request(ac.per_driver_at([7]))
-    summed, = ac.resolve_request(ac.summed_at([7]))
-    assert per_driver.program_phase == PHASE_MEASURE
-    assert summed.program_phase == PHASE_CLOUD_VERIFY
-    assert per_driver.program_phase != summed.program_phase
-
-
-def test_program_for_stop_returns_the_shipped_object_by_identity() -> None:
-    """A per-driver stop is handed the very SAME MEASURE object, not an equal one.
-
-    Identity is the contract: a pose measured with a different sweep or at a
-    different level makes every cross-angle comparison uninterpretable, which is
-    why `program_for_phase` answers by identity and this delegates rather than
-    branching.
-    """
-    check, measure, verify, cloud = object(), object(), object(), object()
-    programs = {"check": check, "measure": measure, "verify": verify, "cloud": cloud}
-
-    per_driver, summed = ac.resolve_request(_both_at([22]))
-    assert ac.program_for_stop(per_driver, **programs) is measure
-    assert ac.program_for_stop(summed, **programs) is cloud
-
-
-def test_per_driver_stop_refuses_before_the_gain_solve() -> None:
-    """No MEASURE program yet ⇒ the shipped refusal, uncaught."""
-    stop, = ac.resolve_request(ac.per_driver_at([0]))
-    with pytest.raises(NoProgramForPhaseError):
-        ac.program_for_stop(
-            stop, check=object(), measure=None, verify=object(), cloud=object(),
-        )
 
 
 def test_requested_angle_order_is_the_running_order() -> None:
     """The walk is the caller's order, indexed 1-based like the capture drives it."""
     stops = ac.resolve_request(ac.per_driver_at([0, 22, -7, 45]))
-    assert [s.angle_deg for s in stops] == [0, 22, -7, 45]
+    assert [s.prompt.pose.azimuth_deg for s in stops] == [0, 22, -7, 45]
     assert [s.index for s in stops] == [1, 2, 3, 4]
 
 
@@ -292,66 +234,9 @@ def test_empty_and_unknown_requests_are_refused() -> None:
     with pytest.raises(contracts.CrossoverV2FlowError, match="at least one stop"):
         ac.AngleCaptureRequest(stops=())
     with pytest.raises(contracts.CrossoverV2FlowError, match="mover"):
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),), mover="robot")
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),), mover="robot")
     with pytest.raises(contracts.CrossoverV2FlowError, match="regime"):
-        ac.AngleStop(0, "sine", purpose="speaker")
-
-
-# --------------------------------------------------------------------------- #
-# 3. THE RULING: this is not a route around the paused lateral statistic
-# --------------------------------------------------------------------------- #
-
-
-def test_the_seam_never_mints_the_lateral_phase() -> None:
-    """No stop is ever tagged PHASE_LATERAL, in any combination.
-
-    What this pins is a SEPARATION OF CONCERNS, not the bar. This module answers
-    "what does this stop play"; a session host answers "which phase runs at this
-    index", and since #2732's take it does tag a staged walk's indexes
-    PHASE_LATERAL. The bar is held one layer down, on that group's declared
-    consumer -- see ``tests/test_crossover_v2_lateral_evidence.py``.
-    """
-    for request in (
-        ac.per_driver_at(_SHIPPED_ANGLES),
-        ac.summed_at(_SHIPPED_ANGLES),
-        _both_at(_SHIPPED_ANGLES, mover=ac.MOVER_ARM),
-    ):
-        phases = {s.program_phase for s in ac.resolve_request(request)}
-        assert PHASE_LATERAL not in phases
-        assert PHASE_LATERAL not in set(ac.index_phase_map(request).values())
-
-
-def test_the_seam_module_does_not_reference_phase_lateral_as_code() -> None:
-    """Static backstop for the ruling in the module docstring.
-
-    A future edit could have this module mint ``PHASE_LATERAL`` itself, which
-    is exactly the coupling that would make it a route back to the retired
-    statistic; this fails the moment the module names that symbol *as code*.
-
-    **Parsed, never text-scanned** -- the discipline `test_lint_contracts.py`
-    states for exactly this shape of rule: the module docstring discusses the
-    name at length in prose (that discussion is the point), so a text scan
-    would report the explanation as the violation. The AST sees only code, and
-    prose is where the name belongs.
-    """
-    import ast
-    from pathlib import Path
-
-    tree = ast.parse(Path(ac.__file__).read_text(encoding="utf-8"))
-    referenced = {
-        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
-    } | {
-        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
-    } | {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    assert "PHASE_LATERAL" not in referenced
-    # Positive control: the scan does see the names this module DOES use, so a
-    # vacuous pass (an empty or mis-walked tree) cannot masquerade as a clean one.
-    assert {"PHASE_MEASURE", "PHASE_CLOUD_VERIFY", "position_angle_deg"} <= referenced
+        ac.AngleStop(mp.Pose(0, 0), "sine", purpose="speaker")
 
 
 # --------------------------------------------------------------------------- #
@@ -373,9 +258,7 @@ def test_mover_changes_the_advance_policy_and_nothing_else() -> None:
     by_arm = ac.resolve_request(ac.per_driver_at(angles, mover=ac.MOVER_ARM))
 
     for hand, arm in zip(by_hand, by_arm, strict=True):
-        assert hand.angle_deg == arm.angle_deg
         assert hand.regime == arm.regime
-        assert hand.program_phase == arm.program_phase
         assert hand.prompt == arm.prompt          # pose AND copy
         assert hand.screen != arm.screen          # ...only this differs
     # Stated as the whole-object claim too, so a field added to ResolvedStop
@@ -415,7 +298,7 @@ def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
     for stop in ac.resolve_request(_both_at([0, -22], mover=ac.MOVER_ARM)):
         assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
         assert stop.screen["countdown_s"] == str(capture_plan.AUTO_ADVANCE_COUNTDOWN_S)
-        assert stop.screen[capture_plan.POSITION_DEG_KEY] == str(stop.angle_deg)
+        assert stop.screen[capture_plan.POSITION_DEG_KEY] == str(stop.prompt.pose.azimuth_deg)
         assert stop.screen[capture_plan.POSITION_ROLE_KEY] == stop.prompt.role
 
 
@@ -466,21 +349,6 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     assert record["mark_distance_m"] == spatial.MARK_DISTANCE_M
 
 
-def test_announced_indexes_delegates_to_the_shipped_owner() -> None:
-    """One owner for "what will the household hear".
-
-    Empty for every request today, and the module docstring says why that is
-    correct rather than an oversight: neither regime's program phase is a
-    session opener, so an angle walk inside an announced session announces
-    nothing -- the shipped behaviour for every capture after the first.
-    """
-    request = _both_at(_SHIPPED_ANGLES)
-    assert ac.announced_indexes(request) == ()
-    assert ac.announced_indexes(request) == capture_plan.announced_capture_indexes(
-        ac.index_phase_map(request)
-    )
-
-
 def test_a_resolved_stop_is_actually_frozen() -> None:
     """`frozen=True` means the screen bag too, not just the fields.
 
@@ -492,18 +360,8 @@ def test_a_resolved_stop_is_actually_frozen() -> None:
     with pytest.raises(TypeError):
         stop.screen["position_deg"] = "45"  # type: ignore[index]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        stop.angle_deg = 45  # type: ignore[misc]
+        stop.index = 45  # type: ignore[misc]
     assert stop.screen == dict(stop.screen)
-
-
-def test_index_phase_map_matches_the_resolved_walk() -> None:
-    """The map and the stops cannot describe different walks."""
-    request = _both_at([0, 7], mover=ac.MOVER_ARM)
-    stops = ac.resolve_request(request)
-    assert ac.index_phase_map(request) == {
-        s.index: s.program_phase for s in stops
-    }
-    assert sorted(ac.index_phase_map(request)) == list(range(1, len(stops) + 1))
 
 
 def test_the_arc_removes_the_inverse_square_confound() -> None:
@@ -524,7 +382,7 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
     are unchanged — only the sentence that contradicted them.
     """
     for degrees in (0, 7, -7, 22, -22, 45):
-        pose = ac.pose_at_angle(degrees)
+        pose = ac.pose_at_angle(mp.Pose(degrees, 0))
         radius_m = math.hypot(pose.offset_cm / 100.0, spatial.MARK_DISTANCE_M)
         chord_radius_m = math.hypot(0.40, spatial.MARK_DISTANCE_M)
         assert radius_m == pytest.approx(
@@ -532,105 +390,6 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
         )
         # the shipped 40 cm slide is the confound this replaces
         assert chord_radius_m == pytest.approx(1.077, abs=0.001)
-
-
-# --------------------------------------------------------------------------- #
-# 5. composing a walk INTO a session (#2732 P2)
-# --------------------------------------------------------------------------- #
-#
-# The three refusals are properties of the PAIR (this walk, this session), which
-# is why they live in the seam and not in the spool's document validation: the
-# same document is fine against a differently-shaped session.
-
-
-def _capture_ceiling() -> int:
-    from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
-
-    return MAX_CAPTURE_PLAN_ATTEMPTS
-
-
-def test_a_composed_walk_is_the_stops_in_order_as_poses() -> None:
-    """The happy path: poses, in the request's stop order, in the vocabulary
-    every shipped prompted walk is already stated in."""
-    prompts = ac.session_lateral_walk(
-        ac.per_driver_at(list(_SHIPPED_ANGLES)),
-        externally_positioned=False,
-        base_entries=3,
-    )
-    assert len(prompts) == len(_SHIPPED_ANGLES)
-    assert [capture_plan.position_angle_deg(p) for p in prompts] == list(_SHIPPED_ANGLES)
-    # Poses, not stops: what the plan builders and the conductor consume.
-    assert all(isinstance(p, capture_plan.CloudPositionPrompt) for p in prompts)
-
-
-def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
-    """Sessions without summed support refuse summed and mixed requests."""
-    for request in (
-        ac.summed_at([0]),
-        _both_at([7]),  # mixed: one per-driver stop is not enough
-    ):
-        with pytest.raises(ac.LateralWalkRefused) as excinfo:
-            ac.session_lateral_walk(
-                request, externally_positioned=False, base_entries=3,
-            )
-        assert excinfo.value.reason == ac.WALK_REGIME_UNSUPPORTED
-        assert ac.REGIME_SUMMED in excinfo.value.detail
-
-
-def test_a_mover_mismatch_refuses_in_both_directions() -> None:
-    """The mover is the one axis a request and a session must already agree on.
-
-    An arm walk in a hand-walked session auto-advances into a microphone nobody
-    is moving; a hand walk in an arm session waits on a position gate no driver
-    will satisfy. Both are stalls, so neither is silently coerced.
-    """
-    for mover, session_positioned in (
-        (ac.MOVER_ARM, False),
-        (ac.MOVER_HUMAN, True),
-    ):
-        with pytest.raises(ac.LateralWalkRefused) as excinfo:
-            ac.session_lateral_walk(
-                ac.per_driver_at([7], mover=mover),
-                externally_positioned=session_positioned,
-                base_entries=3,
-            )
-        assert excinfo.value.reason == ac.REASON_WALK_MOVER_MISMATCH
-    # ...and both matched pairs compose.
-    for mover, session_positioned in (
-        (ac.MOVER_ARM, True),
-        (ac.MOVER_HUMAN, False),
-    ):
-        assert ac.session_lateral_walk(
-            ac.per_driver_at([7], mover=mover),
-            externally_positioned=session_positioned,
-            base_entries=3,
-        )
-
-
-def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
-    """Section 3's ruling, re-asserted over the NEW entry point.
-
-    ``session_lateral_walk`` is the first function here whose whole purpose is
-    to feed a measurement session, which is exactly the shape that would invite
-    it to return indexed, phase-tagged stops. It returns POSES, and the caller
-    tags indexes -- so the thing to assert is the RETURN TYPE, not the absence
-    of a string.
-
-    Asserting "no field contains 'lateral'" would be near-vacuous (a pose has
-    no phase field to contain it); asserting the exact shipped type is what
-    would fail if this ever grew a ``ResolvedStop`` or a ``(index, phase)``
-    pair.
-    """
-    prompts = ac.session_lateral_walk(
-        ac.per_driver_at([0, 22]), externally_positioned=False, base_entries=3,
-    )
-    assert isinstance(prompts, tuple)
-    assert [type(p) for p in prompts] == [capture_plan.CloudPositionPrompt] * 2
-    # A pose carries geometry and copy, and nothing that names a journey.
-    assert not (
-        {f.name for f in dataclasses.fields(capture_plan.CloudPositionPrompt)}
-        & {"phase", "index", "program_phase"}
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -649,7 +408,7 @@ def test_elevation_round_trips_and_leaves_the_bearing_alone(angle_deg: int) -> N
     commanding no bearing at all, and this one commands one.
     """
     for elevation in range(-ac.MAX_ELEVATION_DEG, ac.MAX_ELEVATION_DEG + 1):
-        pose = ac.pose_at_angle(angle_deg, elevation)
+        pose = ac.pose_at_angle(mp.Pose(angle_deg, elevation))
         assert capture_plan.position_elevation_deg(pose) == elevation, elevation
         assert capture_plan.position_angle_deg(pose) == angle_deg, elevation
         assert pose.role != spatial.POSITION_ROLE_XOVR
@@ -680,7 +439,7 @@ def test_a_stop_past_a_movers_reach_on_either_axis_refuses_at_staging(
     """
     with pytest.raises(ac.LateralWalkRefused) as caught:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(angle_deg, ac.REGIME_PER_DRIVER, elevation_deg, purpose="speaker"),),
+            stops=(ac.AngleStop(mp.Pose(angle_deg, elevation_deg), ac.REGIME_PER_DRIVER, purpose="speaker"),),
             mover=mover,
         )
     assert caught.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
@@ -694,17 +453,15 @@ def test_a_person_may_be_asked_to_raise_within_reach(elevation_deg: int) -> None
     """Everything inside the person's own bound stages AND resolves.
 
     The bound covers the plan's baseline vertical walk with margin, and the
-    resolved stop carries the elevation on BOTH statements of it -- its own
-    field and the pose it resolved to -- so the number a session gates on is
-    the number the request asked for.
+    resolved stop's pose carries it, so the number a session gates on is the
+    number the request asked for.
     """
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(22, ac.REGIME_PER_DRIVER, elevation_deg, purpose="speaker"),),
+        stops=(ac.AngleStop(mp.Pose(22, elevation_deg), ac.REGIME_PER_DRIVER, purpose="speaker"),),
         mover=ac.MOVER_HUMAN,
     )
     stop, = ac.resolve_request(request)
 
-    assert stop.elevation_deg == elevation_deg
     assert capture_plan.position_elevation_deg(stop.prompt) == elevation_deg
     assert capture_plan.position_angle_deg(stop.prompt) == 22
 
@@ -720,9 +477,9 @@ def test_a_pose_at_mark_height_is_the_pose_the_seam_already_shipped(
     sayable, so nothing downstream that reads a pose can tell the two apart --
     and the household is told about a rise it was never asked to make.
     """
-    pose = ac.pose_at_angle(angle_deg)
+    pose = ac.pose_at_angle(mp.Pose(angle_deg, 0))
 
-    assert ac.pose_at_angle(angle_deg, 0) == pose
+    assert ac.pose_at_angle(mp.Pose(angle_deg, 0)) == pose
     assert (pose.vertical_sign, pose.vertical_offset_cm) == (0, 0.0)
     assert "mark height" not in pose.headline
 
@@ -744,8 +501,8 @@ def test_a_raised_pose_gains_exactly_one_elevation_clause(
     protractor -- and it names the mark distance the conversion assumes, since
     the same angle is a different height at any other distance.
     """
-    flat = ac.pose_at_angle(22)
-    raised = ac.pose_at_angle(22, elevation_deg)
+    flat = ac.pose_at_angle(mp.Pose(22, 0))
+    raised = ac.pose_at_angle(mp.Pose(22, elevation_deg))
 
     assert flat.headline == (
         "Turn the microphone to +22° (22° RIGHT of the design axis)."
@@ -770,10 +527,10 @@ def test_a_rise_on_the_design_axis_does_not_say_LEAVE_the_microphone(
     asks for a rise has to state the bearing as something to HOLD instead, or
     the household is told not to move and then to move in one sentence.
     """
-    assert ac.pose_at_angle(0).headline == (
+    assert ac.pose_at_angle(mp.Pose(0, 0)).headline == (
         "Leave the microphone on the design axis (0°)."
     )
-    assert ac.pose_at_angle(0, elevation_deg).headline.startswith(
+    assert ac.pose_at_angle(mp.Pose(0, elevation_deg)).headline.startswith(
         "Keep the microphone on the design axis (0°), and "
         f"{abs(elevation_deg)}° {word} mark height"
     )
@@ -782,8 +539,8 @@ def test_a_rise_on_the_design_axis_does_not_say_LEAVE_the_microphone(
 def test_a_behind_prompt_reads_differently_from_the_bearing_at_the_same_azimuth() -> None:
     """Behind and bearing share (0, 0) but are different physical places, so
     the household must not read the same instruction for both (issue #5330)."""
-    bearing = ac.pose_at_angle(0)
-    behind = ac.pose_at_angle(0, kind=mp.POSE_KIND_BEHIND, distance_m=0.1)
+    bearing = ac.pose_at_angle(mp.Pose(0, 0))
+    behind = ac.pose_at_angle(mp.Pose(0, 0, kind=mp.POSE_KIND_BEHIND, distance_m=0.1))
 
     assert behind.text != bearing.text
 
@@ -813,19 +570,17 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     request = ac.request_for_preset(program)
 
     assert len(request.stops) == program.capture_count
-    assert {(s.angle_deg, s.elevation_deg) for s in request.stops} == {
+    assert {(s.pose.azimuth_deg, s.pose.elevation_deg) for s in request.stops} == {
         (p.azimuth_deg, p.elevation_deg) for p in program.poses
     }
-    assert len({(s.angle_deg, s.elevation_deg) for s in request.stops}) == (
+    assert len({(s.pose.azimuth_deg, s.pose.elevation_deg) for s in request.stops}) == (
         program.mic_move_count
     )
     assert [stop.regime for stop in request.stops] == [program.regime for pose in program.poses for _ in range(pose.repeats)]
     # Table order, with each pose's repeats ADJACENT: the microphone moves once
     # per distinct pose, so a repeat that drifted apart would be a second trip.
-    assert [(s.angle_deg, s.elevation_deg) for s in request.stops] == [
-        (pose.azimuth_deg, pose.elevation_deg)
-        for pose in program.poses
-        for _ in range(pose.repeats)
+    assert [s.pose for s in request.stops] == [
+        pose for pose in program.poses for _ in range(pose.repeats)
     ]
     assert (request.program, request.layout) == (program.preset, program.layout)
 
@@ -877,7 +632,7 @@ def test_candidates_expand_pose_major_candidate_minor(
     assert len(request.stops) > 0
     runs = [
         key for key, _ in itertools.groupby(
-            s.place for s in request.stops
+            s.pose.place for s in request.stops
         )
     ]
     assert len(runs) == len(program.poses)
@@ -895,20 +650,6 @@ def _candidate_batch_plan(request):
         roles_bands=_ROLES_BANDS, fc_hz=_FC_HZ,
         acknowledgement_binding="candidate-batch-test", retries_per_pose=0,
     ).capture_plan
-
-
-@pytest.mark.parametrize("candidates", [("base",), ("base", "fp-a", "fp-b"), ("fp-a",)])
-def test_summed_candidate_walk_requires_the_supported_execution_path(candidates):
-    request = ac.request_for_preset(mp.preset("tournament/express"), candidates=candidates)
-    with pytest.raises(ac.LateralWalkRefused) as exc:
-        ac.session_lateral_walk(
-            request, externally_positioned=False, base_entries=2,
-        )
-    assert exc.value.reason == ac.WALK_REGIME_UNSUPPORTED
-    assert len(ac.session_lateral_walk(
-        request, externally_positioned=False, base_entries=2,
-        supported_summed_candidates=True,
-    )) == len(request.stops)
 
 
 def test_three_configs_at_three_poses_use_three_placement_grants():
@@ -993,9 +734,7 @@ def test_a_categorized_program_walks_summed_whatever_the_candidates_say(layout: 
     request = ac.request_for_preset(program, candidates=())
 
     assert {stop.regime for stop in request.stops} == {ac.REGIME_SUMMED}
-    assert [(s.kind, s.distance_m, s.seat_offset_m) for s in request.stops] == [
-        (p.kind, p.distance_m, p.seat_offset_m) for p in program.poses
-    ]
+    assert [s.pose for s in request.stops] == list(program.poses)
     price = walk_price(request)
     assert (price["mic_moves"], price["captures"]) == (
         program.mic_move_count, program.capture_count,
@@ -1005,11 +744,8 @@ def test_a_categorized_program_walks_summed_whatever_the_candidates_say(layout: 
 @pytest.mark.parametrize(
     "stop",
     [
-        ac.AngleStop(
-            0, ac.REGIME_SUMMED,
-            kind=mp.POSE_KIND_SEAT, seat_offset_m=(0.0, 0.0, 0.0), purpose="room",
-        ),
-        ac.AngleStop(0, ac.REGIME_SUMMED, kind=mp.POSE_KIND_CLOSE, distance_m=0.3, purpose="reference"),
+        ac.AngleStop(mp.Pose(0, 0, kind=mp.POSE_KIND_SEAT, seat_offset_m=(0.0, 0.0, 0.0)), ac.REGIME_SUMMED, purpose="room"),
+        ac.AngleStop(mp.Pose(0, 0, kind=mp.POSE_KIND_CLOSE, distance_m=0.3), ac.REGIME_SUMMED, purpose="reference"),
     ],
     ids=["seat", "close"],
 )
@@ -1043,10 +779,10 @@ def test_an_arm_reaches_bearings_at_the_mark_and_nothing_else(
         "an-offset-of-two", "no-distance", "a-distance-behind-the-speaker",
     ],
 )
-def test_a_stop_refuses_a_kind_it_cannot_state(fields: dict) -> None:
-    """A stop states a place completely or refuses -- never half of one."""
-    with pytest.raises(contracts.CrossoverV2FlowError):
-        ac.AngleStop(0, ac.REGIME_SUMMED, **fields)
+def test_a_pose_refuses_a_kind_it_cannot_state(fields: dict) -> None:
+    """A pose states a place completely or refuses -- never half of one."""
+    with pytest.raises(ValueError):
+        mp.Pose(0, 0, **fields)
 
 
 def test_a_seat_stop_is_stated_from_the_head_not_the_mark() -> None:
@@ -1136,19 +872,19 @@ _GOLDEN_BASELINE_EXPRESS = (
 
 
 @pytest.mark.parametrize(
-    ("candidates", "regime", "phase", "price"),
+    ("candidates", "regime", "price"),
     [
-        ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
+        ((), ac.REGIME_PER_DRIVER,
          {"mic_moves": 5, "captures": 10, "ceiling_min": 44,
           "stimulus_s": None}),
-        (("base", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
+        (("base", "fpA"), ac.REGIME_SUMMED,
          {"mic_moves": 5, "captures": 17, "ceiling_min": 58,
           "stimulus_s": None}),
     ],
     ids=["no-cycle", "two-candidates"],
 )
 def test_shipped_program_geometry_and_full_capture_price(
-    candidates: tuple[str, ...], regime: str, phase: str, price: dict,
+    candidates: tuple[str, ...], regime: str, price: dict,
 ) -> None:
     request = ac.request_for_preset(
         mp.run_preset("speaker", "baseline_express"), candidates=candidates,
@@ -1157,13 +893,13 @@ def test_shipped_program_geometry_and_full_capture_price(
     geometries = [capture_plan.position_geometry(stop.prompt) for stop in stops]
 
     assert [
-        (stop.angle_deg, stop.elevation_deg, stop.regime, stop.program_phase,
+        (stop.prompt.pose.azimuth_deg, stop.prompt.pose.elevation_deg, stop.regime,
          dict(stop.screen), stop.prompt.text,
          geometry.axis, geometry.degrees, geometry.mark_distance_m,
          geometry.vertical_deg)
         for stop, geometry in zip(stops, geometries)
     ] == [
-        (angle, elevation, regime, phase, {"auto_advance": "tap"}, text,
+        (angle, elevation, regime, {"auto_advance": "tap"}, text,
          "horizontal", degrees, 1.0, vertical)
         for angle, elevation, text, degrees, vertical in _GOLDEN_BASELINE_EXPRESS
         # Candidate-MINOR: the cycle repeats under each pose, in place.
@@ -1310,7 +1046,7 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
+            stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
             template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields),
         )
     assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
@@ -1331,7 +1067,7 @@ def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -
     """
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),),
+            stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),),
             template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **identity),
         )
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
@@ -1349,8 +1085,8 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     )
     request = ac.AngleCaptureRequest(
         stops=(
-            ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),
-            ac.AngleStop(20, ac.REGIME_SUMMED, 5, "fp-a", purpose="speaker"),
+            ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),
+            ac.AngleStop(mp.Pose(20, 5), ac.REGIME_SUMMED, "fp-a", purpose="speaker"),
         ),
         candidates=("base", "fp-a"), template=template,
     )
@@ -1389,7 +1125,7 @@ def test_a_summed_sweep_beside_an_overlay_is_refused_as_not_measurable(overlay: 
 
 def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
+        stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
         template=ac.walk_template(kind=MEASURE_KIND_VERIFY),
     )
     assert ac.design_axis_spec(request).kind == MEASURE_KIND_CANDIDATE
@@ -1397,7 +1133,7 @@ def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
 
 def test_a_template_that_is_not_a_spec_is_refused() -> None:
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),), template=None)
+        ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),), template=None)
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
@@ -1405,10 +1141,10 @@ def test_a_template_that_is_not_a_spec_is_refused() -> None:
 def test_template_accepts_only_the_base_candidate_token(candidate_id):
     template = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id=candidate_id)
     if candidate_id == "base":
-        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),), template=template).template == template
+        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),), template=template).template == template
     else:
         with pytest.raises(ac.LateralWalkRefused) as refused:
-            ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="speaker"),), template=template)
+            ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),), template=template)
         assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
@@ -1421,7 +1157,7 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
         level=ac.LevelPolicy(level_db=-25, resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
     doc = request.to_dict()
-    assert doc["artifact_schema_version"] == 6
+    assert doc["artifact_schema_version"] == 7
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
     assert doc["level"] == {"mode": "hold_reference", "level_db": -25, "anchor_db_spl": 75.8,
@@ -1458,7 +1194,7 @@ def test_a_branch_row_names_its_pair_through_the_round_trip_and_onto_the_spec(ro
 
 def test_only_a_branches_stop_may_name_a_branch_pair():
     with pytest.raises(contracts.CrossoverV2FlowError):
-        ac.AngleStop(0, ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR, purpose="speaker")
+        ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, branch_pair=mp.BRANCH_PAIR_FRONT_REAR, purpose="speaker")
 
 
 @pytest.mark.parametrize("preset, candidates, parent", [
@@ -1553,22 +1289,7 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
     assert {spec.graph_scope for spec in specs} == {"candidate"}
 
 
-@pytest.mark.parametrize("stops", [1, 24, 33, 99, 110, 111, 120, 121, 128, 129, 140])
-def test_the_capacity_gate_applies_the_stage1_attempt_budget(stops):
-    base_entries = 3
-    attempts = capture_plan.stage1_plan_max_attempts(base_entries + stops)
-    request = ac.per_driver_at([0] * stops)
-    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
-        with pytest.raises(ac.LateralWalkRefused) as refused:
-            ac.session_lateral_walk(request, externally_positioned=False, base_entries=base_entries)
-        assert refused.value.reason == ac.WALK_OVER_CAPTURE_CAPACITY
-    else:
-        assert len(ac.session_lateral_walk(
-            request, externally_positioned=False, base_entries=base_entries,
-        )) == stops
-
-
-@pytest.mark.parametrize("version", [3, 4])
+@pytest.mark.parametrize("version", [5, 6])
 def test_previous_request_version_requires_restage(version):
     doc = {**ac.summed_at([0]).to_dict(), "artifact_schema_version": version}
     with pytest.raises(ac.LateralWalkRefused) as refused:
@@ -1578,7 +1299,7 @@ def test_previous_request_version_requires_restage(version):
 
 def test_a_stale_banked_stop_keeps_its_registered_refusal_code():
     doc = ac.summed_at([0]).to_dict()
-    doc["stops"][0]["angle_deg"] = ac.MAX_ANGLE_DEG + 1
+    doc["stops"][0]["pose"]["azimuth_deg"] = ac.MAX_ANGLE_DEG + 1
     with pytest.raises(ac.LateralWalkRefused) as refused:
         ac.AngleCaptureRequest.from_mapping(doc)
     assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID

@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    Preset, ProgramPose, preset, run_preset,
+    Pose, Preset, preset, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -68,7 +68,7 @@ _ABORTS = {SeamFailure: "seam_failed"}
 
 def _walk(angles, candidates=("fp-a",)):
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
-        ac.AngleStop(angle, ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
+        ac.AngleStop(Pose(angle, 0), ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
         for angle in angles for candidate in candidates),
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE), program="tournament/express")
 
@@ -174,7 +174,6 @@ def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, read
 @pytest.mark.parametrize("repeats", [1, 2, 3])
 def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidates, repeats):
     request, gate = replace(_walk(angles, candidates), repeats=repeats), AnsweredGate()
-    ac.session_lateral_walk(request, externally_positioned=False, base_entries=0, supported_summed_candidates=True)
     captures = plan_run.prepare_plan_captures(request)
     result, fakes = asyncio.run(_run_gated(request, gate=gate))
     assert result.status == "complete"
@@ -194,8 +193,8 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
 
 def test_skipped_per_driver_work_is_disclosed_without_an_extra_grant():
     request = ac.AngleCaptureRequest(candidates=("fp-a", "base", "fp-b"), stops=(
-        ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),
-        ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-b", purpose="speaker")))
+        ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),
+        ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id="fp-b", purpose="speaker")))
     gate = AnsweredGate()
     result, _ = asyncio.run(_run_gated(request, gate=gate))
     assert result.status == "partial"
@@ -233,7 +232,7 @@ def test_interruption_keeps_records_and_names_unmeasured_work(banked):
 
 
 @pytest.mark.parametrize("plan", [
-    ac.AngleCaptureRequest(candidates=("fp-a",), stops=(ac.AngleStop(20, ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),),
+    ac.AngleCaptureRequest(candidates=("fp-a",), stops=(ac.AngleStop(Pose(20, 0), ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),),
         template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL)),
     ac.per_driver_at([0]),
 ])
@@ -655,7 +654,7 @@ def test_manifest_names_emitted_role_levels():
 
 def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
     request = ac.AngleCaptureRequest(candidates=("base", "fp-a"), stops=(
-        ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(0, ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker")))
+        ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker")))
     result, _ = asyncio.run(_run_gated(request, seams=FakeSeams(graph=_StoppingGraph(stop_after=1))))
     assert result.stopped_at["index"] == 2
     assert result.specs[result.stopped_at["index"]].candidate_id == "fp-a"
@@ -732,15 +731,15 @@ def test_a_baseline_keeps_timing_at_entry_and_reads_no_room(layout):
     request = ac.request_for_preset(program, repeats=2)
     captures = plan_run.prepare_plan_captures(request)
     timing = [capture for capture in captures if capture.spec.graph_scope == "timing"]
-    assert [(capture.stop.angle_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
+    assert [(capture.stop.pose.azimuth_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
     assert {capture.stop.purpose for capture in captures} == {"speaker"}
-    assert [capture.stop.place for capture in captures if capture.spec.program_phase == "measure"] == [
+    assert [capture.stop.pose.place for capture in captures if capture.spec.program_phase == "measure"] == [
         pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
 
 
 def test_a_hand_written_branch_plan_resolves_its_timing_take_as_a_summed_take():
     plan = ac.AngleCaptureRequest(
-        (ac.AngleStop(0, ac.REGIME_BRANCHES, branch_pair="front_rear", purpose="speaker"),), program="speaker/mark",
+        (ac.AngleStop(Pose(0, 0), ac.REGIME_BRANCHES, branch_pair="front_rear", purpose="speaker"),), program="speaker/mark",
     )
     request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict())))
     captures = plan_run.prepare_plan_captures(request, roles_bands=tuple(_roles()))
@@ -765,7 +764,7 @@ def test_a_speaker_preset_walks_its_driver_stops_and_no_summed_stop_names_a_band
 
     assert [(stop.regime, stop.purpose) for stop in request.stops] == [(ac.REGIME_PER_DRIVER, "speaker")] * 3
     captures = plan_run.prepare_plan_captures(request, roles_bands=roles)
-    assert [(capture.stop.angle_deg, capture.spec.program_phase) for capture in captures
+    assert [(capture.stop.pose.azimuth_deg, capture.spec.program_phase) for capture in captures
             if capture.spec.graph_scope == "timing"] == [(0, "timing")]
     room = plan_run.prepare_plan_captures(ac.request_for_preset(run_preset("room", "room_quick"), mover=ac.MOVER_ARM),
                                           roles_bands=roles)
@@ -787,7 +786,7 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
     """The timing take is the named preset's (its ``timing_take`` flag), taken on the base; a plan
     naming no preset takes none."""
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(20, regime, candidate_id=candidate, purpose=purpose),),
+        stops=(ac.AngleStop(Pose(20, 0), regime, candidate_id=candidate, purpose=purpose),),
         candidates=(candidate,), repeats=repeats, program=program,
     )
     captures = plan_run.prepare_plan_captures(request)
@@ -795,8 +794,8 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
     assert tuple(capture.spec.program_phase for capture in captures) == tuple(
         phase for phase in phases for _ in range(phase_repeats[phase]))
     assert [capture.repeat for capture in captures[-repeats:]] == list(range(1, repeats + 1))
-    assert [capture.stop.angle_deg for capture in captures[-repeats:]] == [20] * repeats
-    assert all(capture.stop.angle_deg == 0 for capture in captures[:-repeats])
+    assert [capture.stop.pose.azimuth_deg for capture in captures[-repeats:]] == [20] * repeats
+    assert all(capture.stop.pose.azimuth_deg == 0 for capture in captures[:-repeats])
     baseline = [capture for capture in captures if capture.spec.program_phase == "timing"]
     assert [capture.repeat for capture in baseline] == (list(range(1, repeats + 1)) if scope else [])
     assert all((capture.spec.graph_scope, capture.stop.regime, capture.spec.positions, capture.spec.vertical_deg)
@@ -814,7 +813,7 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     every take banks as reference evidence at its driver (ADR-0360)."""
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
     program = Preset("nearfield/each", tuple(
-        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
+        Pose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
         purposes=("reference",), stimulus=NEAR_FIELD)
     request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_preset(program).to_dict())))
     captures = plan_run.prepare_plan_captures(request)
@@ -925,7 +924,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     starts with its probe again, and in-band re-seats are never
     sent back as drift, though each banks its reading (ADR-0361)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
-        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
+        Pose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 2), (30, 1), (15, 1))), purposes=("reference",), stimulus=NEAR_FIELD))
     readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
 
@@ -944,7 +943,7 @@ def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     """A take its ceiling played under the peak it asked for is kept too quiet:
     a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
     request = ac.request_for_preset(Preset("nearfield/each", (
-        ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purposes=("reference",), stimulus=NEAR_FIELD))
+        Pose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purposes=("reference",), stimulus=NEAR_FIELD))
 
     result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
 
@@ -958,7 +957,7 @@ def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
     lines from the next pose on; the ended round shows each in its facts, lines
     and packet lines, and logs each once (#5714)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
-        ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver)
+        Pose(0, 0, kind="close", distance_m=mm / 1000, driver=driver)
         for driver in ("woofer", "woofer:rear") for mm in (15, 30)), purposes=("reference",), stimulus=NEAR_FIELD))
 
     with caplog.at_level("WARNING", logger=plan_run.logger.name):
@@ -1008,7 +1007,7 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     round, even one with no retries; the page is told which plays are the
     probe, and a pose's takes play at the level its probe solved (ADR-0365)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
-        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
+        Pose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
         for mm, repeats in ((15, 1), (30, 2))), purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
     # The operator presses Redo during each of the first probes, then lets each pose land.
@@ -1039,7 +1038,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
     ends the round with its retries spent."""
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     request = (ac.request_for_preset(Preset("nearfield/each", (
-        ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
+        Pose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
         purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries) if driver else
         replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
     placements = [(66.0, *(80.0,) * repeats)] * 2 if driver else [(70.0,) * repeats, (75.0,) * repeats]
@@ -1111,8 +1110,8 @@ async def test_room_uses_its_first_seat_take_as_the_level_reference():
     for index, (capture, observed, accepted, action, delta) in enumerate(zip(
         captures, (70, 78), (True, False), ("accept", "retake_same"), (None, 8),
     ), 1):
-        assert (capture.spec.program_phase, capture.stop.kind) == ("lateral", "seat")
-        manifest.begin({"index": index, "pose": {"kind": "seat", "seat_offset_m": capture.stop.seat_offset_m},
+        assert (capture.spec.program_phase, capture.stop.pose.kind) == ("lateral", "seat")
+        manifest.begin({"index": index, "pose": {"kind": "seat", "seat_offset_m": capture.stop.pose.seat_offset_m},
                         "candidate_id": capture.stop.candidate_id}, attempt=1, pose_index=index - 1)
         record = {"take_id": str(index), "level_db": -20, "stimulus_id": "room", "phase": "lateral",
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed}}}
@@ -1131,7 +1130,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
     fakes = FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
+        stops=(ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
         level=ac.LevelPolicy(level_db=requested, resolved=ac.ResolvedLevel(75, -15, "1234")),
         level_source=source, program="speaker/mark",
     )
@@ -1179,7 +1178,7 @@ async def test_run_requires_the_chosen_level_in_an_open_session(level):
 
 
 async def test_bass_levels_refuse_when_no_level_is_admissible():
-    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
+    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="bass"),))
     ladder = level_ladder(request, ready_facts(request, commissioning_stop_db_spl=None))
     hold, prepare = Mock(), Mock()
     with pytest.raises(ac.LateralWalkRefused) as refused:
@@ -1305,7 +1304,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
 async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl, stop, tolerance, fader, admitted, window):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
-    request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
+    request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="bass"),))
     facts = ready_facts(request, commissioning_stop_db_spl=stop, stimulus_ids_for=lambda _: ("bass-sweep",))
     anchor_stimulus = {"stimulus_id": "broadband-sweep", "wav_sha256": "anchor-wav"}
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23,
@@ -1351,7 +1350,7 @@ async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl
 async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box, rung_spl):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
-    request = ac.AngleCaptureRequest(tuple(ac.AngleStop(angle, ac.REGIME_SUMMED, purpose="bass") for angle in (0, 20)))
+    request = ac.AngleCaptureRequest(tuple(ac.AngleStop(Pose(angle, 0), ac.REGIME_SUMMED, purpose="bass") for angle in (0, 20)))
     facts = ready_facts(request, stimulus_ids_for=lambda _: ("bass-sweep",))
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record, "reference_volume_db": -22.23, "measured_db_spl": 74.23}))
     rung_spl[-22.23] = {"loudest_half_second_db_spl": 75, "max_window_db_spl": 80, "ceiling_db_spl": 85}
@@ -1381,7 +1380,7 @@ async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box
 async def test_unmeasured_rung_holds_or_persists_its_missing_level(tmp_path, box, rung_spl, monkeypatch, window):
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
-    request = ac.AngleCaptureRequest((ac.AngleStop(0, ac.REGIME_SUMMED, purpose="bass"),))
+    request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="bass"),))
     ladder = preflight_levels(replace(request, levels=(-28.0, -18.0)), ready_facts(request))
     rung_spl[-28] = {"loudest_half_second_db_spl": 66.22, "max_window_db_spl": window, "ceiling_db_spl": 85}
     fakes, gate = FakeSeams(), AnsweredGate()

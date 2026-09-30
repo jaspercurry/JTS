@@ -117,7 +117,7 @@ LEVEL_MISMATCH_DB = 3.0
 
 def driver_level_mismatches(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Each near-field microphone position (a close pose less its driver, which
-    ``pose_place`` counts once per driver) where the drivers of one role play more
+    ``Pose.place`` counts once per driver) where the drivers of one role play more
     than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
     ``unit_drive_db_spl`` is the median, over its kept takes, of the level its
     located sweeps read (ADR-0364) less the stimulus gain and the fader its set

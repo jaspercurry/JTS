@@ -27,7 +27,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from jasper.platform.json_fields import finite_float
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand
+from jasper.audio_measurement.program import RoleBand
 
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
@@ -39,16 +39,15 @@ from .crossover_v2.contracts import (
     MEASURE_KIND_VERIFY,
     POLARITY_NORMAL,
 )
-from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.measure_spec import (
     GRAPH_SCOPE_DRIVERS, MeasureSpec, branch_target_ids_for,
 )
-from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
     BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_SPEAKER,
     BRANCH_PAIR_DRIVERS,
     candidate_identity,
     cleared_layers,
+    Pose,
     Preset,
     plan_poses,
     REGIME_PER_DRIVER,
@@ -58,8 +57,6 @@ from .measurement_programs import (
     validated_branch_pair,
     validated_capture_purpose,
     validated_purposes,
-    pose_place,
-    validated_pose,
     validated_angle,
 )
 from .crossover_v2.spatial import (
@@ -79,13 +76,10 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     AUTO_ADVANCE_COUNTDOWN_S,
     AUTO_ADVANCE_TAP,
     CloudPositionPrompt,
-    announced_capture_indexes,
     position_angle_deg,
     remote_position_prompt,
-    stage1_plan_max_attempts,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
-from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
 __all__ = [
     "REGIME_PER_DRIVER",
@@ -120,10 +114,6 @@ __all__ = [
     "per_driver_at",
     "summed_at",
     "resolve_request",
-    "program_for_stop",
-    "index_phase_map",
-    "announced_indexes",
-    "WALK_REGIME_UNSUPPORTED",
     "WALK_OVER_MOVER_ENVELOPE",
     "WALK_LEVEL_POLICY_INVALID",
     "WALK_SPL_CALIBRATION_REQUIRED",
@@ -139,13 +129,12 @@ __all__ = [
     "WALK_NOTHING_PLAYABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
-    "session_lateral_walk",
 ]
 
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
 LEVEL_SOURCES = ("seat_reference", "program_default", "operator")
-REQUEST_SCHEMA_VERSION = 6
+REQUEST_SCHEMA_VERSION = 7
 REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 
@@ -183,15 +172,6 @@ MOVER_MAX_ELEVATION_DEG: Mapping[str, int] = MappingProxyType({
     MOVER_CONFIRMED: MAX_ELEVATION_DEG,
 })
 
-#: Which composed program object each regime plays, stated as the PHASE whose program it
-#: is. Per-driver is MEASURE's interleaved object; summed is the position groups'
-#: unannounced sweep.
-_REGIME_PROGRAM_PHASE = {
-    REGIME_PER_DRIVER: PHASE_MEASURE,
-    REGIME_SUMMED: PHASE_CLOUD_VERIFY,
-    REGIME_BRANCHES: PHASE_CLOUD_VERIFY,
-}
-
 
 # --------------------------------------------------------------------------- #
 # the request
@@ -214,74 +194,68 @@ def _validated_angle(angle_deg: object) -> int:
 
 @dataclass(frozen=True)
 class AngleStop:
-    """One stop: an angle, and what is played there.
+    """One stop: a pose, and what is played there.
 
-    ``angle_deg`` is a signed WHOLE degree (negative LEFT, positive RIGHT of
-    the design axis); whole degrees because a tenth of a degree claims
-    precision the ~1 m mark placement never had. ``elevation_deg`` is the
-    orthogonal bearing, signed whole degrees, 0 for a stop nobody raised;
-    which mover may ask for non-zero is :data:`MOVER_MAX_ELEVATION_DEG`.
+    The pose's angles are signed WHOLE degrees (negative LEFT, positive RIGHT
+    of the design axis; negative BELOW mark height), because a tenth of a
+    degree claims precision the ~1 m mark placement never had; which mover may
+    ask for a non-zero elevation is :data:`MOVER_MAX_ELEVATION_DEG`.
     ``candidate_id`` is the banked candidate fingerprint this stop measures
-    (``""`` for the program's baseline layer). ``kind``,
-    ``distance_m`` and ``seat_offset_m`` are the pose's category and where it
-    is stated from (:class:`~.measurement_programs.ProgramPose`).
-    ``branch_pair`` is which two targets a ``branches`` stop excites
-    (:data:`~.measurement_programs.BRANCH_PAIRS`). ``driver`` is the one target
-    a stop plays alone (ADR-0366).
+    (``""`` for the program's baseline layer). ``branch_pair`` is which two
+    targets a ``branches`` stop excites
+    (:data:`~.measurement_programs.BRANCH_PAIRS`). A pose that names its
+    driver plays that one target alone (ADR-0366).
     """
 
-    angle_deg: int
+    pose: Pose
     regime: str
-    elevation_deg: int = 0
     candidate_id: str = BASE_CANDIDATE
-    kind: str = POSE_KIND_BEARING
-    distance_m: float | None = None
-    seat_offset_m: tuple[float, float, float] | None = None
     purpose: str | None = None
     #: Every purpose its takes serve, :attr:`purpose` first; a stop that names
     #: only its purpose serves that one (ADR-0383).
     purposes: tuple[str, ...] = ()
-    headline: str = ""
-    detail: str = ""
     stimulus: Mapping[str, Any] | None = None
     branch_pair: str = BRANCH_PAIR_DRIVERS
-    driver: str = ""
 
     def __post_init__(self) -> None:
-        # Normalized back onto the field, so an ``np.int64`` a caller passed
-        # never reaches a record or an equality check as a numpy scalar.
         object.__setattr__(self, "candidate_id", candidate_identity(self.candidate_id, for_spec=True))
-        object.__setattr__(self, "angle_deg", _validated_angle(self.angle_deg))
-        object.__setattr__(
-            self, "elevation_deg", _validated_angle(self.elevation_deg)
-        )
+        _validated_angle(self.pose.azimuth_deg)
+        _validated_angle(self.pose.elevation_deg)
         try:
-            offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
             purpose = validated_capture_purpose(self.purpose, self.regime)
-            purposes = validated_purposes(self.purposes or (purpose,), self.regime, (self.driver,))
+            purposes = validated_purposes(self.purposes or (purpose,), self.regime, (self.pose.driver,))
             if purposes[0] != purpose:
                 raise ValueError(f"a stop's purposes start with its purpose {purpose!r}, got {list(purposes)}")
             object.__setattr__(self, "purposes", purposes)
             validated_branch_pair(self.branch_pair, self.regime)
-            if self.driver and self.candidate_id:
+            if self.pose.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
-        object.__setattr__(self, "seat_offset_m", offset)
-        object.__setattr__(self, "distance_m", distance)
 
     @property
     def plays_summed(self) -> bool:
         """Whether this stop plays a summed graph (the scope a summed sweep
         rides); a stop naming its driver plays that driver alone instead."""
-        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES) and not self.driver
+        return self.regime in (REGIME_SUMMED, REGIME_BRANCHES) and not self.pose.driver
 
-    @property
-    def place(self) -> tuple[object, ...]:
-        return pose_place(
-            self.kind, self.angle_deg, self.elevation_deg,
-            self.distance_m, self.seat_offset_m, self.driver,
-        )
+
+def _stop_pose(**stated: Any) -> Pose:
+    """A stop's pose from its stated fields, refused as a stop is (a
+    :class:`CrossoverV2FlowError`), so a door that takes raw angles or a staged
+    stop refuses a bad pose the way it refuses a bad stop."""
+    try:
+        return Pose(**stated)
+    except ValueError as exc:
+        raise CrossoverV2FlowError(str(exc)) from None
+
+
+def _stated(record: Any, always: tuple[str, ...]) -> dict[str, Any]:
+    """A record's fields that ``always`` names or that differ from their
+    defaults, tuples as lists: a staged stop's shape."""
+    return {f.name: list(value) if isinstance(value, tuple) else value
+            for f in fields(record) for value in (getattr(record, f.name),)
+            if f.name in always or value != f.default}
 
 
 #: The scope a template naming a summed sweep is VALIDATED under. ``MeasureSpec``
@@ -441,14 +415,14 @@ class AngleCaptureRequest:
         self._refuse_beyond_reach(
             POSITION_AXIS_HORIZONTAL,
             MOVER_MAX_ANGLE_DEG[self.mover],
-            tuple(stop.angle_deg for stop in self.stops),
+            tuple(stop.pose.azimuth_deg for stop in self.stops),
         )
         self._refuse_beyond_reach(
             POSITION_AXIS_VERTICAL,
             MOVER_MAX_ELEVATION_DEG[self.mover],
-            tuple(stop.elevation_deg for stop in self.stops),
+            tuple(stop.pose.elevation_deg for stop in self.stops),
         )
-        unreachable = sorted({stop.kind for stop in self.stops if stop.kind != POSE_KIND_BEARING})
+        unreachable = sorted({stop.pose.kind for stop in self.stops if stop.pose.kind != POSE_KIND_BEARING})
         if unreachable and self.externally_positioned:
             raise LateralWalkRefused(
                 WALK_OVER_MOVER_ENVELOPE,
@@ -499,11 +473,8 @@ class AngleCaptureRequest:
             **{key: value for key, value in asdict(self).items() if key != "levels" or value is not None},
             "template": self.template.to_dict(), "level": self.level.to_dict(),
             "stops": [
-                {f.name: candidate_identity(stop.candidate_id) if f.name == "candidate_id" else
-                 list(getattr(stop, f.name)) if isinstance(getattr(stop, f.name), tuple) else getattr(stop, f.name)
-                 for f in fields(stop)
-                 if f.name in ("angle_deg", "regime", "elevation_deg", "candidate_id", "purpose")
-                 or getattr(stop, f.name) != f.default}
+                {**_stated(stop, ("regime", "purpose")), "candidate_id": candidate_identity(stop.candidate_id),
+                 "pose": _stated(stop.pose, ("azimuth_deg", "elevation_deg"))}
                 for stop in self.stops
             ],
             "candidates": list(self.candidates),
@@ -530,7 +501,8 @@ class AngleCaptureRequest:
         if not isinstance(values["stops"], list) or not values["stops"]:
             raise ValueError("stops must be a nonempty list")
         for name, read in (
-            ("stops", lambda entries: tuple(AngleStop(**entry) for entry in entries)),
+            ("stops", lambda entries: tuple(AngleStop(**{**entry, "pose": _stop_pose(**entry["pose"])})
+                                            for entry in entries)),
             ("template", MeasureSpec.from_mapping), ("level", LevelPolicy.from_mapping),
         ):
             try:
@@ -609,22 +581,14 @@ class AngleCaptureRequest:
 # --------------------------------------------------------------------------- #
 
 
-def pose_at_angle(
-    angle_deg: int,
-    elevation_deg: int = 0,
-    *,
-    kind: str = POSE_KIND_BEARING,
-    distance_m: float | None = None,
-    seat_offset_m: tuple[float, float, float] | None = None,
-    driver: str = "",
-) -> CloudPositionPrompt:
-    """The pose at a stated bearing -- the exact inverse of :func:`position_angle_deg`.
+def pose_at_angle(pose: Pose) -> CloudPositionPrompt:
+    """The prompt for a pose at its stated bearing -- the exact inverse of :func:`position_angle_deg`.
 
-    Returns a cm-primary pose rather than carrying the angle onward, since ``offset_cm``
-    is the load-bearing datum of every shipped consumer
+    The prompt carries the pose, and words its bearing as the cm move ``offset_cm``,
+    the load-bearing datum of every shipped consumer
     (:attr:`CloudPositionPrompt.wide`, the evidence sidecar, the attribution stage).
-    ``position_angle_deg(pose_at_angle(d)) == d`` for every whole degree this accepts --
-    that round trip is a test, not a claim. ``elevation_deg`` rides the same
+    That move reads back as the pose's own bearing for every whole degree this
+    accepts -- that round trip is a test, not a claim. The elevation rides the same
     construction on the orthogonal axis (``vertical_offset_cm``,
     :func:`position_elevation_deg`).
 
@@ -636,14 +600,14 @@ def pose_at_angle(
     of the REQUEST and the advance question of the MOVER, reusing
     :func:`remote_position_prompt` (mover-neutral: "keep it 1 m from the speaker and
     pointed at it" is what a taut string does by construction and what an arm does by
-    radius).
+    radius), unless the pose states its own words.
     """
-    degrees = _validated_angle(angle_deg)
-    elevation = _validated_angle(elevation_deg)
-    distance = MARK_DISTANCE_M if distance_m is None else float(distance_m)
+    degrees = _validated_angle(pose.azimuth_deg)
+    elevation = _validated_angle(pose.elevation_deg)
+    distance = MARK_DISTANCE_M if pose.distance_m is None else pose.distance_m
     offset_cm = _offset_cm_at(degrees, distance)
     role = POSITION_ROLE_OFFAX if offset_cm >= WIDE_OFFSET_MIN_CM else POSITION_ROLE_ONAX
-    geometric = CloudPositionPrompt(
+    worded = remote_position_prompt(CloudPositionPrompt(
         # Placeholder, immediately replaced: copy is derived from the geometry.
         headline="",
         detail="",
@@ -652,12 +616,9 @@ def pose_at_angle(
         lateral_sign=_sign_of(degrees),
         vertical_sign=_sign_of(elevation),
         vertical_offset_cm=_offset_cm_at(elevation, distance),
-        kind=kind,
-        distance_m=distance_m,
-        seat_offset_m=seat_offset_m,
-        driver=driver,
-    )
-    return remote_position_prompt(geometric)
+        pose=pose,
+    ))
+    return replace(worded, headline=pose.headline or worded.headline, detail=pose.detail or worded.detail)
 
 
 def _sign_of(degrees: int) -> int:
@@ -665,8 +626,8 @@ def _sign_of(degrees: int) -> int:
 
 
 def _offset_cm_at(degrees: int, distance_m: float = MARK_DISTANCE_M) -> float:
-    """The cm displacement one bearing names, in the mark's own plane. The tangent
-    :func:`position_angle_deg`/:func:`position_elevation_deg` both invert, written once.
+    """The cm displacement one bearing names, in the mark's own plane; a cloud-table
+    row's bearing is read back through its inverse (``capture_plan._pose``).
     """
     return 100.0 * distance_m * math.tan(math.radians(abs(degrees)))
 
@@ -705,10 +666,10 @@ def stop_specs(
         placed.append(replace(
             request.template,
             kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
-            positions=(stop.angle_deg,),
+            positions=(stop.pose.azimuth_deg,),
             sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz,
             sweep_s=None if stop.stimulus else request.template.sweep_s,
-            vertical_deg=stop.elevation_deg,
+            vertical_deg=stop.pose.elevation_deg,
             pose_prompts=(prompt.text,),
             candidate_id=stop.candidate_id or baseline_id,
             graph_scope="candidate_branches" if stop.regime == REGIME_BRANCHES else "candidate",
@@ -732,7 +693,8 @@ def per_driver_at(
     to :class:`AngleStop` UNCOERCED (see :func:`_validated_angle`).
     """
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(a, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER) for a in angles_deg),
+        stops=tuple(AngleStop(_stop_pose(azimuth_deg=a, elevation_deg=0), REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER)
+                    for a in angles_deg),
         mover=mover,
     )
 
@@ -742,7 +704,8 @@ def summed_at(
 ) -> AngleCaptureRequest:
     """Summed captures at each angle -- the system response off the axis."""
     return AngleCaptureRequest(
-        stops=tuple(AngleStop(a, REGIME_SUMMED, purpose=PURPOSE_SPEAKER) for a in angles_deg),
+        stops=tuple(AngleStop(_stop_pose(azimuth_deg=a, elevation_deg=0), REGIME_SUMMED, purpose=PURPOSE_SPEAKER)
+                    for a in angles_deg),
         mover=mover,
     )
 
@@ -790,12 +753,9 @@ def request_for_preset(
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
-                pose.azimuth_deg, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
-                elevation_deg=pose.elevation_deg, candidate_id=candidate, kind=pose.kind,
-                distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,
-                purpose=preset.purpose, purposes=preset.purposes,
-                headline=pose.headline, detail=pose.detail, stimulus=preset.stimulus,
-                branch_pair=preset.branch_pair, driver=pose.driver,
+                pose, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
+                candidate_id=candidate, purpose=preset.purpose, purposes=preset.purposes,
+                stimulus=preset.stimulus, branch_pair=preset.branch_pair,
             )
             for pose in plan_poses(preset, targets, driver)
             for _ in range(pose.repeats)
@@ -820,18 +780,13 @@ def request_for_preset(
 class ResolvedStop:
     """One stop, resolved into what the shipped runner already consumes. ``index`` is the
     1-based capture index the capture drives (``index == accepted_count + 1``).
-    ``program_phase`` names the phase whose composed program object this stop plays;
-    :func:`program_for_stop` turns it into the object -- a program question, never a
-    session-journey one (see the module docstring). ``candidate_id`` is the request
-    stop's, carried so a resolved walk names the variant each stop measures.
+    ``candidate_id`` is the request stop's, carried so a resolved walk names the
+    variant each stop measures; its pose is its prompt's.
     """
 
     index: int
-    angle_deg: int
     regime: str
-    elevation_deg: int
     prompt: CloudPositionPrompt
-    program_phase: str
     screen: Mapping[str, str]
     candidate_id: str = ""
 
@@ -856,64 +811,24 @@ def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) ->
 
 
 def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
-    """The whole request, resolved into indexed stops in running order: pose from angle,
-    program from regime, advance policy from mover -- three independent axes composed
-    once, here.
+    """The whole request, resolved into indexed stops in running order: the prompt from
+    the pose, the advance policy from the mover -- two independent axes composed once,
+    here.
     """
     resolved: list[ResolvedStop] = []
     for offset, stop in enumerate(request.stops):
-        pose = pose_at_angle(
-            stop.angle_deg, stop.elevation_deg, kind=stop.kind,
-            distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m, driver=stop.driver,
-        )
-        pose = replace(pose, preserve_text=bool(stop.headline or stop.detail),
-                       headline=stop.headline or pose.headline, detail=stop.detail or pose.detail)
+        prompt = pose_at_angle(stop.pose)
         resolved.append(
             ResolvedStop(
                 index=offset + 1,
-                angle_deg=stop.angle_deg,
                 regime=stop.regime,
-                elevation_deg=stop.elevation_deg,
-                prompt=pose,
-                program_phase=_REGIME_PROGRAM_PHASE[stop.regime],
-                screen=_screen_policy(request, pose),
+                prompt=prompt,
+                screen=_screen_policy(request, prompt),
                 candidate_id=stop.candidate_id,
             )
         )
     return tuple(resolved)
 
-
-def program_for_stop(
-    stop: ResolvedStop,
-    *,
-    check: ExcitationProgram,
-    measure: ExcitationProgram | None,
-    verify: ExcitationProgram,
-    cloud: ExcitationProgram,
-) -> ExcitationProgram:
-    """The composed program this stop plays -- BY IDENTITY, through the shipped dispatcher.
-    Delegates to :func:`~jasper.active_speaker.crossover_v2.programs.program_for_phase`,
-    so a per-driver stop gets the very same MEASURE object the design-axis anchor played
-    (a different level or sweep would make cross-angle comparison uninterpretable).
-    Requesting a per-driver stop before the CHECK gain solve raises
-    ``NoProgramForPhaseError``, uncaught here.
-    """
-    return program_for_phase(
-        stop.program_phase,
-        check=check,
-        measure=measure,
-        verify=verify,
-        cloud=cloud,
-    )
-
-
-def index_phase_map(request: AngleCaptureRequest) -> dict[int, str]:
-    """Capture index -> the phase whose program runs there, the map
-    :func:`announced_capture_indexes` reads."""
-    return {stop.index: stop.program_phase for stop in resolve_request(request)}
-
-
-WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 
 #: A stop is outside the stated mover's own reach on one AXIS
 #: (:data:`MOVER_MAX_ANGLE_DEG`, :data:`MOVER_MAX_ELEVATION_DEG`). Decided by
@@ -984,7 +899,6 @@ WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 
 WALK_REFUSAL_REASONS = frozenset({
-    WALK_REGIME_UNSUPPORTED,
     REASON_WALK_MOVER_MISMATCH,
     REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     WALK_OVER_MOVER_ENVELOPE,
@@ -1005,10 +919,7 @@ WALK_REFUSAL_REASONS = frozenset({
 
 
 class LateralWalkRefused(CrossoverV2FlowError):
-    """A walk may not run -- either as STATED, or in THIS session. Most reasons are properties
-    of the pair (walk, session), judged only by :func:`session_lateral_walk`;
-    :data:`WALK_OVER_MOVER_ENVELOPE` is a property of the request alone, raised by
-    :class:`AngleCaptureRequest` at statement time. ``reason`` is from
+    """A walk may not run -- either as STATED, or in THIS session. ``reason`` is from
     :data:`WALK_REFUSAL_REASONS`; ``detail`` is the sentence a person reads.
     """
 
@@ -1017,70 +928,3 @@ class LateralWalkRefused(CrossoverV2FlowError):
         self.reason = reason
         self.detail = detail
 
-
-def session_lateral_walk(
-    request: AngleCaptureRequest,
-    *,
-    externally_positioned: bool,
-    base_entries: int,
-    supported_summed_candidates: bool = False,
-) -> tuple[CloudPositionPrompt, ...]:
-    """The poses a measurement session should walk for this request.
-
-    ``externally_positioned`` is the session's own ADVANCE policy
-    (``V2PlanShape.externally_positioned``, never ``positions_gated``);
-    ``base_entries`` is how many captures the session takes that are NOT
-    this walk. Returns one pose per stop, in stop order, never a session phase.
-
-    Raises :class:`LateralWalkRefused` with :data:`WALK_REGIME_UNSUPPORTED`,
-    :data:`REASON_WALK_MOVER_MISMATCH`, or :data:`WALK_OVER_CAPTURE_CAPACITY` --
-    properties of the PAIR (walk, session), so the spool's own document
-    validation cannot make them. The capacity bound asks
-    :func:`stage1_plan_max_attempts`, the same producer the emitted plan
-    sets ``max_attempts`` from.
-    """
-
-    off_regime = sorted({
-        stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER
-    })
-    if off_regime and not (
-        supported_summed_candidates
-        and (all(stop.regime == REGIME_SUMMED for stop in request.stops)
-             or (len(request.stops) == 1 and request.stops[0].regime == REGIME_BRANCHES
-                 and bool(request.stops[0].candidate_id)))
-    ):
-        raise LateralWalkRefused(
-            WALK_REGIME_UNSUPPORTED,
-            f"unsupported capture regimes for this session: {', '.join(off_regime)}",
-        )
-    if request.externally_positioned != externally_positioned:
-        raise LateralWalkRefused(
-            REASON_WALK_MOVER_MISMATCH,
-            f"the walk states mover={request.mover!r} "
-            f"(externally_positioned={request.externally_positioned}) but this "
-            f"session is externally_positioned={externally_positioned}",
-        )
-    entries = base_entries + len(request.stops)
-    attempts = stage1_plan_max_attempts(entries)
-    if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
-        raise LateralWalkRefused(
-            WALK_OVER_CAPTURE_CAPACITY,
-            f"{base_entries} session captures + {len(request.stops)} stops = "
-            f"{entries} entries, needing {attempts} capture blob indexes over a "
-            f"ceiling of {MAX_CAPTURE_PLAN_ATTEMPTS}",
-        )
-    return tuple(stop.prompt for stop in resolve_request(request))
-
-
-def announced_indexes(request: AngleCaptureRequest) -> tuple[int, ...]:
-    """Which stops of this walk play the courtesy prelude. Delegates to
-    :func:`announced_capture_indexes` so "what will the household hear" keeps ONE owner
-    (``courtesy_prelude_for_phase``).
-
-    Today empty for every request -- neither regime's program phase is a session opener.
-    A standalone runner still owes an opening warning: ``_courtesy_beeps_step``
-    (:mod:`jasper.active_speaker.crossover_v2.sweep_spec`) refuses an empty
-    ``announced_captures`` outright, so it must open on an announced capture the way
-    stage 1 does, on CHECK.
-    """
-    return announced_capture_indexes(index_phase_map(request))

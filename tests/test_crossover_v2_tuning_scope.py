@@ -304,8 +304,8 @@ def test_program_baselines_play_every_applied_layer_their_purpose_keeps(tuning_p
     assert candidate.linearization and candidate.blend_correction
     assert candidate.room_correction == snapshot["room_correction"]
     assert candidate.bass_extension.items() >= snapshot["bass_extension"].items()
-    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(0, ac.REGIME_SUMMED, purpose=purpose),
-                                            ac.AngleStop(0, ac.REGIME_SUMMED, purpose=purpose, candidate_id="fp-trial")),
+    request = ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose=purpose),
+                                            ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose=purpose, candidate_id="fp-trial")),
                                      candidates=(mp.BASE_CANDIDATE, "fp-trial"))
     spec, trial = ac.stop_specs(request, baseline_id=candidate.fingerprint,
                                 prompts=[stop.prompt for stop in ac.resolve_request(request)])

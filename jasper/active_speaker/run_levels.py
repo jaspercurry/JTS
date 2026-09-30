@@ -144,7 +144,7 @@ async def run_levels(
     results: list[RunManifest] = []
     try:
         async with hold as held:
-            for pose_index, (_, group) in enumerate(groupby(ladder.plan.stops, key=lambda stop: stop.place), 1):
+            for pose_index, (_, group) in enumerate(groupby(ladder.plan.stops, key=lambda stop: stop.pose.place), 1):
                 stops = tuple(group)
                 prompt = resolve_request(replace(ladder.plan, stops=stops))[0].prompt
                 entry = SimpleNamespace(screen={"title": prompt.headline, "body": prompt.detail,

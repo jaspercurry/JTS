@@ -41,7 +41,7 @@ from jasper.active_speaker.session_volume_plan import (
 )
 
 from ..measurement_programs import (
-    POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT, pose_place,
+    POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT, Pose,
 )
 from ..round_copy import millimetres
 from .contracts import (
@@ -117,7 +117,7 @@ def build_inline_session_spec(
                     "title": prompt.headline, "body": prompt.detail,
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
-    attempts = len(entries) + sum(1 for _ in groupby(prompt.place for prompt in prompts)) * retries_per_pose
+    attempts = len(entries) + sum(1 for _ in groupby(prompt.pose.place for prompt in prompts)) * retries_per_pose
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
     plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,
@@ -129,11 +129,6 @@ def build_inline_session_spec(
 
 
 CAPTURE_PLAN_TARGET = 3
-
-# Total admission attempts a v2 session may spend across its entries, retakes
-# included. A POLICY choice about retries, deliberately not the SANITY ceiling
-# `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`.
-CAPTURE_PLAN_MAX_ATTEMPTS = 8
 
 
 # --------------------------------------------------------------------------- #
@@ -160,11 +155,6 @@ DEFAULT_CLOUD_VERIFY_POSITIONS = 6
 # :data:`CLOUD_VERIFY_POSE_PROMPTS` by ``_min_positions_for_two_wide_offsets``,
 # never a literal, so reordering the prompts moves the floor with them.
 MIN_CLOUD_VERIFY_POSITIONS = 6
-
-# Retake headroom a plan carries above its entry count: the same ABSOLUTE spare
-# the 3-entry flow has, not the same ratio — longer sets get proportionally
-# fewer retakes each, deliberately.
-CLOUD_RETAKE_ALLOWANCE = CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET
 
 
 # The offset class that carries fundamental 1's LF edge: at or past this
@@ -197,7 +187,9 @@ class CloudPositionPrompt:
     to the design axis and nothing about how the microphone got there. ``wide``
     is computed from it, so the ~30 cm-class guarantee cannot be voided by
     editing copy alone. ``role`` names the question the position answers
-    (:data:`POSITION_ROLES`).
+    (:data:`POSITION_ROLES`). ``pose`` is where the move puts the microphone
+    (ADR-0366 §1); the bearings :func:`position_angle_deg` and
+    :func:`position_elevation_deg` state are its own.
     """
 
     headline: str
@@ -217,20 +209,7 @@ class CloudPositionPrompt:
     #: distances at once (the second geometry-retake rung goes 75 cm sideways
     #: AND 30 cm up). ``0`` means the row asks for no raise.
     vertical_offset_cm: float = 0.0
-    #: The pose's category (ADR-0260); a ``seat`` row states
-    #: ``seat_offset_m`` ``(right, forward, up)`` from the head centre, a
-    #: ``close`` or ``behind`` row its own ``distance_m``; ``None`` is the mark.
-    kind: str = POSE_KIND_BEARING
-    distance_m: float | None = None
-    seat_offset_m: tuple[float, float, float] | None = None
-    preserve_text: bool = False
-    #: The one driver a near-field row sits at and plays (ADR-0360).
-    driver: str = ""
-
-    @property
-    def place(self) -> tuple[object, ...]:
-        return pose_place(self.kind, position_angle_deg(self), position_elevation_deg(self),
-                          self.distance_m, self.seat_offset_m, self.driver)
+    pose: Pose = Pose(0, 0)
 
     @property
     def wide(self) -> bool:
@@ -241,7 +220,7 @@ class CloudPositionPrompt:
     def at_mark(self) -> bool:
         """Whether the pose asks for no move at all — on EITHER axis."""
         return (
-            self.kind == POSE_KIND_BEARING
+            self.pose.kind == POSE_KIND_BEARING
             and float(self.offset_cm) == 0.0
             and float(self.vertical_offset_cm) == 0.0
         )
@@ -249,7 +228,7 @@ class CloudPositionPrompt:
     @property
     def mark_distance_m(self) -> float:
         """The reference length this pose's bearings are derived against."""
-        return MARK_DISTANCE_M if self.distance_m is None else float(self.distance_m)
+        return MARK_DISTANCE_M if self.pose.distance_m is None else self.pose.distance_m
 
     @property
     def text(self) -> str:
@@ -298,7 +277,9 @@ def _pose(
 
     ``template`` carries a ``{d}`` slot filled by
     :func:`format_position_distance`, so a row's stated distance and its
-    ``offset_cm`` cannot drift apart. Refuses at import time below
+    ``offset_cm`` cannot drift apart. Its pose's bearing is ``atan(offset /
+    mark distance)`` in whole degrees, the tangent ``angle_capture.pose_at_angle``
+    inverts: ±7° at 12 cm, ±22° at 40 cm. Refuses at import time below
     :data:`MIN_CLOUD_OFFSET_CM`, with ``ValueError`` rather than
     :class:`CrossoverV2FlowError` because the table is built while this module
     is still executing and that class is not defined yet.
@@ -313,6 +294,8 @@ def _pose(
             f"cloud position role must be one of {POSITION_ROLES}, got {role!r}"
         )
     vertical_sign = _VERTICAL_SIGNS.get(str(bearing.get("updown") or ""), 0)
+    lateral_sign = _LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0)
+    degrees = round(math.degrees(math.atan2(float(offset_cm) / 100.0, MARK_DISTANCE_M)))
     return CloudPositionPrompt(
         headline=template.format(
             d=format_position_distance(offset_cm), **bearing
@@ -323,9 +306,10 @@ def _pose(
         # Every row names exactly one direction word, so its single
         # ``offset_cm`` is the one displacement it moved and the other axis
         # keeps the neutral 0.
-        lateral_sign=_LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0),
+        lateral_sign=lateral_sign,
         vertical_sign=vertical_sign,
         vertical_offset_cm=offset_cm if vertical_sign else 0.0,
+        pose=Pose(lateral_sign * degrees, vertical_sign * degrees),
     )
 
 
@@ -471,14 +455,11 @@ if DEFAULT_CLOUD_VERIFY_POSITIONS != 1 + len(CLOUD_VERIFY_POSE_PROMPTS):
 
 
 def position_angle_deg(prompt: CloudPositionPrompt) -> int:
-    """The signed horizontal bearing of one lateral pose, in WHOLE degrees.
+    """The signed horizontal bearing of one lateral pose, in WHOLE degrees: its
+    pose's, so ``-7`` is 7° LEFT of the design axis. Whole degrees because the
+    offsets are tape-measure distances to a mark placed "about" 1 m out.
 
-    ``atan(offset / mark distance)`` in the mark's own plane, signed by
-    :data:`_LATERAL_SIGNS`, so ``-7`` is 7° LEFT of the design axis; the shipped
-    offsets give ±7° (12 cm) and ±22° (40 cm). Whole degrees because the offsets
-    are tape-measure distances to a mark placed "about" 1 m out.
-
-    #2932 is open: this is a TANGENT construction, which puts the capsule at
+    #2932 is open: a bearing is a TANGENT construction, which puts the capsule at
     ``mark / cos(θ)`` rather than a constant radius — treat the bearing as sound
     and the equidistance claim as unverified.
 
@@ -502,23 +483,16 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
             "declares no side, so it has no signed bearing — build it through "
             "_pose (or set lateral_sign) rather than letting it read as 0°"
         )
-    radians = math.atan2(float(prompt.offset_cm) / 100.0, prompt.mark_distance_m)
-    return int(round(prompt.lateral_sign * math.degrees(radians)))
+    return prompt.pose.azimuth_deg
 
 
 def position_elevation_deg(prompt: CloudPositionPrompt) -> int:
-    """The signed ELEVATION of one pose above mark height, in WHOLE degrees.
-
-    ``atan(vertical_offset_cm / MARK_DISTANCE_M)``, over the row's own
-    ``vertical_offset_cm`` rather than ``offset_cm`` because a compound row
-    moves both ways at once. Refuses nothing: a row asking for no raise signs
-    ``0``, which is true of it — an unstated elevation has an honest zero where
-    an unstated bearing does not.
+    """The signed ELEVATION of one pose above mark height, in WHOLE degrees: its
+    pose's. Refuses nothing: a row asking for no raise signs ``0``, which is true
+    of it — an unstated elevation has an honest zero where an unstated bearing
+    does not.
     """
-    if prompt.vertical_sign == 0:
-        return 0
-    radians = math.atan2(float(prompt.vertical_offset_cm) / 100.0, prompt.mark_distance_m)
-    return int(round(prompt.vertical_sign * math.degrees(radians)))
+    return prompt.pose.elevation_deg
 
 
 def position_geometry(prompt: CloudPositionPrompt) -> PositionGeometry:
@@ -542,10 +516,10 @@ def position_geometry(prompt: CloudPositionPrompt) -> PositionGeometry:
         axis=POSITION_AXIS_HORIZONTAL,
         degrees=None if unsigned else position_angle_deg(prompt),
         # A seat pose is stated from the head, so no mark distance is true of it.
-        mark_distance_m=None if prompt.kind == POSE_KIND_SEAT else prompt.mark_distance_m,
+        mark_distance_m=None if prompt.pose.kind == POSE_KIND_SEAT else prompt.mark_distance_m,
         vertical_deg=elevation,
-        kind=prompt.kind,
-        seat_offset_m=prompt.seat_offset_m,
+        kind=prompt.pose.kind,
+        seat_offset_m=prompt.pose.seat_offset_m,
     )
 
 
@@ -556,26 +530,27 @@ def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
     everything downstream reads exactly what Full's walk records. A raise also
     states its LENGTH, because the person holding the microphone has a tape
     measure and no protractor. It names the mark distance beside it since that
-    is the standoff :func:`position_elevation_deg` derives the degrees against
+    is the standoff the height is derived at
     (#2932: a bearing puts the capsule further out than that).
     """
-    if prompt.kind == POSE_KIND_SEAT:
-        return replace(prompt, headline=_seat_headline(prompt.seat_offset_m), detail=_SEAT_DETAIL)
+    pose = prompt.pose
+    if pose.kind == POSE_KIND_SEAT:
+        return replace(prompt, headline=_seat_headline(pose.seat_offset_m), detail=_SEAT_DETAIL)
     distance = prompt.mark_distance_m
-    if prompt.kind == POSE_KIND_CLOSE and prompt.driver:
+    if pose.kind == POSE_KIND_CLOSE and pose.driver:
         return replace(
             prompt,
             headline=(f"Put the microphone {millimetres(distance)} from the centre of the "
-                      f"{measurement_target_name(prompt.driver)}, on its axis."),
+                      f"{measurement_target_name(pose.driver)}, on its axis."),
             detail="Measured from the dust cap, pointed straight at it.",
         )
-    if prompt.kind == POSE_KIND_CLOSE:
+    if pose.kind == POSE_KIND_CLOSE:
         return replace(
             prompt,
             headline=f"Put the microphone {distance:g} m from the baffle on the design axis.",
             detail="Close enough that the room drops out of the read; pointed at the speaker.",
         )
-    if prompt.kind == POSE_KIND_BEHIND:
+    if pose.kind == POSE_KIND_BEHIND:
         return replace(
             prompt,
             headline=f"Put the microphone {distance:g} m behind the cabinet, on the axis.",
@@ -709,17 +684,6 @@ def resolve_plan_shape(
     return V2PlanShape(cloud_measure_positions=n, cloud_verify_positions=m)
 
 
-def stage1_plan_max_attempts(capture_target: int) -> int:
-    """The admission budget a stage-1 plan of ``capture_target`` entries emits.
-
-    Derived from the entries a plan actually emits.
-    """
-    return (
-        capture_target
-        + CLOUD_RETAKE_ALLOWANCE
-    )
-
-
 def _validated_cloud_counts(
     *,
     cloud_measure_positions: int,
@@ -752,19 +716,6 @@ def _validated_cloud_counts(
 DEFAULT_INDEX_PHASE_MAP: Mapping[int, str] = MappingProxyType(
     {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
 )
-
-
-def announced_capture_indexes(index_phase: Mapping[int, str]) -> tuple[int, ...]:
-    """The 1-based captures of this plan that play the courtesy prelude.
-
-    The prelude announces a SESSION rather than a capture
-    (:func:`~.programs.courtesy_prelude_for_phase`). Derived from the same
-    ``index -> phase`` map the plan's entries are built from.
-    """
-    return tuple(
-        index for index, phase in sorted(index_phase.items())
-        if courtesy_prelude_for_phase(phase)
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -851,7 +802,7 @@ def pose_batch_screens(
         return {}
     screens = {}
     for _pose, group in groupby(
-        enumerate(prompts), key=lambda row: row[1].place,
+        enumerate(prompts), key=lambda row: row[1].pose.place,
     ):
         offsets = [offset for offset, _prompt in group]
         for ordinal, offset in enumerate(offsets, 1):
@@ -879,7 +830,8 @@ def position_screen_keys(
         POSITION_DEG_KEY: str(degrees),
         **({POSITION_VERTICAL_DEG_KEY: str(vertical)} if vertical else {}),
         POSITION_ROLE_KEY: role,
-        **({POSITION_KIND_KEY: prompt.kind} if prompt is not None and prompt.kind != POSE_KIND_BEARING else {}),
+        **({POSITION_KIND_KEY: prompt.pose.kind} if prompt is not None and prompt.pose.kind != POSE_KIND_BEARING
+           else {}),
     }
 
 

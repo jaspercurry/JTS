@@ -48,7 +48,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, Cro
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
+    RUNNABLE_PROGRAMS, Pose, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
 )
 from jasper.active_speaker.preflight import PreflightReport
 from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
@@ -523,7 +523,7 @@ def test_trial_runs_the_program_its_document_states(
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     expected = run_preset(program, layout)
     assert (plan.program, plan.layout, plan.mover, plan.candidates) == (program, layout, mover, ("base", fingerprint))
-    assert [(stop.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
+    assert [(stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
         (pose.place, candidate, "summed")
         for pose in expected.poses for _ in range(pose.repeats) for candidate in ("", fingerprint)
     ]
@@ -585,7 +585,7 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
     assert code == 0
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert (plan.program, plan.mover) == ("room/seat", "human")
-    assert [(stop.kind, stop.seat_offset_m) for stop in plan.stops] == [
+    assert [(stop.pose.kind, stop.pose.seat_offset_m) for stop in plan.stops] == [
         ("seat", (0, 0, 0)), ("seat", (0.3, 0, 0)), ("seat", (0, 0.3, 0)),
     ]
 
@@ -608,7 +608,7 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert code == 0
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == ([] if candidates is None else [candidates])
-    assert (plan["artifact_schema_version"], body["run_id"]) == (6, "run-1")
+    assert (plan["artifact_schema_version"], body["run_id"]) == (7, "run-1")
     assert plan["level"]["level_db"] == -25
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["subject"] == ({"candidate_ids": [candidates]} if candidates else {})
@@ -667,7 +667,7 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
     assert code == 0
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.repeats == 1
-    assert Counter(stop.place for stop in plan.stops) == {
+    assert Counter(stop.pose.place for stop in plan.stops) == {
         pose.place: pose.repeats if repeats is None else repeats for pose in selected.poses
     }
     # The answer counts takes per pose and configuration (ADR-0389).
@@ -1465,7 +1465,7 @@ def test_run_refusals_keep_their_exit_and_code(
         monkeypatch.setattr(v2host, "resolve_conductor_context", resolve)
     flags = ["--poses", "0", "--mover", "arm"]
     if source == "plan":
-        plan = AngleCaptureRequest((AngleStop(0, "summed", purpose="speaker"),), mover="arm")
+        plan = AngleCaptureRequest((AngleStop(Pose(0, 0), "summed", purpose="speaker"),), mover="arm")
         path = tmp_path / "arm-plan.json"
         path.write_text(json.dumps(plan.to_dict()))
         flags = ["--plan", str(path)]

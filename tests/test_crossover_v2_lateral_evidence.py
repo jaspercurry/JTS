@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import pose_curve
@@ -161,7 +162,7 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
 @pytest.mark.parametrize("purpose", ["speaker", "room"])
 def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     request = ac.AngleCaptureRequest((
-        ac.AngleStop(22, ac.REGIME_SUMMED, candidate_id="trial", purpose=purpose),
+        ac.AngleStop(Pose(22, 0), ac.REGIME_SUMMED, candidate_id="trial", purpose=purpose),
     ), candidates=("trial",))
     captures = prepare_plan_captures(request, roles_bands=_roles())
     plan = capture_plan.build_inline_session_spec(
@@ -176,13 +177,6 @@ def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     program = build_verify_program(FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()))
     assert entry.duration_ms == capture_plan._program_duration_ms(program) + capture_plan.CAPTURE_ENTRY_MARGIN_MS
     assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
-
-
-@pytest.mark.parametrize("capture_target", [2, 3, 2 + LATERAL_COUNT, 3 + LATERAL_COUNT])
-def test_the_retry_budget_grows_with_lateral_entries(capture_target):
-    assert capture_plan.stage1_plan_max_attempts(capture_target) == (
-        capture_target + capture_plan.CLOUD_RETAKE_ALLOWANCE
-    )
 
 
 def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
@@ -301,11 +295,7 @@ def test_the_evidence_basis_is_a_bounded_log_grid():
 
 def _angle_prompts(angles=(0, 7, -7, 22, -22)):
     """The poses an operator's staged walk composes to, through the seam."""
-    return ac.session_lateral_walk(
-        ac.per_driver_at(list(angles)),
-        externally_positioned=False,
-        base_entries=3,
-    )
+    return tuple(stop.prompt for stop in ac.resolve_request(ac.per_driver_at(list(angles))))
 
 
 @pytest.mark.parametrize(

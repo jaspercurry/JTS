@@ -365,13 +365,14 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
 def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery):
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+    from jasper.active_speaker.measurement_programs import Pose
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
 
     plan = SimpleNamespace(needs_recovery=True)
     calls = []
     real_prepare = v2host.prepare_v2_session
-    body = {"plan": AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),)).to_dict()}
+    body = {"plan": AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),)).to_dict()}
 
     def recover(run_async, camilla_factory):
         assert run_async is correction_runtime.run_async

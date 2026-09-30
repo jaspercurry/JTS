@@ -111,12 +111,12 @@ def _shared(values: Iterable[Any]) -> Any:
 def _plan_envelope(plan: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """A run's subject and parameters, from its resolved plan; a staged run has no round yet (ADR-0389).
     A preset spreads its repeats over duplicate stops, so takes per pose and configuration are counted."""
-    takes = Counter((stop.place, stop.candidate_id, stop.regime) for stop in plan.stops)
+    takes = Counter((stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops)
     return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
             {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
              "levels": list(plan.levels) if plan.levels else None,
              "repeats": _shared(count * plan.repeats for count in takes.values()),
-             "driver": _shared(stop.driver for stop in plan.stops if stop.driver)})
+             "driver": _shared(stop.pose.driver for stop in plan.stops if stop.pose.driver)})
 
 
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:

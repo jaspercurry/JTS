@@ -18,7 +18,7 @@ from jasper.platform.json_fields import finite_float
 
 from ..measurement_analysis import analyzed_measurements
 from ..run_manifest import kept_measurements
-from ..measurement_programs import PURPOSE_ROOM, validated_pose
+from ..measurement_programs import PURPOSE_ROOM, Pose
 from .journey import PHASE_LATERAL
 from .pose_curve import WINDOW_UNGATED
 from .position_cycle import parse_curve_magnitude, take_curve
@@ -49,7 +49,8 @@ class SeatSelection:
 
 def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
     try:
-        offset, _ = validated_pose(row.pose_kind, record.get("seat_offset_m"), record.get("mark_distance_m"))
+        offset = Pose(0, 0, kind=row.pose_kind, seat_offset_m=record.get("seat_offset_m"),
+                      distance_m=record.get("mark_distance_m")).seat_offset_m
     except (ValueError, TypeError):
         return None
     if offset is None and finite_float(record.get("position_deg")) is None:

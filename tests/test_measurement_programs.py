@@ -338,7 +338,7 @@ _NEARFIELD, _DRIVERS = mp.run_preset("nearfield"), mp.run_preset("drivers")
     (_NEARFIELD, _CARDIOID, "woofer:rear", tuple(("woofer:rear", distance) for _, distance in _WOOFER_STEP)),
     (_DRIVERS, _CARDIOID, "", (("woofer", None), ("woofer:rear", None), ("tweeter", None))),
     (_DRIVERS, _CARDIOID, "tweeter", (("tweeter", None),)),
-    (replace(_DRIVERS, poses=tuple(mp.ProgramPose(0, 0, driver=driver) for driver in ("woofer:rear", "tweeter"))),
+    (replace(_DRIVERS, poses=tuple(mp.Pose(0, 0, driver=driver) for driver in ("woofer:rear", "tweeter"))),
      _CARDIOID, "", (("woofer:rear", None), ("tweeter", None))),
     (mp.run_preset("nearfield", poses='[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", '
                                        '"distance_m": 0.02, "driver": "woofer"}]'), _CARDIOID, "", (("woofer", 0.02),)),
@@ -349,7 +349,7 @@ def test_a_presets_driver_role_plays_each_declared_output(row, targets, driver, 
     pose, plays what it names; an undeclared role keeps its name for preflight to refuse;
     --driver narrows to one output (ADR-0366 §6)."""
     request = ac.request_for_preset(row, targets=targets, driver=driver)
-    assert tuple((stop.driver, stop.distance_m) for stop in request.stops) == walked
+    assert tuple((stop.pose.driver, stop.pose.distance_m) for stop in request.stops) == walked
 
 
 @pytest.mark.parametrize("row,targets,driver,offered", [
@@ -383,12 +383,11 @@ def test_a_near_field_run_resolves_as_reference_evidence(program_id, layout, pos
     row = mp.run_preset(program_id, layout, poses)
     assert (row.layout, tuple((pose.driver, pose.distance_m) for pose in row.poses)) == resolved
     assert (row.purpose, row.regime, row.stimulus, mp.run_purpose(row.preset)) == (
-        mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, {"band_hz": [20.0, 2000.0], "sweep_s": 8.0, "gap_s": 0.5},
-        mp.PURPOSE_REFERENCE)
+        mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, _bundled_config()["stimuli"]["near_field"], mp.PURPOSE_REFERENCE)
 
 
 def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
-    return mp.ProgramPose(
+    return mp.Pose(
         0, 0, repeats,
         kind=mp.POSE_KIND_SEAT, seat_offset_m=(right_m, forward_m, up_m),
     )
@@ -398,12 +397,12 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
     ("poses", "moves", "captures"),
     [
         (
-            (mp.ProgramPose(0, 0, 1), mp.ProgramPose(0, 0, 1), mp.ProgramPose(10, 0, 1)),
+            (mp.Pose(0, 0, 1), mp.Pose(0, 0, 1), mp.Pose(10, 0, 1)),
             2,
             3,
         ),
         (
-            (mp.ProgramPose(0, 0, 4), mp.ProgramPose(0, 0, 1), mp.ProgramPose(10, 0, 2)),
+            (mp.Pose(0, 0, 4), mp.Pose(0, 0, 1), mp.Pose(10, 0, 2)),
             2,
             7,
         ),
@@ -530,12 +529,12 @@ def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, support
 
 
 def _program_with(purpose, regime, kind, distance_m, driver):
-    return mp.Preset("t/t", (mp.ProgramPose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
+    return mp.Preset("t/t", (mp.Pose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
                                  purposes=(purpose,), regime=regime)
 
 
 def _stop_with(purpose, regime, kind, distance_m, driver):
-    return ac.AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose=purpose, driver=driver)
+    return ac.AngleStop(mp.Pose(0, 0, kind=kind, distance_m=distance_m, driver=driver), regime, purpose=purpose)
 
 
 @pytest.mark.parametrize("door,refusal", [(_program_with, ValueError), (_stop_with, CrossoverV2FlowError)])
@@ -579,8 +578,8 @@ def test_a_near_field_run_measures_no_candidate(candidates, accepted) -> None:
 
 @pytest.mark.parametrize("stops,expected", [
     (mp.run_preset("drivers"), [("lateral", ("woofer",)), ("lateral", ("woofer:rear",)), ("lateral", ("tweeter",))]),
-    ((ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
-      ac.AngleStop(0, mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE, driver="woofer")),
+    ((ac.AngleStop(mp.Pose(0, 0), mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_SPEAKER),
+      ac.AngleStop(mp.Pose(0, 0, driver="woofer"), mp.REGIME_PER_DRIVER, purpose=mp.PURPOSE_REFERENCE)),
      [("check", ()), ("timing", ()), ("measure", ()), ("lateral", ("woofer",))]),
 ], ids=["one-driver-preset", "beside-a-two-driver-stop"])
 def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected) -> None:
@@ -640,7 +639,8 @@ def test_rear_behind_places_the_microphone_behind_the_cabinet(preset, regime, pa
 def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:
     """A behind pose carries no seat offset; its distance validates like a
     close pose's (issue #5330)."""
-    assert mp.validated_pose(mp.POSE_KIND_BEHIND, None, 0.1) == (None, 0.1)
+    pose = mp.Pose(0, 0, kind=mp.POSE_KIND_BEHIND, distance_m=0.1)
+    assert (pose.seat_offset_m, pose.distance_m) == (None, 0.1)
 
 
 def test_run_preset_resolves_rear_layouts_and_custom_bearings() -> None:
