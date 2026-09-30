@@ -140,7 +140,7 @@ def test_the_exempt_modules_are_real_and_in_the_menu(module_name: str) -> None:
 
 
 @pytest.mark.parametrize("fields", [
-    {}, {"code": "measurement_candidate_speaker_mismatch"},
+    {}, {"code": "a_code"},
     {"next_action": {"id": "apply_matching_room_layer"}},
     {"code": "measurement_candidate_speaker_mismatch",
      "next_action": {"id": "apply_matching_room_layer"}},
@@ -151,6 +151,25 @@ def test_the_record_status_and_the_exit_code_always_agree(code, status, fields, 
     assert json.loads(capsys.readouterr().out) == {
         "status": status, "reason": "a_slug", "detail": {}, **fields,
     }
+
+
+@pytest.mark.parametrize(("reason", "code", "action"), [
+    ("round_not_found", None, "name_round"),
+    ("evidence_unreadable", "round_not_found", "name_round"),
+    ("evidence_unreadable", "a_code", "review_evidence"),
+    ("a_slug", "a_code", None),
+])
+def test_a_refusal_carries_the_registry_action_of_its_code_else_its_reason(reason, code, action, capsys):
+    _refusal.failed(_refusal.EXIT_REFUSED, reason, {}, code=code)
+    assert (json.loads(capsys.readouterr().out).get("next_action") or {}).get("id") == action
+
+
+@pytest.mark.parametrize("main, argv", [
+    (round_views.main, ["frequency"]), (crossover_prescriber.main, ["contract", "--round"]),
+], ids=["round-views", "contract"])
+def test_a_missing_round_refuses_with_its_registry_action(main, argv, tmp_path, capsys):
+    assert main([*argv, str(tmp_path / "no-such-round")]) == _refusal.EXIT_UNREADABLE
+    assert json.loads(capsys.readouterr().out)["next_action"]["id"] == "name_round"
 
 
 def test_the_failing_codes_are_exactly_one_two_three() -> None:

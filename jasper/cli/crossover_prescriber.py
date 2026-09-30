@@ -45,7 +45,6 @@ from jasper.active_speaker.crossover_v2.prescription_document import (
     judge_prescription_document, preview_prescription_document, parse_vary_axis, preview_kind,
     read_prescription_document, saved_base, vary_document,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.rear_preview import summary_rows
 from jasper.active_speaker.crossover_v2.round_inputs import (
     banked_round_of, latest_banked_rounds, recent_round_sessions, round_inputs, prescription_sources, resolve_set, RoundInputs,
@@ -202,8 +201,7 @@ def _evidence_code(exc: Exception) -> str:
 def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
     if exit_code is None:
         exit_code = {REASON_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
-    return failed(exit_code, refusal.code, refusal.failure_detail(), code=refusal.code,
-                  next_action=refusal_copy_for(refusal.code)[1])
+    return failed(exit_code, refusal.code, refusal.failure_detail(), code=refusal.code)
 
 
 def _cmd_document(args: argparse.Namespace) -> int:

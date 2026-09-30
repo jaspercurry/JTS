@@ -25,6 +25,7 @@ from jasper.active_speaker.crossover_v2.room_views import incumbent_room
 from jasper.active_speaker.round_bank import RoundBankError
 from jasper.audio_measurement import evidence_reasons
 from jasper.bass_extension.dynamic import DYNAMIC_BASS_REFUSAL_REASONS
+from jasper.cli import _refusal, audition, mic_calibration
 from jasper.cli.round_views._common import refused_by_name
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
@@ -188,13 +189,17 @@ _FORWARDED_CODES = {
     *(code.value for code in CommissioningEvidenceStoreErrorCode), *DYNAMIC_BASS_REFUSAL_REASONS,
     corner_admissibility.FC_REJECT_BELOW_DECLARED_FLOOR, corner_admissibility.FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
 }
-#: Each helper that names a code in a gap or a refusal, and the keyword that carries it (else its first argument).
-#: ``BlendPrescriptionRefused`` is what ``refuse`` raises and what each judge's ``*PrescriptionRefused`` aliases.
-_CODE_KEYWORDS: dict[Callable[..., object], str | None] = {
-    evidence_reasons.EvidenceUnavailable: None, evidence_reasons.unavailable: None, refused_by_name: None,
-    _prescription_common.refuse: None, _prescription_common.BlendPrescriptionRefused: None,
-    prescription_document.PrescriptionDocumentRefused: None, RoundBankError: None,
-    refusal_copy.CrossoverV2Refused: "code",
+#: Each helper that names a code in a gap or a refusal: the position of the argument that carries it, and the keywords
+#: that do. ``BlendPrescriptionRefused`` is what ``refuse`` raises and what each judge's ``*PrescriptionRefused``
+#: aliases; ``failed`` and ``refused`` are every CLI's refusal record.
+_CODE_ARGUMENTS: dict[Callable[..., object], tuple[int | None, tuple[str, ...]]] = {
+    **dict.fromkeys((
+        evidence_reasons.EvidenceUnavailable, evidence_reasons.unavailable, refused_by_name,
+        _prescription_common.refuse, _prescription_common.BlendPrescriptionRefused,
+        prescription_document.PrescriptionDocumentRefused, RoundBankError,
+    ), (0, ())),
+    refusal_copy.CrossoverV2Refused: (None, ("code",)),
+    _refusal.failed: (1, ("reason", "code")), _refusal.refused: (0, ("reason", "code")),
 }
 
 
@@ -217,17 +222,16 @@ def _named_codes(node: ast.expr, namespace: dict[str, object]) -> set[str]:
     return {code} if isinstance(code, str) else set()
 
 
-def _code_argument(call: ast.Call, keyword: str | None) -> ast.expr | None:
-    if keyword is None:
-        return call.args[0] if call.args else None
-    return next((each.value for each in call.keywords if each.arg == keyword), None)
+def _code_arguments(call: ast.Call, position: int | None, keywords: tuple[str, ...]) -> list[ast.expr]:
+    positional = [] if position is None else call.args[position:position + 1]
+    return [*positional, *(each.value for each in call.keywords if each.arg in keywords)]
 
 
 def _codes_raised_by_name() -> dict[str, str]:
     """Each code that a raise site or a gap names outright, and the first place it does."""
     root = pathlib.Path(jasper.__file__).parent
     trees = {path: ast.parse(path.read_text(encoding="utf-8")) for path in sorted(root.rglob("*.py"))}
-    names = {entry.__name__ for entry in _CODE_KEYWORDS}
+    names = {entry.__name__ for entry in _CODE_ARGUMENTS}
     # ``AlignmentPrescriptionRefused = BlendPrescriptionRefused``: an alias raises the same codes.
     names |= {target.id for tree in trees.values() for node in tree.body
               if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in names
@@ -242,22 +246,24 @@ def _codes_raised_by_name() -> dict[str, str]:
         module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
         namespace = vars(import_module(module))
         for call in calls:
-            entry = next((each for each in _CODE_KEYWORDS if _resolved(call.func, namespace) is each), None)
-            argument = None if entry is None else _code_argument(call, _CODE_KEYWORDS[entry])
-            for code in () if argument is None else _named_codes(argument, namespace):
+            entry = next((each for each in _CODE_ARGUMENTS if _resolved(call.func, namespace) is each), None)
+            arguments = [] if entry is None else _code_arguments(call, *_CODE_ARGUMENTS[entry])
+            for code in {code for argument in arguments for code in _named_codes(argument, namespace)}:
                 raised.setdefault(code, f"{module}:{call.lineno}")
     return raised
 
 
 def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action():
     """Guards a recurrence: the scan behind #5928 found dozens of codes raised through the gap
-    shape, the evidence exception, the prescription refusals or the round bank with no registry
-    row, so a reader got a code with neither copy nor a next action. A code that reaches a gap
-    or a refusal through a variable is listed above."""
+    shape, the evidence exception, the prescription refusals, the round bank or a CLI's
+    ``failed()`` and ``refused()`` with no registry row, so a reader got a code with neither
+    copy nor a next action. A code that reaches a gap or a refusal through a variable is listed
+    above."""
     raised = _codes_raised_by_name()
     assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED, "alignment_no_crossover_region",
             "driver_filter_malformed", "prescription_polarity_invalid", "composition_base_required",
-            "already_banked", "baseline_config_validation_failed",
+            "already_banked", "baseline_config_validation_failed", "walk_refused", "not_root",
+            mic_calibration.REFUSE_NONE_REGISTERED, audition.NOT_RESTORED,
             } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias and a keyword"
     lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
                if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}

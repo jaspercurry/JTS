@@ -75,7 +75,7 @@ CASES = {
         ["voice", "--provider", "grok"], 1, {"reason": "key_unset"},
     ),
     "unreadable_keys_file_exits_2_before_any_write": Case(
-        ["voice", "--provider", "gemini"], 2, {"reason": "unreadable"}, keys=b"\xff\xfe\n",
+        ["voice", "--provider", "gemini"], 2, {"reason": "settings_unreadable"}, keys=b"\xff\xfe\n",
     ),
     "discovered_model_no_env_file_can_hold_is_refused": Case(
         ["voice", "--model", "gpt-realtime\nbroken"], 1, {"reason": "unusable_value"},

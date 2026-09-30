@@ -33,6 +33,7 @@ from jasper.active_speaker.safe_playback import stop_safe_playback_session
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.active_speaker.measurement_programs import program_entries
+from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
@@ -1040,7 +1041,7 @@ def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[s
         # Mirrors jasper-crossover-prescriber's ``base: saved`` read: a corrupt or
         # unreadable on-disk topology/applied-profile file fails closed as a
         # typed refusal instead of an unhandled exception reaching the client.
-        return PrescriptionDocumentRefused("evidence_unreadable", None, str(exc)).to_dict()
+        return PrescriptionDocumentRefused(REASON_UNREADABLE, None, str(exc)).to_dict()
     log_event(
         logger,
         "sound.active_speaker_rear_calibration_bank",
