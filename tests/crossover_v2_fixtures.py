@@ -42,6 +42,7 @@ import numpy as np
 from jasper.active_speaker.bundles import BUNDLE_SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -661,7 +662,7 @@ def bank_capture_round(
     *,
     capture_ids: Sequence[str] | None = None,
     positions_deg: Sequence[float] | None = None,
-    vertical_deg: float = 0.0,
+    vertical_deg: int = 0,
     distance_m: float | None = 1.0,
     radiated_band_hz: tuple[float, float] | None = (150.0, 20000.0),
     kept_role: str | None = "summed",
@@ -692,6 +693,7 @@ def bank_capture_round(
                 else float(positions_deg[index])
             ),
             "vertical_deg": vertical_deg,
+            "pose_kind": POSE_KIND_BEARING,
             "mark_distance_m": distance_m,
             "provenance": {"stimulus": {"phase": "verify", "wav_sha256": "c" * 64}},
         }

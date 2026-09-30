@@ -1187,7 +1187,8 @@ def test_shipped_program_geometry_and_full_capture_price(
         # Candidate-MINOR: the cycle repeats under each pose, in place.
         for _candidate in (candidates or ("",))
     ]
-    assert [pose_kind_fields(geometry) for geometry in geometries] == [{"mark_distance_m": 1.0}] * len(stops)
+    assert [pose_kind_fields(geometry) for geometry in geometries] == [
+        {"mark_distance_m": 1.0, "pose_kind": mp.POSE_KIND_BEARING}] * len(stops)
     assert walk_price(request) == price
 
 

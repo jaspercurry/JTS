@@ -70,6 +70,7 @@ from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
 from .measurement_context import capture_basis, compare_capture_basis
 from .position_cycle import parse_curve_complex, take_curve
+from .record_index import take_pose_kind
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
 from .round_captures import doc_pose_key
@@ -323,13 +324,12 @@ def rear_document(
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
         basis_of[take.take_id] = capture_basis(record)
         bases.setdefault(candidate, []).append(basis_of[take.take_id])
-        if (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING:
+        if row.pose_kind == POSE_KIND_BEARING:
             bearing.add(take.pose_key)
         # An on-axis reference must be a bearing pose: a non-bearing pose at
         # azimuth 0 (e.g. behind the cabinet) is never the front curve the
         # measured-dip search assumes.
-        if (row.position_deg == 0 and row.vertical_deg == 0
-                and (record.get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING):
+        if row.position_deg == 0 and row.vertical_deg == 0 and row.pose_kind == POSE_KIND_BEARING:
             on_axis.add(take.pose_key)
     if not batch:
         raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
@@ -510,7 +510,7 @@ def pair_takes(records: Iterable[Mapping[str, Any]]) -> list[PairTake]:
                    for role, ir in impulses.items()}
         bands = [responses[role]["band_hz"] for role in roles]
         takes.append(PairTake(
-            doc_pose_key(record), record.get("pose_kind") or POSE_KIND_BEARING, int(rate), freqs,
+            doc_pose_key(record), take_pose_kind(record), int(rate), freqs,
             spectra[PAIR_ROLES[0]], spectra[PAIR_ROLES[1]],
             (max(band[0] for band in bands), min(band[1] for band in bands)), impulses, shifts,
         ))
@@ -645,7 +645,7 @@ def _pair_document(
     # blend into this median. With none of them confident, and with no
     # electrical chain to evaluate, it is simply absent.
     held = [gap for key, row in positions.items()
-            if (records[key][0].get("pose_kind") or POSE_KIND_BEARING) == POSE_KIND_BEARING
+            if take_pose_kind(records[key][0]) == POSE_KIND_BEARING
             and (gap := confident_arrival_gap_s(row["arrival_gap"])) is not None]
     ratio = None
     if grids and section.get("case") == "electrical_dsp":

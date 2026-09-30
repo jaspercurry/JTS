@@ -341,10 +341,9 @@ def position_cycle_document(
             f"under {_BANKED_POSITIONS_GLOB} — this round's walk was refused at "
             f"take time, or its poses were never accepted"
         )
-    for field, kind in (("vertical_deg", int), ("candidate_id", str)):
-        lacking = sorted(str(take["take_id"]) for take in records if type(take[field]) is not kind)
-        if lacking:
-            raise PositionCycleError(f"{root}: takes {lacking} carry no {field}")
+    lacking = sorted(str(take["take_id"]) for take in records if type(take["candidate_id"]) is not str)
+    if lacking:
+        raise PositionCycleError(f"{root}: takes {lacking} carry no candidate_id")
     try:
         takes = sorted(
             records,

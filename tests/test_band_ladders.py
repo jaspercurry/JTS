@@ -110,7 +110,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         assert result is not None
         payload, _ = result
         if builder == "rear_preview":
-            takes = rear_views.pair_takes([{"branch_diagnostic": _branch_diagnostic()}])
+            takes = rear_views.pair_takes([{"branch_diagnostic": _branch_diagnostic(), "pose_kind": "bearing"}])
             payload = rear_preview._position(takes, payload, diagnostic_seed(48000))
         else:
             low, high = payload["coverage_hz"]

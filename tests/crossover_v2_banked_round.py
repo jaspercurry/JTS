@@ -294,9 +294,9 @@ def pose_kind_fields(
     """Measured geometry and analysis facts shared by retained takes."""
     return {
         "mark_distance_m": geometry.mark_distance_m,
+        "pose_kind": geometry.kind,
         **({"gating_applied": gating_applied} if gating_applied is not None else {}),
         **({
-            "pose_kind": geometry.kind,
             "seat_offset_m": list(geometry.seat_offset_m) if geometry.seat_offset_m is not None else None,
         } if geometry.kind != measurement_programs.POSE_KIND_BEARING else {}),
     }
@@ -467,8 +467,7 @@ def cloud_position_record(
     ``position_deg`` (``None`` where no bearing was commanded),
     ``position_axis``, ``vertical_deg`` and ``mark_distance_m``, stamped from
     the pose the operator was given, with ``prompt`` beside them as the human
-    instruction rather than the source of truth. ``vertical_deg`` is absent from
-    older records and a reader takes that absence as 0. See
+    instruction rather than the source of truth. See
     :class:`~jasper.active_speaker.crossover_v2.spatial.PositionGeometry` for
     the frame.
 
@@ -604,6 +603,7 @@ def phase_capture_record(
         "position_deg": DESIGN_AXIS_DEG,
         "position_axis": spatial.POSITION_AXIS_HORIZONTAL,
         "vertical_deg": 0,
+        "pose_kind": measurement_programs.POSE_KIND_BEARING,
         "curves": [dict(curve) for curve in curves],
     }
 
@@ -654,6 +654,7 @@ def timing_take_record(
         "position_deg": DESIGN_AXIS_DEG,
         "position_axis": spatial.POSITION_AXIS_HORIZONTAL,
         "vertical_deg": 0,
+        "pose_kind": measurement_programs.POSE_KIND_BEARING,
         "regime": regime,
         "captured_at": captured_at,
         "validity_floor_hz": validity_floor_hz,

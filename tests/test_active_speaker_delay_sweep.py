@@ -78,6 +78,8 @@ def _bank(
             "measurement_purpose": PURPOSE_SPEAKER,
             "take_id": take_id,
             "position_deg": position_deg,
+            "vertical_deg": 0,
+            "pose_kind": "bearing",
             **({"phase_composition": composition} if composition else {}),
             "curves": curves,
         }),

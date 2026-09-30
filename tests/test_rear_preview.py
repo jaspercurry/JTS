@@ -282,7 +282,7 @@ def test_pair_takes_share_a_window_and_remove_each_clock_shift():
         response["impulse"] = [0.0] * 48 + response["impulse"]
         response["pre_guard_samples"] += 48
         response["clock_shift_samples"] = index * 0.75
-    take, = pair_takes([{}, {"branch_diagnostic": diagnostic}])
+    take, = pair_takes([{}, {"branch_diagnostic": diagnostic, "pose_kind": "bearing"}])
     assert take.freqs_hz == pytest.approx(np.fft.rfftfreq(figures.IMPULSE_FFT_SIZE, 1 / 48000))
     for response, actual in zip(diagnostic["responses"], (take.front, take.rear)):
         windowed = np.asarray(response["impulse"])[48:]

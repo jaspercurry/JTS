@@ -336,7 +336,7 @@ def _bank_cloud_sidecar(session: Path) -> Path:
         "phase": "cloud_verify",
         "position_id": "cloud_verify_01",
         "index": 1, "attempt": 1, "take_id": "cloud_verify_01_a01",
-        "role": "onax", "wav_sha256": "cloud-sha",
+        "role": "onax", "wav_sha256": "cloud-sha", "vertical_deg": 0, "pose_kind": "bearing",
     }))
     return path
 
@@ -423,7 +423,7 @@ def test_a_hand_edited_pose_sidecar_costs_a_sort_order_not_the_packet(tmp_path):
         "phase": "lateral",
         "index": "not-a-number", "attempt": None, "take_id": "lateral_99_a01",
         "position_deg": True, "role": "offax", "regime": "per_driver",
-        "wav_sha256": "bad-sha",
+        "wav_sha256": "bad-sha", "vertical_deg": 0, "pose_kind": "bearing",
     }))
 
     block = build_crossover_evidence_packet(session)["lateral_poses"]
@@ -493,6 +493,8 @@ def _bank_take_with_diagnostic(
         "attempt": 1,
         "take_id": take_id,
         "wav_sha256": f"{take_id}-sha",
+        "vertical_deg": 0,
+        "pose_kind": "bearing",
     }
     if diagnostic is not None:
         payload["diagnostic"] = diagnostic

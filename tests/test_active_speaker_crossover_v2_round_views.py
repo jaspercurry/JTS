@@ -71,7 +71,7 @@ def _make_round_dir(tmp_path: Path, name: str, *, take: bool = False) -> Path:
         (capture_dir / "positions").mkdir()
         (capture_dir / "positions" / "take_0001.json").write_text(json.dumps({
             "kind": POSITION_EVIDENCE_KIND, "phase": "measure", "take_id": "take_0001",
-            "measurement_purpose": PURPOSE_SPEAKER, "position_deg": 0,
+            "measurement_purpose": PURPOSE_SPEAKER, "position_deg": 0, "vertical_deg": 0, "pose_kind": "bearing",
             "curves": [_summed_curve(GRID, np.full(GRID.shape, -20.0))],
         }))
     write_manifest(round_dir)
@@ -344,6 +344,7 @@ def _bank_lateral_pose(
         "measurement_purpose": PURPOSE_SPEAKER,
         "position_deg": position_deg,
         "vertical_deg": vertical_deg,
+        "pose_kind": "bearing",
         "candidate_id": candidate_id,
         "curves": curves,
     }))

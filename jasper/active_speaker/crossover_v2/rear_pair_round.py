@@ -8,7 +8,7 @@ from typing import Any
 
 from jasper.active_speaker import state_paths
 from jasper.active_speaker.candidate_bank import _directories
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_REAR
+from jasper.active_speaker.measurement_programs import PURPOSE_REAR
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.platform.json_fields import parse_utc_iso
 from .rear_views import front_on_axis, pair_diagnostic
@@ -24,9 +24,9 @@ _ROUND_LIMIT = 128
 @lru_cache(maxsize=_ROUND_LIMIT)
 def _front_pair_round(directory: Path) -> bool:
     return any(
-        front_on_axis(doc_pose_key(record), record.get("pose_kind") or POSE_KIND_BEARING)
+        front_on_axis(doc_pose_key(record), row.pose_kind)
         and pair_diagnostic(record) is not None
-        for _, record in purpose_take_records(round_inputs(directory).session_dir, purpose=PURPOSE_REAR)
+        for row, record in purpose_take_records(round_inputs(directory).session_dir, purpose=PURPOSE_REAR)
     )
 
 

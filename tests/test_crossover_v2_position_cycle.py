@@ -166,10 +166,9 @@ def test_a_raised_pose_carries_its_elevation_into_the_index(
     assert take["position_deg"] == 22
 
 
-@pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
-def test_a_take_banked_without_its_elevation_or_candidate_is_refused(tmp_path, field):
+def test_a_take_banked_without_its_candidate_is_refused(tmp_path):
     """No reader defaults a field a take was banked without (#2902)."""
-    _bank(tmp_path, [{k: v for k, v in _record(1, 7).items() if k != field}])
+    _bank(tmp_path, [{k: v for k, v in _record(1, 7).items() if k != "candidate_id"}])
 
     with pytest.raises(PositionCycleError):
         position_cycle_document(tmp_path, derived_at=STAMP)
@@ -220,7 +219,7 @@ def test_the_clouds_positions_are_not_takes_of_this_walk(tmp_path):
     (positions / "cloud_02_a01.json").write_text(json.dumps({
         "schema_version": 1, "kind": POSITION_EVIDENCE_KIND,
         "capture_session_id": "capture-1", "phase": "cloud_measure",
-        "index": 2, "attempt": 1, "take_id": "cloud_02_a01",
+        "index": 2, "attempt": 1, "take_id": "cloud_02_a01", "vertical_deg": 0, "pose_kind": "bearing",
     }))
 
     takes = position_cycle_document(tmp_path, derived_at=STAMP)["takes"]
@@ -593,16 +592,9 @@ _BOTH_ROLES = [{"role": "woofer"}, {"role": "tweeter"}]
 
 
 def _pose_bank(tmp_path: Path) -> Path:
-    """One walk at 0 deg: a mark-height take, then a NEWER raised one.
-
-    The mark-height record carries no ``vertical_deg`` KEY AT ALL — the shape
-    every round banked before elevated walks shipped — so selecting it at
-    ``vertical_deg=0`` also pins that absence reading as mark height rather
-    than as "unknown height".
-    """
-    mark = {k: v for k, v in _record(1, 0).items() if k != "vertical_deg"}
+    """One walk at 0 deg: a mark-height take, then a NEWER raised one."""
     speaker = {"measurement_purpose": PURPOSE_SPEAKER, "curves": _BOTH_ROLES}
-    _bank(tmp_path, [{**mark, **speaker}, {**_record(2, 0), "vertical_deg": 10, **speaker}])
+    _bank(tmp_path, [{**_record(1, 0), **speaker}, {**_record(2, 0), "vertical_deg": 10, **speaker}])
     write_manifest(tmp_path)
     return tmp_path / "bundle" / "sess-1"
 
@@ -635,11 +627,6 @@ def _indexed(bundle_dir: Path, **filters) -> list[str]:
             lambda d: _indexed(d, vertical_deg=10),
             ["lateral_02_a01"],
             id="the_index_selects_the_raised_take_alone",
-        ),
-        pytest.param(
-            lambda d: _indexed(d, vertical_deg=0),
-            ["lateral_01_a01"],
-            id="a_record_lacking_the_key_indexes_as_mark_height",
         ),
     ],
 )

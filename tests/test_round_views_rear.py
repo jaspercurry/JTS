@@ -301,7 +301,7 @@ def test_pair_takes_clamp_the_window_and_skip_incomplete_solos():
     diagnostic = _branch_diagnostic()
     diagnostic["responses"] = diagnostic["responses"][:2]
     diagnostic["responses"][0]["pre_guard_samples"] = 0
-    take, = rear_views.pair_takes([{"branch_diagnostic": diagnostic}])
+    take, = rear_views.pair_takes([{"branch_diagnostic": diagnostic, "pose_kind": "bearing"}])
     assert all(len(impulse) == _PULSE_SAMPLES for impulse in take.impulses.values())
     for rate in (None, 0, -1, float("nan"), float("inf"), "48000"):
         assert rear_views.pair_takes([{"branch_diagnostic": {**diagnostic, "sample_rate_hz": rate}}]) == []
@@ -682,7 +682,8 @@ def test_a_rear_round_discloses_its_reference_against_the_previous_reference(
     names its round, and the rear view writes either way."""
     # The real reader, so an earlier round's takes refuse or are passed over as they are on a speaker.
     monkeypatch.setattr(room_selection, "analyzed_measurements", measurement_analysis.analyzed_measurements)
-    at = {deg: doc_pose_key({"position_deg": deg, "vertical_deg": 0, "mark_distance_m": 1.0}) for deg in (0, -20, 20)}
+    at = {deg: doc_pose_key({"position_deg": deg, "vertical_deg": 0, "mark_distance_m": 1.0, "pose_kind": "bearing"})
+          for deg in (0, -20, 20)}
     if earlier != "absent":
         before = rear_round(tmp_path, name="earlier", missing={_MUTED: (20,)}, retake={_MUTED: 6.0},
                             curves={**_CURVES, _MUTED: None} if earlier == "curves_unbanked" else _CURVES,

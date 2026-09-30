@@ -152,8 +152,8 @@ def test_a_filter_that_matches_nothing_is_an_answer_not_a_refusal(
 
 def test_poses_are_keyed_on_the_full_declared_pose(tmp_path: Path) -> None:
     """#3503: same azimuth, different height, is a DIFFERENT pose."""
-    ground = _write_round(tmp_path / "ground", vertical_deg=0.0)
-    raised = _write_round(tmp_path / "raised", vertical_deg=12.0, distance_m=None)
+    ground = _write_round(tmp_path / "ground", vertical_deg=0)
+    raised = _write_round(tmp_path / "raised", vertical_deg=12, distance_m=None)
     ground_keys = [capture.pose_key for capture in discover_captures(ground)]
     raised_keys = [capture.pose_key for capture in discover_captures(raised)]
 
@@ -227,16 +227,7 @@ def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path: Path) -> None
     ("doc", "key"),
     [
         (
-            {"position_deg": 0, "vertical_deg": 0, "mark_distance_m": 1.0},
-            "az+0.00_el+0.00_d+1.00",
-        ),
-        # No ``pose_kind``: the doc is the bearing it always was, and a stray
-        # offset is not a seat.
-        (
-            {
-                "position_deg": 0, "vertical_deg": 0, "mark_distance_m": 1.0,
-                "seat_offset_m": [0.3, 0.0, 0.0],
-            },
+            {"position_deg": 0, "vertical_deg": 0, "mark_distance_m": 1.0, "pose_kind": "bearing"},
             "az+0.00_el+0.00_d+1.00",
         ),
         (
@@ -275,7 +266,7 @@ def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path: Path) -> None
             for driver in ("woofer", "woofer:rear")
         ),
     ],
-    ids=["bearing", "offset-without-a-kind", "seat", "close", "behind", "front-driver", "rear-driver"],
+    ids=["bearing", "seat", "close", "behind", "front-driver", "rear-driver"],
 )
 def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
     doc: dict, key: str
@@ -292,8 +283,23 @@ def test_doc_pose_key_tells_categorized_poses_apart_and_leaves_bearings_alone(
 def test_a_pose_field_that_is_not_a_finite_number_keys_as_undeclared(
     position_deg: object,
 ) -> None:
-    doc = {"position_deg": position_deg, "vertical_deg": 0, "mark_distance_m": 1.0}
+    doc = {"position_deg": position_deg, "vertical_deg": 0, "mark_distance_m": 1.0, "pose_kind": "bearing"}
     assert doc_pose_key(doc) == "azna_el+0.00_d+1.00"
+
+
+@pytest.mark.parametrize("field, read", [
+    ("pose_kind", discover_captures), ("vertical_deg", discover_captures),
+    ("pose_kind", lambda root: doc_pose_key(json.loads(capture_record(root, "cloud_verify_00").read_text()))),
+], ids=["index-kind", "index-height", "pose-key-kind"])
+def test_a_take_banked_without_its_pose_refuses_by_that_field(tmp_path: Path, field: str, read) -> None:
+    """No kind or height is assumed for a take that banked none (#2902)."""
+    root = _write_round(tmp_path)
+    record = capture_record(root, "cloud_verify_00")
+    record.write_text(json.dumps({key: value for key, value in json.loads(record.read_text()).items() if key != field}))
+
+    with pytest.raises(EvidenceUnavailable) as excinfo:
+        read(root)
+    assert (excinfo.value.reason, excinfo.value.detail["field"]) == (TAKE_CURVES_NOT_BANKED, field)
 
 
 def test_window_view_keeps_one_capture_reference_and_exact_window_math(tmp_path):

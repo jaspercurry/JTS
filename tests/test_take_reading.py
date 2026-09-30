@@ -49,7 +49,7 @@ def _take(capture_id: str, *, role: str = "summed", delay: int = 100, gain: floa
     return TakeRead(PoseCapture(
         capture_id=capture_id, phase=None, wav=None, program_sha256="",
         azimuth_deg=0.0, vertical_deg=0.0, mark_distance_m=1.0, radiated_band_hz=band,
-        sample_rate=RATE, ir=ir, peak_idx=int(np.argmax(np.abs(ir))),
+        sample_rate=RATE, ir=ir, peak_idx=int(np.argmax(np.abs(ir))), pose_kind="bearing",
         preprocessing={"impulse_source": "kept", "pre_guard_samples": ORIGIN, "clock_shift_samples": 0.0},
         curve={"gate_window_ms": gate_ms} if gate_ms else {}, record_document=record or {},
     ), role)

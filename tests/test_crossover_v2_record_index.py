@@ -325,7 +325,7 @@ def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intrud
             "kind": POSITION_EVIDENCE_KIND, "take_id": f"take_{index:04d}",
             "phase": spec.other_phase if intruding and intruder == "phase" else spec.phase,
             "measurement_purpose": spec.other_purpose if intruding and intruder == "purpose" else PURPOSE_SPEAKER,
-            "position_deg": 0, "vertical_deg": 0, "candidate_id": candidate, "gating_applied": True,
+            "position_deg": 0, "vertical_deg": 0, "pose_kind": "bearing", "candidate_id": candidate, "gating_applied": True,
             "curves": [{"role": role, "band_hz": [200.0, 12000.0], "freqs_hz": freqs,
                         "magnitude_db": [0.0] * len(freqs), "phase_deg": [0.0] * len(freqs),
                         "gate_window_ms": 5.0, "trusted_floor_hz": floor_hz} for role in ("woofer", "tweeter")],
