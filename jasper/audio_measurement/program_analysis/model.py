@@ -617,8 +617,9 @@ class DriverResponse:
     repeat_index: int | None = None
     late_energy: Mapping[str, float] | None = None
     impulse: RecordedImpulse | None = None
-    #: The same arrival read ungated, on this grid, wherever the gate windowed
-    #: it (ADR-0383 §2); ``None`` for a response no gate windowed.
+    #: The same arrival read ungated, at the banked grid's bins of ``freqs_hz``
+    #: (:func:`~jasper.audio_measurement.evidence_grid.evidence_bins`), for a
+    #: response on the gate path (ADR-0383 §2); ``None`` for an exempt one.
     ungated_tf: np.ndarray | None = None
 
     @property

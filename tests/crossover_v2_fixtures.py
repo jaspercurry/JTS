@@ -32,7 +32,7 @@ from tests.run_manifest_fixture import write_manifest
 import hashlib
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
@@ -54,6 +54,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.evidence_grid import evidence_bins
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.recorded_impulse import RecordedImpulse
@@ -158,9 +159,10 @@ def _driver_response(
         magnitude_db = np.asarray(summed_db, dtype=float)
     else:
         magnitude_db = _in_room_summed_db() if role == "summed" else np.zeros(64)
+    complex_tf = (10.0 ** (magnitude_db / 20.0)).astype(complex)
     return DriverResponse(
         role=role, freqs_hz=_SUMMED_FREQS_HZ, magnitude_db=magnitude_db,
-        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
+        complex_tf=complex_tf, ungated_tf=complex_tf[evidence_bins(_SUMMED_FREQS_HZ)],
         gating={
             "applied": True, "window_ms": window_ms,
             **({"floor_source": floor_source} if floor_source else {}),
@@ -186,22 +188,17 @@ def _linearizable_response(
     n_repeats: int = 2, validity_floor_hz: float = 140.0,
 ) -> DriverResponse:
 
+    complex_tf = (10.0 ** (magnitude_db / 20.0)).astype(complex)
+
     def make() -> DriverResponse:
         return DriverResponse(
             role=role, freqs_hz=_LINEARIZABLE_FREQS_HZ, magnitude_db=magnitude_db,
-            complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
+            complex_tf=complex_tf, ungated_tf=complex_tf[evidence_bins(_LINEARIZABLE_FREQS_HZ)],
             gating={"applied": True, "window_ms": 8.0},
             snr=None, validity_floor_hz=validity_floor_hz,
         )
 
-    repeats = tuple(make() for _ in range(n_repeats))
-    return DriverResponse(
-        role=role, freqs_hz=_LINEARIZABLE_FREQS_HZ, magnitude_db=magnitude_db,
-        complex_tf=(10.0 ** (magnitude_db / 20.0)).astype(complex),
-        gating={"applied": True, "window_ms": 8.0},
-        snr=None, validity_floor_hz=validity_floor_hz,
-        repeat_responses=repeats,
-    )
+    return replace(make(), repeat_responses=tuple(make() for _ in range(n_repeats)))
 
 
 def _check_analysis(

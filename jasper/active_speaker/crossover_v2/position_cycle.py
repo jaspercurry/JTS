@@ -136,38 +136,50 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     return {field: raw.get(field) for field in _TAKE_FIELDS}
 
 
-def take_window(record: Mapping[str, Any]) -> str:
-    """The window a take's own analysis graded: gated wherever its gate
-    windowed a response, which banks a gated curve (ADR-0383 §2)."""
-    curves = record.get("curves") or ()
-    return WINDOW_GATED if any(curve.get("window") == WINDOW_GATED for curve in curves) else WINDOW_UNGATED
+#: The window a reader names to read each role through its take's own
+#: (:func:`take_window`).
+OWN_WINDOW = "own"
+
+
+def take_window(record: Mapping[str, Any], role: str) -> str:
+    """The window a take's own analysis graded for ``role``: gated wherever the
+    gate windowed that role's response, which banks its gated curve (ADR-0383 §2)."""
+    return WINDOW_GATED if any(
+        isinstance(curve, Mapping) and curve.get("role") == role and curve.get("window") == WINDOW_GATED
+        for curve in record.get("curves") or ()) else WINDOW_UNGATED
+
+
+def _named(record: Mapping[str, Any], role: str, window: str) -> str:
+    return take_window(record, role) if window == OWN_WINDOW else window
 
 
 def take_curves(raw: Mapping[str, Any], window: str) -> list[Mapping[str, Any]] | None:
-    """The curves one take record banked through ``window``, or ``None`` when it banked none."""
+    """The curves one take record banked through ``window``, each role through
+    its own for :data:`OWN_WINDOW`; ``None`` when it banked none."""
     curves = raw.get("curves")
     if not isinstance(curves, list):
         return None
-    return [curve for curve in curves if isinstance(curve, Mapping) and curve.get("window") == window] or None
+    return [curve for curve in curves if isinstance(curve, Mapping)
+            and curve.get("window") == _named(raw, curve.get("role"), window)] or None
 
 
 @overload
 def take_curve(
-    record: Mapping[str, Any], role: str, window: str | None = None, *, required: Literal[True],
+    record: Mapping[str, Any], role: str, window: str, *, required: Literal[True],
 ) -> Mapping[str, Any]: ...
 @overload
 def take_curve(
-    record: Mapping[str, Any], role: str, window: str | None = None, *, required: bool = False,
+    record: Mapping[str, Any], role: str, window: str, *, required: bool = False,
 ) -> Mapping[str, Any] | None: ...
 def take_curve(
-    record: Mapping[str, Any], role: str, window: str | None = None, *, required: bool = False,
+    record: Mapping[str, Any], role: str, window: str, *, required: bool = False,
 ) -> Mapping[str, Any] | None:
-    """The curve a take record banked for ``role`` through ``window``, else
-    through :func:`take_window`; ``None`` when it banked none for it, as a take
+    """The curve a take record banked for ``role`` through ``window`` (its own
+    for :data:`OWN_WINDOW`); ``None`` when it banked none for it, as a take
     whose analysis failed banks none (ADR-0383). A record that banked neither,
     or none for a ``required`` role, refuses by that field, naming the role and
     window (#2902)."""
-    window = window or take_window(record)
+    window = _named(record, role, window)
     curve = next((curve for curve in record.get("curves") or ()
                   if curve.get("role") == role and curve.get("window") == window), None)
     if curve is None and (required or ("curves" not in record and "analysis_error" not in record)):
@@ -262,7 +274,7 @@ def select_pose_curve_pair(
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_id is not None and document.get("take_id") != take_id)):
             continue
-        curves = take_curves(document, take_window(document))
+        curves = take_curves(document, OWN_WINDOW)
         if search_detail is not None:
             search_detail["takes_seen"] += 1
             search_detail["roles_per_take"][row.path] = dict(Counter(

@@ -21,7 +21,7 @@ from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
 from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fingerprinted
 from .crossover_v2.intervention import CloudFitTerms
-from .crossover_v2.position_cycle import take_curve, take_window
+from .crossover_v2.position_cycle import OWN_WINDOW, take_curve
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
     INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, SetTakes, round_inputs,
@@ -186,7 +186,7 @@ def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
              "alignment": (take.get("level") or {}).get("alignment"), "screens": verdict.get("screens", []),
              "fault": verdict.get("fault") or take.get("incident") or None,
              **({"record": take["record"]} if "record" in take else {}),
-             **gate_fields(take_curve(take, role, take_window(take)) if take["selected"] else None)}
+             **gate_fields(take_curve(take, role, OWN_WINDOW) if take["selected"] else None)}
             for take in group["takes"] for verdict in [take.get("verdict") or {}]]
 
 
@@ -216,7 +216,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                                    "selected": bool(curve.get("selected")),
                                    "candidate_id": curve.get("candidate_id") or group.get("capture_basis", {}).get("candidate_id"),
                                    "pose": take.get("pose", curve.get("position")), "role": curve.get("role"),
-                                   "window": curve.get("window", "gated" if gates["gate_window_ms"] else "ungated"),
+                                   "window": curve["window"],
                                    **gates, "stats": series_stats(curve, plot, gates["trusted_floor_hz"])})
             atomic_write_json(view_path, view)
             artifacts["frequency_view"] = str(view_path)

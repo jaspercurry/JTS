@@ -355,7 +355,7 @@ def test_the_scanners_read_the_speaker_takes_the_host_banks(tmp_path, monkeypatc
     measure = bank_executor_take(tmp_path / "measure", monkeypatch, program=program,
                                  analysis_fields={"driver_responses": gated})
     bundle = bundle_of(tmp_path / "measure")
-    assert {curve["window"] for curve in measure["curves"]} == {"gated"}
+    assert {curve["window"] for curve in measure["curves"]} == {"gated", "ungated"}
     ceiling = room_ceiling(bundle)
     assert (ceiling.source, ceiling.trusted_floor_hz, ceiling.source_take_id) == (
         CEILING_SOURCE_ROUND_GATE, 450.0, measure["take_id"])

@@ -148,7 +148,7 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
                 "qualified": mask.tolist(), "timing_valid": timing_valid,
                 "clearance_s": silence - required,
             }
-    curve = take_curve(document, "summed", WINDOW_UNGATED, required=True) or {}
+    curve = take_curve(document, "summed", WINDOW_UNGATED, required=True)
     frequencies = np.asarray(curve["freqs_hz"], dtype=float)
     bass = (frequencies >= BASS_BAND_HZ[0]) & (frequencies <= BASS_BAND_HZ[1])
     frequencies = frequencies[bass]

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from jasper.audio_measurement.branch_program import build_branch_program
+from jasper.audio_measurement.evidence_grid import evidence_bins
 from jasper.audio_measurement.program import build_verify_program, segment_stimulus
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.program_analysis import (
@@ -79,10 +80,13 @@ def test_solo_and_sum_keep_measured_level_phase_and_recording_clock(epsilon, pol
     assert not result.glitch_detected
     lower, upper = result.driver_responses
     mask = (lower.freqs_hz >= 1200) & (lower.freqs_hz <= 4000)
-    # Both windows keep the recording clock (ADR-0383 §2).
-    for ratio in (upper.complex_tf[mask] / lower.complex_tf[mask], upper.ungated_tf[mask] / lower.ungated_tf[mask]):
+    banked = lower.freqs_hz[evidence_bins(lower.freqs_hz)]
+    kept = (banked >= 1200) & (banked <= 4000)
+    # Both windows keep the recording clock (ADR-0383 §2); the ungated one is read on the banked grid.
+    for freqs, ratio in ((lower.freqs_hz[mask], upper.complex_tf[mask] / lower.complex_tf[mask]),
+                         (banked[kept], upper.ungated_tf[kept] / lower.ungated_tf[kept])):
         phase = np.unwrap(np.angle(ratio / polarity))
-        delay = -np.polyfit(lower.freqs_hz[mask], phase, 1)[0] / (2 * np.pi)
+        delay = -np.polyfit(freqs, phase, 1)[0] / (2 * np.pi)
         assert delay * 1e6 == pytest.approx(250, abs=5)
         assert np.median(20 * np.log10(abs(ratio))) == pytest.approx(20 * np.log10(.7), abs=.08)
     predicted = lower.complex_tf[mask] + upper.complex_tf[mask]

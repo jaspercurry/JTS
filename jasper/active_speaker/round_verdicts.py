@@ -27,7 +27,7 @@ from jasper.audio_measurement.seat_figures import spread_rms_db
 
 from .crossover_v2.commanded import profile_crossover_regions
 from .crossover_v2.intervention import CloudFitTerms
-from .crossover_v2.position_cycle import measured_curve_band, parse_curve_magnitude, take_curve, take_window
+from .crossover_v2.position_cycle import OWN_WINDOW, measured_curve_band, parse_curve_magnitude, take_curve
 from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes
 from .linearization_envelope import DEFAULT_ENVELOPE_GRID_HZ
 from .profile import CrossoverRegion
@@ -54,7 +54,7 @@ def _null_ceilings(
             if any(role not in roles for role in pair):
                 continue
             takes = [roles[role] for role in pair]
-            curves = [take_curve(roles[role], role, take_window(roles[role])) or {} for role in pair]
+            curves = [take_curve(roles[role], role, OWN_WINDOW) or {} for role in pair]
             parsed = [parse_curve_magnitude(curve) for curve in curves]
             row: dict[str, Any] = {
                 "pose": takes[0]["pose"],
@@ -106,8 +106,7 @@ def mark_takes(selected: SetTakes, role: str | None) -> list[Mapping[str, Any]]:
 
 def common_measured_band(takes: Sequence[Mapping[str, Any]], role: str) -> list[float] | None:
     """The band every take measured for ``role``, so each spread speaks for one span."""
-    bands = [measured[2] for take in takes
-             if (measured := measured_curve_band(take_curve(take, role, take_window(take)) or {}))]
+    bands = [measured[2] for take in takes if (measured := measured_curve_band(take_curve(take, role, OWN_WINDOW) or {}))]
     return [max(lo for lo, _ in bands), min(hi for _, hi in bands)] if bands else None
 
 
@@ -136,7 +135,7 @@ def pair_spread(
         return {**result, "reason": REASON_FIT_BAND_UNAVAILABLE}
     curves = {}
     for take in {id(take): take for pair in pairs for take in pair}.values():
-        measured = measured_curve_band(take_curve(take, role, take_window(take)) or {})
+        measured = measured_curve_band(take_curve(take, role, OWN_WINDOW) or {})
         if measured is None:
             return {**result, "reason": REASON_MARK_RESPONSE_UNAVAILABLE}
         freqs, magnitude, (covered_lo, covered_hi) = measured

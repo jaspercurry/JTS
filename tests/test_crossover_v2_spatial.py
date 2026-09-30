@@ -26,9 +26,11 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.audio_measurement import gating, program
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry, MeasurementPriors, analyze_program_capture,
 )
+from tests.test_audio_measurement_program_analysis import FC_HZ, SR, _band_impulse, _synthesize
 from tests.crossover_v2_banked_round import (
     LateralPose,
     TakeClaim,
@@ -595,6 +597,30 @@ def test_a_summed_speaker_take_banks_both_windows(exempt, windows):
     assert [(record["role"], record["window"]) for record in records] == [("summed", window) for window in windows]
     assert records[0]["gate_window_ms"] is not None if exempt is None else records[0]["gate_window_ms"] is None
     assert records[-1] == banked(gating.SEAT_EXEMPT)[0]
+
+
+def test_a_measure_take_whose_repeat_dropped_out_banks_the_windows_it_read():
+    """A woofer repeat lost to a dropout gives its gate no window. The take
+    still banks each response's own curve, then each response's ungated
+    reading, every occurrence it read included (ADR-0383 §2)."""
+    import numpy as np
+
+    roles = [program.RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
+             program.RoleBand("tweeter", 1, FrequencyBand(1300.0, 20000.0))]
+    prog = program.build_measure_program({"woofer": -11.0, "tweeter": -13.0}, roles,
+                                         sweep_durations={"woofer": 0.6, "tweeter": 0.5})
+    capture = np.array(_synthesize(prog, woofer_ir=_band_impulse(180, 150, 6000, 0.8),
+                                   tweeter_ir=_band_impulse(205, 1300, 20000, -0.6), noise=0.0))
+    dropped = prog.segment("sweep_w_rep2")
+    capture[dropped.start_sample - int(0.3 * SR):dropped.start_sample + dropped.n_samples + int(0.6 * SR)] = 0.0
+    analysis = analyze_program_capture(prog, capture, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ))
+    woofer = analysis.driver_responses[0]
+
+    records = spatial.analysis_curve_records(analysis, prog)
+
+    assert [response.gating["applied"] for response in (woofer, *woofer.repeat_responses)] == [True, True, False]
+    assert [(record["role"], record["window"], len(record["repeat_curves"])) for record in records] == [
+        ("woofer", "gated", 2), ("tweeter", "gated", 2), ("woofer", "ungated", 2), ("tweeter", "ungated", 2)]
 
 
 def test_an_analysis_that_measured_no_response_banks_an_empty_list():

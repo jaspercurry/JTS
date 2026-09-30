@@ -14,9 +14,9 @@ from jasper.active_speaker.rear_calibration import read_rear_calibration, rear_o
 from jasper.audio_measurement import rear_evidence, seat_figures as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.evidence_grid import evidence_bins
 from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, EvidenceUnavailable
 
-from .pose_curve import lateral_evidence_grid_hz, nearest_native_bins
 from .rear_views import PairTake, front_on_axis, pair_takes, rear_document
 from .room_selection import purpose_take_records
 from .round_inputs import RoundInputs
@@ -68,7 +68,7 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     if band is not None:
         low, high = max(band[0], coverage[0]), min(band[1], coverage[1])
         band = [low, high] if low < high else None
-    bins = nearest_native_bins(grid, lateral_evidence_grid_hz())
+    bins = evidence_bins(grid)
     freqs = grid[bins]
     # See ADR-0325: the reference carries this document's front chain.
     muted = [take.front * front for take in takes]

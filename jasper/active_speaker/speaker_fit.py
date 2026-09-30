@@ -17,7 +17,7 @@ from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB
 from jasper.active_speaker.alignment_evidence import alignment_evidence
 from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, program_charge_db
 from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, DriverEvidence, NonFiniteTrimError, fit_branches, resolve_trims_after_fit
-from jasper.active_speaker.crossover_v2.position_cycle import take_curve, take_window
+from jasper.active_speaker.crossover_v2.position_cycle import OWN_WINDOW, take_curve
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, RoundViewsError, capture_identity, latest_measure_takes, prescription_sources, resolve_set
 from jasper.active_speaker.crossover_v2.round_views import response_from_banked_curve
 from jasper.active_speaker.crossover_v2.spatial import _primary_sweep_bands
@@ -88,7 +88,7 @@ def design_clouds(
                 responses = []
                 lo, hi = 0.0, float("inf")
                 for _group, take in bearings.values():
-                    parsed = response_from_banked_curve(take_curve(take, role, take_window(take), required=True))
+                    parsed = response_from_banked_curve(take_curve(take, role, OWN_WINDOW, required=True))
                     if parsed[0].role != role:
                         raise ValueError("design pose has no fit response")
                     responses.append(parsed[0])
@@ -185,8 +185,7 @@ def speaker_fit(
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
     regions = list(base.source_preset.crossover_regions)
     sections = sections_by_role(regions)
-    window = take_window(record)
-    drivers = [DriverEvidence(role, response_from_banked_curve(take_curve(record, role, window, required=True))[0], band,
+    drivers = [DriverEvidence(role, response_from_banked_curve(take_curve(record, role, OWN_WINDOW, required=True))[0], band,
                               classes.get(role, "unknown")) for role, band in bands.items()]
     branches = fit_branches(
         drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},

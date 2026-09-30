@@ -20,7 +20,7 @@ from ..measurement_analysis import analyzed_measurements
 from ..run_manifest import kept_measurements
 from ..measurement_programs import PURPOSE_ROOM, validated_pose
 from .journey import PHASE_LATERAL
-from .position_cycle import parse_curve_magnitude, take_curve, take_window
+from .position_cycle import OWN_WINDOW, parse_curve_magnitude, take_curve
 from .record_index import Measurement, record_path
 from .measurement_context import capture_basis
 from .round_captures import doc_pose_key
@@ -56,7 +56,7 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         return None
     if record.get("incident") or record.get("measurement_status") == "incomplete":
         return None
-    summed = take_curve(record, "summed", take_window(record))
+    summed = take_curve(record, "summed", OWN_WINDOW)
     parsed = parse_curve_magnitude(summed) if summed is not None else None
     if parsed is None:
         return None

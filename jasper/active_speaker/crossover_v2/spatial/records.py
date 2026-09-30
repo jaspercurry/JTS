@@ -148,7 +148,7 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
     analysis that grows the other half starts banking it. CHECK fills neither.
 
     One record per PRIMARY response and window: each response's own curve,
-    then, for each response its gate windowed, that arrival read ungated
+    then, for each response whose gate applied, that arrival read ungated
     (ADR-0383 §2), so a reader picks a role's curve by its window. A role's
     repeat occurrences ride nested on their own primary (:func:`pose_curve_record`)
     rather than as rows of their own. They remain diagnostic and feed no
@@ -169,7 +169,7 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
     return [
         pose_curve_record(lateral_pose_curve(response, band, ungated=ungated))
         for ungated in (False, True) for response, band in primaries
-        if not ungated or response.ungated_tf is not None
+        if not ungated or (response.gating or {}).get("applied")
     ]
 
 

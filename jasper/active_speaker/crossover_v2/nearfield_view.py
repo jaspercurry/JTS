@@ -37,7 +37,7 @@ from jasper.audio_measurement.trusted_band import TrustedBand, within_trusted
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
 from .capture_provenance import take_trusted_band
-from .position_cycle import take_curve
+from .position_cycle import OWN_WINDOW, take_curve
 from .spatial import MARK_DISTANCE_M
 
 #: Where the distance step is read: above a port, below cone breakup (#5684),
@@ -135,7 +135,7 @@ def nearfield_view(
     placed: dict[str, dict[tuple[float, str], list[int]]] = {}
     for take in takes:
         driver = (take.get("pose") or {}).get("driver")
-        if not (take.get("selected") and driver and (curve := take_curve(take, driver))):
+        if not (take.get("selected") and driver and (curve := take_curve(take, driver, OWN_WINDOW))):
             continue
         freqs, sweeps = _sweeps(curve)
         swept = curve["band_hz"]
