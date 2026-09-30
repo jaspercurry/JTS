@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.runtime import measurement_window as coordinator
+from jasper.runtime.measurement_window import MeasurementWindowError
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -55,6 +56,10 @@ def applied_reference(monkeypatch):
     candidate = MeasuredCrossoverCandidate(program_id="test", analysis={"measurement_status": "unmeasured"}, role_attenuations_db={"woofer": 0, "tweeter": 0}, source_preset=_preset())
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.door.find_banked_candidate",
                         lambda *a, **kw: SimpleNamespace(candidate=candidate))
+
+
+#: The isolation window itself, before a fixture swaps it out.
+REAL_WINDOW = coordinator.measurement_window
 
 
 @pytest.fixture
@@ -149,6 +154,62 @@ async def test_the_door_installs_a_measurement_graph_and_puts_the_entry_back(
 
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
     assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+
+
+@pytest.mark.parametrize(("parked", "pauses", "reason"), [
+    (False, 1, "voice_pause_failed"), (False, 2, "voice_lease_lost"), (True, 0, None)],
+    ids=["pause refused", "pause lost", "voice-input-absent"])
+async def test_where_voice_runs_a_lost_voice_pause_ends_the_run_into_its_restore(
+        tmp_path, box, monkeypatch, parked, pauses, reason):
+    """Where jasper-voice is expected to run, the door holds voice strictly. A
+    voice pause refused at entry ends the run before anything plays, and one
+    lost on renewal ends it at once: the fader is back at the household level
+    and nothing plays after. A box parked with no voice input has no voice to
+    pause, and its run goes on as before (#5925, comment 5921678274)."""
+    marker = tmp_path / "voice-input-absent"
+    if parked:
+        marker.write_text("reason=no_mic\n")
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
+    events: list = []
+
+    async def voice(_path, cmd, **_kwargs):
+        if parked:
+            raise FileNotFoundError("jasper-voice is parked")
+        if cmd == "MEASURE_PAUSE" and events.count("pause") + 1 >= pauses:
+            events.append("lost")
+            raise RuntimeError("voice pause lost")
+        events.append("pause" if cmd == "MEASURE_PAUSE" else cmd)
+        return {"state": "WAKE"} if cmd == "STATUS" else {"result": "ok", "drained": True}
+
+    async def isolation(**_kwargs):
+        return None
+
+    async def hold(_path, body):
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    monkeypatch.setattr(coordinator, "measurement_window", REAL_WINDOW)
+    monkeypatch.setattr(coordinator, "_voice_uds_command", voice)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", isolation)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", isolation)
+    monkeypatch.setattr(coordinator, "_measurement_hold_command", hold)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
+
+    async def run():
+        async with _door(tmp_path, box):
+            for _ in range(20):
+                events.append(("play", box.volume_db))
+                await asyncio.sleep(0.01)
+
+    if reason is None:
+        await run()
+        assert events.count(("play", -20.0)) == 20
+    else:
+        with pytest.raises(MeasurementWindowError) as caught:
+            await run()
+        assert caught.value.reason == reason and ("play", -20.0) not in events[events.index("lost"):]
+        assert (("play", -20.0) in events) is (pauses > 1) and events.count(("play", -20.0)) < 20
+    assert box.volume_db == pytest.approx(HOUSEHOLD_DB)
+    assert box.loaded[-1:] == ([] if pauses == 1 else [(tmp_path / ENTRY_CONFIG).read_text()])
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])

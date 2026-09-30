@@ -16,6 +16,7 @@ from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.dsp_control.dsp_apply import dsp_writer_lock
 from jasper.audio_resources.volume_owner import volume_owner
+from jasper.voice.input_presence import voice_parked_no_mic
 
 from ..candidate_bank import CandidateBankRefusal, find_banked_candidate
 from ..design_draft import load_design_draft
@@ -102,7 +103,10 @@ async def isolation_hold(
     # The coordinator renews all three leases across windows and poses (ADR-0305).
     # The window wraps the open, because the latch's first write is a fader
     # write like any other.
-    async with measurement_window(gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner):
+    # Where jasper-voice runs, a voice pause the window cannot hold, at entry or on
+    # renewal, ends the run into the restore below (#5925, comment 5921678274).
+    async with measurement_window(gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner,
+                                  require_voice_pause=not voice_parked_no_mic()):
         await plan.enforce_ceiling(volume_door)
         body_error: BaseException | None = None
         try:
