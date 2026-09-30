@@ -439,7 +439,7 @@ def test_an_accepted_set_becomes_the_candidates_room_peqs():
 def test_room_prescription_and_preview_follow_the_measured_floor(tmp_path, freq_hz, coverage_floor_hz):
     bundle = round_inputs(bank_seat_round(tmp_path)).session_dir
     takes = tuple(replace(take, band_hz=(30.0, take.band_hz[1])) for take in select_seat_takes(bundle).takes)
-    raw = room_median(takes, room_ceiling(bundle))
+    raw = room_median(takes, room_ceiling())
     if coverage_floor_hz != 30.0:
         # A grid that claims to start below the evidence is not this round's median.
         raw["coverage_hz"][0] = coverage_floor_hz
@@ -513,7 +513,7 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
 def test_the_producers_spatial_support_sets_the_disclosed_cut_floor(tmp_path, n_positions, gain, count, legacy, discloses):
     round_dir = bank_seat_round(tmp_path, magnitudes_db=[np.full(SEAT_GRID_HZ.shape, -30.0)] * n_positions)
     bundle_dir = round_inputs(round_dir).session_dir
-    document = room_median(select_seat_takes(bundle_dir).takes, room_ceiling(bundle_dir))
+    document = room_median(select_seat_takes(bundle_dir).takes, room_ceiling())
     if legacy:
         document.pop("spatial_support", None)
         document["spread_db"] = [0.0] * len(document["freqs_hz"])

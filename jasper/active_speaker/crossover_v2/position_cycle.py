@@ -19,7 +19,7 @@ from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, Ev
 from jasper.audio_measurement.trusted_band import TrustedBand, banked_band
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
-from ..measurement_programs import PURPOSE_SPEAKER
+from ..measurement_programs import PURPOSE_BASS, PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from ..run_manifest import kept_measurements
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_LATERAL
@@ -148,6 +148,17 @@ def take_window(record: Mapping[str, Any], role: str) -> str:
     return WINDOW_GATED if any(
         isinstance(curve, Mapping) and curve.get("role") == role and curve.get("window") == WINDOW_GATED
         for curve in record.get("curves") or ()) else WINDOW_UNGATED
+
+
+_PROGRAM_WINDOWS: Mapping[Any, str] = {PURPOSE_SPEAKER: WINDOW_GATED, PURPOSE_ROOM: WINDOW_UNGATED,
+                                        PURPOSE_BASS: WINDOW_UNGATED, PURPOSE_REAR: WINDOW_UNGATED}
+
+
+def program_window(record: Mapping[str, Any]) -> str:
+    """The window a take's program reads (ADR-0400 §2): gated for a speaker
+    take, ungated for a room, bass or rear take. A take no program reads, a
+    reference take, reads its own (:data:`OWN_WINDOW`)."""
+    return _PROGRAM_WINDOWS.get(record.get("measurement_purpose"), OWN_WINDOW)
 
 
 def _named(record: Mapping[str, Any], role: Any, window: str) -> str:

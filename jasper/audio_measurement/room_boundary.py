@@ -29,14 +29,13 @@ ROOM_BOUNDARY_MAX_HZ: float = 500.0
 ROOM_FLOOR_HZ: float = 20.0
 AUDIO_BAND_TOP_HZ: float = 20_000.0
 
-# Where a room ceiling came from. ``applied_candidate`` remains readable for
-# room documents produced before the round's own gate became the source.
+# Where a room ceiling came from (ADR-0256 rule 1). Nothing writes the applied
+# tune's trusted floor yet (#6110), so only the fallback is produced (ADR-0400).
 CEILING_SOURCE_APPLIED = "applied_candidate"
-CEILING_SOURCE_ROUND_GATE = "round_gate"
 CEILING_SOURCE_FALLBACK = "fallback"
-CEILING_SOURCES = frozenset({
-    CEILING_SOURCE_APPLIED, CEILING_SOURCE_ROUND_GATE, CEILING_SOURCE_FALLBACK,
-})
+# A stored room layer composed before ADR-0400 may carry it; remove when no applied tune carries it (#6110).
+CEILING_SOURCE_ROUND_GATE = "round_gate"
+CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK, CEILING_SOURCE_ROUND_GATE})
 
 # The window a room median must be read in: the seat cube is the room's own
 # measurement and is analyzed ungated (ADR-0260), so a gated or mixed median
@@ -46,8 +45,8 @@ ROOM_MEDIAN_WINDOW = "ungated"
 
 
 def room_ceiling_hz(trusted_floor_hz: float | None) -> float:
-    """Where the room layer stops: the round gate's trusted floor inside the
-    allowed bounds, or the default when the round has no gated take."""
+    """Where the room layer stops: the applied tune's trusted floor inside the
+    allowed bounds, or the default when none is readable (ADR-0256 rule 1)."""
     if trusted_floor_hz is None:
         return ROOM_BOUNDARY_DEFAULT_HZ
     return min(max(float(trusted_floor_hz), ROOM_BOUNDARY_MIN_HZ), ROOM_BOUNDARY_MAX_HZ)

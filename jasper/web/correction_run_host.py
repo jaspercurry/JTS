@@ -29,6 +29,7 @@ from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import timing_prior
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
+from jasper.active_speaker.measurement_programs import gate_exemption
 from jasper.active_speaker.plan_run import RunDoor, after_grading
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
@@ -135,9 +136,14 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                   conductor.lateral_priors())
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
+        # See ADR-0400.
+        kind = record.get("pose_kind")
+        exemption = gate_exemption(kind, driver=record.get("pose_driver") or "",
+                                   distance_m=take_distance_m(kind, record.get("mark_distance_m")))
         analysis = conductor.analyze(
             program, capture, priors,
-            replace(conductor.capture_geometry(phase, index), declared_first_bounce_s=first_bounce_s), phase=phase,
+            replace(conductor.capture_geometry(phase, index), declared_first_bounce_s=first_bounce_s,
+                    gate_exempt_reason=exemption), phase=phase,
         )
         calibration = evidence.get("calibration", {}).get(phase, {})
         manifest.calibration = {"id": calibration.get("calibration_id"),

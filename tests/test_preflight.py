@@ -14,7 +14,9 @@ import numpy as np
 import pytest
 import yaml
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_preset
+from jasper.active_speaker.angle_capture import (
+    AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_PER_DRIVER, REGIME_SUMMED, request_for_preset,
+)
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
@@ -763,13 +765,19 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
 
 
 @pytest.mark.parametrize("level_db,has_ambient,disclosed", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])
+@pytest.mark.parametrize("stop,program", [
+    (AngleStop(0, REGIME_SUMMED, purpose="speaker"), ""),
+    # Its one stop plays per driver; its timing take plays the pilots.
+    (AngleStop(0, REGIME_PER_DRIVER, purpose="speaker"), "speaker/mark"),
+], ids=["summed", "speaker-mark"])
 @pytest.mark.parametrize("fc_hz,band,ambient_row,floor", [
     (2000, (200, 800), (160, 350, -68.4), -43.4),
     (625, (200, 250), (160, 350, -68.4), -43.4),
     (None, (550, 800), (350, 1000, -71.3), -46.3),
 ])
-def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, disclosed, fc_hz, band, ambient_row, floor):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=level_db))
+def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, disclosed, stop, program, fc_hz, band,
+                                                ambient_row, floor):
+    plan = AngleCaptureRequest((stop,), program=program, level=LevelPolicy(level_db=level_db))
     anchor = ready_facts(plan).anchor
     sensitivity = replace(anchor.sensitivity, sens_factor_db=-12.07)
     report = {"bands": [{"band_hz": [lo, hi], "level_dbfs": dbfs} for lo, hi, dbfs in (

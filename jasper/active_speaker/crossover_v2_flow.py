@@ -88,7 +88,6 @@ from jasper.platform.log_event import log_event
 from .crossover_v2.alignment_prescription import (
     alignment_delay_search_bounds_us,
 )
-from .measurement_programs import gate_exemption
 
 logger = logging.getLogger(__name__)
 
@@ -252,9 +251,6 @@ class CrossoverV2Session:
             session_volume_db=self._session_volume_db,
             fc_hz=self._fc_hz,
             sweep_duration_limits_s=self._sweep_duration_limits_s,
-            summed_sweep_band_hz=_plan.room_sweep_band_hz(
-                self._roles, self._lateral_prompts
-            ),
             target_bands=target_bands or {},
         )
         # Composed ONCE and held: ``program_for_phase`` answers by object identity.
@@ -608,12 +604,12 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError(str(exc)) from exc
 
     def capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
-        """Apply the plan's analysis purpose to this capture."""
+        """The session's geometry at this capture's angles; the host adds the
+        window its pose picks (ADR-0400)."""
         spec = self._measure_specs_by_index.get(index)
-        position, vertical, exemption = (
+        position, vertical = (
             (spec.positions or (0,))[0] if spec else 0,
             spec.vertical_deg if spec else 0,
-            None,
         )
         if phase in GROUP_PHASES:
             prompt = self._cloud_prompt(phase, index)
@@ -621,10 +617,8 @@ class CrossoverV2Session:
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
             )
-            exemption = gate_exemption(prompt.purpose, driver=prompt.driver, distance_m=prompt.distance_m)
         return replace(
             self._geometry,
-            gate_exempt_reason=exemption,
             position_deg=position,
             vertical_deg=vertical,
         )

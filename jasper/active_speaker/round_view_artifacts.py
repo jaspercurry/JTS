@@ -174,7 +174,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("best_coordinate_us", "confirmation_coordinates_us", "next", "phase", "phase_composition",
                        "take_path")),
     "room": CatalogRow(ROOM_ARTIFACT, TAKES_SET, programs=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,),
-                       builder="round_bookkeeping.room", packet="room", schema="jts_room/2",
+                       builder="round_bookkeeping.room", packet="room", schema="jts_room/3",
         question="What is the room's median response at the seats, with its ceiling, lasting features and incumbent?",
         needs="one set of summed takes at the seat poses (room/seat or rear/seat)",
         avoid="the speaker's own response; directivity and frequency read that",
@@ -233,7 +233,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("document", "preview", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
-                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3"),
+                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/4"),
 }
 
 #: The run order of the views a finished round publishes: ``room-grade``
@@ -343,14 +343,8 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
     }
 
 
-def read_purposes(purposes: tuple[str, ...], *, has_room: bool = False) -> set[str]:
-    """The purposes whose views read a round of these purposes: a speaker round
-    that kept its summed stops as room sets is read by the room views too."""
-    return set(purposes) | ({PURPOSE_ROOM} if purposes[0] == PURPOSE_SPEAKER and has_room else set())
-
-
-def bookkeeping_views(purposes: tuple[str, ...], *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
+def bookkeeping_views(purposes: tuple[str, ...]) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base, for a round of these purposes."""
-    wanted = read_purposes(purposes, has_room=has_room)
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
-    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows if wanted.intersection(row.bookkeeping))
+    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
+                 if set(purposes).intersection(row.bookkeeping))

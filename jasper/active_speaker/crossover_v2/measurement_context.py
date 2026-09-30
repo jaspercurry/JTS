@@ -35,7 +35,6 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
         "stimulus_id": record.get("stimulus_id", (record.get("program") or {}).get("stimulus_id")),
         "stimulus_wav_sha256": stimulus.get("wav_sha256"),
         "stimulus_peak_dbfs": stimulus.get("peak_dbfs"),
-        "gating_applied": record.get("gating_applied"),
     }
 
 
@@ -44,7 +43,7 @@ GRAPH_FIELDS = (
 )
 CAPTURE_FIELDS = (
     "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
-    "stimulus_peak_dbfs", "gating_applied", "stimulus_id",
+    "stimulus_peak_dbfs", "stimulus_id",
 )
 
 

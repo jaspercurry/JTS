@@ -40,7 +40,6 @@ from jasper.active_speaker.flat_spec import SPEC_BANDS
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import GATE_SWEEP_REFERENCE_BAND_HZ
 from jasper.audio_measurement.calibration import CalibrationCurve, apply_calibration_curve
-from jasper.audio_measurement.deconv import cap_capture_length
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import MAGNITUDE_SMOOTH_FRACTION
 from jasper.audio_measurement.gating import (
@@ -51,13 +50,6 @@ from jasper.audio_measurement.gating import (
     gated_segment,
     intersect_bands,
 )
-from jasper.audio_measurement.household_mic import resolve_setup_calibration
-from jasper.audio_measurement.program import ExcitationProgram, PROGRAM_PHASE_VERIFY
-from jasper.audio_measurement.program_analysis.locate import locate_global_offset
-from jasper.audio_measurement.program_analysis.model import CAPTURE_BOUND_MARGIN_S, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-from jasper.audio_measurement.program_analysis.response import deconvolve_window, driver_response, n_fft_for
-from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture
-from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
 from .feature_classification import UNCERTAINTY_UNSEPARATED
 from .feature_optics import (
@@ -67,8 +59,6 @@ from .feature_optics import (
     feature_q,
 )
 from .round_captures import PoseCapture, discover_captures, document_capture_id, played_graph_fingerprint
-from .record_index import reopen_measurement_capture
-from .position_cycle import take_artifact_path
 
 GENERATED_BY = "jasper.active_speaker.crossover_v2.gate_sweep"
 
@@ -231,47 +221,6 @@ def gated_curve(
         freqs[keep], db[keep], MAGNITUDE_SMOOTH_FRACTION
     )
     return np.interp(grid, freqs[keep], smoothed)
-
-
-def reference_gated_measurement(bundle_dir: Path, record_path: str) -> dict[str, Any]:
-    """One banked summed WAV through the analysis stage's adaptive reference gate."""
-    record, wav = reopen_measurement_capture(bundle_dir, take_artifact_path(bundle_dir, record_path))
-    if wav is None:
-        raise ValueError("measurement_capture_missing")
-    program = ExcitationProgram.from_dict(record["program"])
-    samples, rate = decode_wav_to_mono(wav)
-    if program.phase != PROGRAM_PHASE_VERIFY or program.channels != 1 or rate != program.sample_rate_hz:
-        raise ValueError("measurement_analysis_program_unsupported")
-    samples = cap_capture_length(samples, sweep_len=program.total_samples, sample_rate=rate,
-                                 max_capture_seconds=program.total_samples / rate + CAPTURE_BOUND_MARGIN_S)
-    offset, _, _, _ = locate_global_offset(program, samples, rate)
-    aligned, _ = align_summed_capture(program, samples, offset,
-        search_samples=round(SWEEP_SCHEDULE_RESIDUAL_CEILING_MS * rate / 1000))
-    averaged = average_summed_capture(program, aligned, offset)
-    segment = program.segment("sweep_verify")
-    impulse, _ = deconvolve_window(averaged, segment, offset + segment.start_sample, rate)
-    calibration = resolve_setup_calibration(record.get("capture_setup"), device=record.get("capture_device"))
-    grid = analysis_grid()
-    grid = grid[(grid >= segment.f1_hz) & (grid <= segment.f2_hz)]
-    response = driver_response(
-        "summed", impulse, rate,
-        calibration=calibration.curve if calibration is not None else None,
-        ambient_report=None, fc_hz=None, n_fft=n_fft_for(impulse),
-    )
-    keep = (response.freqs_hz >= GRID_LO_HZ * 0.7) & (response.freqs_hz <= GRID_HI_HZ * 1.3)
-    smoothed = smooth_fractional_octave(
-        response.freqs_hz[keep], response.magnitude_db[keep], MAGNITUDE_SMOOTH_FRACTION,
-    )
-    magnitude = np.interp(grid, response.freqs_hz[keep], smoothed)
-    fragment = response.gating or {}
-    return {"freqs_hz": tuple(grid), "magnitude_db": tuple(magnitude), "window": "gated",
-            "calibration": {"applied": calibration is not None,
-                            "calibration_id": calibration.calibration_id if calibration is not None else None},
-            "gate_window_ms": fragment.get("window_ms"),
-            "validity_floor_hz": response.validity_floor_hz,
-            "trusted_floor_hz": fragment.get("f_trusted_hz"),
-            "floor_source": fragment.get("floor_source"),
-            "smoothing_fractional_octave": MAGNITUDE_SMOOTH_FRACTION}
 
 
 def _band_mean_db(

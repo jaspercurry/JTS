@@ -10,7 +10,7 @@ import pytest
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.evidence_grid import evidence_bins
 from jasper.audio_measurement.program import build_verify_program, segment_stimulus
-from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.active_speaker.measurement_programs import POSE_KIND_SEAT
 from jasper.audio_measurement.program_analysis import (
     MeasurementGeometry, MeasurementPriors, analyze_program_capture,
 )
@@ -108,7 +108,7 @@ def test_a_gate_exemption_reaches_every_branch_segment_of_one_capture(monkeypatc
     priors = MeasurementPriors(crossover_fc_hz=1600)
     gated, exempt = (
         analyze_program_capture(program, capture, SR, priors=priors, geometry=geometry)
-        for geometry in (None, MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT))
+        for geometry in (None, MeasurementGeometry(gate_exempt_reason=POSE_KIND_SEAT))
     )
     for result in (gated, exempt):
         assert [r["band_hz"] for r in result.branch_diagnostic["responses"]] == [list(band) if band else None] * 3
@@ -117,7 +117,7 @@ def test_a_gate_exemption_reaches_every_branch_segment_of_one_capture(monkeypatc
 
     assert [r.role for r in rows["exempt"]] == ["woofer", "woofer:rear", "summed"]
     assert [r.gating["applied"] for r in rows["exempt"]] == [False] * 3
-    assert {r.gating["exempt_reason"] for r in rows["exempt"]} == {SEAT_EXEMPT}
+    assert {r.gating["exempt_reason"] for r in rows["exempt"]} == {POSE_KIND_SEAT}
     assert [r.validity_floor_hz for r in rows["exempt"]] == [None] * 3
     assert [r.gating["applied"] for r in rows["gated"]] == [True] * 3
     assert {r.gating["exempt_reason"] for r in rows["gated"]} == {None}

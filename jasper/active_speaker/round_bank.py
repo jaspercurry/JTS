@@ -216,9 +216,9 @@ def _index_poses(target: Path) -> list[str]:
 def _bookkeeping(
     target: Path, bundle: Path, view_runner: Callable[..., dict[str, Any]] | None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    from .measurement_programs import PURPOSE_SPEAKER, run_purposes  # lazy: bank-only program registry
+    from .measurement_programs import run_purposes  # lazy: bank-only program registry
     from .round_view_artifacts import bookkeeping_views  # lazy: the view table imports NumPy
-    from .run_manifest import RUN_MANIFEST_FILENAME, pointer_rows, room_sets, view_sets  # lazy: measurement types
+    from .run_manifest import RUN_MANIFEST_FILENAME, pointer_rows, view_sets  # lazy: measurement types
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
 
     artifacts, _ = round_artifact_dir(bundle)
@@ -226,17 +226,13 @@ def _bookkeeping(
     if manifest is None or not manifest.is_file():
         return None, []
     document = pointer_rows(json.loads(manifest.read_text()))
-    purposes = run_purposes(document["preset"])
-    room_groups = room_sets(document)
-    views = bookkeeping_views(purposes, has_room=bool(room_groups))
+    views = bookkeeping_views(run_purposes(document["preset"]))
     sets = view_sets(document)
     multiple_bases = sum(bool(row.get("base")) for row in sets) > 1
 
     results = []
     for view, per_set, grades_against_base in views:
         targets = sets if per_set and len(sets) > 1 else [None]
-        if purposes[0] == PURPOSE_SPEAKER and view.startswith("room"):
-            targets = room_groups
         for row in targets:
             set_id = row["set_id"] if row else None
             incumbent_id = None

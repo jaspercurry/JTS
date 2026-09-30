@@ -272,14 +272,14 @@ def run_purposes(banked: str) -> tuple[str, ...]:
         return (run_purpose(banked),)
 
 
-def gate_exemption(purpose: str | None, *, driver: str = "", distance_m: float | None = None) -> str | None:
-    """Why a take is read ungated: a room, bass or rear take measures the
-    room; a pose within the near-field distance of one driver reads the room
-    about 40 dB down (ADR-0366)."""
-    from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+def gate_exemption(kind: str | None, *, driver: str = "", distance_m: float | None = None) -> str | None:
+    """Why a take at this pose is read ungated: a seat pose is the room's own
+    measurement; a pose within the near-field distance of one driver reads the
+    room about 40 dB down. A take's purpose never exempts it (ADR-0400)."""
+    from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
-    if _validated_purpose(purpose) in (PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR):
-        return SEAT_EXEMPT
+    if kind == POSE_KIND_SEAT:
+        return POSE_KIND_SEAT
     return NEAR_FIELD_EXEMPT if at_driver_near_field(driver, distance_m) else None
 
 
@@ -379,7 +379,6 @@ class Preset:
     layout: str = ""
     levels: str | None = None
     stimulus: Mapping[str, Any] | None = None
-    room_sweep: bool = False
     branch_pair: str = BRANCH_PAIR_DRIVERS
     #: The named layouts this preset offers; ``layout`` is the one these poses are,
     #: or :data:`CUSTOM_LAYOUT` for an inline list (ADR-0366 §6).
@@ -396,9 +395,6 @@ class Preset:
         object.__setattr__(self, "purposes", validated_purposes(
             self.purposes, self.regime, [pose.driver for pose in self.poses]))
         validated_branch_pair(self.branch_pair, self.regime)
-        if not isinstance(self.room_sweep, bool) or (self.room_sweep and
-                (set(self.purposes) != {PURPOSE_SPEAKER} or self.regime != REGIME_PER_DRIVER)):
-            raise ValueError("room_sweep requires a boolean and a per-driver speaker program")
         if not isinstance(self.timing_take, bool):
             raise ValueError("timing_take must be a boolean")
 
@@ -414,7 +410,7 @@ class Preset:
 
     @property
     def capture_count(self) -> int:
-        return sum(p.repeats + self.room_sweep for p in self.poses)
+        return sum(p.repeats for p in self.poses)
 
 
 @dataclass(frozen=True)
@@ -539,7 +535,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
         unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "levels", "stimulus",
-                              "room_sweep", "branch_pair", "description", "use_when", "timing_take"}
+                              "branch_pair", "description", "use_when", "timing_take"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -574,7 +570,6 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
             mover=layouts[layout].mover,
             layout=layout, layouts=tuple(offered), levels=levels,
             stimulus=stimuli[stimulus] if stimulus is not None else None,
-            room_sweep=row.get("room_sweep", False),
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
             description=_text(row.get("description"), f"preset {preset_id} description"),
             use_when=_text(row.get("use_when"), f"preset {preset_id} use_when"),

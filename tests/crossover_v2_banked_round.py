@@ -871,7 +871,7 @@ def bank_seat_round(
                 lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                 gating_applied=False,
                 **stamp,
-            ), **_seat_capture(store, program, stop.index, magnitude), "measurement_purpose": stop.prompt.purpose}
+            ), **_seat_capture(store, program, stop.index, magnitude), "measurement_purpose": measurement_programs.PURPOSE_ROOM}
             for stop, magnitude in zip(stops, magnitudes)
         ),
         _receipt("r3"),

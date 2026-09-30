@@ -25,6 +25,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT, gate_exemption
 from jasper.audio_measurement import gating, program
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program_analysis import (
@@ -572,11 +573,11 @@ def test_every_shape_of_analysis_banks_its_complex_response(
         assert record["band_hz"] == list(bands[record["role"]])
 
 
-@pytest.mark.parametrize("exempt,windows", [(None, ["gated", "ungated"]), (gating.SEAT_EXEMPT, ["ungated"])])
-def test_a_summed_speaker_take_banks_both_windows(exempt, windows):
-    """A summed take the gate windows banks its gated curve, then that arrival
-    read ungated: exactly the curve a seat take of the same capture banks,
-    which banks that one alone (ADR-0383 §2)."""
+@pytest.mark.parametrize("kind,windows", [(POSE_KIND_BEARING, ["gated", "ungated"]), (POSE_KIND_SEAT, ["ungated"])])
+def test_a_summed_speaker_take_banks_both_windows(kind, windows):
+    """A summed take at a bearing, which the gate windows, banks its gated
+    curve, then that arrival read ungated: exactly the curve a seat take of
+    the same capture banks, which banks that one alone (ADR-0383 §2, ADR-0400)."""
     import numpy as np
     from scipy.signal import fftconvolve
 
@@ -592,11 +593,11 @@ def test_a_summed_speaker_take_banks_both_windows(exempt, windows):
                                            geometry=MeasurementGeometry(gate_exempt_reason=reason))
         return spatial.analysis_curve_records(analysis, prog)
 
-    records = banked(exempt)
+    records = banked(gate_exemption(kind))
 
     assert [(record["role"], record["window"]) for record in records] == [("summed", window) for window in windows]
-    assert records[0]["gate_window_ms"] is not None if exempt is None else records[0]["gate_window_ms"] is None
-    assert records[-1] == banked(gating.SEAT_EXEMPT)[0]
+    assert (records[0]["gate_window_ms"] is not None) is (kind == POSE_KIND_BEARING)
+    assert records[-1] == banked(gate_exemption(POSE_KIND_SEAT))[0]
 
 
 def test_a_measure_take_whose_repeat_dropped_out_banks_the_windows_it_read():

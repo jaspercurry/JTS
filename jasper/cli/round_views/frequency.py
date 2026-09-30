@@ -77,8 +77,7 @@ def _frequency_source(path: Path):
 
 def _cmd_frequency(args: argparse.Namespace) -> int:
     sources = [Path(source) for source in (args.source_a, args.source_b) if source]
-    # A banked round reads the view its bank filed, gated overlays included; this
-    # verb's own build has none (#5928 TB5).
+    # A banked round reads the view its bank filed (#5928 TB5).
     read = [(_banked_view(source) if source.is_dir() else None) or source for source in sources]
     # Resolving a source IS this verb's load stage, "that document holds no
     # curves" included: the fix is to name a different source.

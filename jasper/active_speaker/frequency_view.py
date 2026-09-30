@@ -13,7 +13,7 @@ from typing import Any
 
 from .frequency_display import prepare_frequency_curve
 
-SCHEMA = "jts_frequency_view/3"
+SCHEMA = "jts_frequency_view/4"
 FREQUENCY_VIEW_FILENAME = "frequency_view.json"
 
 

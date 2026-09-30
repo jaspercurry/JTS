@@ -111,7 +111,7 @@ def test_room_band_follows_coverage_and_support_counts_positions(tmp_path, floor
     selected = select_seat_takes(inputs.session_dir)
     takes = tuple(replace(take, band_hz=(floor_hz, take.band_hz[1])) for take in selected.takes)
     room = room_views.room_document(
-        takes, set_id="base", evidence=selected.evidence, bundle_dir=inputs.session_dir,
+        takes, set_id="base", evidence=selected.evidence,
         applied_profile_path=None, geometry_path=None, manifest={},
     )
     document, persistence = room["median"], room["persistence"]
@@ -182,44 +182,29 @@ def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> tuple[
     return Path(row.path).with_name(f"{take_id}.json").as_posix(), gated
 
 
-def test_the_ceiling_uses_the_highest_round_gate_and_discloses_its_take(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("gated", [False, True])
+def test_the_ceiling_is_the_disclosed_fallback_whatever_the_round_gated(tmp_path, capsys, gated) -> None:
+    """ADR-0256 rule 1: no applied tune carries a trusted floor (#6110), so the
+    room layer stops at the default and says why. A gated take in the round
+    does not move it (ADR-0400)."""
     round_dir = bank_seat_round(tmp_path)
-    seats = [(row.path, record) for row, record in measurement_documents(round_inputs(round_dir).session_dir)]
-    gates = [_add_gated_take(round_dir, take_id="gate-low", floor_hz=350.0),
-             _add_gated_take(round_dir, take_id="gate-source", floor_hz=357.1428571428571)]
-    write_manifest(round_dir, program="room", groups=[manifest_set(seats, set_id="seats"),
-                                                      manifest_set(gates, set_id="speaker")])
+    flags = []
+    if gated:
+        seats = [(row.path, record) for row, record in measurement_documents(round_inputs(round_dir).session_dir)]
+        write_manifest(round_dir, program="room", groups=[
+            manifest_set(seats, set_id="seats"),
+            manifest_set([_add_gated_take(round_dir, take_id="gate", floor_hz=450.0)], set_id="speaker")])
+        flags = ["--set", "seats"]
 
-    answer = _run(capsys, ["room", str(round_dir), "--set", "seats"])
+    answer = _run(capsys, ["room", str(round_dir), *flags])
     ceiling = json.loads(Path(answer["out"]).read_text())["ceiling"]
 
-    assert ceiling["hz"] == pytest.approx(357.1428571428571)
-    assert ceiling["provenance"] == {
-        "ceiling_hz": pytest.approx(357.1428571428571),
-        "ceiling_source": "round_gate",
-        "trusted_floor_hz": pytest.approx(357.1428571428571),
-        "source_take_id": "gate-source",
-        "source_curve_role": "summed",
-        "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
-        "reason": "",
-    }
-
-
-def test_a_pure_room_round_uses_the_fixed_ceiling(tmp_path, capsys) -> None:
-    round_dir = bank_seat_round(tmp_path)
-
-    _run(capsys, ["room", str(round_dir)])
-    ceiling = json.loads((round_dir / "room.json").read_text())["ceiling"]
-
-    assert ceiling == {"hz": ROOM_BOUNDARY_DEFAULT_HZ, "provenance": {
-        "ceiling_hz": ROOM_BOUNDARY_DEFAULT_HZ,
-        "ceiling_source": "fallback",
-        "trusted_floor_hz": None,
-        "source_take_id": None,
-        "source_curve_role": None,
-        "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
-        "reason": "the round has no gated summed or driver take",
-    }}
+    provenance = ceiling.pop("provenance")
+    reason = provenance.pop("reason")
+    assert ceiling == {"hz": ROOM_BOUNDARY_DEFAULT_HZ}
+    assert provenance == {"ceiling_hz": ROOM_BOUNDARY_DEFAULT_HZ, "ceiling_source": "fallback",
+                          "trusted_floor_hz": None, "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]}
+    assert isinstance(reason, str) and reason
 
 
 def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_path, capsys):
@@ -317,7 +302,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
                                   basis=selected.capture_basis)
-    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling(inputs.session_dir)),
+    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling()),
                       "set_id": selected.set_id, "evidence": selection.evidence}
     value = read_room_median(median)
     assert document["limits"] == {
@@ -358,7 +343,6 @@ def test_room_without_an_incumbent_discloses_null_and_reason(room_round, capsys,
     selection = select_seat_takes(inputs.session_dir)
     document = room_views.room_document(
         selection.takes, set_id="candidate", evidence=selection.evidence,
-        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None, manifest={"sets": groups},
     )
     assert document["incumbent"] is document["boundary"] is None
@@ -389,7 +373,6 @@ def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
     selection = select_seat_takes(inputs.session_dir)
     document = room_views.room_document(
         selection.takes, set_id=own, evidence=selection.evidence,
-        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None,
         manifest={"sets": [{"set_id": own, "base": True, "capture_basis": {}, "takes": []}]},
     )
@@ -450,9 +433,12 @@ def test_retired_room_verbs(verb):
 
 
 @pytest.mark.parametrize("purpose,floor_hz", [("speaker", 20.0), ("room", 30.0)])
-def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
+def test_a_speaker_packet_holds_driver_fits_and_a_room_packet_holds_the_room(
     speaker_round, tmp_path, capsys, purpose, floor_hz,
 ):
+    """A speaker round's packet holds each driver's fit at three poses and no
+    room section; a room round's summed takes at the same poses hold the room
+    evidence (ADR-0400)."""
     root, driver, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
@@ -462,14 +448,14 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
     for record in summed:
         record["curves"][0]["band_hz"][0] = floor_hz
     groups = []
-    for role in ("woofer", "tweeter", "summed"):
+    for role in ("woofer", "tweeter") if purpose == "speaker" else ("summed",):
         rows = []
         for index, degrees in enumerate((0, -20, 20)):
             source = summed[index] if role == "summed" else driver
             record = {**source, "take_id": f"{role}-{index}", "pose_kind": "bearing",
                       "position_deg": degrees, "vertical_deg": 0, "mark_distance_m": 1.0,
                       "gating_applied": role != "summed", "graph_scope": "candidate" if role == "summed" else "drivers",
-                      "measurement_purpose": "room" if role == "summed" else "speaker"}
+                      "measurement_purpose": purpose}
             record.pop("seat_offset_m", None)
             path = directory / "positions" / f"{record['take_id']}.json"
             path.write_text(json.dumps(record))
@@ -487,23 +473,27 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
     manifest_path, views = _bookkeeping(root, inputs.session_dir, round_views.run_bookkeeping)
     packet = write_round_packet(root, manifest_path, views)
     # A timing set bounds no prescription, so it is not listed as unavailable (#5632 F8).
-    assert set(packet["limits"]) == {"woofer", "tweeter", "summed"}
-    assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
-        (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
-    assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])
+    assert set(packet["limits"]) == ({"woofer", "tweeter"} if purpose == "speaker" else {"summed"})
+    catalog = _run(capsys, ["catalog", str(root)])
+    room_calls = {call["set_id"] for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room"
+                  for call in tool["calls"] if call["present"]}
+    if purpose == "speaker":
+        assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
+            (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
+        assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])
+        assert (packet["room"], room_calls) == ([], set())
+        return
     room, = packet["room"]
     assert room["set_id"] == room["incumbent"]["set_id"] == "summed"
     assert room["median"]["n_positions"] == room["persistence"]["spatial_support"]["n_positions"] == 3
     assert room["median"]["window"] == "ungated"
     assert set(room) == {"ceiling", "median", "spread_rms_db", "persistence", "incumbent", "boundary", "boundary_reason",
                          "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id", "schema"}
-    assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
     limits = packet["limits"]["summed"]
+    assert limits["bounds"]["admit_boost"] == room["admit_boost"]
     assert limits["status"] == "available"
     assert limits["bounds"]["band_hz"][0] == room["median"]["coverage_hz"][0] == floor_hz
     assert limits["bounds"]["freqs_hz"] == room["median"]["freqs_hz"]
     assert len(limits["bounds"]["cut_floor_db"]) == len(room["median"]["freqs_hz"])
     assert {row["set_id"] for row in views if row["view"] == "room" and row["status"] == "written"} == {"summed"}
-    catalog = _run(capsys, ["catalog", str(root)])
-    assert {call["set_id"] for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room"
-            for call in tool["calls"] if call["present"]} == {"summed"}
+    assert room_calls == {"summed"}

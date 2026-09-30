@@ -240,7 +240,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
 
     path.write_text(json.dumps(record))
     manifest = _joined(inputs)
-    manifest["sets"][0]["capture_basis"].update(gating_applied=True, role="tweeter")
+    manifest["sets"][0]["capture_basis"].update(role="tweeter")
     monkeypatch.setattr("jasper.active_speaker.speaker_fit.fit_branches", controlled_fit)
     rows = _fits(inputs, manifest, prescription_sources(inputs), {})
     assert rows
@@ -547,7 +547,7 @@ def test_a_design_cloud_that_refuses_is_disclosed_and_its_takes_fit_nothing(spea
     for path, take in rows:
         take_artifact_path(inputs.session_dir, path).write_text(json.dumps(take))
     group = manifest_set(rows, set_id="speaker-set")
-    group["capture_basis"].update(role="woofer", gating_applied=True)
+    group["capture_basis"].update(role="woofer")
     write_manifest(root, groups=[group])
     directory, _ = round_artifact_dir(inputs.session_dir)
 
@@ -621,18 +621,17 @@ def test_a_base_that_does_not_reopen_refuses_by_its_code_and_the_packet_still_bu
     speaker_round, capsys, damage, code,
 ):
     """#5909: a round whose banked candidate does not reopen (an ADR-0352 bass section, ADR-0381)
-    is no base either judge charges; the bank still stores its packet and its room set's limits."""
+    is no base either judge charges; the bank still stores its packet."""
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
     path = directory / "candidate.json"
     path.write_text(damage(json.loads(path.read_text())))
     row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
-    speaker, room = (manifest_set([(row.path, record)], set_id=set_id) for set_id in ("speaker-set", "room-set"))
+    speaker = manifest_set([(row.path, record)], set_id="speaker-set")
     speaker["capture_basis"].update(role="woofer")
     speaker["takes"][0].update(role="woofer")
-    room["capture_basis"].update(role="summed", gating_applied=False)
-    write_manifest(root, groups=[speaker, room])
+    write_manifest(root, groups=[speaker])
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == round_views.EXIT_UNREADABLE
     fit = json.loads(capsys.readouterr().out)
     assert crossover_prescriber.main(["contract", "--round", str(root)]) == crossover_prescriber.EXIT_UNREADABLE
@@ -645,7 +644,6 @@ def test_a_base_that_does_not_reopen_refuses_by_its_code_and_the_packet_still_bu
     assert ([entry["reason_summary"] for entry in packet["fits"]], packet["limits"]["speaker-set"], digests.pop("speaker")) == (
         [{"unavailable": code}], {"status": "unavailable", "reason": code},
         {"status": "unavailable", "reason": code, "field": "candidate.json"})
-    assert "schema" in packet["limits"]["room-set"]
     assert digests and all(isinstance(digest, str) for digest in digests.values())
 
 

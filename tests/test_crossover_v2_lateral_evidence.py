@@ -31,7 +31,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
 from jasper.audio_measurement import evidence_grid
 from jasper.audio_measurement.evidence_grid import lateral_evidence_grid_hz
 from jasper.active_speaker.plan_run import prepare_plan_captures
-from jasper.audio_measurement import gating
 from jasper.audio_measurement.program import build_verify_program
 from jasper.audio_measurement.program_analysis import (
     DriverResponse,
@@ -172,12 +171,9 @@ def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     ).capture_plan
     (entry,) = plan.entries
     assert entry.kind_label == PHASE_LATERAL
-    band = (150.0, 20000.0) if purpose == "room" else None
-    assert captures[0].spec.sweep_band_hz == (band or ())
-    program = build_verify_program(
-        FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()),
-        sweep_band_hz=band,
-    )
+    # No purpose names a summed sweep's band (ADR-0400).
+    assert captures[0].spec.sweep_band_hz == ()
+    program = build_verify_program(FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()))
     assert entry.duration_ms == capture_plan._program_duration_ms(program) + capture_plan.CAPTURE_ENTRY_MARGIN_MS
     assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
 
@@ -234,25 +230,6 @@ def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
     # and CHECK's ambient floor to grade the pose's own SNR.
     assert pose.crossover_fc_hz == anchor.crossover_fc_hz
     assert pose.ambient_report == anchor.ambient_report
-
-
-def test_each_pose_is_analyzed_under_its_own_gate_exemption():
-    """The session reads the pose the operator followed: a pose at one driver
-    ungated as near-field (ADR-0360), a room seat as the room, a bearing gated."""
-    request = ac.AngleCaptureRequest(stops=(
-        ac.AngleStop(0, ac.REGIME_NEAR_FIELD, kind="close", distance_m=0.015, purpose="reference",
-                     driver="woofer:rear"),
-        ac.AngleStop(0, ac.REGIME_SUMMED, kind="seat", seat_offset_m=(0.0, 0.0, 0.0), purpose="room"),
-        ac.AngleStop(20, ac.REGIME_SUMMED, purpose="speaker"),
-    ))
-    prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
-    index_phase_map = _lateral_map(len(prompts))
-    c = _conductor(FakeSeams(), index_phase_map=index_phase_map, lateral_prompts=prompts,
-                   lateral_consumer=journey.LATERAL_CONSUMER_FORWARD_MODEL)
-
-    assert [c.capture_geometry(PHASE_LATERAL, index).gate_exempt_reason
-            for index, phase in sorted(index_phase_map.items()) if phase == PHASE_LATERAL] == [
-        gating.NEAR_FIELD_EXEMPT, gating.SEAT_EXEMPT, None]
 
 
 def test_a_pose_replays_the_anchors_own_program_object():

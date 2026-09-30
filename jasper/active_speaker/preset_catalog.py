@@ -24,7 +24,7 @@ def preset_catalog(context: Any) -> list[dict[str, Any]]:
     return [{
         "preset": row.preset, "purposes": list(row.purposes), "description": row.description,
         "use_when": row.use_when, "regime": row.regime, "branch_pair": row.branch_pair,
-        "room_sweep": row.room_sweep, "cleared_layers": list(cleared_layers(row.purpose, base=True, regime=row.regime)),
+        "cleared_layers": list(cleared_layers(row.purpose, base=True, regime=row.regime)),
         "stimulus": dict(row.stimulus) if row.stimulus else None,
         "level_ladder_db": list(LEVEL_OFFSETS_DB) if row.levels else None, "layout": row.layout,
         "layouts": [_layout(row.preset, name, programs, targets, context) for name in row.layouts],

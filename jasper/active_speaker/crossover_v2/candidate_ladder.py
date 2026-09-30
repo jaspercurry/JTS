@@ -18,7 +18,8 @@ from jasper.audio_measurement.series_stats import curve_difference, deviation_su
 from jasper.platform.json_fields import finite_float
 
 from .journey import PHASE_LATERAL
-from .position_cycle import OWN_WINDOW, measured_curve_band, take_curves
+from .pose_curve import WINDOW_GATED, WINDOW_UNGATED
+from .position_cycle import measured_curve_band, take_curves
 from .record_index import Measurement
 from .round_captures import REFUSE_CAPTURE_UNREADABLE, doc_pose_key, document_capture_id
 from .round_inputs import RoundInputs
@@ -73,7 +74,8 @@ class _Read(NamedTuple):
 
 def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
     """Every lateral take the round kept, of any purpose, by its own record,
-    with the banked view's curves when the view holds any, else the record's.
+    with the banked view's curves when the view holds any, else the record's
+    curves through both windows, as the view draws them.
     A take the view lacks reads as having no curve. A view curve is matched by
     its take id alone: the speaker program's view carries no ``phase``
     (round_packet.write_round_packet)."""
@@ -93,7 +95,8 @@ def _lateral_takes(session_dir: Path, frequency_path: Path) -> Iterator[_Take]:
                 yield _Take(take_id, row, record, f"{frequency_path}#{take_id}", viewed.get(take_id))
             return
     for take_id, (row, record) in records.items():
-        yield _Take(take_id, row, record, row.path, take_curves(record, OWN_WINDOW))
+        yield _Take(take_id, row, record, row.path,
+                    [curve for window in (WINDOW_GATED, WINDOW_UNGATED) for curve in take_curves(record, window) or ()])
 
 
 def _read_poses(session_dir: Path, frequency_path: Path) -> _Read:

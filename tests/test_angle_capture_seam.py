@@ -75,6 +75,14 @@ from tests.crossover_v2_banked_round import (
 )
 
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
+
+
+def _both_at(angles_deg, *, mover: str = ac.MOVER_HUMAN) -> ac.AngleCaptureRequest:
+    """Both regimes at each angle, per-driver first."""
+    return ac.AngleCaptureRequest(stops=tuple(
+        ac.AngleStop(angle, regime, purpose="speaker")
+        for angle in angles_deg for regime in (ac.REGIME_PER_DRIVER, ac.REGIME_SUMMED)), mover=mover)
+
 _FC_HZ = 2000.0
 _ROLES_BANDS = (
     RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
@@ -147,14 +155,13 @@ def test_angle_stop_refuses_a_non_whole_degree(bad: object) -> None:
 
 # --- the whole-degree contract binds EVERY door, not just two --------------- #
 #
-# The three request constructors used to coerce with ``int(a)`` BEFORE the
-# validator ran, so `per_driver_at([0.4])` silently produced an on-axis capture.
-# These pin all three doors against the truncation cases.
+# A request constructor that coerced with ``int(a)`` BEFORE the validator ran
+# would turn `per_driver_at([0.4])` into an on-axis capture. These pin every
+# door against the truncation cases.
 
 _DOORS = (
     pytest.param(lambda a: ac.per_driver_at([a]), id="per_driver_at"),
     pytest.param(lambda a: ac.summed_at([a]), id="summed_at"),
-    pytest.param(lambda a: ac.both_at([a]), id="both_at"),
 )
 _TRUNCATING = [7.9, -7.9, 0.4, "45", None]
 
@@ -248,7 +255,7 @@ def test_program_for_stop_returns_the_shipped_object_by_identity() -> None:
     check, measure, verify, cloud = object(), object(), object(), object()
     programs = {"check": check, "measure": measure, "verify": verify, "cloud": cloud}
 
-    per_driver, summed = ac.resolve_request(ac.both_at([22]))
+    per_driver, summed = ac.resolve_request(_both_at([22]))
     assert ac.program_for_stop(per_driver, **programs) is measure
     assert ac.program_for_stop(summed, **programs) is cloud
 
@@ -260,16 +267,6 @@ def test_per_driver_stop_refuses_before_the_gain_solve() -> None:
         ac.program_for_stop(
             stop, check=object(), measure=None, verify=object(), cloud=object(),
         )
-
-
-def test_both_at_pairs_the_regimes_so_the_microphone_moves_once_per_angle() -> None:
-    """Position-major: two regimes at one angle are ADJACENT stops."""
-    stops = ac.resolve_request(ac.both_at([0, 7]))
-    assert [(s.angle_deg, s.regime) for s in stops] == [
-        (0, ac.REGIME_PER_DRIVER), (0, ac.REGIME_SUMMED),
-        (7, ac.REGIME_PER_DRIVER), (7, ac.REGIME_SUMMED),
-    ]
-    assert [s.index for s in stops] == [1, 2, 3, 4]
 
 
 def test_requested_angle_order_is_the_running_order() -> None:
@@ -317,7 +314,7 @@ def test_the_seam_never_mints_the_lateral_phase() -> None:
     for request in (
         ac.per_driver_at(_SHIPPED_ANGLES),
         ac.summed_at(_SHIPPED_ANGLES),
-        ac.both_at(_SHIPPED_ANGLES, mover=ac.MOVER_ARM),
+        _both_at(_SHIPPED_ANGLES, mover=ac.MOVER_ARM),
     ):
         phases = {s.program_phase for s in ac.resolve_request(request)}
         assert PHASE_LATERAL not in phases
@@ -402,7 +399,7 @@ def test_the_string_and_protractor_combination_is_reachable() -> None:
 
 def test_human_mover_taps_and_declares_no_position() -> None:
     """A human move waits for a tap and declares no position target."""
-    for stop in ac.resolve_request(ac.both_at([0, 22])):
+    for stop in ac.resolve_request(_both_at([0, 22])):
         assert stop.screen == {"auto_advance": capture_plan.AUTO_ADVANCE_TAP}
         assert capture_plan.POSITION_DEG_KEY not in stop.screen
 
@@ -415,7 +412,7 @@ def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
     tape, released by their own tap -- which is exactly the shape
     ``V2PlanShape.positions_gated`` exists to say apart from this one.
     """
-    for stop in ac.resolve_request(ac.both_at([0, -22], mover=ac.MOVER_ARM)):
+    for stop in ac.resolve_request(_both_at([0, -22], mover=ac.MOVER_ARM)):
         assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
         assert stop.screen["countdown_s"] == str(capture_plan.AUTO_ADVANCE_COUNTDOWN_S)
         assert stop.screen[capture_plan.POSITION_DEG_KEY] == str(stop.angle_deg)
@@ -477,7 +474,7 @@ def test_announced_indexes_delegates_to_the_shipped_owner() -> None:
     session opener, so an angle walk inside an announced session announces
     nothing -- the shipped behaviour for every capture after the first.
     """
-    request = ac.both_at(_SHIPPED_ANGLES)
+    request = _both_at(_SHIPPED_ANGLES)
     assert ac.announced_indexes(request) == ()
     assert ac.announced_indexes(request) == capture_plan.announced_capture_indexes(
         ac.index_phase_map(request)
@@ -501,7 +498,7 @@ def test_a_resolved_stop_is_actually_frozen() -> None:
 
 def test_index_phase_map_matches_the_resolved_walk() -> None:
     """The map and the stops cannot describe different walks."""
-    request = ac.both_at([0, 7], mover=ac.MOVER_ARM)
+    request = _both_at([0, 7], mover=ac.MOVER_ARM)
     stops = ac.resolve_request(request)
     assert ac.index_phase_map(request) == {
         s.index: s.program_phase for s in stops
@@ -570,7 +567,7 @@ def test_a_summed_stop_refuses_rather_than_being_measured_per_driver() -> None:
     """Sessions without summed support refuse summed and mixed requests."""
     for request in (
         ac.summed_at([0]),
-        ac.both_at([7]),  # mixed: one per-driver stop is not enough
+        _both_at([7]),  # mixed: one per-driver stop is not enough
     ):
         with pytest.raises(ac.LateralWalkRefused) as excinfo:
             ac.session_lateral_walk(
@@ -834,16 +831,13 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     assert len({(s.angle_deg, s.elevation_deg) for s in request.stops}) == (
         program.mic_move_count
     )
-    assert [stop.regime for stop in request.stops] == [
-        regime for pose in program.poses
-        for regime in ([ac.REGIME_PER_DRIVER] * pose.repeats + ([ac.REGIME_SUMMED] if program.room_sweep else []))
-    ]
+    assert [stop.regime for stop in request.stops] == [program.regime for pose in program.poses for _ in range(pose.repeats)]
     # Table order, with each pose's repeats ADJACENT: the microphone moves once
     # per distinct pose, so a repeat that drifted apart would be a second trip.
     assert [(s.angle_deg, s.elevation_deg) for s in request.stops] == [
         (pose.azimuth_deg, pose.elevation_deg)
         for pose in program.poses
-        for _ in range(pose.repeats + program.room_sweep)
+        for _ in range(pose.repeats)
     ]
     assert (request.program, request.layout) == (program.preset, program.layout)
 
@@ -1157,7 +1151,7 @@ _GOLDEN_BASELINE_EXPRESS = (
     ("candidates", "regime", "phase", "price"),
     [
         ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
-         {"mic_moves": 5, "captures": 15, "ceiling_min": 54,
+         {"mic_moves": 5, "captures": 10, "ceiling_min": 44,
           "stimulus_s": None}),
         (("base", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
          {"mic_moves": 5, "captures": 17, "ceiling_min": 58,
@@ -1171,7 +1165,7 @@ def test_shipped_program_geometry_and_full_capture_price(
     request = ac.request_for_preset(
         mp.run_preset("speaker", "baseline_express"), candidates=candidates,
     )
-    stops = tuple(stop for stop in ac.resolve_request(request) if candidates or stop.regime == ac.REGIME_PER_DRIVER)
+    stops = ac.resolve_request(request)
     geometries = [capture_plan.position_geometry(stop.prompt) for stop in stops]
 
     assert [

@@ -1150,6 +1150,31 @@ def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(m
     assert fakes.analyzed[-1][4].declared_first_bounce_s == (room.first_bounce_s(distance_m) if declared else None)
 
 
+@pytest.mark.parametrize("phase,purpose,pose,reason", [
+    ("measure", "speaker", {"pose_kind": "seat", "mark_distance_m": None}, "seat"),
+    ("verify", "room", {"pose_kind": "bearing", "mark_distance_m": None}, None),
+    ("verify", "rear", {"pose_kind": "behind", "mark_distance_m": 0.1}, None),
+    ("lateral", "reference", {"pose_kind": "close", "mark_distance_m": 0.015, "pose_driver": "woofer:rear"}, "near_field"),
+    ("lateral", "reference", {"pose_kind": "close", "mark_distance_m": 0.3, "pose_driver": "woofer:rear"}, None),
+])
+def test_each_take_is_read_through_the_window_its_pose_picks_in_every_phase(monkeypatch, phase, purpose, pose, reason):
+    """The host reads a take's gate exemption from the pose on its record, in
+    every phase: a seat reads the room, a pose at one driver within 100 mm reads
+    it about 40 dB down, and a room, bass or rear take anywhere else is gated
+    (ADR-0400)."""
+    fakes = FlowSeams()
+    conductor = _conductor(fakes, index_phase_map={1: phase}, gain_plan_db={"woofer": -20.0, "tweeter": -26.0})
+    records = SimpleNamespace(enrich=None, after_bank=None)
+    monkeypatch.setattr(correction_run_host, "load_declared_geometry", lambda: None)
+    correction_run_host.bind_plan_analysis(conductor, records, evidence={},
+                                           manifest=SimpleNamespace(calibration={}, capture_record=dict))
+
+    records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1, "measurement_purpose": purpose,
+                          "program": conductor.program_for_phase(phase).to_dict(), **pose})
+
+    assert fakes.analyzed[-1][4].gate_exempt_reason == reason
+
+
 @pytest.mark.parametrize("scope, phase", [
     ("drivers", "check"), ("drivers", "measure"), ("timing", "timing"),
     ("candidate", "verify"), ("candidate_branches", "lateral"),

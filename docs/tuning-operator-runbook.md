@@ -55,7 +55,7 @@ The [Rear section](tuning-playbook.md#rear) explains the model and its figures.
 
 ## Room
 
-Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the applied candidate, including its applied bass extension; room is off only when the run composes a candidate without it. Follow the page prompts; use Retake or Done there. `--layout room_quick` keeps the three bearings for smoke tests. A room candidate trial uses the seat set; `trial <fp> --mover arm --attest-rig-clear --wait` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied speaker's trusted floor, clamped to room bounds. Use `room` for the document and trial at the same poses.
+Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the applied candidate, including its applied bass extension; room is off only when the run composes a candidate without it. Follow the page prompts; use Retake or Done there. `--layout room_quick` keeps the three bearings for smoke tests; a take at a bearing also banks its gated window, and the room views read the ungated one ([ADR-0400](adr/0400-the-window-follows-the-pose-not-the-purpose.md)). A room candidate trial uses the seat set; `trial <fp> --mover arm --attest-rig-clear --wait` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied tune's trusted floor, clamped to room bounds; no applied tune carries one yet ([#6110](https://github.com/jaspercurry/JTS/issues/6110)), so it stops at the 350 Hz default and says so ([ADR-0400](adr/0400-the-window-follows-the-pose-not-the-purpose.md)). Use `room` for the document and trial at the same poses.
 
 ## Near-field
 

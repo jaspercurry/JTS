@@ -32,10 +32,10 @@ from .frequency_view import FREQUENCY_VIEW_FILENAME
 from .linearization_fit import unavailable_fit
 from .round_view_artifacts import ARTIFACT_BY_VIEW, PACKET_FAMILIES
 from .speaker_fit import design_clouds, speaker_fit
-from .measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER, run_purpose
+from .measurement_programs import PURPOSE_REAR, PURPOSE_SPEAKER, run_purpose
 from .round_verdicts import round_verdicts
 from .round_packet_report import gate_fields, packet_index
-from .run_manifest import RUN_MANIFEST_KIND, RunManifest, room_sets, view_sets
+from .run_manifest import RUN_MANIFEST_KIND, RunManifest, view_sets
 from .crossover_v2.refusal_copy import CrossoverV2Refused, exception_detail
 
 if TYPE_CHECKING:
@@ -148,10 +148,10 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
     fits = []
     for group in manifest.get("sets", ()):
         set_role = group["capture_basis"].get("role")
-        if group["capture_basis"].get("gating_applied") is False or set_role in (None, "summed"):
+        if set_role in (None, "summed"):
             continue
         for take in group["takes"]:
-            if not take["selected"]:
+            if not take["selected"] or take.get("gating_applied") is False:
                 continue
             take_id = take["take_id"]
             if take_id in unclouded:
@@ -244,13 +244,12 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         sources = {}
     profile = sources.get("applied_profile") or {}
     limits = {}
-    rooms = room_sets(manifest)
-    for group in view_sets(manifest):
-        section = PURPOSE_ROOM if purpose == PURPOSE_SPEAKER and group in rooms else purpose
+    sets = view_sets(manifest)
+    for group in sets:
         try:
-            section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None)
-            if section in contract_programs(section_sources):
-                contract = prescription_contracts(programs=(section,), **section_sources)[section]
+            section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(sets) > 1 else None)
+            if purpose in contract_programs(section_sources):
+                contract = prescription_contracts(programs=(purpose,), **section_sources)[purpose]
                 limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
             limits[group["set_id"]] = unavailable(_refusal_code(exc, "evidence_unreadable"))
