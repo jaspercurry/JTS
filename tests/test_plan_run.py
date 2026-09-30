@@ -1097,6 +1097,33 @@ def test_a_branch_take_at_the_mark_plays_6_db_under_its_quieter_branch(front_db,
     assert max(readings[2:]) <= 80.0
 
 
+def test_a_re_placed_branch_take_probes_both_branches_again():
+    """A new placement of a branch set's first take starts at its first branch's
+    probe again, never at the take unlevelled (ADR-0365, ADR-0403 §3)."""
+    request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
+
+    result, fakes, _, _ = _run_levelled(request, (), ceiling_db=-12.0, replace_at=3,
+                                        chain={"woofer": 110.0, "woofer:rear": 110.0})
+
+    assert result.status == "complete"
+    assert [(call["spec"].graph_scope, call["stimulus_dbfs"]) for call in fakes.play.calls] == [
+        ("drivers", None), ("drivers", None), ("candidate_branches", -37.0)] * 2 + [("candidate_branches", -37.0)]
+
+
+def test_a_branch_set_finds_its_own_level_after_a_summed_set_at_its_spot():
+    """A branch take after a close summed take at the same spot never shares the
+    summed probe's level, which bounds neither branch alone (ADR-0403 §3)."""
+    pose = Pose(0, 0, kind="behind", distance_m=0.1)
+    request = ac.AngleCaptureRequest(stops=(
+        ac.AngleStop(pose, ac.REGIME_SUMMED, purpose="rear"),
+        ac.AngleStop(pose, ac.REGIME_BRANCHES, purpose="rear", branch_pair="front_rear")), repeats=2)
+
+    captures = plan_run.prepare_plan_captures(request)
+
+    assert [(capture.spec.graph_scope, capture.spec.level_probe) for capture in captures] == [
+        ("candidate", True), ("candidate", False), ("candidate_branches", True), ("candidate_branches", False)]
+
+
 def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():
     """A close set's first take that reads loud at every level is left unmeasured
     once its retakes are spent. The rest of its set plays at the last level solved
