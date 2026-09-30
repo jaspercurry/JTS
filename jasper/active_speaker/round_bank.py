@@ -208,7 +208,7 @@ def _index_poses(target: Path) -> list[str]:
 
     try:
         write_position_cycle(target)
-    except (PositionCycleError, OSError):
+    except (PositionCycleError, EvidenceUnavailable, OSError):
         return [POSITION_CYCLE_FILENAME]
     return []
 

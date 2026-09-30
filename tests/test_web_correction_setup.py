@@ -15,6 +15,7 @@ hardware.
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.web import correction_crossover_v2_volume as v2volume
 from jasper.web import correction_crossover_v2_state as v2state
 
@@ -145,6 +146,22 @@ def test_get_measurement_data_dispatches_a_and_b(monkeypatch):
     assert json.loads(resp.split(b"\r\n\r\n", 1)[1]) == {
         "a": "aaa", "b": "bbb",
     }
+
+
+def test_measurement_data_answers_a_round_that_refuses_by_name(monkeypatch):
+    """A round banked before a field its takes now need refuses with its code
+    and the field, never a bare 500 (#2902)."""
+    from jasper.web import correction_measurements
+
+    def refuse(**_kwargs):
+        raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"take_id": "t", "field": "pose_kind"})
+
+    monkeypatch.setattr(correction_measurements, "build_data", refuse)
+    resp = _drive("/measurements/data?a=round:old")
+
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+    assert b"422" in resp.split(b"\r\n", 1)[0]
+    assert (body["code"], body["detail"]["field"]) == (TAKE_CURVES_NOT_BANKED, "pose_kind")
 
 
 def test_follower_keeps_local_crossover_measurement_post(monkeypatch):

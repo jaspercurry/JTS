@@ -48,6 +48,7 @@ from urllib.parse import parse_qs, urlparse
 
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 
 from jasper.platform.log_event import log_event
 from jasper.platform.logging_setup import configure_logging
@@ -449,6 +450,8 @@ def _get_measurements_data(handler: _Handler) -> None:
         ))
     except correction_measurements.MeasurementViewRequestError as exc:
         handler._send_client_error(exc)
+    except EvidenceUnavailable as exc:
+        handler._send_json({**refusal_envelope(exc), "detail": exc.detail}, status=HTTPStatus.UNPROCESSABLE_ENTITY)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         logger.exception("/measurements/data failed")
         handler._send_json(refusal_envelope(exc), status=500)

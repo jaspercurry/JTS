@@ -161,6 +161,26 @@ def test_a_round_with_no_walk_to_index_is_banked_without_one(tmp_path):
     assert round_inputs(banked.path).session_dir.name == session_dir.name
 
 
+def test_a_take_banked_before_its_pose_kind_is_named_and_the_round_still_banks(tmp_path):
+    """The pose index and the stored evidence are best-effort: each names the
+    field the take lacks, and neither unwinds the round (#2902)."""
+    session_dir, state_path = _live_session(tmp_path)
+    take = next(session_dir.rglob("positions/lateral_*.json"))
+    take.write_text(json.dumps({key: value for key, value in json.loads(take.read_text()).items() if key != "pose_kind"}))
+
+    banked = bank_round(
+        session_dir,
+        campaign_root=tmp_path / "campaigns",
+        state_path=state_path,
+        **_ssot(tmp_path, present=False),
+    )
+
+    packet = json.loads((banked.path / "packet.json").read_text())
+    assert POSITION_CYCLE_FILENAME in banked.provenance["missing"]
+    assert [(row["reason"], row["detail"]["field"]) for row in packet["unavailable"]
+            if row["artifact"] == "evidence"] == [(TAKE_CURVES_NOT_BANKED, "pose_kind")]
+
+
 @pytest.mark.parametrize(
     "sha, git_absent", [("abc1234", False), (None, True)], ids=["sha", "no-sha"]
 )

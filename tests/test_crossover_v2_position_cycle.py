@@ -29,6 +29,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.spatial import (
     MARK_DISTANCE_M,
     POSITION_AXIS_HORIZONTAL,
@@ -172,6 +173,14 @@ def test_a_take_banked_without_its_candidate_is_refused(tmp_path):
 
     with pytest.raises(PositionCycleError):
         position_cycle_document(tmp_path, derived_at=STAMP)
+
+
+def test_a_take_banked_without_its_elevation_refuses_by_that_field(tmp_path):
+    _bank(tmp_path, [{k: v for k, v in _record(1, 7).items() if k != "vertical_deg"}])
+
+    with pytest.raises(EvidenceUnavailable) as excinfo:
+        position_cycle_document(tmp_path, derived_at=STAMP)
+    assert (excinfo.value.reason, excinfo.value.detail["field"]) == (TAKE_CURVES_NOT_BANKED, "vertical_deg")
 
 
 def test_every_indexed_value_is_present_in_the_banked_record(tmp_path):

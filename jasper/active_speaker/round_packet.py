@@ -97,7 +97,7 @@ def banked_evidence(inputs: RoundInputs) -> tuple[dict[str, Any], Exception | No
     stores ``evidence: None``, which readers refuse (ADR-0383)."""
     try:
         evidence = build_round_evidence(inputs)
-    except ROUND_INPUT_ERRORS as exc:
+    except (*ROUND_INPUT_ERRORS, EvidenceUnavailable) as exc:
         return {"packet_fingerprint": None, EVIDENCE_KEY: None}, exc
     return {"packet_fingerprint": evidence.get("packet_fingerprint"), EVIDENCE_KEY: fingerprinted(evidence)}, None
 
@@ -256,7 +256,8 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
             limits[group["set_id"]] = unavailable(_refusal_code(exc, "evidence_unreadable"))
     stored, error = banked_evidence(inputs)
     if error is not None:
-        errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable")})
+        errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable"),
+                       **({"detail": error.detail} if isinstance(error, EvidenceUnavailable) else {})})
     refused: dict[str, EvidenceUnavailable] = {}
     clouds = design_clouds(manifest, refused=refused)
     errors += [{"artifact": "design_clouds", "set_id": set_id, "reason": refusal.reason, "detail": refusal.detail}

@@ -116,6 +116,11 @@ const requests = [];
 async function getJSON(url) {
   requests.push(url);
   if (mode === "error") throw new Error("load failed");
+  if (mode === "refused") {
+    const refusal = new Error("A take in the measurement did not bank a field this view reads.");
+    refusal.body = { code: "take_curves_not_banked", detail: { field: "pose_kind" } };
+    throw refusal;
+  }
   if (mode === "empty") {
     return { catalog: [], selected: { a: null, b: null }, view: null };
   }
@@ -301,6 +306,14 @@ check(
   elements.get("measurement-chart-status").textContent === "load failed" &&
   chartPayloads.at(-1).series.length === 0,
   "load failures clear stale chart data and show the error",
+);
+
+mode = "refused";
+await elements.get("measurement-run-a").dispatch("change");
+check(
+  elements.get("measurement-chart-status").textContent.includes("take_curves_not_banked") &&
+  elements.get("measurement-chart-status").textContent.includes("pose_kind"),
+  "a named refusal shows its code and the field it names",
 );
 
 console.log(JSON.stringify({ ok: true, passed }));

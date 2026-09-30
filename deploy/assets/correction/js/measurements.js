@@ -239,13 +239,19 @@ function render(payload) {
   draw();
 }
 
+function refusalName(body) {
+  if (!body || !body.code) return '';
+  const field = body.detail && body.detail.field;
+  return ` (${field ? `${body.code}: ${field}` : body.code})`;
+}
+
 async function load(runA = '', runB = null) {
   els.status.textContent = 'Loading measurements…';
   try {
     render(await getJSON(dataUrl(runA, runB)));
   } catch (error) {
     clearView(error && error.message
-      ? error.message : 'The saved measurements could not be loaded.');
+      ? `${error.message}${refusalName(error.body)}` : 'The saved measurements could not be loaded.');
   }
 }
 
