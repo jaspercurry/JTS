@@ -25,6 +25,7 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_level_probe_program,
     build_measure_program,
+    build_summed_level_probe_program,
     build_verify_program,
 )
 from jasper.audio_measurement.excitation import NEAR_FIELD_SILENCE_S
@@ -117,11 +118,17 @@ class NoProgramForPhaseError(RuntimeError):
     """This session composes no excitation for that phase."""
 
 
+def _scope_backoff_db(spec: Any) -> float:
+    """The dB a summed take plays under the seat-equivalent level: how far its
+    graph plays over the level anchor's, never negative."""
+    return max(0.0, max((gain for role, gain in (spec.scope_gains_db or {}).items()
+                         if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
+
+
 def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_dbfs: float | None = None, *,
                            safety_profile: Mapping[str, Any], role_targets: Mapping[str, str]) -> ExcitationProgram:
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
-    backoff = max(0.0, max((gain for role, gain in (spec.scope_gains_db or {}).items()
-                           if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
+    backoff = _scope_backoff_db(spec)
     if stimulus_dbfs is not None:
         # A retake plays the peak it asks for, never above its first attempt's (#5709).
         backoff = max(backoff, BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs)
@@ -184,17 +191,32 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     )
 
 
-def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
-    """A driver pose's level probe: its take's target, band and ceiling, rising
-    at most ``MAX_STEP_DB`` a burst from well under the seat-equivalent level to
-    that ceiling (ADR-0365)."""
-    band, seat_equivalent, ceiling, channels = _solo_take(excitation, spec)
+def _probe_gains(seat_equivalent: float, ceiling: float) -> tuple[float, ...]:
+    """A probe's burst gains: at most ``MAX_STEP_DB`` apart, from well under the
+    seat-equivalent level to the take's own ceiling (ADR-0365)."""
     start = min(seat_equivalent - LEVEL_PROBE_START_BACKOFF_DB, ceiling)
     steps = math.ceil(round((ceiling - start) / MAX_STEP_DB, 6))
+    return tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1))
+
+
+def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
+    """A driver pose's level probe: its take's target, band and ceiling (ADR-0365)."""
+    band, seat_equivalent, ceiling, channels = _solo_take(excitation, spec)
     return build_level_probe_program(
-        band, tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1)),
+        band, _probe_gains(seat_equivalent, ceiling),
         sweep_band_hz=_solo_sweeps(spec, band.role)["sweep_band_hz"], gap_s=NEAR_FIELD_SILENCE_S,
         downstream_gain_db=excitation.session_volume_db, channels=channels,
+    )
+
+
+def compose_summed_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
+    """A driverless summed take's level probe: its own sweep band and ceiling, the
+    summed gain its take plays at when no level is asked (ADR-0403)."""
+    backoff = _scope_backoff_db(spec)
+    return build_summed_level_probe_program(
+        _probe_gains(BASE_STIMULUS_PEAK_DBFS - backoff, excitation._summed_gain(backoff)),
+        sweep_band_hz=spec.sweep_band_hz or measurement_band_hz(excitation.roles), gap_s=NEAR_FIELD_SILENCE_S,
+        downstream_gain_db=excitation.session_volume_db,
     )
 
 
@@ -407,10 +429,11 @@ def program_for_phase(
 def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Mapping[str, float] | None,
                      stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
                      role_targets: Mapping[str, str]) -> ExcitationProgram:
+    if spec.level_probe and stimulus_dbfs is None:
+        # A take that finds its level plays its probe until a level is asked (ADR-0365, ADR-0403).
+        return compose_level_probe(excitation, spec) if solo_target(spec) else compose_summed_probe(excitation, spec)
     if solo_target(spec):
-        # A driver pose's first attempt, with no level asked yet, finds its level (ADR-0365).
-        return (compose_level_probe(excitation, spec) if stimulus_dbfs is None
-                else compose_target_program(excitation, spec, stimulus_dbfs))
+        return compose_target_program(excitation, spec, stimulus_dbfs)
     if spec.program_phase == PHASE_CHECK:
         fallback = CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None else 0.0
         program = excitation.check_program(extra_backoff_db=fallback)

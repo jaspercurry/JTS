@@ -37,7 +37,7 @@ from .measured_crossover_candidate import (
 from .movers import MOVER_ARM
 from .measurement_programs import (
     BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, UnknownPresetError,
-    candidate_identity, cleared_layers, pose_level, run_purposes,
+    candidate_identity, cleared_layers, run_purposes,
 )
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
 from .seat_level_reference import (
@@ -53,7 +53,7 @@ LIVE_ADMISSION = (
     "crossover_v2.session.TuningSession._proven_level",
 )
 #: The anchor is the seat level at the 1 m mark; a pose that levels itself plays at its own target instead.
-POSE_LEVEL_SPL_BASIS = "seat_anchor_1m (driver pose: levels itself at the microphone)"
+POSE_LEVEL_SPL_BASIS = "seat_anchor_1m (a pose that levels itself at the microphone)"
 
 
 @dataclass(frozen=True)
@@ -170,7 +170,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         code = REASON_MEASUREMENT_OUTPUT_MUTED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
     admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
-    if any(pose_level(stop.pose) is not None for stop in plan.stops):
+    if any(stop.level is not None for stop in plan.stops):
         admission["predicted_spl_basis"] = POSE_LEVEL_SPL_BASIS
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:

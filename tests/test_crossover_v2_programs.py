@@ -729,7 +729,7 @@ def _near_field_rear(cap_dbfs: float, stimulus=NEAR_FIELD) -> tuple[SessionExcit
     band = FrequencyBand(20.0, 4000.0)
     return (SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": cap_dbfs}, -20.0, None,
                               {"woofer:rear": 8.0}, target_bands={"woofer:rear": band}),
-            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), stimulus=stimulus))
+            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), stimulus=stimulus, level_probe=True))
 
 
 def _sweeps(program):
@@ -811,6 +811,29 @@ def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, 
     assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
     assert len({s.n_samples for s in _sweeps(probe)}) == len(gains)
     assert {(s.f1_hz, s.f2_hz) for s in _sweeps(probe)} == {(s.f1_hz, s.f2_hz) for s in _sweeps(take)} == {band_hz}
+
+
+@pytest.mark.parametrize("scope_gains_db", [None, {"woofer": 3.0, "tweeter": 1.0}])
+def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
+    """A driverless summed take that finds its level plays its probe first:
+    bursts of its own summed sweep's band, rising at most MAX_STEP_DB from 30 dB
+    under that take's ceiling to the ceiling, no two of one length (ADR-0365,
+    ADR-0403)."""
+    excitation = _excitation({"woofer": 0.0, "tweeter": 0.0}, {"woofer": 4.0, "tweeter": 4.0})
+    spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="trial", program_phase="lateral",
+                       scope_gains_db=scope_gains_db, level_probe=True)
+    probe = program_for_spec(spec, excitation, GAIN_PLAN_DB, safety_profile={}, role_targets={})
+    sweep = program_for_spec(spec, excitation, GAIN_PLAN_DB, 0.0, safety_profile={},
+                             role_targets={}).segment("sweep_verify")
+    bursts = probe.stimulus_segments()
+    gains = [burst.gain_db for burst in bursts]
+
+    assert is_level_probe(probe) and (probe.phase, probe.channels) == ("verify", 1)
+    assert (gains[0], gains[-1]) == pytest.approx((sweep.gain_db - 30.0, sweep.gain_db))
+    assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
+    assert len({burst.n_samples for burst in bursts}) == len(bursts)
+    assert {(burst.kind, burst.f1_hz, burst.f2_hz) for burst in bursts} == {(KIND_SUMMED_SWEEP, sweep.f1_hz,
+                                                                          sweep.f2_hz)}
 
 
 @pytest.mark.parametrize("rear,target", [

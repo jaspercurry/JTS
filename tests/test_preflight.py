@@ -209,19 +209,20 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
         assert report.rung_admission["predicted_spl_basis"] == POSE_LEVEL_SPL_BASIS
 
 
-@pytest.mark.parametrize("distance_m,stimulus,driver", [
-    (0.015, NEAR_FIELD, "woofer"), (0.015, None, "woofer"), (0.15, NEAR_FIELD, "woofer"), (None, None, "woofer"),
-    (0.3, None, "")])
-def test_the_spl_basis_names_a_pose_that_levels_itself(distance_m, stimulus, driver):
+@pytest.mark.parametrize("distance_m,stimulus,driver,levels", [
+    (0.015, NEAR_FIELD, "woofer", True), (0.015, None, "woofer", True), (0.15, NEAR_FIELD, "woofer", True),
+    (None, None, "woofer", True), (0.3, None, "", True), (None, None, "", False)])
+def test_the_spl_basis_names_a_pose_that_levels_itself(distance_m, stimulus, driver, levels):
     """The seat anchor predicts no take at a pose that levels itself at the
     microphone: preflight says so for a driver's pose at any distance, whatever
-    it plays, and for no pose that plays at the run's fader (ADR-0361, ADR-0366 §2)."""
+    it plays, and for a driverless summed spot closer than the mark, but not for
+    a pose that plays at the run's fader (ADR-0361, ADR-0403)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0, kind="bearing" if distance_m is None else "close",
                                                distance_m=distance_m, driver=driver),
                                           REGIME_PER_DRIVER if driver else REGIME_SUMMED, purpose="reference",
                                           stimulus=stimulus),))
     report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer",)))
-    assert (report.rung_admission.get("predicted_spl_basis") == POSE_LEVEL_SPL_BASIS) is bool(driver)
+    assert (report.rung_admission.get("predicted_spl_basis") == POSE_LEVEL_SPL_BASIS) is levels
 
 
 def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():

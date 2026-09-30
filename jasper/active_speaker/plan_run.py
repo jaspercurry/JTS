@@ -30,7 +30,7 @@ from .angle_capture import (
     WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
     WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, LateralWalkRefused,
-    resolve_request, stop_specs,
+    level_sets, resolve_request, stop_specs,
 )
 from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures
 from .commission_wiring import commissioning_spl_ceiling_db
@@ -50,7 +50,7 @@ from .crossover_v2.refusal_copy import (
 from .crossover_v2.session import TuningSession
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
-from .measurement_programs import BASE_CANDIDATE, PoseLevel, pose_level
+from .measurement_programs import BASE_CANDIDATE, PoseLevel
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest, driver_level_mismatches
 from .round_copy import PLACE_MICROPHONE, take_counts
@@ -60,6 +60,8 @@ _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
 Analyze = Callable[[Mapping[str, Any]], ProgramAnalysis]
 #: What a take's assessment may raise and still answer with a stop; any other ends the run.
 _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
+#: The verdicts that retake at the level they name.
+_LEVEL_RETAKES = frozenset({"retake_louder", "retake_quieter"})
 #: A graded take's host effects (a rearm, an acceptance), held while its capture
 #: plays so that no later rung is composed from them (ADR-0383).
 _held_effects: ContextVar[list[Callable[[], None]] | None] = ContextVar("held_effects", default=None)
@@ -159,7 +161,10 @@ class _Work:
     config: int
     size: int
     entry: Any
+    #: The rule this take is levelled and graded by; ``None`` plays at the fader or carries its set's level.
     pose_level: PoseLevel | None
+    #: The take whose landed level this take's set shares (``angle_capture.level_sets``).
+    level_set: int | None
 
 
 def _pose(stop: Any) -> dict[str, Any]:
@@ -299,10 +304,12 @@ async def run_plan(
         stops = [capture.resolved(request) for capture in captures]
         manifest.planned = [_planned_row(index, capture.repeat, capture.stop)
                             for index, capture in enumerate(captures, 1)]
-        places = [capture.stop.pose.place for capture in captures]
+        angle_stops = [capture.stop for capture in captures]
     else:
         stops = [resolved[offset // request.repeats] for offset in range(len(specs))]
-        places = [request.stops[offset // request.repeats].pose.place for offset in range(len(specs))]
+        angle_stops = [request.stops[offset // request.repeats] for offset in range(len(specs))]
+    places = [stop.pose.place for stop in angle_stops]
+    level_starts = level_sets(angle_stops)
     anchor = request.level.resolved
     level = request.level.volume_db
     if level is None and session is not None:
@@ -325,19 +332,20 @@ async def run_plan(
                     "capture_index": manifest.planned[offset]["index"]}
             planned.append(stop)
             if spec is not None:
-                expanded.append((spec, stop, pose_index, stops[offset]))
+                expanded.append((spec, stop, pose_index, stops[offset],
+                                 angle_stops[offset].level if spec.level_probe else None, level_starts[offset]))
     manifest.planned = planned
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
                                  [row[3].prompt for row in expanded], [row[3].candidate_id for row in expanded])
     work: list[_Work] = []
     for _pose_index, expanded_batch in groupby(enumerate(expanded), key=lambda row: row[1][2]):
         expanded_rows = list(expanded_batch)
-        for config, (index, (played_spec, stop, pose_index, resolved_stop)) in enumerate(expanded_rows, 1):
+        for config, (index, (played_spec, stop, pose_index, resolved_stop, rule, level_set)) in enumerate(
+                expanded_rows, 1):
             entry = SimpleNamespace(screen={**resolved_stop.screen,
                                     "title": resolved_stop.prompt.headline, "body": resolved_stop.prompt.detail,
                                     **position_screen_keys(resolved_stop.prompt), **screens.get(index + 1, {})})
-            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry,
-                              pose_level(resolved_stop.prompt.pose)))
+            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry, rule, level_set))
     return await _run(work, session=session, door=door, level=level,
                       manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
@@ -485,6 +493,15 @@ async def _run(
                     if (retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES
                             and item.spec.program_phase != PHASE_CHECK):
                         manifest.mark_not_measured(item.stop["index"], retry.fault)
+                        solved = [*playing[offset].level_ladder_dbfs, *(
+                            (retry.next_gain_db,) if retry.next in _LEVEL_RETAKES and retry.next_gain_db is not None
+                            else ())]
+                        if item.pose_level is not None and solved:
+                            # A set whose levelling take is left unmeasured plays at the last level
+                            # solved for it, never above the last it played (ADR-0403).
+                            for index in range(offset + 1, len(work)):
+                                if work[index].level_set == item.level_set and work[index].pose_level is None:
+                                    playing[index] = replace(work[index].spec, level_ladder_dbfs=(min(solved),))
                         retry = None
                         retry_was_measured = False
                         offset += 1
@@ -503,7 +520,7 @@ async def _run(
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
-                if retry.next in {"retake_louder", "retake_quieter"}:
+                if retry.next in _LEVEL_RETAKES:
                     if retry.next_gain_db is None:
                         manifest.reason = retry.fault or "retry_gain_missing"
                         break
@@ -618,9 +635,9 @@ async def _run(
                 retry = None
                 retry_was_measured = False
                 if item.pose_level is not None:
-                    # The rest of this placement plays at the level this take landed (ADR-0361).
+                    # The rest of this take's set plays at the level it landed (ADR-0361, ADR-0403).
                     for index in range(offset + 1, len(work)):
-                        if work[index].pose_index == item.pose_index:
+                        if work[index].level_set == item.level_set:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)
                 if signals.retake.is_set():
                     continue

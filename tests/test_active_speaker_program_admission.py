@@ -27,7 +27,9 @@ from jasper.active_speaker.crossover_v2 import conductor_context
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, effective_preset
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.platform.speaker_layout import measurement_target_id
-from jasper.active_speaker.crossover_v2.programs import SessionExcitation, excitation_from_context, program_for_spec
+from jasper.active_speaker.crossover_v2.programs import (
+    SessionExcitation, compose_summed_probe, excitation_from_context, program_for_spec,
+)
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
@@ -174,8 +176,11 @@ def _roles(woofer_band=(500.0, 1600.0), tweeter_band=(1600.0, 10_000.0)):
     ]
 
 
+@pytest.mark.parametrize("probe", [False, True], ids=["take", "its_probe"])
 @pytest.mark.parametrize("scope", ["candidate", "timing"])
-def test_way1_summed_full_band_is_admitted(tmp_path, scope):
+def test_way1_summed_full_band_is_admitted(tmp_path, scope, probe):
+    """A summed take, and the level probe a close driverless one plays first
+    (ADR-0403), pass summed admission through the same protected graph."""
     topology, safety, targets = _profile_and_targets(
         passive=True, woofer_floor=30, woofer_highpass=30, max_sweep_duration_s=4,
     )
@@ -188,10 +193,13 @@ def test_way1_summed_full_band_is_admitted(tmp_path, scope):
         program_id="way1", analysis={"source": "prescribed"}, source_preset=preset,
         role_attenuations_db={"full_range": 0.0},
     )
-    program = SessionExcitation(
+    excitation = SessionExcitation(
         (RoleBand("full_range", 0, FrequencyBand(20, 20000)),), {"full_range": 0},
         -20, None, {"full_range": 4}, (20, 20000),
-    ).verify_program()
+    )
+    program = (compose_summed_probe(excitation, MeasureSpec(kind="baseline", graph_scope="candidate",
+                                                            candidate_id="way1", level_probe=True))
+               if probe else excitation.verify_program())
     wav = tmp_path / "way1.wav"
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
@@ -202,8 +210,8 @@ def test_way1_summed_full_band_is_admitted(tmp_path, scope):
     assert admission.allowed
     assert admission.refusals == ()
     assert {segment.role for segment in admission.segments} == {"full_range"}
-    sweep = program.segment("sweep_verify")
-    assert (sweep.f1_hz, sweep.f2_hz) == (20, 20000)
+    assert is_level_probe(program) is probe
+    assert {(s.f1_hz, s.f2_hz) for s in program.stimulus_segments() if s.kind == "summed_sweep"} == {(20, 20000)}
 
 
 def _measure_program(session_volume_db, roles=None, gains=None, courtesy_prelude=False):
@@ -1189,7 +1197,7 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.
         "active": True, "targets": {"drivers": active_driver_targets(topology)},
     }, topology=topology)
     spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), stimulus=preset("nearfield/each").stimulus,
-                       program_phase=PHASE_LATERAL)
+                       program_phase=PHASE_LATERAL, level_probe=True)
     excitation = excitation_from_context(context, context.session_volume_db)
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),

@@ -14,7 +14,7 @@ import pytest
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd, refusal_copy
 from jasper.active_speaker.alignment_evidence import round_alignment
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.measurement_programs import DRIVER_POSE_LEVEL
+from jasper.active_speaker.measurement_programs import SPOT_LEVEL
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
@@ -589,7 +589,7 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
     analysis = _analysis(stimulus_levels=levels, **({} if heard else {"locations": (_loc("sweep_w", confidence=0.05),)}))
     verdict = cd.assess(analysis, phase="measure", prior_verdict=prior, program=program,
                         spl={"sens_factor_db": -12.0, "ceiling_db_spl": stop},
-                        pose_level=DRIVER_POSE_LEVEL, level_asked_dbfs=asked)
+                        pose_level=SPOT_LEVEL, level_asked_dbfs=asked)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_capped", False) is (asked == -35.0)
     if reading is not None:
@@ -618,7 +618,7 @@ def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, fl
                                         sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
     levels = tuple(LevelReading(g, spl - 106.0, floor - 106.0) for g, spl in zip(gains, heard))
     spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, **({"stopped_at_db_spl": stopped_at} if stopped_at else {})}
-    verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, pose_level=DRIVER_POSE_LEVEL)
+    verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, pose_level=SPOT_LEVEL)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_shortfall_db") == shortfall
 

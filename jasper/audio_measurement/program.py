@@ -1137,15 +1137,33 @@ def build_level_probe_program(
     Each burst is longer than the one before by whole cycles at the band's floor
     (at least :data:`LEVEL_PROBE_GROWTH_S`), so no two share a shape in any band.
     """
-    f1_hz, f2_hz = _intersect_band(role_band.band, *sweep_band_hz)
+    return _level_probe(PROGRAM_PHASE_MEASURE, KIND_SWEEP, role_band.role, role_band.channel,
+                        _intersect_band(role_band.band, *sweep_band_hz), gains_db, gap_s=gap_s,
+                        downstream_gain_db=downstream_gain_db, channels=channels)
+
+
+def build_summed_level_probe_program(
+    gains_db: Sequence[float], *, sweep_band_hz: tuple[float, float], gap_s: float, downstream_gain_db: float,
+) -> ExcitationProgram:
+    """A driverless summed take's level probe: the same bursts, of its mono summed
+    sweep's band, in the shape summed admission reads (ADR-0403)."""
+    return _level_probe(PROGRAM_PHASE_VERIFY, KIND_SUMMED_SWEEP, None, 0, sweep_band_hz, gains_db, gap_s=gap_s,
+                        downstream_gain_db=downstream_gain_db, channels=1)
+
+
+def _level_probe(
+    phase: str, kind: str, role: str | None, channel: int, band_hz: tuple[float, float],
+    gains_db: Sequence[float], *, gap_s: float, downstream_gain_db: float, channels: int,
+) -> ExcitationProgram:
+    f1_hz, f2_hz = band_hz
     step_s = max(math.log(f2_hz / f1_hz) / f1_hz, LEVEL_PROBE_GROWTH_S)
     gap_n = _seconds_to_samples(gap_s, PROGRAM_SAMPLE_RATE_HZ)
     segments: list[ProgramSegment] = []
     cursor = _append_pilot_ambient_window(segments, 0)
     for index, gain_db in enumerate(gains_db):
         burst = _stimulus(
-            segment_id=f"{LEVEL_PROBE_SEGMENT_PREFIX}{index}", kind=KIND_SWEEP, role=role_band.role,
-            channel=role_band.channel, start=cursor, f1_hz=f1_hz, f2_hz=f2_hz,
+            segment_id=f"{LEVEL_PROBE_SEGMENT_PREFIX}{index}", kind=kind, role=role,
+            channel=channel, start=cursor, f1_hz=f1_hz, f2_hz=f2_hz,
             duration_s=LEVEL_PROBE_BURST_S + index * step_s, gain_db=gain_db,
             downstream_gain_db=downstream_gain_db,
         )
@@ -1153,7 +1171,7 @@ def build_level_probe_program(
         cursor += burst.n_samples
         segments.append(_silence(f"{LEVEL_PROBE_SEGMENT_PREFIX}gap_{index}", cursor, gap_n))
         cursor += gap_n
-    return _finalize(PROGRAM_PHASE_MEASURE, channels, segments, cursor)
+    return _finalize(phase, channels, segments, cursor)
 
 
 def is_level_probe(program: ExcitationProgram) -> bool:

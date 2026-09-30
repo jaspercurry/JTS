@@ -33,7 +33,8 @@ from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIR
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
-    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, REASON_INTERNAL_ERROR, TakeVerdict,
+    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_LEVEL_OFF_TARGET, REASON_RETRIES_SPENT,
+    REASON_INTERNAL_ERROR, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -48,7 +49,9 @@ from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.level import LevelReading
-from jasper.audio_measurement.program import ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program
+from jasper.audio_measurement.program import (
+    ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program, build_summed_level_probe_program,
+)
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
 from jasper.platform.json_fields import CodedFieldError
@@ -845,9 +848,12 @@ class _LevelRecords:
         band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
         peak = min(self.probe_db if record.get("stimulus_dbfs") is None else record["stimulus_dbfs"], self.ceiling_db)
         reading = next(self.readings)
+        probe = record.get("stimulus_dbfs") is None and self.manifest.specs[record["index"]].level_probe
         program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
                                              downstream_gain_db=0.0, channels=1)
-                   if record.get("stimulus_dbfs") is None and record.get("pose_driver") else
+                   if probe and record.get("pose_driver") else
+                   build_summed_level_probe_program((peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                                    downstream_gain_db=0.0) if probe else
                    build_measure_program({"woofer": peak}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2}))
         record.update(
             program=program.to_dict(),
@@ -1009,6 +1015,47 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
     assert fakes.play.rungs == [None, None, None]
     assert selected == [True, False, True]
     assert not any("level_step" in progress for progress in gate.progress)
+
+
+def test_a_close_driverless_spot_turns_itself_down_once():
+    """rear_behind's spot 0.1 m behind the cabinet reads louder than the mark at
+    the run's fader. It plays one probe of its own summed sweep, and its take is
+    turned down to 80 dB; the mark before it plays at the fader and is never
+    levelled (ADR-0403)."""
+    result, fakes, selected, gate = _run_levelled(
+        ac.request_for_preset(run_preset("rear/express", "rear_behind")), (75.0, 92.0, 80.0))
+
+    assert result.status == "complete"
+    assert fakes.play.rungs == [None, None, -55.0]
+    assert selected == [True, False, True]
+    steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
+    assert list(steps.values()) == ["probe", "levelled"]
+
+
+def test_a_close_driverless_set_shares_one_level():
+    """A close driverless set probes once, at its first take. Its repeats and its
+    lateral pose play at the level that take landed and answer to their repeats,
+    so a lateral that reads 4 dB under the target is not raised (ADR-0403)."""
+    request = replace(ac.request_for_preset(run_preset("rear/express", poses=json.dumps([
+        {"azimuth_deg": angle, "elevation_deg": 0, "distance_m": 0.5} for angle in (0, 20)]))), repeats=2)
+
+    result, fakes, selected, _ = _run_levelled(request, (90.0, 80.0, 80.4, 76.0, 76.3))
+
+    assert result.status == "complete"
+    assert fakes.play.rungs == [None] + [-53.0] * 4
+    assert selected == [False] + [True] * 4
+
+
+def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():
+    """A close set's first take that reads loud at every level is left unmeasured
+    once its retakes are spent. The rest of its set plays at the last level solved
+    for it, never at the take's ceiling (ADR-0403)."""
+    request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
+
+    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 6 + (80.0,))
+
+    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0, -83.0, -90.0, -97.0]
+    assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
 @pytest.mark.parametrize("web", [True, False], ids=["web", "ladder"])

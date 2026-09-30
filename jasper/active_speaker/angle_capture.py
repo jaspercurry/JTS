@@ -47,8 +47,10 @@ from .measurement_programs import (
     candidate_identity,
     cleared_layers,
     Pose,
+    PoseLevel,
     Preset,
     plan_poses,
+    pose_level,
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     REGIME_BRANCHES,
@@ -250,6 +252,34 @@ class AngleStop:
         rides); a stop naming its driver plays that driver alone instead."""
         return self.regime in (REGIME_SUMMED, REGIME_BRANCHES) and not self.pose.driver
 
+    @property
+    def level(self) -> PoseLevel | None:
+        """The level rule of this stop's takes, where its pose's rule
+        (:func:`~.measurement_programs.pose_level`) meets what plays there: a
+        driver's pose always levels itself (ADR-0365); a driverless stop only
+        when it plays the summed sweep, whose probe summed admission reads, and
+        no bass stimulus, whose ladder is a deliberate series (ADR-0403)."""
+        if self.pose.driver or (self.regime == REGIME_SUMMED and self.stimulus is None):
+            return pose_level(self.pose)
+        return None
+
+
+def level_sets(stops: Sequence[AngleStop]) -> tuple[int | None, ...]:
+    """For each take in run order, the index of the take whose level it shares,
+    or ``None`` when it plays at its run's fader (ADR-0366 §2). A driver's
+    takes share a level within their placement (ADR-0361). A driverless summed
+    spot closer than the mark shares one with the next spots at its kind and
+    distance -- its candidates, repeats and lateral poses -- found by the set's
+    first take (ADR-0403)."""
+    def key(stop: AngleStop) -> tuple[object, ...]:
+        return stop.pose.place if stop.pose.driver else (stop.pose.kind, stop.pose.distance_m)
+
+    starts: list[int | None] = []
+    for index, stop in enumerate(stops):
+        joins = index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)
+        starts.append(None if stop.level is None else starts[-1] if joins else index)
+    return tuple(starts)
+
 
 def _stop_pose(**stated: Any) -> Pose:
     """A stop's pose from its stated fields, refused as a stop is (a
@@ -334,7 +364,7 @@ DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
 #: The template fields the EXECUTOR assigns per capture, and which a walk
 #: therefore may not state: a stated one would be silently replaced at every
 #: stop and silently kept on the design-axis spec.
-_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids")
+_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe")
 
 
 @dataclass(frozen=True)
