@@ -158,7 +158,7 @@ def _registered_action(*codes: str | None) -> Mapping[str, Any] | None:
     """The next action ``REASON_REGISTRY`` holds for the first of ``codes`` that has one (ADR-0300)."""
     from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: import cost (NumPy); jasper-round's parser and reads stay light (ADR-0393, tests/test_cli_round.py)
 
-    return next((spec.next_action for code in codes if (spec := REASON_REGISTRY.get(code or "")) and spec.next_action), None)
+    return next((spec.next_action for code in codes if code and (spec := REASON_REGISTRY.get(code)) and spec.next_action), None)
 
 
 def refused(

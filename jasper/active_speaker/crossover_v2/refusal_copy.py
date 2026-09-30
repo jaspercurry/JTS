@@ -299,7 +299,7 @@ class ReasonSpec:
     # a generic destination rather than a load-bearing control) and the
     # ``next_action`` of a refusal body or preflight issue (``refusal_copy_for``,
     # ``PreflightIssue.from_code``). Shape is the mapping the envelope emits:
-    # ``{"id", "label", "href"}``; a command's action has no ``href``.
+    # ``{"id", "label", "href"}``.
     next_action: Mapping[str, Any] | None = None
     # True only for measured-and-rejected recording quality, never a level or safety fault.
     capture_quality: bool = False
@@ -342,7 +342,7 @@ ARM_STOP_COPY = {
 }
 ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR}
 
-#: The analysis-side evidence codes' household copy, under the next action that gets their evidence.
+#: The household copy of the analysis-side evidence codes and the command-line tools' own codes, under the next action each names.
 _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("measure_again", "Measure this round again"): {
         evidence_reasons.REASON_FIT_NOT_FINITE: "A fitted filter term is not a finite number, so the fit is published without numbers.",
@@ -509,7 +509,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "mic_calibration_file_unreadable": "The calibration file cannot be read, or holds no calibration curve.",
         "mic_calibration_lookup_invalid": "The model and serial name no calibration that the vendor can look up.",
         "mic_calibration_none_registered": "No household microphone is registered.",
-        "mic_calibration_store_unwritable": "The speaker's calibration folder cannot be written; writing it needs sudo.",
+        "mic_calibration_store_unwritable": "The speaker's calibration folder cannot be written. Writing it needs sudo.",
         "mic_calibration_unavailable": "No calibration is available for the measurement microphone: none is "
                                        "remembered, or its file cannot be read.",
         "mic_calibration_unresolvable": "The registered microphone names a calibration that is no longer on the speaker.",
@@ -601,10 +601,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "capture_slot_busy": "Another measurement holds the capture slot. Finish or cancel it, then join again.",
         "run_answer_invalid": "The speaker's answer to the run request names no run.",
     },
-}
-
-#: The command-line tools' own codes, whose next action is a command or a value: it has no page to link.
-_COMMAND_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("run_as_root", "Run it on the speaker as root"): {
         "dry_run_requires_local_host": "Dry-run reads this machine's facts. Run it on the speaker.",
         "local_state_unreadable": "The speaker's local state cannot be read by this user.",
@@ -628,7 +624,7 @@ _COMMAND_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("check_speaker", "Check that the speaker answers, then read its state"): {
         "answer_lost": "The speaker's answer was lost, so the outcome is unknown.",
     },
-    ("stop_audition", "Stop the audition with jasper-audition stop"): {
+    ("stop_audition", "Put the full graph back with jasper-audition stop"): {
         "audition_not_restored": "The audition ended, and the speaker is not back on its full graph.",
     },
 }
@@ -723,8 +719,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
                         next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
-    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message, next_action={"id": action, "label": label})
-       for (action, label), rows in _COMMAND_COPY.items() for code, message in rows.items()},
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
                         next_action={"id": "measure_again", "label": "Measure this round again",
                                      "href": "/sound/speaker/crossover/"})
