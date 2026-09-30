@@ -1075,6 +1075,27 @@ def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -
     assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
+@pytest.mark.parametrize(("program", "layout", "poses", "refused"), [
+    ("drivers/each", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}]', True),
+    ("rear/express", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.2}]', True),
+    ("rear/pair", "rear_behind", None, True),
+    ("bass/axis", "seat_express", None, False),
+], ids=["driver", "close set", "branch set", "bass"])
+def test_a_plan_states_no_ladder_for_a_take_that_levels_itself(program, layout, poses, refused) -> None:
+    """A take that levels itself plays its probe first, so a staged plan whose
+    template states a ladder is refused where every plan document enters, the
+    page's and ``jasper-round run --plan``'s alike; a bass stop keeps its ladder
+    (ADR-0405)."""
+    document = ac.request_for_preset(mp.run_preset(program, layout, poses), targets=("woofer", "tweeter")).to_dict()
+    document["template"]["level_ladder_dbfs"] = [-12.0]
+    if refused:
+        with pytest.raises(ac.LateralWalkRefused) as excinfo:
+            ac.AngleCaptureRequest.from_mapping(document)
+        assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
+    else:
+        assert ac.AngleCaptureRequest.from_mapping(document).template.level_ladder_dbfs == (-12.0,)
+
+
 def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> None:
     """One template, two readers: the design-axis spec drops the summed sweep the
     drivers scope cannot play and keeps the ladder and ceiling every scope can;

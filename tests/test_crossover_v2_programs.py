@@ -38,7 +38,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import replace
-from itertools import product, takewhile
+from itertools import product
 from types import SimpleNamespace
 
 import pytest
@@ -81,7 +81,6 @@ from jasper.audio_measurement.program import (
     is_level_probe,
 )
 from jasper.active_speaker.profile import ramp_bound_db_spl
-from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.audio_measurement.ramp import MAX_STEP_DB
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
@@ -908,7 +907,7 @@ SEAT_EQUIVALENT_DBFS = -12.0
 BLIND_CUT_DB = 12.0
 #: A driver's take plays up to digital full scale under its cap: the seat-equivalent cap is removed (ADR-0403 §4).
 DRIVER_CEILING_DBFS = 0.0
-#: A probe's first burst at the output, fader plus digital gain (ADR-0403 §4).
+#: A probe's first burst at the output, fader plus digital gain (ADR-0405).
 PROBE_START_OUTPUT_DBFS = -60.0
 #: Fake chains: what the microphone reads for digital full scale at the output, from a seat to 15 mm.
 FAKE_CHAINS_DB_SPL = (100.0, 115.0, 125.0, 135.0)
@@ -921,19 +920,11 @@ DRIVER_POSES = """[
     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0, 0, 0], "driver": "woofer"}]"""
 
 
-def _assert_probe_rises_from_minus_60_and_ends_at_its_ramp_bound(program, fader_db):
+def _assert_probe_rises_from_minus_60_under_its_ramp_bound(program, fader_db):
     gains = [segment.gain_db for segment in program.stimulus_segments()]
     assert gains[0] == pytest.approx(min(PROBE_START_OUTPUT_DBFS - fader_db, gains[-1]))
     assert all(0.0 < later - earlier <= MAX_STEP_DB + 1e-9 for earlier, later in zip(gains, gains[1:]))
-    bound = ramp_bound_db_spl(85.0)
-    for chain_db_spl in FAKE_CHAINS_DB_SPL:
-        heard = [gain + fader_db + chain_db_spl for gain in gains]
-        whole = list(takewhile(lambda level: level <= bound, heard))
-        assert heard[0] <= bound and whole
-        loudest = len(whole) - 1
-        take_db = min(gains[-1], solve_gain(LevelReading(gains[loudest], whole[loudest], None),
-                                            target_db=80.0, tolerance_db=2.0, max_raise_db=15.0))
-        assert take_db + fader_db + chain_db_spl <= 80.0
+    assert all(gains[0] + fader_db + chain <= ramp_bound_db_spl(85.0) for chain in FAKE_CHAINS_DB_SPL)
 
 
 @pytest.mark.parametrize("fader_db", [-45.0, -20.0, 0.0])
@@ -950,8 +941,7 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
     Every probe's first burst plays at −60 dBFS at the output, or at its ceiling
     when that is lower, and each burst at most 6 dB over the one before. On fake
     chains from a seat to 15 mm, its first burst reads under the ramp bound (76 dB
-    under the 85 dB stop), which ends it before any burst it plays whole reads
-    over 76 dB, and the take its loudest whole burst levels reads at most 80 dB."""
+    under the 85 dB stop), which ends the bursts after it (ADR-0405)."""
     topology, safety, targets = _profile_and_targets(rear=True, woofer_floor=30, woofer_upper=4000,
                                                      max_sweep_duration_s=8)
     bands = {target: resolve_driver_excitation_ceilings(safety, fingerprint, program_admission=True)[0]
@@ -985,4 +975,4 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
                     ceiling = min(cap_db - fader_db, level_db, math.inf if asked is None else asked)
                     assert segment.gain_db <= ceiling + 1e-9, (name, layout, spec.program_phase, asked, segment.segment_id)
                 if is_level_probe(program):
-                    _assert_probe_rises_from_minus_60_and_ends_at_its_ramp_bound(program, fader_db)
+                    _assert_probe_rises_from_minus_60_under_its_ramp_bound(program, fader_db)

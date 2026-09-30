@@ -57,8 +57,7 @@ GAIN_CAP_BACKOFF_DB = 0.01
 CHECK_PROBE_BACKOFF_DB = 12.0
 
 #: A level probe's first burst plays this loud at the output, its fader plus its
-#: digital gain; on the measured chain that reads about 65 dB 15 mm from the
-#: woofer (ADR-0403 §4).
+#: digital gain (ADR-0405).
 LEVEL_PROBE_START_OUTPUT_DBFS = -60.0
 
 #: A driver's take plays up to digital full scale, under its cap and the run's
@@ -197,7 +196,7 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
 
 def _probe_gains(fader_db: float, ceiling: float) -> tuple[float, ...]:
     """A probe's burst gains: at most ``MAX_STEP_DB`` apart, from −60 dBFS at the
-    output to the take's own ceiling (ADR-0365, ADR-0403 §4)."""
+    output to the take's own ceiling (ADR-0365, ADR-0405)."""
     start = min(LEVEL_PROBE_START_OUTPUT_DBFS - fader_db, ceiling)
     steps = math.ceil(round((ceiling - start) / MAX_STEP_DB, 6))
     return tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1))
