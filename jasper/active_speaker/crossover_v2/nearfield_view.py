@@ -115,6 +115,12 @@ def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
     return row
 
 
+def nearest_raw(driver: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """A view driver's placement nearest its cone that has a raw curve: the
+    curve the cabinet model and the alignment fit read."""
+    return next((placement for placement in driver.get("placements", ()) if placement["raw"]), None)
+
+
 def nearfield_view(
     takes: Iterable[Mapping[str, Any]], *, radiating_diameter_mm_by_target: Mapping[str, float],
     room: DeclaredGeometry | None = None, played_graphs: Mapping[str, Mapping[str, Any]] = MappingProxyType({}),

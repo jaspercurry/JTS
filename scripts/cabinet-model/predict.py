@@ -32,7 +32,8 @@ from typing import Any
 
 import numpy as np
 
-from _cabinet import WOOFERS, Cabinet, db, farfield_takes, gated_db, rear_ratio, roughness_db, sealed_fit
+from _cabinet import WOOFERS, Cabinet, db, farfield_takes, gated_db, rear_ratio, roughness_db
+from jasper.active_speaker.bass_fit import sealed_fit
 from jasper.audio_measurement.series_stats import curve_difference, deviation_summary
 
 TABLE_HZ = (30, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 600)
@@ -178,10 +179,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         curves[path.name] = c
         fb = c["front"] - c["behind"]
         rough = " / ".join(f"{roughness_db(db(cab.seat(r, d, **room)), grid):.2f}" for d in (0, 15, 30))
-        f0, q, rms = sealed_fit(grid, c["front"], 30, 150)
+        fit = sealed_fit(grid, c["front"], 30, 150)
         print(f"\n{path.name}: seat roughness 0/15/30 deg {rough} dB | front minus behind {FB_BAND[0]}-{FB_BAND[1]} Hz "
               f"mean {np.mean(fb[fb_band]):+.1f}, min {np.min(fb[fb_band]):+.1f} dB | on-axis low end "
-              f"~ 2nd-order high-pass {f0:.0f} Hz, Q {q:.2f} (fit rms {rms:.1f} dB)")
+              f"~ 2nd-order high-pass {fit.corner_hz:.0f} Hz, Q {fit.q:.2f} (fit rms {fit.residual_db:.1f} dB)")
         print("   Hz   front    side  behind  front-behind    seat")
         for f, i in zip(TABLE_HZ, rows):
             print(f"{f:5d} {c['front'][i]:+7.1f} {c['side'][i]:+7.1f} {c['behind'][i]:+7.1f} {fb[i]:+13.1f} {c['seat'][i]:+7.1f}")

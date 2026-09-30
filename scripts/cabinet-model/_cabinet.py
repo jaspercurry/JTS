@@ -22,9 +22,9 @@ from typing import Any
 
 import numpy as np
 import yaml
-from scipy.optimize import least_squares
 
 from jasper.active_speaker.branch_chain import rear_stage_response
+from jasper.active_speaker.crossover_v2.nearfield_view import nearest_raw
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.audio_measurement.deconv import apply_arrival_window, direct_arrival_window
 from jasper.audio_measurement.excess_phase import minimum_phase
@@ -79,9 +79,8 @@ def nearfield_raw(views: Sequence[Path]) -> dict[str, dict[str, Any]]:
     for view in views:
         drivers = {driver["driver"]: driver for driver in json.loads(view.read_text())["drivers"]}
         for name, driver in WOOFERS.items():
-            raw = next((placement["raw"] for placement in drivers.get(driver, {}).get("placements", ())
-                        if placement["raw"]), None)
-            curves[name] = raw or curves.get(name)
+            placement = nearest_raw(drivers.get(driver, {}))
+            curves[name] = placement["raw"] if placement else curves.get(name)
     for name, driver in WOOFERS.items():
         if curves[name] is None:
             raise SystemExit(f"{', '.join(map(str, views))}: no raw near-field curve for the {name} woofer ({driver})")
@@ -192,19 +191,6 @@ def rear_ratio(dsp: Path, grid: np.ndarray, *, front: int = 0, rear: int = 2) ->
                                    output_channels={"front": front, "rear": rear},
                                    allow_limiter_passthrough=True, dynamic_bass_at_rest=True)
     return out["rear"] / out["front"]
-
-
-def sealed_fit(freqs: np.ndarray, y_db: np.ndarray, lo: float, hi: float) -> tuple[float, float, float]:
-    """2nd-order high-pass fit of a level curve over lo..hi Hz: (corner Hz, Q, rms dB)."""
-    sel = (freqs >= lo) & (freqs <= hi)
-
-    def model(p):
-        s = 1j * freqs[sel] / p[1]
-        return p[0] + 20 * np.log10(np.abs(s * s / (s * s + s / p[2] + 1)))
-
-    fit = least_squares(lambda p: model(p) - y_db[sel], x0=(np.median(y_db[sel]), 70.0, 0.7),
-                        bounds=((-300, 20, 0.3), (300, 200, 3.0)))
-    return float(fit.x[1]), float(fit.x[2]), float(np.sqrt(np.mean(fit.fun ** 2)))
 
 
 def seat_deviation(y_db: np.ndarray, grid: np.ndarray, lo: float = 45.0, hi: float = 650.0) -> np.ndarray:
