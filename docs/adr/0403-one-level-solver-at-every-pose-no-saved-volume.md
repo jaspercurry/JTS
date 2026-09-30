@@ -53,11 +53,12 @@ the `rear_behind` layout, can read near or over the 85 dB stop. The owner decide
    **A branch set.** A branch take plays each of its two branches alone, then their sum, so it
    levels itself at any spot. Consecutive branch stops of one pair at one kind and one distance
    are one set. Before the set's first take, each branch plays alone the probe a driver's pose
-   plays, on the drivers graph (ADR-0365). The take plays 6 dB under the lower level those two
-   probes find, never above its ceiling. Two branches in phase read at most 6 dB over the louder
-   one alone, so the sum reads at most 80 dB where the take plays each branch no louder than its
-   probe read it. The rest of the set plays at the level that take landed, as a close set's takes
-   do.
+   plays, on the drivers graph (ADR-0365), over the take's own band down to that driver's floor,
+   as a near-field probe sweeps its row's band (ADR-0360 §4). The probe then reads the room's gain
+   in the bass as the take will. The take plays 6 dB under the lower level those two probes find,
+   never above its ceiling. Two branches in phase read at most 6 dB over the louder one alone, so
+   the sum reads at most 80 dB where the take plays each branch no louder than its probe read it.
+   The rest of the set plays at the level that take landed, as a close set's takes do.
 4. **No saved volume.** A run finds its fader with a probe of its first spot's own stimulus before
    its first take, and holds it.
    - The probe's first burst plays at −60 dBFS at the output (fader plus digital gain), and its
@@ -88,9 +89,13 @@ the `rear_behind` layout, can read near or over the 85 dB stop. The owner decide
   branch sets (quieter only), then §4 (a run's own level), then §5 (deletion only).
 - A close driverless set costs one probe, about 12 s, before its takes. A branch set costs two
   probes, one for each branch.
-- A branch probe sweeps MEASURE's band, from 150 Hz, on the drivers graph. Below 150 Hz the room,
-  and a candidate's dynamic bass (ADR-0359), can lift a branch take over what its probes read.
-  There the take is still never above its ceiling, and the 85 dB stop is its bound.
+- A branch probe plays on the drivers graph, which carries no candidate's dynamic bass boost
+  (ADR-0359). Where the take's graph carries one, the boost can lift a branch take over what its
+  probes read. The take still plays no louder than its ceiling, and the 85 dB stop ends it.
+- A branch probe plays one branch up to that driver's own ceiling, under that driver's cap. The
+  take's ceiling is the tightest cap of every driver, so a probe can play a branch louder than
+  the take does. That is the driver probe's own envelope: bursts at most 6 dB apart, ended by the
+  76 dB ramp bound (ADR-0365).
 - At a close spot, a per-driver schedule keeps its fader, and a bass take keeps its ladder.
 - Rejected:
   - A branch pair that probes its summed stimulus on the candidate graph. The branch take plays
