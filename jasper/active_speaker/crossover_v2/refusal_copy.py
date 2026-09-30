@@ -363,7 +363,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "measurement_capture_identity_mismatch": "A take's recording does not match the identity its record banked.",
         "measurement_program_manifest_missing": "A take's record banked no program manifest.",
         "no_admissible_captures": "The round banked no measure or branch take this view can read.",
-        "region_unavailable": "The round measured no blend band, so a blend prescription has no band to check against.",
         "round_capture_unreadable": "A take's banked record, recording or impulse cannot be read.",
         "round_no_captures": "The round banked no take record this view can read.",
         "round_radiated_band_missing": "A take banked no curve, so the band its driver radiates is unknown.",
@@ -379,8 +378,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REASON_NO_SHARED_MARK_TAKES: "No driver has mark takes in two of the compared rounds, so nothing "
                                                       "compares between rounds.",
         "unmeasured": "The speaker has no banked repeat floor.",
-        "unreadable": "The banked repeat floor cannot be read.",
-        "unusable": "The banked repeat floor gives no stopping thresholds.",
     },
     ("measure_positions", "Measure more positions"): {
         evidence_reasons.REASON_NO_REFERENCE_TAKE: "The reference take is missing at this position, so no comparison zero exists.",
@@ -411,7 +408,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REFUSE_PAIR_UNDERSAMPLED: "The two woofers' relative phase turns more than a quarter turn "
                                                    "between two readings, so the fit cannot follow it.",
         "rear_preview_needs_pair_round": "The rear preview needs a banked pair round, and there is none.",
-        "level_error": "The rear level could not be computed.",
     },
     ("name_target", "Name a target that covers the fit band"): {
         evidence_reasons.REFUSE_TARGET_BAND_SHORT: "The target document's valid band does not cover the band the "
@@ -472,8 +468,11 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "evidence_unreadable": "The evidence this tool reads could not be read.",
         "field_malformed": "The artifact was read, and its field holds a value of the wrong type.",
         "field_null": "The artifact was read, and the field this block reads is empty.",
+        "level_error": "The rear level could not be computed.",
         "source_absent": "The artifact this block reads was never supplied or banked.",
         "source_unreadable": "The artifact this block reads is there and cannot be read.",
+        "unreadable": "The banked repeat floor cannot be read.",
+        "unusable": "The banked repeat floor gives no stopping thresholds.",
     },
     ("choose_output", "Choose a writable output path"): {
         evidence_reasons.REASON_UNWRITABLE: "The round view could not write its output artifact.",
@@ -516,6 +515,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("read_contract", "Read the section's contract"): {
         "alignment_no_crossover_region": "A one-way speaker has no crossover, so there is nothing to align.",
         "boost_route_unavailable": "The blend stage carries no boost.",
+        "region_unavailable": "The blend contract names no band, so a blend prescription has no band to check against.",
         "topology_malformed": "The topology cannot be checked: its document is malformed, or the declared drivers "
                               "give no crossover range.",
         "topology_no_crossover_region": "A one-way speaker has no crossover corner to change.",
