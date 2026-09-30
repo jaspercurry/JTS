@@ -393,14 +393,18 @@ class PoseLevel:
     max_raise_db: float
 
 
-DRIVER_POSE_LEVEL = PoseLevel(target_db_spl=80.0, tolerance_db=2.0, max_raise_db=15.0)
+SPOT_LEVEL = PoseLevel(target_db_spl=80.0, tolerance_db=2.0, max_raise_db=15.0)
 
 
 def pose_level(pose: Pose) -> PoseLevel | None:
     """The one level rule of a pose's takes (ADR-0366 §2): a pose that plays one
-    driver alone levels itself, at any kind and distance; any other pose plays
-    at its run's fader and answers to its repeats (``None``)."""
-    return DRIVER_POSE_LEVEL if pose.driver else None
+    driver alone levels itself, at any kind and distance (ADR-0361), and so does
+    a driverless spot closer than the mark that is not a seat (ADR-0403); any
+    other pose plays at its run's fader and answers to its repeats (``None``)."""
+    from .crossover_v2.spatial import MARK_DISTANCE_M  # lazy: spatial imports NumPy; keeps jasper.web numpy-free
+
+    close = pose.kind != POSE_KIND_SEAT and pose.distance_m is not None and pose.distance_m < MARK_DISTANCE_M
+    return SPOT_LEVEL if pose.driver or close else None
 
 
 @dataclass(frozen=True)

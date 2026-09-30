@@ -10,7 +10,9 @@ from itertools import groupby
 from typing import Sequence
 
 from jasper.audio_measurement.program import RoleBand
-from .angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop, resolve_request, stop_specs, design_axis_spec
+from .angle_capture import (
+    AngleCaptureRequest, AngleStop, ResolvedStop, design_axis_spec, level_sets, resolve_request, stop_specs,
+)
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
 from .crossover_v2.measure_spec import MeasureSpec
@@ -66,7 +68,11 @@ def prepare_plan_captures(
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
-    return tuple(captures)
+    # A driver's takes, and the first take of each close driverless set, find their level (ADR-0365, ADR-0403).
+    starts = level_sets([capture.stop for capture in captures])
+    return tuple(replace(capture, spec=replace(capture.spec, level_probe=True))
+                 if start is not None and (capture.stop.pose.driver or start == index) else capture
+                 for index, (capture, start) in enumerate(zip(captures, starts)))
 
 
 def takes_timing(request: AngleCaptureRequest) -> bool:

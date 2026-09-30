@@ -68,8 +68,8 @@ class MeasureSpec:
     ``level_ladder_dbfs`` rungs are stimulus levels in dBFS: the ladder moves
     the STIMULUS and never the claim, which is what ruling S8's "same drive
     voltage, nothing touched between measurements" rests on. Empty means the
-    single stimulus the program declares; at a driver's pose, its level probe
-    (ADR-0365).
+    single stimulus the program declares, or with ``level_probe`` its level
+    probe (ADR-0365, ADR-0403).
 
     The polarity flip is RELATIVE to the design polarity the graph would
     otherwise carry, so a ``polarity=inverted`` record can name a graph whose
@@ -117,8 +117,14 @@ class MeasureSpec:
     #: The applied candidate layers this take's purpose clears, emptied by the
     #: door when it compiles the take's graph (ADR-0370). Candidate graphs only.
     cleared_layers: tuple[str, ...] = ()
+    #: Whether this take finds its level, playing its level probe when no level
+    #: is asked: a driver's take, or the first take of a driverless summed set
+    #: closer than the mark (``angle_capture.level_sets``; ADR-0365, ADR-0403).
+    level_probe: bool = False
 
     def __post_init__(self) -> None:
+        if self.level_probe and not (solo_target(self) or (self.graph_scope == "candidate" and self.stimulus is None)):
+            raise ValueError("a level probe plays one driver alone, or a driverless summed sweep on the candidate graph")
         if self.stimulus is not None:
             solo = bool(solo_target(self))
             validated_stimulus(self.stimulus, one_driver=solo)
@@ -312,7 +318,7 @@ def _from_json(name: str, value: Any) -> Any:
         if not isinstance(value, str):
             raise ValueError(f"{name} must be a string, got {value!r}")
         return value.strip()
-    if name == "level_matched":
+    if name in ("level_matched", "level_probe"):
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be true or false, got {value!r}")
         return value
