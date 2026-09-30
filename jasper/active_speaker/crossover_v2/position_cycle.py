@@ -149,7 +149,7 @@ def take_window(record: Mapping[str, Any], role: str) -> str:
         for curve in record.get("curves") or ()) else WINDOW_UNGATED
 
 
-def _named(record: Mapping[str, Any], role: str, window: str) -> str:
+def _named(record: Mapping[str, Any], role: Any, window: str) -> str:
     return take_window(record, role) if window == OWN_WINDOW else window
 
 
