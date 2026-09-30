@@ -289,7 +289,6 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         "alignment": {
             **(unavailable(alignment.ALIGNMENT_NO_CROSSOVER_REGION) if one_way else {"status": "available"}
                if corner else unavailable(alignment.PRESCRIPTION_FC_UNKNOWN)),
-            "entry": alignment_format["entry"], "request_key": alignment_format["key"],
             "schema": _request_schema(alignment_format, alignment.ALIGNMENT_PRESCRIPTION_KIND,
                                       alignment.ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION,
                                       {"delay_us": _number()},

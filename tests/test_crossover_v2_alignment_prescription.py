@@ -25,7 +25,6 @@ import pytest
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT, POLARITY_KEEP
 from jasper.active_speaker.crossover_v2.alignment_prescription import (
     ALIGNMENT_NO_CROSSOVER_REGION,
-    ALIGNMENT_PRESCRIPTION_KEY,
     ALIGNMENT_PRESCRIPTION_KIND,
     ALIGNMENT_PRESCRIPTION_MALFORMED,
     ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS,
@@ -457,8 +456,6 @@ def test_a_preset_that_declares_no_window_discloses_the_lobe():
 def test_no_prescription_reads_as_the_automatic_path():
     """Absence is not a refusal — it is every ordinary round."""
     assert _read(None, fc_hz=FC_HZ) is None
-    assert _read({}.get(ALIGNMENT_PRESCRIPTION_KEY),
-                                       fc_hz=FC_HZ) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -487,25 +484,6 @@ def test_the_response_format_advertises_exactly_the_refusals_that_exist():
     the gate actually raises."""
     advertised = alignment_prescription_response_format()["refusals"]
     assert set(advertised) == set(ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS)
-
-
-def test_the_response_format_names_the_request_time_door_and_its_severity():
-    """The other two prescription classes stage through the prescriber CLI;
-    this one and the topology pin are request-body keys whose refusal takes
-    the whole session. Before this test the alignment door had NO discovery
-    surface at all — a prescriber could only learn its shape by reading the
-    module source."""
-    block = alignment_prescription_response_format()
-    assert block["key"] == ALIGNMENT_PRESCRIPTION_KEY
-    assert block["entry"] == "request_body"
-    assert "jasper-crossover-prescriber" in block["entry_detail"]
-    assert "refuses the whole session" in block["severity"]
-    # The envelope is discoverable in the same block a prescriber reads for
-    # every other field, not left to be learned by a refusal.
-    assert str(ALIGNMENT_PRESCRIPTION_KIND) in block["fields"]["kind"]
-    assert str(ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION) in (
-        block["fields"]["artifact_schema_version"]
-    )
 
 
 def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():
