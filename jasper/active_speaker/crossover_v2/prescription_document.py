@@ -297,7 +297,7 @@ def preview_prescription_document(
         else:
             if kind == "emitted_graph" and (round_dir is None or capture_id is None):
                 raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, blamed_section(sections),
-                                                  "a driver/blend preview needs --round <diagnostic round>")
+                                                  "a speaker preview needs --round <diagnostic round>")
             if kind == "room":
                 preview_function = room.preview_room_prescription
                 if not sections[kind]:

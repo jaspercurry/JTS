@@ -207,7 +207,7 @@ def group_delay_report(
 
 @dataclass(frozen=True)
 class PreviewSide:
-    """A driver/blend forecast read as one side of a comparison."""
+    """A speaker forecast read as one side of a comparison."""
 
     freqs_hz: np.ndarray
     predicted_db: np.ndarray

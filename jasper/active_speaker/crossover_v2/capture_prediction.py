@@ -22,10 +22,12 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.prediction_document import CAPTURE_PREDICTION_KIND
 from jasper.platform.speaker_layout import measurement_target_id
 
+from .corner_admissibility import recornered_preset
 from .forward_model import ForwardModelError, PredictedSum, acceptance_block, predicted_minus_measured_db
 from .gate_sweep import N_FFT, REFERENCE_RUNG_MS
 from .graph_prediction import GraphPredictionError, RelativeGraphResponse, relative_branch_response
 from .round_captures import PoseCapture, capture_fingerprint, capture_row, select_capture_roles
+from .topology_prescription import candidate_topology
 
 DEFAULT_BRANCHES = ("woofer", "tweeter")
 
@@ -212,7 +214,11 @@ def capture_prediction(
             raise ForwardModelError("source candidate does not match the exact recorded candidate", reason="forward_model_candidate_mismatch", detail={
                 "capture_id": capture_id, "expected_candidate_id": basis.source["candidate_id"], "actual_candidate_id": source_candidate.fingerprint,
             })
-        if candidate.source_preset != source_candidate.source_preset or candidate.room_correction or source_candidate.room_correction:
+        # A topology section moves the base's corner and order; nothing else in the preset may differ.
+        corner = candidate_topology(candidate)
+        speaker, basis_speaker = (c.source_preset if corner is None else recornered_preset(
+            c.source_preset, fc_hz=corner["fc_hz"], order=corner["order"]) for c in (candidate, source_candidate))
+        if speaker != basis_speaker or candidate.room_correction or source_candidate.room_correction:
             raise ForwardModelError("this forecast requires the same speaker base and no room correction")
         channel_map = candidate.source_preset.channel_map
         channels = channel_map.primary_index_by_role

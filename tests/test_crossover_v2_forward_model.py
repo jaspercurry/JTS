@@ -677,6 +677,28 @@ def test_driver_grid_writes_full_previews_but_reports_only_summaries(emitted_pre
         assert full["preview"]["prediction"]["predicted_db"]
 
 
+def test_a_topology_grid_forecasts_each_admitted_corner_and_names_each_refused_one(emitted_preview, tmp_path, capsys):
+    source, _, _, argv, args = emitted_preview
+    Path(args.document).write_text(json.dumps(document(source.fingerprint, {
+        "topology": {"fc_hz": 1600.0, "order": 4, "basis_artifacts": ["fc.json"]}})))
+    assert crossover_prescriber.main([*argv, "--vary", "topology.fc_hz=1400,1600,2000", "--vary", "topology.order=2,4,8",
+                                      "--out-dir", str(tmp_path / "corners")]) == 0
+    rows = {tuple(row["values"].values()): row for row in json.loads(capsys.readouterr().out)["variants"]}
+    assert {corner: row.get("reason") for corner, row in rows.items()} == {
+        **{(1400, order): "below_declared_floor" for order in (2, 4, 8)},
+        **{(fc, 2): "topology_slope_below_declared_requirement" for fc in (1600, 2000)},
+        (1600, 4): None, (1600, 8): None, (2000, 4): None, (2000, 8): None,
+    }
+    moved = {}
+    for corner, row in rows.items():
+        if row["out"]:
+            preview = json.loads(Path(row["out"]).with_suffix(".preview.json").read_text())["preview"]
+            moved[corner] = np.max(np.abs(np.subtract(preview["prediction"]["predicted_db"],
+                                                      preview["reconstruction"]["predicted_db"])))
+    # The base's own corner forecasts the take itself; another corner or order moves the forecast.
+    assert moved.pop((1600, 4)) < 1e-6 and min(moved.values()) > 1.0
+
+
 @pytest.mark.parametrize("take,azimuth", [(None, 15.0), (None, 0.0), ("old", 0.0), ("old-off", 15.0)])
 def test_preview_resolves_an_exact_take_from_the_set(emitted_preview, capsys, take, azimuth):
     _, _, doc, argv, args = emitted_preview
