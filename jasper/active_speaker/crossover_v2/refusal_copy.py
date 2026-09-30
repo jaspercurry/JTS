@@ -363,7 +363,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "measurement_captures_missing": "No take in the measurement was captured and analysed.",
         "measurement_capture_identity_mismatch": "A take's recording does not match the identity its record banked.",
         "measurement_program_manifest_missing": "A take's record banked no program manifest.",
-        "no_admissible_captures": "The round banked no measure or branch take this view can read.",
         "round_capture_unreadable": "A take's banked record, recording or impulse cannot be read.",
         "round_no_captures": "The round banked no take record this view can read.",
         "round_radiated_band_missing": "A take banked no curve, so the band its driver radiates is unknown.",
@@ -432,8 +431,8 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "view_runner_unavailable": "The bank ran with no view runner, so it filed no round views.",
         "write_failed": "The round could not be written to the bank.",
     },
-    ("select_round", "Select the round these takes belong to"): {
-        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
+    ("select_round", "Name a round that holds takes this view can read"): {
+        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "The round holds no take this view can read.",
     },
     ("name_round", "Name a banked round or a live session bundle"): {
         "already_banked": "The session is already banked as a round.",
