@@ -28,7 +28,7 @@ each filter's `position_variance`, and the per-pose null ceiling in
 `verdicts`. Then read role gate lines and retake `fault` values. A missing
 section is missing evidence.
 
-Band rows name their `ladder` from `band_ladders.py`: `rear_upper`, `rear_level`, `rear_late_energy`, `rear_arrival_gap`, `bass`, `third_octave_bass`, `octave`, `room` (fixed split edges, with outer edges set by coverage and ceiling), `speaker_spec`, `snr`, or `crossover_snr`.
+Band rows name their `ladder` from `band_ladders.py`: `rear_front_guard`, `rear_level`, `rear_late_energy`, `rear_arrival_gap`, `bass`, `third_octave_bass`, `octave`, `room` (fixed split edges, with outer edges set by coverage and ceiling), `speaker_spec`, `snr`, or `crossover_snr`.
 
 Numbers below the trusted floor carry `below_trusted_floor` beside their
 `value`. They are not speaker evidence. Use `jasper-round-views` for a question
@@ -332,7 +332,8 @@ The [Seat loop](#seat) is the loop of record. The pair take plays the front
 woofer alone, the rear alone and both on one clock, with the rear stage cleared.
 Read `packet["rear"][].pair.positions[*]`: `superposition_residual_db` tests
 the model; `arrival_gap` gives the rear-minus-front gap, confidence and
-`search_ms`; `rear_polarity` gives the measured sign. The gap uses the applied
+`search_ms`; `rear_polarity` gives the measured sign, read only in the lowest
+bands whose banked SNR is trusted (`snr_short` when none is). The gap uses the applied
 rear document's band or `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage;
 `band_hz` and `arrival_gap_band_source` disclose `rear_document` or `default`.
 
@@ -359,7 +360,9 @@ gap: hardware cardioids read below about −6 dB at every bearing, while fills
 read −2 to −4. `figures.muted` and `figures.predicted` use the packet's figures.
 Vary the rear-weight Peaking gain on both branches together, cancellation
 `delay_ms`, or cancellation low-pass corner; judge the seat trial yourself.
-`upper_bands` at bearings uses `UPPER_BANDS_HZ`; seats carry `bands` instead.
+`front_guard` at bearings is each third octave from 400 Hz to 4 kHz
+(`FRONT_GUARD_BANDS_HZ`), candidate minus rear-muted by
+`series_stats.band_change_db`; seats carry `bands` instead.
 Compare within one round: the muted trough's depth moved by up to 5 dB between
 rounds at the same bearing while its frequency held.
 
@@ -443,6 +446,12 @@ uses two person-held poses, in front and behind the cabinet. Read the `behind`
 row's `bands[].change_db` only, against rear-muted next to the preview's;
 `late_energy` has no meaning there (no direct arrival behind the cabinet).
 The full trial curves are in `frequency_view.json` (the `frequency` view).
+Rank the candidates by their `rear_score`: per third octave from 100 to 315 Hz,
+the front change minus the behind change, both against rear-muted, so a tune
+that is only quieter everywhere gains nothing. From 160 Hz up, the room refills
+an ungated null behind the box, so those bands read each take's kept impulse
+through a 10 ms window: it ranks tunes, but proves no depth
+(`below_trusted_floor`). `score_db` is the mean gain, each band capped at 12 dB.
 
 To judge the cardioid by ear, flip between it and a fair "off". A rear-muted
 copy alone is not fair: the rear stage also changes the bass at the mic, so

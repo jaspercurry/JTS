@@ -27,6 +27,8 @@ THIRD_OCTAVE_BASS_BANDS_HZ = _third_octaves(20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 
 # The third octaves wholly inside UPPER_BANDS_HZ's span: its band means hid a ~1 dB dip at 500 Hz (#5404 item 4).
 FRONT_GUARD_BANDS_HZ = _third_octaves(400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0,
                                       4000.0)
+# The rear score's cancellation band: one 100-350 Hz mean hid a null that worked at 85-125 Hz only (#5404 item 2).
+REAR_SCORE_BANDS_HZ = _third_octaves(100.0, 125.0, 160.0, 200.0, 250.0, 315.0)
 # A near-field take: the low bass a gated take cannot resolve, up to its sweep's ~2 kHz top.
 NEAR_FIELD_BANDS_HZ = ((20.0, 35.0), (35.0, 50.0), (50.0, 100.0), (100.0, 200.0),
                        (200.0, 400.0), (400.0, 800.0), (800.0, 2000.0))
@@ -62,6 +64,7 @@ SERIES_STATS_FLATNESS_BAND_HZ = (400.0, 10000)
 
 BAND_LADDERS = MappingProxyType({
     "rear_front_guard": FRONT_GUARD_BANDS_HZ,
+    "rear_score": REAR_SCORE_BANDS_HZ,
     "rear_level": LEVEL_BANDS_HZ,
     "rear_late_energy": (LATE_ENERGY_BAND_HZ,),
     "rear_arrival_gap": (ARRIVAL_GAP_BAND_HZ,),

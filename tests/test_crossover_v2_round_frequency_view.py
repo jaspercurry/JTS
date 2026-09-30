@@ -28,6 +28,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import reopen_measurement_record
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
+from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, WiredStimulusCapture
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA, bass_evidence
@@ -663,9 +664,10 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    def host_analysis(answer, _record, *, exempt=POSE_KIND_SEAT):
+    def host_analysis(answer, record, *, exempt=POSE_KIND_SEAT, keep_impulses=False):
         """The analysis the capture host banks on a take (ADR-0383), read ungated as a seat take
-        is, or through the gate with no ``exempt`` reason (ADR-0400)."""
+        is, or through the gate with no ``exempt`` reason (ADR-0400); with ``keep_impulses``, the
+        impulses the host keeps beside it (ADR-0354)."""
         if answer.program is None:
             return {}
         played = ExcitationProgram.from_dict(answer.program)
@@ -676,9 +678,11 @@ def summed_capture_bundle(tmp_path, request):
         analysis = analyze_program_capture(played, samples, rate, calibration=curve,
                                            geometry=geometry, capture_report=answer.capture_integrity)
         analysis = replace(analysis, bass=bass_evidence(played, analysis, samples, curve))
-        return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played, None)}
+        kept = {"impulses": write_take_impulses(bundle, record["take_id"], analysis, recording=None)} if keep_impulses else {}
+        return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played, None),
+                **kept}
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, exempt=POSE_KIND_SEAT, **fields):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, exempt=POSE_KIND_SEAT, keep_impulses=False, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
         samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
         samples *= 10 ** (capture_gain_db / 20)
@@ -705,7 +709,7 @@ def summed_capture_bundle(tmp_path, request):
             bundle, recorder_factory=lambda *_: Recorder(), setup_reference=lambda: setup,
         )
         records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured,
-                                      enrich=partial(host_analysis, exempt=exempt) if analyzed else None)
+                                      enrich=partial(host_analysis, exempt=exempt, keep_impulses=keep_impulses) if analyzed else None)
         await configured.around(play, program=program)
         answer = configured.take_answer()
         if not retain_program:

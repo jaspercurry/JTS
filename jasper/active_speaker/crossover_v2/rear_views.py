@@ -24,6 +24,7 @@ filled-in figure, and nothing here reads which mover placed the microphone.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -39,6 +40,7 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_NO_COMPARISON,
     REASON_NO_EARLIER_REFERENCE,
     REASON_NO_REFERENCE_TAKE,
+    REASON_NO_ROW,
     REASON_REFERENCE_NOT_IN_SET,
     REASON_SEGMENT_MISSING,
     REASON_UNREADABLE,
@@ -49,19 +51,23 @@ from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     unavailable,
 )
-from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, PURPOSE_REAR
+from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, POSE_KIND_BEARING, POSE_KIND_BEHIND, PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import (
     changed_section_paths, rear_operating_facts, section_change_family,
 )
 from jasper.active_speaker.run_manifest import view_sets
+from jasper.audio_measurement import impulse_reading
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
-from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.band_ladders import (
+    ARRIVAL_GAP_BAND_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ, REAR_SCORE_BANDS_HZ,
+)
+from jasper.audio_measurement.gating import PHASE_GATE_LEAD_MS, f_trusted_floor_hz
 from jasper.audio_measurement.rear_evidence import (
     arrival_gap_ms, confident_arrival_gap_s, gradient_residual_db,
     pair_band_levels, rear_polarity, superposition_residual_db,
 )
 from jasper.audio_measurement.seat_figures import (
-    BAND_SOURCE_COVERAGE, IMPULSE_FFT_SIZE, across_positions, band_level_changes, comparison_band,
+    BAND_SOURCE_COVERAGE, FIGURE_FRACTION, IMPULSE_FFT_SIZE, across_positions, band_level_changes, comparison_band,
     figure_level_db, late_energy_change, position_figures, reference_curve_db, repeat_spread,
 )
 from jasper.audio_measurement.series_stats import band_change_db
@@ -78,6 +84,7 @@ from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_recor
 from .room_views import room_ceiling
 from .round_captures import doc_pose_key
 from .round_inputs import ROUND_INPUT_ERRORS, RoundInputs, SetTakes, banked_round_of, comparands, round_inputs
+from .take_impulses import IMPULSES_KEY, impulse_for, take_impulses
 
 
 ROLE_INCUMBENT = "incumbent"
@@ -94,6 +101,14 @@ PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
 #: The capture facts every candidate in one batch must share for the figures to
 #: mean anything, echoed from the takes' own basis rather than restated.
 LEVEL_FIELDS = ("level_db", "stimulus_id", "calibration_applied", "calibration_reference")
+
+#: The rear score (#5405 comment 5747658591). Behind the box the room refills an
+#: ungated null, so the bands centred from the first figure up read each take's
+#: kept impulse through the window; each band's gain is capped so that one deep
+#: band cannot buy the mean (#5404 comment 5746999024 item 2).
+REAR_SCORE_WINDOWED_FROM_HZ = 150.0
+REAR_SCORE_WINDOW_MS = 10.0
+REAR_SCORE_CAP_DB = 12.0
 
 
 def _shared(values: Sequence[Any]) -> Any:
@@ -178,15 +193,87 @@ def _applied_stack(profile: Mapping[str, Any] | None) -> dict[str, bool]:
     return applied_layer_names(profile)
 
 
+def _changes(grid: np.ndarray, level_db: np.ndarray, reference_db: np.ndarray,
+             bands: Sequence[tuple[float, float]], swept_hz: Sequence[float]) -> list[float | None]:
+    """Each band's level minus the reference's, by :func:`band_change_db` (ADR-0358);
+    ``None`` for a band the takes did not sweep."""
+    return [band_change_db(grid, level_db, reference_db, band)
+            if swept_hz[0] <= band[0] and band[1] <= swept_hz[1] else None for band in bands]
+
+
 def _front_guard(grid: np.ndarray, curve_db: np.ndarray, reference_db: np.ndarray,
                  swept_hz: Sequence[float]) -> list[dict[str, Any]]:
-    """Each :data:`FRONT_GUARD_BANDS_HZ` band's change of the 1/6-octave level, candidate minus
-    rear-muted, by :func:`band_change_db` (ADR-0358); a band the takes did not sweep is a gap."""
-    curve, reference = (figure_level_db(grid, side) for side in (curve_db, reference_db))
-    return [{"status": "available", "band_hz": list(band), "change_db": change}
-            if swept_hz[0] <= band[0] and band[1] <= swept_hz[1]
-            and (change := band_change_db(grid, curve, reference, band)) is not None
-            else {**unavailable(REASON_COVERAGE_SHORT), "band_hz": list(band)} for band in FRONT_GUARD_BANDS_HZ]
+    """Each :data:`FRONT_GUARD_BANDS_HZ` band's change of the 1/6-octave level,
+    candidate minus rear-muted; a band the takes did not sweep is a gap."""
+    changes = _changes(grid, figure_level_db(grid, curve_db), figure_level_db(grid, reference_db),
+                       FRONT_GUARD_BANDS_HZ, swept_hz)
+    return [{"status": "available", "band_hz": list(band), "change_db": change} if change is not None
+            else {**unavailable(REASON_COVERAGE_SHORT), "band_hz": list(band)}
+            for band, change in zip(FRONT_GUARD_BANDS_HZ, changes)]
+
+
+def _windowed_db(session_dir: Path, records: Sequence[Mapping[str, Any]], grid: np.ndarray) -> np.ndarray | None:
+    """The takes' kept summed impulses read through :data:`REAR_SCORE_WINDOW_MS`
+    from their peaks (ADR-0354, ADR-0355), at 1/6 octave on ``grid``, averaged in
+    dB; ``None`` when one take kept none."""
+    curves = []
+    for record in records:
+        impulse = impulse_for(take_impulses(session_dir, record), "summed")
+        if impulse is None:
+            return None
+        curves.append(impulse_reading.magnitude_db(
+            impulse.samples, impulse.sample_rate_hz, peak_index=int(np.argmax(np.abs(impulse.samples))),
+            window_ms=REAR_SCORE_WINDOW_MS, lead_ms=PHASE_GATE_LEAD_MS, grid_hz=grid,
+            smoothing_fraction=FIGURE_FRACTION))
+    return np.asarray(np.mean(curves, axis=0))
+
+
+def _rear_score(
+    session_dir: Path, takes: Mapping[str, Sequence[SeatTake]], reference: Mapping[str, Sequence[SeatTake]],
+    records: Mapping[str, Mapping[str, Any]], *, front: set[str], behind: set[str], swept_hz: Sequence[float],
+) -> dict[str, Any]:
+    """The front-to-back gain in each :data:`REAR_SCORE_BANDS_HZ` band, against
+    rear-muted: the mean change over the front poses minus the mean over the
+    behind ones, whose bands from :data:`REAR_SCORE_WINDOWED_FROM_HZ` read
+    through :func:`_windowed_db`. The score is the mean gain, each band's capped
+    at :data:`REAR_SCORE_CAP_DB`."""
+    poses = {side: sorted(key for key in keys if key in takes and key in reference)
+             for side, keys in (("front", front), ("behind", behind))}
+    if not poses["front"] or not poses["behind"]:
+        return unavailable(REASON_NO_ROW, {side: len(keys) for side, keys in poses.items()})
+
+    def plain(key: str) -> list[float | None]:
+        grid, zero = _mean_curve_db(reference[key])
+        level = figure_level_db(grid, _mean_curve_db(takes[key], grid)[1])
+        return _changes(grid, level, figure_level_db(grid, zero), REAR_SCORE_BANDS_HZ, swept_hz)
+
+    def through_window(key: str) -> list[float | None] | None:
+        grid = reference[key][0].freqs_hz
+        read = [_windowed_db(session_dir, [records[take.take_id] for take in side[key]], grid)
+                for side in (takes, reference)]
+        return None if read[0] is None or read[1] is None else _changes(
+            grid, read[0], read[1], REAR_SCORE_BANDS_HZ, swept_hz)
+
+    ahead = [plain(key) for key in poses["front"]]
+    behind_plain = [plain(key) for key in poses["behind"]]
+    behind_read = [read for key in poses["behind"] if (read := through_window(key)) is not None]
+    if len(behind_read) < len(behind_plain):
+        return unavailable(TAKE_CURVES_NOT_BANKED, {"field": IMPULSES_KEY, "role": "summed"})
+    rows: list[dict[str, Any]] = []
+    gains: list[float] = []
+    for index, band in enumerate(REAR_SCORE_BANDS_HZ):
+        window = math.sqrt(band[0] * band[1]) >= REAR_SCORE_WINDOWED_FROM_HZ
+        sides = [[row[index] for row in ahead], [row[index] for row in (behind_read if window else behind_plain)]]
+        held = [[value for value in side if value is not None] for side in sides]
+        if held != sides:
+            return unavailable(REASON_COVERAGE_SHORT, {"band_hz": list(band)})
+        front_db, behind_db = (float(np.mean(side)) for side in held)
+        gains.append(front_db - behind_db)
+        rows.append({"band_hz": list(band), "window_ms": REAR_SCORE_WINDOW_MS if window else None,
+                     "below_trusted_floor": window and band[0] < f_trusted_floor_hz(REAR_SCORE_WINDOW_MS / 1e3),
+                     "front_change_db": front_db, "behind_change_db": behind_db, "gain_db": gains[-1]})
+    return {"status": "available", "ladder": "rear_score", "cap_db": REAR_SCORE_CAP_DB, **poses,
+            "score_db": float(np.mean([min(gain, REAR_SCORE_CAP_DB) for gain in gains])), "bands": rows}
 
 
 def _position_rows(
@@ -331,6 +418,8 @@ def rear_document(
     basis_of: dict[str, Mapping[str, Any]] = {}
     on_axis: set[str] = set()
     bearing: set[str] = set()
+    behind: set[str] = set()
+    records: dict[str, Mapping[str, Any]] = {}
     for row, record, take in analyzed_purpose_takes(inputs.session_dir, purpose=PURPOSE_REAR):
         if take is None:
             continue
@@ -338,8 +427,11 @@ def rear_document(
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
         basis_of[take.take_id] = capture_basis(record)
         bases.setdefault(candidate, []).append(basis_of[take.take_id])
+        records[take.take_id] = record
         if row.pose_kind == POSE_KIND_BEARING:
             bearing.add(take.pose_key)
+        if row.pose_kind == POSE_KIND_BEHIND:
+            behind.add(take.pose_key)
         # An on-axis reference must be a bearing pose: a non-bearing pose at
         # azimuth 0 (e.g. behind the cabinet) is never the front curve the
         # measured-dip search assumes.
@@ -433,6 +525,10 @@ def rear_document(
             "positions": rows,
             "across_positions": across_positions(
                 rows, incumbent_rows=incumbent_rows, spread_db=spread["spread_db"]),
+            "rear_score": _rear_score(
+                inputs.session_dir, batch[name], batch[reference_id], records,
+                front=bearing, behind=behind, swept_hz=swept_hz,
+            ) if muted else unavailable(REASON_NO_COMPARISON),
         })
     observed = [basis for rows in bases.values() for basis in rows]
     return {
