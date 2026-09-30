@@ -62,8 +62,7 @@ def test_a_raised_seat_joins_no_bearing_set_the_walk_already_had():
         capture_plan.position_angle_deg(p) for p in CLOUD_POSITION_PROMPTS
         if p.role != spatial.POSITION_ROLE_XOVR
     ] == bearings
-    # Every lateral seat is at mark height, so the new field says nothing new
-    # about any of them — which is why an old bundle missing it reads as 0.
+    # Every lateral seat is at mark height.
     assert {
         g.vertical_deg for g in geometries if g.axis == "horizontal"
     } == {0}

@@ -50,14 +50,14 @@ from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.seat_level_reference import (
     STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
 )
-from jasper.audio_measurement.evidence_reasons import unavailable
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, unavailable
 from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_active_speaker_session_volume_plan import _bank_reference
-from tests.test_crossover_v2_blend_prescription import _bundle
+from tests.test_crossover_v2_blend_prescription import _bank_take_with_diagnostic, _bundle
 from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import (
     TWEETER_BAND,
@@ -440,6 +440,18 @@ def test_a_gap_reaches_status_as_its_code_and_its_detail(packet, packet_gap):
     expected = packet_gap or packet["drivers"]
     assert (declared["status"], declared["reason"], declared["detail"]) == (
         "unavailable", expected["reason"], expected["detail"])
+
+
+def test_a_take_banked_before_its_pose_kind_is_a_gap_status_names(tmp_path, capsys):
+    """Status refuses nothing: a packet a take cannot build is a gap naming the field (#2902)."""
+    session, _ = _speaker_dirs(tmp_path, live=True)
+    take = _bank_take_with_diagnostic(session, "measure_01_a01")
+    take.write_text(json.dumps({key: value for key, value in json.loads(take.read_text()).items() if key != "pose_kind"}))
+
+    code, payload = _status([str(session)], capsys)
+
+    assert (code, payload["declared"]["reason"], payload["declared"]["detail"]["field"]) == (
+        0, TAKE_CURVES_NOT_BANKED, "pose_kind")
 
 
 @pytest.mark.parametrize(

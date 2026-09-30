@@ -468,7 +468,7 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
         pipeline.insert(0, {"type": "Mixer", "name": "split"})
     events = []
     monkeypatch.setattr(summed_alignment, "log_event", lambda logger, event, **fields: events.append(fields))
-    row = Measurement("sum.json", "session", "summed", "timing", position_deg, 0, "candidate", None, "timing")
+    row = Measurement("sum.json", "session", "summed", "timing", position_deg, 0, "candidate", None, "timing", "", "bearing")
     documents = [(replace(row, path=f"sum-{i}.json"), {"take_id": "sum" if i == 0 else f"sum-{i}",
                   "graph_scope": "timing", "graph_fingerprint": "submitted", "provenance": {"graph": {"fingerprint": "played"}}})
                  for i in range(repeats)]

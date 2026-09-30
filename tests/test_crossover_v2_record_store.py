@@ -97,6 +97,8 @@ def _take(
         "baseline_record_id": "",
         "position_deg": position_deg,
         "position_axis": "lateral",
+        "vertical_deg": 0,
+        "pose_kind": "bearing",
         "prompt": "stand at the mark",
         "candidate_id": "",
         "regime": "reference_axis",

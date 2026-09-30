@@ -125,7 +125,7 @@ def _bank_take(
     (positions / f"{take_id}.json").write_text(json.dumps({
         "kind": POSITION_EVIDENCE_KIND, "phase": phase, "measurement_purpose": PURPOSE_SPEAKER,
         "take_id": take_id, "captured_at": captured_at, "position_deg": position_deg,
-        "vertical_deg": vertical_deg, "wav_path": f"summed/summed_{take_id}.wav",
+        "vertical_deg": vertical_deg, "pose_kind": "bearing", "wav_path": f"summed/summed_{take_id}.wav",
         "curves": [{"role": role, "band_hz": [150.0, 20000.0]}] if curves is None else curves,
         IMPULSES_KEY: write_take_impulses(bundle, take_id, analysis, recording=None),
     }))

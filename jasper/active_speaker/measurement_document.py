@@ -10,6 +10,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
+from .crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from .crossover_v2.record_index import played_graph_fingerprint
 from .crossover_v2.round_captures import doc_pose_key
 from .frequency_reference import band_limited_curve, share_run_reference
@@ -94,8 +95,10 @@ def frequency_run_from_documents(
         source_id = take_id or f"document_{document_index + 1}"
         if take_id:
             takes.add(take_id)
-        if document.get("position_deg") is not None or document.get("seat_offset_m") is not None:
-            poses.add(doc_pose_key(document))
+        # A take names its pose (#2902); any other document names none.
+        pose_id = doc_pose_key(document) if document.get("kind") == POSITION_EVIDENCE_KIND else None
+        if pose_id is not None and (document.get("position_deg") is not None or document.get("seat_offset_m") is not None):
+            poses.add(pose_id)
         degrees = _whole_degrees(document.get("position_deg"))
         if degrees is not None:
             angles.add(degrees)
@@ -134,7 +137,7 @@ def frequency_run_from_documents(
                 visible_by_default=False,
                 role=role or None,
                 position={
-                    "id": doc_pose_key(document),
+                    "id": pose_id,
                     "seat_offset_m": document.get("seat_offset_m"),
                     "axis": document.get("position_axis"),
                     "deg": document.get("position_deg"),

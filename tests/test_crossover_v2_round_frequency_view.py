@@ -272,6 +272,8 @@ def _bank_one_round(root: Path, session_id: str, sets: dict | None = None, banke
                 "take_id": take_id,
                 "phase": "measure",
                 "position_deg": bearing,
+                "vertical_deg": 0,
+                "pose_kind": "bearing",
                 "curves": [{
                     "role": "summed",
                     "reference_db": 0.0,
@@ -713,7 +715,7 @@ def summed_capture_bundle(tmp_path, request):
             "kind": "candidate" if candidate else "baseline", "take_id": take_id,
             "measurement_status": "captured", "incident": "", "phase": "measurement",
             "graph_scope": scope, "candidate_id": candidate, "graph_fingerprint": "a" * 16,
-            "level_db": -20, "stimulus_dbfs": -14, "position_deg": 0, **fields,
+            "level_db": -20, "stimulus_dbfs": -14, "position_deg": 0, "vertical_deg": 0, "pose_kind": "bearing", **fields,
         }, answer)
 
     return bundle, calibration_root, program, bank
@@ -963,7 +965,7 @@ def test_bass_comparison_keeps_common_bins_and_separates_input_from_output(chang
         'record_path': 'before.json',
         'record': {'candidate_id': 'a', 'graph_fingerprint': 'graph-a', 'graph_scope': 'candidate',
                    'level_db': -20, 'stimulus_dbfs': -20, 'position_axis': 'horizontal',
-                   'position_deg': 0, 'vertical_deg': 0, 'stimulus_id': 'program-0'},
+                   'position_deg': 0, 'vertical_deg': 0, 'pose_kind': 'bearing', 'stimulus_id': 'program-0'},
         'sweep_band_hz': [20, 200], 'sweep_duration_s': 4, 'calibration': {'applied': False},
         'freqs_hz': [50, 60, 70, 80, 100, 150, 190],
         'fundamental_db': [-20] * 7, 'fundamental_qualified': [True, False, True, True, True, True, True],
@@ -999,7 +1001,7 @@ def bass_fit_pairs():
     baseline = {
         'record_path': 'off.json',
         'record': {'graph_scope': 'candidate', 'candidate_id': 'baseline-fp', 'graph_fingerprint': 'baseline',
-                   'position_deg': 0, 'level_db': -20, 'stimulus_dbfs': -20,
+                   'position_deg': 0, 'vertical_deg': 0, 'pose_kind': 'bearing', 'level_db': -20, 'stimulus_dbfs': -20,
                    'stimulus_id': 'sweep'},
         'sweep_band_hz': [20, 20000], 'sweep_duration_s': 4, 'calibration': {},
         'freqs_hz': grid.tolist(), 'fundamental_db': [-20.] * len(grid),

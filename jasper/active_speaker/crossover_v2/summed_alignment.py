@@ -40,7 +40,7 @@ def timing_prior(record: Mapping[str, Any], analysis: Any) -> str | None:
     if record.get("graph_scope") != "timing":
         _unreadable("timing_take_scope")
         return None
-    if (record.get("position_deg") != 0 or record.get("vertical_deg", 0) != 0 or not played_graph_fingerprint(record)
+    if (record.get("position_deg") != 0 or record.get("vertical_deg") != 0 or not played_graph_fingerprint(record)
             or measured_response_from_analysis(analysis, reference_mark=REFERENCE_MARK_DESIGN_AXIS) is None):
         return None
     return str(record["take_id"])

@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
+from ..measurement_programs import POSE_KIND_SEAT
 from .record_index import played_graph_fingerprint
 
 def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -25,7 +25,7 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
         "played_graph_recorded": bool((provenance.get("graph") or {}).get("fingerprint")),
         "graph_scope": record.get("graph_scope") or None,
         "side": record.get("side"),
-        "pose_kind": record.get("pose_kind") or POSE_KIND_BEARING,
+        "pose_kind": record.get("pose_kind"),
         "calibration_reference": setup.get("calibration"),
         "calibration_applied": calibration.get("applied"),
         "capture_calibration": calibration or None,

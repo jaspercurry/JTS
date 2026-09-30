@@ -27,7 +27,7 @@ from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .contracts import BANKED_TAKE_GLOB
 from .position_cycle import take_curve
-from .record_index import measurement_documents, played_graph_fingerprint
+from .record_index import measurement_documents, played_graph_fingerprint, take_pose_kind
 from .round_inputs import (
     NO_ROUND_ARTIFACTS_REASON, RoundViewsError, round_artifact_dir, round_inputs,
 )
@@ -58,7 +58,7 @@ class PoseCapture:
     sample_rate: int
     ir: np.ndarray
     peak_idx: int
-    pose_kind: str = POSE_KIND_BEARING
+    pose_kind: str
     seat_offset_m: tuple[float, ...] | None = None
     pose_driver: str = ""
     candidate_id: str = ""
@@ -101,12 +101,8 @@ def _doc_pose_driver(doc: Mapping[str, Any]) -> str:
 
 
 def _doc_pose_category(doc: Mapping[str, Any]) -> tuple[str, tuple[float, ...] | None]:
-    """The kind a doc declares and, for a seat, its ``(right, forward, up)``.
-
-    A doc banked before poses had a kind is the bearing it always was.
-    """
-    kind = doc.get("pose_kind")
-    kind = kind if isinstance(kind, str) and kind else POSE_KIND_BEARING
+    """The kind a doc declares and, for a seat, its ``(right, forward, up)``."""
+    kind = take_pose_kind(doc)
     offset = doc.get("seat_offset_m")
     if kind != POSE_KIND_SEAT or not isinstance(offset, Sequence):
         return kind, None
@@ -120,7 +116,7 @@ def _pose_key(
     azimuth_deg: float | None,
     vertical_deg: float | None,
     mark_distance_m: float | None,
-    kind: str = POSE_KIND_BEARING,
+    kind: str,
     seat_offset_m: tuple[float, ...] | None = None,
     driver: str = "",
 ) -> str:

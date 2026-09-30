@@ -22,11 +22,11 @@ from typing import Any, Iterator, Mapping, Sequence
 from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.bundles import read_artifact_manifest, relative_artifact_path
 from jasper.audio_measurement.evidence_identity import ArtifactIdentity
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.platform.json_fields import CodedFieldError, as_mapping
 
 from ..bundles import BUNDLE_KIND
 from ..commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
-from ..measurement_programs import POSE_KIND_BEARING
 from .contracts import (
     BANKED_TAKE_GLOB,
     MEASURE_KIND_KEY,
@@ -41,6 +41,7 @@ __all__ = [
     "measurement_documents",
     "reopen_measurement_capture",
     "reopen_measurement_record",
+    "take_pose_kind",
     "take_purpose",
 ]
 
@@ -57,9 +58,9 @@ class Measurement:
     vertical_deg: int
     candidate_id: str
     captured_at: str | None
-    graph_scope: str = ""
-    graph_fingerprint: str = ""
-    pose_kind: str = POSE_KIND_BEARING
+    graph_scope: str
+    graph_fingerprint: str
+    pose_kind: str
     seat_offset_m: Sequence[float] | None = None
     mark_distance_m: float | None = None
 
@@ -148,23 +149,40 @@ def _captured_at(value: Any) -> str | None:
         return None
 
 
+def _not_banked(document: Mapping[str, Any], field: str) -> EvidenceUnavailable:
+    return EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"take_id": document.get("take_id"), "field": field})
+
+
+def take_pose_kind(document: Mapping[str, Any]) -> str:
+    """The pose kind a take banked. A take that banked none refuses by that
+    field; no kind is assumed (#2902)."""
+    kind = document.get("pose_kind")
+    if not isinstance(kind, str) or not kind:
+        raise _not_banked(document, "pose_kind")
+    return kind
+
+
 def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
-    """The identity fields from one banked file, or ``None`` if it is not a take."""
+    """The identity fields from one banked file, or ``None`` if it is not a take.
+    A take without a whole-degree ``vertical_deg`` or a ``pose_kind`` refuses by
+    that field (#2902)."""
     if document.get("kind") != POSITION_EVIDENCE_KIND:
         return None
+    vertical_deg = _position_deg(document.get("vertical_deg"))
+    if vertical_deg is None:
+        raise _not_banked(document, "vertical_deg")
     return (
         path,
         _text(document.get("run_id")),
         _text(document.get(MEASURE_KIND_KEY)),
         _text(document.get("phase")),
         _position_deg(document.get("position_deg")),
-        # A pose is always at SOME height: absent or malformed reads as 0.
-        _position_deg(document.get("vertical_deg")) or 0,
+        vertical_deg,
         _text(document.get("candidate_id")),
         _captured_at(document.get("captured_at")),
         _text(document.get("graph_scope")),
         _text(document.get("graph_fingerprint")),
-        _text(document.get("pose_kind")) or POSE_KIND_BEARING,
+        take_pose_kind(document),
         document.get("seat_offset_m"),
         document.get("mark_distance_m"),
     )

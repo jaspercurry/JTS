@@ -625,7 +625,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     Exit 0 whatever it found: this verb accepts nothing and refuses nothing, so
     an unreadable bundle is a FACT it reports — ``packet_fingerprint: null``
     beside a gap in each section the packet feeds, its code in ``reason`` and
-    its sentence in ``detail`` — rather than a failure that would have to
+    its evidence in ``detail`` — rather than a failure that would have to
     publish a refusal record instead of the orientation the caller ran it for.
     """
     inputs: RoundInputs | None = None
@@ -637,6 +637,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
             packet = _load_packet(args, inputs=inputs)
         except (CrossoverEvidencePacketError, OSError) as exc:
             packet_gap = unavailable(_evidence_code(exc), str(exc))
+        except EvidenceUnavailable as exc:
+            packet_gap = unavailable(exc.reason, exc.detail)
 
     return _answer(args, "status", subject(inputs), **status_document(
         packet, packet_gap,

@@ -180,6 +180,7 @@ def height_varying_feature() -> dict:
             sample_rate=RATE,
             ir=_pose_ir(index, late_copy_ms=late_copy_ms),
             peak_idx=PEAK_IDX,
+            pose_kind="bearing",
         )
         for index, (azimuth_deg, vertical_deg, late_copy_ms) in enumerate(
             MIXED_AXIS_POSES
@@ -581,6 +582,7 @@ def test_a_feature_whose_centre_walks_between_the_rungs_reads_moved() -> None:
                 sample_rate=RATE,
                 ir=ir,
                 peak_idx=PEAK_IDX,
+                pose_kind="bearing",
             )
         )
     (feature,) = sweep_features(

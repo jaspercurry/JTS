@@ -447,7 +447,7 @@ def test_a_pose_records_the_elevation_it_was_GIVEN_on_the_horizontal_axis(
     [
         (
             spatial.PositionGeometry(spatial.POSITION_AXIS_HORIZONTAL, 7, spatial.MARK_DISTANCE_M),
-            {"mark_distance_m": 1.0, "gating_applied": False},
+            {"pose_kind": "bearing", "mark_distance_m": 1.0, "gating_applied": False},
         ),
         (
             spatial.PositionGeometry(

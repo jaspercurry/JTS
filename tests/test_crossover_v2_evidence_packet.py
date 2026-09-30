@@ -438,6 +438,7 @@ def _bank_candidate_take(
         "candidate_id": candidate_id,
         "position_deg": position_deg,
         "vertical_deg": 0,
+        "pose_kind": "bearing",
         **({"phase": phase} if phase is not None else {}),
     }))
 

@@ -358,7 +358,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
                                            "is not comparable with the measured sum.",
         evidence_reasons.REASON_SWEEP_GRIDS_DISAGREE: "One driver's sweeps in a take were read on different "
                                                       "frequency grids, so they cannot be pooled.",
-        evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank the analysed curves this view reads.",
+        evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank a field this view reads.",
         "measurement_captures_missing": "No take in the measurement was captured and analysed.",
     },
     ("measure_repeats", "Measure repeat takes at the mark"): {
