@@ -13,7 +13,9 @@ from typing import Any
 from jasper.active_speaker.bass_table_report import bass_table_markdown, bass_table_rows
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from jasper.active_speaker.crossover_v2.round_inputs import comparand
-from jasper.active_speaker.crossover_v2.take_reading import REFUSE_COMPARE_NO_COMPARAND
+from jasper.active_speaker.crossover_v2.take_reading import (
+    REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, REFUSE_COMPARE_NO_COMPARAND,
+)
 from jasper.active_speaker.round_view_builders import bass_payload
 from jasper.audio_measurement.band_ladders import BASS_FIT_REFERENCE_BAND_HZ
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
@@ -64,8 +66,10 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
 
     manifests: dict[Path, Any] = {}
 
-    def side(root: Path, set_id: str | None, take_id: str | None) -> tuple[Any, ...]:
-        """One side's bass take, the view it is read from, what it read, its set and its take id."""
+    def side(root: Path, set_id: str | None, take_id: str | None, source: str | None = None) -> tuple[Any, ...]:
+        """One side's bass take, the view it is read from, what it read, its set and its take id.
+        A comparand (``source``) whose round filed no bass view refuses by name: the
+        rule matches place, drivers and graph scope, not the program (ADR-0391 §1)."""
         inputs = round_inputs(root)
         key = inputs.session_dir.resolve()
         if key not in manifests:
@@ -74,8 +78,11 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
             inputs.session_dir, every_take=take_id is not None)
         take_id = selected.take_id(take_id)
         path = bass_view_path(inputs, root, selected.set_id, manifests[key])
-        return (selected_take(json.loads(path.read_text()), take_id), str(path),
-                subject(inputs, selected, take_ids=[take_id]), selected, take_id)
+        read = subject(inputs, selected, take_ids=[take_id])
+        if source is not None and not path.is_file():
+            raise CrossoverV2Refused({"round_id": read.get("round_id"), "set_id": selected.set_id,
+                                      "take_id": take_id, "source": source}, code=REFUSE_BASS_COMPARAND_VIEW_NOT_FILED)
+        return selected_take(json.loads(path.read_text()), take_id), str(path), read, selected, take_id
 
     after_round = args.after or args.before
     source = None
@@ -86,7 +93,7 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
         if found is None:
             raise CrossoverV2Refused({"set_id": group.set_id, "take_id": take_id, "role": group.role},
                                      code=REFUSE_COMPARE_NO_COMPARAND)
-        source, before = found.source, side(found.round_dir, found.set_id, found.take_id)
+        source, before = found.source, side(found.round_dir, found.set_id, found.take_id, found.source)
     else:
         before = side(args.before, args.before_set, args.before_take)
         after = side(after_round, args.after_set, args.after_take)

@@ -21,7 +21,9 @@ from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.crossover_v2.round_inputs import (
     COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND, SetTakes, default_out, round_artifact_dir, round_inputs, with_records,
 )
-from jasper.active_speaker.crossover_v2.take_reading import REFUSE_COMPARE_NO_COMPARAND
+from jasper.active_speaker.crossover_v2.take_reading import (
+    REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, REFUSE_COMPARE_NO_COMPARAND,
+)
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, kept_measurements
@@ -220,19 +222,25 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
 
 
 @pytest.mark.parametrize("rounds,flags,expected", [
-    ({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}}, ["--after-set", "cand"], (COMPARAND_SAME_ROUND, "r", "r0")),
-    ({"e": {"base": [("e0", 0)]}, "r": {"cand": [("c0", 0)]}}, [], (COMPARAND_EARLIER_ROUND, "e", "e0")),
-    ({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}}, ["--before-set", "base", "--after-set", "cand"], (None, "r", "r0")),
-    ({"e": {"base": [("e30", 30)]}, "r": {"cand": [("c0", 0)]}}, [], None),
-], ids=["same-round-base", "earlier-round", "before-side-named", "none"])
+    ({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}}, ["--after-set", "cand"], (0, COMPARAND_SAME_ROUND, "r", "r0")),
+    ({"e": {"base": [("e0", 0)]}, "r": {"cand": [("c0", 0)]}}, [], (0, COMPARAND_EARLIER_ROUND, "e", "e0")),
+    ({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}}, ["--before-set", "base", "--after-set", "cand"],
+     (0, None, "r", "r0")),
+    ({"e": {"base": [("e30", 30)]}, "r": {"cand": [("c0", 0)]}}, [], (EXIT_REFUSED, REFUSE_COMPARE_NO_COMPARAND, None, "c0")),
+    ({"room": {"base": [("s0", 0)]}, "r": {"cand": [("c0", 0)]}}, [],
+     (EXIT_REFUSED, REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, "room", "s0")),
+], ids=["same-round-base", "earlier-round", "before-side-named", "none", "comparand-files-no-bass-view"])
 def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_path, capsys, rounds, flags, expected):
     """ADR-0391: one round named with no --before-* flag is the after take's, and
     the before take is its comparand, read from the bass view its round filed;
-    the answer says how it was found. With none, bass-compare refuses by name."""
+    the answer says how it was found. With none, or with a comparand whose round
+    filed no bass view, bass-compare refuses by name."""
     store = tmp_path / "campaigns"
     paths = {}
     for day, (name, sets) in enumerate(rounds.items()):
         root = paths[name] = _banked(store, name, f"2026-09-{20 + day}T12:00:00Z", sets)
+        if name == "room":
+            continue  # A room round files no bass view.
         inputs = round_inputs(root)
         records = {record["take_id"]: (row.path, record) for row, record in measurement_documents(inputs.session_dir)}
         for set_id, takes in sets.items():
@@ -247,11 +255,12 @@ def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_pa
     code = main(["bass-compare", str(paths["r"]), *flags, "--change", "diagnostic"])
     answer = json.loads(capsys.readouterr().out)
 
-    if expected is None:
-        assert (code, answer["reason"]) == (EXIT_REFUSED, REFUSE_COMPARE_NO_COMPARAND)
-        return
-    before, _after = answer["subject"]["rounds"]
-    assert (code, answer["comparand"], before["round_id"], before["take_ids"]) == (0, *expected[:2], [expected[2]])
+    if code:
+        detail = answer["detail"]
+        assert (code, answer["reason"], detail.get("round_id"), detail["take_id"]) == expected
+    else:
+        before, _after = answer["subject"]["rounds"]
+        assert (code, answer["comparand"], before["round_id"], *before["take_ids"]) == expected
 
 
 @pytest.mark.parametrize("changed", [
