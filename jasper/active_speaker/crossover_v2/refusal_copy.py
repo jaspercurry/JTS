@@ -545,10 +545,25 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "audition_no_rear_stage": "The applied graph has no single rear stage to compare.",
         "audition_running_graph_differs": "An unsaved EQ draft or another live edit is playing, so no comparison can start.",
         "cardioid_compare_unavailable": "The applied tune cannot compare the rear output.",
+        "delay_graph_proof_failed": "The candidate's graph does not bind its delay to the outputs of the driver it names.",
+        "tweeter_unprotected": "The candidate's graph leaves a tweeter output without its protective high-pass.",
     },
     ("review_candidate", "Review the candidate graph and driver declaration."): {
         "audition_rear_muted_in_tune": "The applied tune mutes the rear output, so there is nothing to compare.",
         "authored_status_required": "Only an unmeasured candidate can be authored.",
+        # ``measured_crossover_candidate``'s field checks. The code and the detail name the field, so one sentence serves.
+        **{code: "The candidate holds a value that is malformed, out of range or not supported." for code in (
+            "alignment_invalid", "alignment_malformed", "alignment_partial", "analysis_invalid", "attenuation_out_of_range",
+            "bass_extension_invalid", "bass_extension_malformed", "blend_correction_invalid", "blend_correction_malformed",
+            "candidate_invalid", "candidate_schema_unsupported", "candidate_tampered", "delay_role_ambiguous",
+            "delay_role_invalid", "delay_role_unknown", "delay_us_invalid", "delay_us_out_of_range",
+            "effective_preset_invalid", "exclusion_evidence_invalid", "exclusion_evidence_malformed",
+            "linearization_invalid", "linearization_malformed", "linearization_outcome_invalid",
+            "linearization_outcome_malformed", "polarity_invalid", "program_id_invalid",
+            "rear_calibration_case_unsupported", "rear_calibration_malformed", "rear_calibration_mode_unsupported",
+            "role_attenuations_incomplete", "role_attenuations_malformed", "room_correction_invalid",
+            "room_correction_malformed", "source_preset_invalid", "trim_decision_invalid", "trim_decision_malformed",
+        )},
     },
     ("read_contract", "Read the section's contract"): {
         "above_lower_driver_band": "The crossover corner is above the band the lower driver declares.",

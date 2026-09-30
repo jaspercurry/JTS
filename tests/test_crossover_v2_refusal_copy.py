@@ -14,7 +14,7 @@ import pytest
 
 import jasper
 from jasper.active_speaker.angle_capture import WALK_REFUSAL_REASONS
-from jasper.active_speaker import crossover_v2_flow as flow, wizard_client
+from jasper.active_speaker import crossover_v2_flow as flow, measured_crossover_candidate, wizard_client
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreErrorCode
 from jasper.active_speaker.crossover_v2 import (
     _prescription_common, corner_admissibility, evidence_packet, intervention, refusal_copy, take_reading,
@@ -194,11 +194,14 @@ _FORWARDED_CODES = {
     *(value for name, value in vars(wizard_client).items() if name.startswith("REASON_")),
 }
 #: Each helper that names a code in a gap or a refusal: the position of the argument that carries it, and the keywords
-#: that do. ``refuse`` is what each judge's ``*PrescriptionRefused`` aliases raise; ``failed`` and ``refused`` are every
-#: CLI's refusal record, and ``_wizard_failure`` is ``jasper-round``'s when the wizard named no code. An exception
-#: class needs no row here: :func:`_classes_a_cli_catches` finds it by its constructor.
+#: that do. ``refuse`` is what each judge's ``*PrescriptionRefused`` aliases raise, and ``_refuse`` what the candidate's
+#: field checks raise; ``failed`` and ``refused`` are every CLI's refusal record, and ``_wizard_failure`` is
+#: ``jasper-round``'s when the wizard named no code. An exception class needs no row here:
+#: :func:`_classes_a_cli_catches` finds it by its constructor.
 _CODE_ARGUMENTS: dict[Callable[..., object], tuple[int | None, tuple[str, ...]]] = {
-    **dict.fromkeys((evidence_reasons.unavailable, refused_by_name, _prescription_common.refuse), (0, ())),
+    **dict.fromkeys((
+        evidence_reasons.unavailable, refused_by_name, _prescription_common.refuse, measured_crossover_candidate._refuse,
+    ), (0, ())),
     refusal_copy.CrossoverV2Refused: (None, ("code",)),
     _refusal.failed: (1, ("reason", "code")), _refusal.refused: (0, ("reason", "code")),
     round_cli._wizard_failure: (1, ()),
@@ -222,9 +225,33 @@ def _resolved(node: ast.expr, namespace: dict[str, object]) -> object:
     return None
 
 
-def _named_codes(node: ast.expr, namespace: dict[str, object]) -> set[str]:
+def _loop_bindings(
+    node: ast.AST, parents: dict[ast.AST, ast.AST], namespace: dict[str, object],
+) -> list[dict[str, object]]:
+    """Each way the ``for`` loops around ``node`` bind their targets, for the loops that iterate what
+    the module defines. A loop over a local binds nothing."""
+    bindings: list[dict[str, object]] = [{}]
+    while node in parents:
+        node = parents[node]
+        if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            try:
+                values = list(eval(compile(ast.Expression(node.iter), "<scan>", "eval"), dict(namespace)))
+            except NameError:
+                continue
+            bindings = [{**each, node.target.id: value} for each in bindings for value in values]
+    return bindings
+
+
+def _named_codes(node: ast.expr, namespace: dict[str, object], bindings: list[dict[str, object]]) -> set[str]:
+    """The codes ``node`` names: a literal or a module constant, either branch of a conditional, and an
+    f-string once for each value its loop takes (``f"{name}_invalid"``)."""
     if isinstance(node, ast.IfExp):
-        return _named_codes(node.body, namespace) | _named_codes(node.orelse, namespace)
+        return _named_codes(node.body, namespace, bindings) | _named_codes(node.orelse, namespace, bindings)
+    if isinstance(node, ast.JoinedStr):
+        try:
+            return {eval(compile(ast.Expression(node), "<scan>", "eval"), {**namespace, **each}) for each in bindings}
+        except NameError:
+            return set()
     code = _resolved(node, namespace)
     return {code} if isinstance(code, str) else set()
 
@@ -273,10 +300,12 @@ def _codes_raised_by_name() -> dict[str, str]:
             continue
         module = _module_name(path)
         namespace = vars(import_module(module))
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
         for call in calls:
             entry = next((each for each in arguments if _resolved(call.func, namespace) is each), None)
             found = [] if entry is None else _code_arguments(call, *arguments[entry])
-            for code in {code for argument in found for code in _named_codes(argument, namespace)}:
+            bindings = _loop_bindings(call, parents, namespace) if any(isinstance(each, ast.JoinedStr) for each in found) else [{}]
+            for code in {code for argument in found for code in _named_codes(argument, namespace, bindings)}:
                 raised.setdefault(code, f"{module}:{call.lineno}")
     return raised
 
@@ -287,8 +316,7 @@ def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action()
     ``failed()`` and ``refused()`` with no registry row, so a reader got a code with neither
     copy nor a next action. A code that reaches a gap or a refusal through a variable is listed
     above. An exception class is found by its constructor when a ``jasper/cli`` module names it in
-    an ``except``. A class a CLI reaches only through a base class, and a code raised through a
-    private wrapper such as ``measured_crossover_candidate._refuse``, are not seen."""
+    an ``except``; a class a CLI reaches only through a base class is not seen."""
     raised = _codes_raised_by_name()
     assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED, "alignment_no_crossover_region",
             "driver_filter_malformed", "prescription_polarity_invalid", "composition_base_required",
@@ -297,7 +325,9 @@ def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action()
             # Each class found by its constructor, and ``jasper-round``'s wizard fallbacks.
             "audition_restore_failed", "authored_status_required", "candidate_malformed", "key_unset",
             "not_downloaded", "round_set_unknown", "run_refused",
-            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias, a keyword and a class"
+            # The candidate's field checks: a literal, a module constant, an f-string over a loop, and a gate.
+            "delay_us_invalid", "room_correction_invalid", "linearization_invalid", "tweeter_unprotected",
+            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias, a keyword, a class and an f-string"
     lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
                if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}
     assert not lacking
