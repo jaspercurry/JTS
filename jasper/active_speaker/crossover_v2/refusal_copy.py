@@ -528,7 +528,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("speaker_setup", "Finish the protected speaker setup"): {
         "audition_commission_load_active": "A per-driver setup config is loaded, so the applied tune is not what plays.",
         "audition_no_applied_profile": "No speaker tune is applied, so there is no graph to reduce.",
-        "composition_saved_tune_unavailable": "The speaker has no applied tune to build on.",
+        "composition_saved_tune_unavailable": "The saved tune is not available to build on.",
         "driver_passband_unavailable": "The speaker declares no band for its drivers, so a per-driver prescription "
                                        "has nothing to check against.",
         "prescription_fc_unknown": "The crossover corner is unknown, so an alignment cannot be checked at it.",
