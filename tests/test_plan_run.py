@@ -933,7 +933,7 @@ def _heard_analysis(record):
 
 
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True, chain=None,
-                  room_gain_db=0.0, verdicts=None):
+                  room_gain_db=0.0, verdicts=None, redo_when_unmeasured=None):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
     (or, not ``web``, run as the bass ladder runs it: no gate, no ``admit``) and
     judged on the level each take read; the microphone is re-placed at take
@@ -941,10 +941,20 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
     ``redo_at``, take 0 being just after the first placement is confirmed. A
     ``chain`` reads each take from its targets' sensitivities and the room's
     gain under 150 Hz (:class:`_BranchChain`). ``verdicts`` answers a take by
-    its number instead of its assessment, where it returns one."""
+    its number instead of its assessment, where it returns one. The operator
+    presses Redo just as the planned take ``redo_when_unmeasured`` is left
+    unmeasured."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
     manifest = RunManifest("run", _Store(fakes.records))
+    if redo_when_unmeasured is not None:
+        mark = manifest.mark_not_measured
+
+        def mark_and_redo(index, reason):
+            mark(index, reason)
+            if index == redo_when_unmeasured:
+                signals.retake.set()
+        manifest.mark_not_measured = mark_and_redo
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(FlowSeams(), index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
 
@@ -1234,6 +1244,20 @@ def test_a_redo_probes_both_branches_again_behind_a_summed_take(redo_at):
     plays = [(call["spec"].graph_scope, call["stimulus_dbfs"]) for call in fakes.play.calls]
     assert plays[redo_at:] == [("candidate", None), ("drivers", None), ("drivers", None),
                                ("candidate_branches", -37.0)]
+
+
+def test_a_redo_as_a_set_finds_no_level_plays_the_rest_at_the_level_it_then_lands():
+    """The behind spot's probe is never heard, and the operator presses Redo just
+    as that take is left unmeasured. The redone take lands, and the rest of the
+    set plays at its level, not skipped as level_unsolved (ADR-0403 §3)."""
+    request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
+
+    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0) + (70.0,) * 4 + (92.0, 80.0, 80.0),
+                                        verdicts=lambda take: _UNHEARD if 3 <= take <= 6 else None,
+                                        redo_when_unmeasured=3)
+
+    assert result.status == "complete" and result.not_measured == []
+    assert fakes.play.rungs == [None] * 7 + [-55.0, -55.0]
 
 
 def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():

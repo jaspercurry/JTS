@@ -689,6 +689,7 @@ async def _run(
                     for index in range(offset + 1, len(work)):
                         if work[index].level_set == item.level_set:
                             playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs)
+                            unlevelled.discard(index)
                 if signals.retake.is_set():
                     continue
                 offset += 1
