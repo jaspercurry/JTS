@@ -752,7 +752,8 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
     "bass": (lambda request, root: _bass_argv(request, root, scope="drivers"), "measurement_analysis_program_unsupported"),
     "bass (no captured take)": (lambda request, root: _bass_argv(request, root, measurement_status="incomplete"),
                                 "measurement_captures_missing"),
-    "bass-alignment": (lambda request, root: ["bass-alignment", str(nearfield_round(root)), "--band-hz", "2", "10"],
+    # A band above every woofer's corner cannot place it.
+    "bass-alignment": (lambda request, root: ["bass-alignment", str(nearfield_round(root)), "--band-hz", "150", "300"],
                        "coverage_short"),
     "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
     "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],

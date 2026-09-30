@@ -16,13 +16,17 @@ from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_nearfield_view import FREQS, _graph, _take
 
 
+def _box_db(corner_hz: float, q: float) -> np.ndarray:
+    """A sealed box's 2nd-order high-pass over the banked grid."""
+    s = 1j * FREQS / corner_hz
+    return 20.0 * np.log10(np.abs(s * s / (s * s + s / q + 1.0)))
+
+
 def _sealed(take: dict, corner_hz: float, q: float) -> dict:
     """``take`` as a sealed box of this corner and Q radiates it, played through a unity graph."""
-    s = 1j * FREQS / corner_hz
-    shape = 20.0 * np.log10(np.abs(s * s / (s * s + s / q + 1.0)))
     curve, = take["curves"]
     for sweep in (curve, *curve["repeat_curves"]):
-        sweep["magnitude_db"] = (np.asarray(sweep["magnitude_db"]) + shape).tolist()
+        sweep["magnitude_db"] = (np.asarray(sweep["magnitude_db"]) + _box_db(corner_hz, q)).tolist()
     return {**take, "provenance": {"graph": {"config": _graph(0.0)}}}
 
 
@@ -66,9 +70,8 @@ def test_each_driver_fits_at_its_nearest_placement_and_a_curve_that_cannot_place
 def test_a_bass_takes_catalog_call_fits_its_curve_as_played_and_files_where_the_catalog_says(
         tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    s = 1j * FREQS / 55.0
     curve = {"role": "summed", "freqs_hz": FREQS.tolist(), "band_hz": [20.0, 20000.0],
-             "magnitude_db": (80.0 + 20.0 * np.log10(np.abs(s * s / (s * s + s / 0.8 + 1.0)))).tolist()}
+             "magnitude_db": (80.0 + _box_db(55.0, 0.8)).tolist()}
     bundle = _bundle(tmp_path, "bass/axis", [{"take_id": "b0", "selected": True, "curves": [curve],
                                               "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}}],
                      {"role": "summed"})

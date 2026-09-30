@@ -39,6 +39,9 @@ document, which goes through the same judge → compose → apply gates as any o
    mkdir -p $D && ssh pi@<speaker> "sudo cat <that path>" > $D/nearfield_view.json
    ```
 
+   `jasper-round-views bass-alignment <round>` fits each woofer's sealed-box corner and Q (fc,
+   Qtc) from the same curves.
+
 3. **Transfer.** Integrate the solved case to the mic spots on each woofer's axis. Gate 1 (the
    integral reproduces the solver's own probes) must pass. Gate 2 checks the model's level step
    against each woofer's measured `step_db` from step 2's view. It also integrates step 5's two
