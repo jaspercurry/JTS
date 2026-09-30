@@ -328,7 +328,8 @@ def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intrud
             "position_deg": 0, "vertical_deg": 0, "pose_kind": "bearing", "candidate_id": candidate, "gating_applied": True,
             "curves": [{"role": role, "band_hz": [200.0, 12000.0], "freqs_hz": freqs,
                         "magnitude_db": [0.0] * len(freqs), "phase_deg": [0.0] * len(freqs),
-                        "gate_window_ms": 5.0, "trusted_floor_hz": floor_hz} for role in ("woofer", "tweeter")],
+                        "window": "gated", "gate_window_ms": 5.0, "trusted_floor_hz": floor_hz}
+                       for role in ("woofer", "tweeter")],
         }))
     write_bundle_manifest(
         _session(tmp_path), refused={"take_0003"} if intruder == "refused" else (),
@@ -354,7 +355,7 @@ def test_the_scanners_read_the_speaker_takes_the_host_banks(tmp_path, monkeypatc
     measure = bank_executor_take(tmp_path / "measure", monkeypatch, program=program,
                                  analysis_fields={"driver_responses": gated})
     bundle = bundle_of(tmp_path / "measure")
-    assert {curve["window"] for curve in measure["curves"]} == {"gated"}
+    assert {curve["window"] for curve in measure["curves"]} == {"gated", "ungated"}
     ceiling = room_ceiling(bundle)
     assert (ceiling.source, ceiling.trusted_floor_hz, ceiling.source_take_id) == (
         CEILING_SOURCE_ROUND_GATE, 450.0, measure["take_id"])

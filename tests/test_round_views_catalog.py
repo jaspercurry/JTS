@@ -127,7 +127,8 @@ def _one_set(preset: str, role: str) -> dict:
     """A one-set round of ``preset`` whose set measured ``role``: one kept take in front and one behind."""
     return {"preset": preset, "sets": [{"set_id": "s", "capture_basis": {"role": role, "gating_applied": role != "summed"},
             "takes": [{"take_id": kind, "selected": True, "pose": {"kind": kind, "deg": 0, "elevation_deg": 0},
-                       "curves": [{"role": role}]} for kind in ("bearing", "behind")]}]}
+                       "curves": [{"role": role, "window": "gated" if role != "summed" else "ungated"}]}
+                      for kind in ("bearing", "behind")]}]}
 
 
 @pytest.mark.parametrize("preset,role", [("speaker/mark", "woofer"), ("speaker/mark", "summed"), ("room/seat", "summed")])

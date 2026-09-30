@@ -35,6 +35,8 @@ from ..run_manifest import kept_measurements, room_sets, view_sets
 
 from .evidence_packet.incumbent import applied_profile_source
 from .journey import PHASE_LATERAL, PHASE_MEASURE
+from .pose_curve import WINDOW_GATED
+from .position_cycle import take_curves
 from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
@@ -94,24 +96,14 @@ class Ceiling:
 
 
 def room_ceiling(bundle_dir: Path) -> Ceiling:
-    """The highest trusted floor disclosed by a gated speaker take the round kept (ADR-0256)."""
+    """The highest trusted floor disclosed by a gated curve of a speaker take the round kept (ADR-0256)."""
     floors = []
     for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
-        gating_applied = record.get("gating_applied")
-        if gating_applied is False:
-            continue
         take_id = str(record.get("take_id") or row.path)
-        for curve in record.get("curves") or ():
-            if not isinstance(curve, Mapping):
-                continue
-            gate_window_ms = finite_float(curve.get("gate_window_ms"))
-            if gating_applied is not True and not (gate_window_ms is not None and gate_window_ms > 0):
-                continue
+        for curve in take_curves(record, WINDOW_GATED) or ():
             role = curve.get("role")
-            if not isinstance(role, str) or not role:
-                continue
             trusted = finite_float(curve.get("trusted_floor_hz"))
-            if trusted is not None and trusted > 0:
+            if isinstance(role, str) and role and trusted is not None and trusted > 0:
                 floors.append((trusted, take_id, role))
     source = max(floors, default=None)
     trusted = source[0] if source is not None else None

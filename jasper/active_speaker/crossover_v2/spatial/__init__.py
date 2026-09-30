@@ -7,16 +7,19 @@
 No ``jasper.web`` import and nothing from :mod:`..crossover_v2_flow`.
 """
 
+from jasper.audio_measurement.evidence_grid import (
+    LATERAL_EVIDENCE_BAND_HZ as LATERAL_EVIDENCE_BAND_HZ,
+    LATERAL_EVIDENCE_POINTS_PER_OCTAVE as LATERAL_EVIDENCE_POINTS_PER_OCTAVE,
+    lateral_evidence_grid_hz as lateral_evidence_grid_hz,
+)
+
 from ..contracts import (
     POSITION_AXES as POSITION_AXES,
     POSITION_AXIS_HORIZONTAL as POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL as POSITION_AXIS_VERTICAL,
 )
 from ..pose_curve import (
-    LATERAL_EVIDENCE_BAND_HZ as LATERAL_EVIDENCE_BAND_HZ,
-    LATERAL_EVIDENCE_POINTS_PER_OCTAVE as LATERAL_EVIDENCE_POINTS_PER_OCTAVE,
     LateralPoseCurve as LateralPoseCurve,
-    lateral_evidence_grid_hz as lateral_evidence_grid_hz,
     pose_curve_record as pose_curve_record,
 )
 from .group_floor import (

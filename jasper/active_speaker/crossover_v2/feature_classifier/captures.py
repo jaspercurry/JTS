@@ -20,6 +20,7 @@ from ..journey import (
     PHASE_VERIFY,
 )
 from ..position_cycle import (
+    OWN_WINDOW,
     parse_curve_magnitude,
     take_curves,
 )
@@ -74,7 +75,7 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     out: list[RoundPoseCurve] = []
     for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
         pose_id = Path(row.path).stem
-        for curve in take_curves(record) or ():
+        for curve in take_curves(record, OWN_WINDOW) or ():
             role = curve.get("role")
             if not isinstance(role, str):
                 continue

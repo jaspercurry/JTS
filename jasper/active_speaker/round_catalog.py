@@ -9,7 +9,7 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .crossover_v2.position_cycle import take_curve
+from .crossover_v2.position_cycle import OWN_WINDOW, take_curve
 from .crossover_v2.round_inputs import SetTakes, set_artifact_name, take_artifact_name
 from .measurement_programs import PURPOSE_ROOM, PURPOSE_SPEAKER, PURPOSES, run_purposes
 from .round_view_artifacts import CATALOG, PROG, TAKES_THIS_ROUND, CatalogRow, read_purposes
@@ -28,7 +28,7 @@ def _first_takes(group: SetTakes) -> list[Mapping[str, Any]]:
     """The set's first kept take of each pose kind that holds its response, on-axis first."""
     firsts: dict[Any, Mapping[str, Any]] = {}
     for take in (*group.on_axis, *group.takes):
-        if take["selected"] and take_curve(take, group.role):
+        if take["selected"] and take_curve(take, group.role, OWN_WINDOW):
             firsts.setdefault(take["pose"].get("kind"), take)
     return list(firsts.values())
 

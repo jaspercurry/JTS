@@ -276,6 +276,7 @@ def _bank_one_round(root: Path, session_id: str, sets: dict | None = None, banke
                 "pose_kind": "bearing",
                 "curves": [{
                     "role": "summed",
+                    "window": "ungated",
                     "reference_db": 0.0,
                     "freqs_hz": [100.0, 1000.0, 10000.0],
                     "magnitude_db": [-1.0, 0.0, 1.0],

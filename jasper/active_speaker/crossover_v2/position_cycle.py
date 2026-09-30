@@ -22,6 +22,7 @@ from ..measurement_programs import PURPOSE_SPEAKER
 from ..run_manifest import kept_measurements
 from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_LATERAL
+from .pose_curve import WINDOW_GATED, WINDOW_UNGATED
 from .record_index import Measurement, bundle_measurements
 
 #: The index's own name, so a reader that finds this document anywhere knows
@@ -135,27 +136,56 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     return {field: raw.get(field) for field in _TAKE_FIELDS}
 
 
-def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
-    """The measured curves one take record carries, or ``None`` when it carries none."""
+#: The window a reader names to read each role through its take's own
+#: (:func:`take_window`).
+OWN_WINDOW = "own"
+
+
+def take_window(record: Mapping[str, Any], role: str) -> str:
+    """The window a take's own analysis graded for ``role``: gated wherever the
+    gate windowed that role's response, which banks its gated curve (ADR-0383 §2)."""
+    return WINDOW_GATED if any(
+        isinstance(curve, Mapping) and curve.get("role") == role and curve.get("window") == WINDOW_GATED
+        for curve in record.get("curves") or ()) else WINDOW_UNGATED
+
+
+def _named(record: Mapping[str, Any], role: Any, window: str) -> str:
+    return take_window(record, role) if window == OWN_WINDOW else window
+
+
+def take_curves(raw: Mapping[str, Any], window: str) -> list[Mapping[str, Any]] | None:
+    """The curves one take record banked through ``window``, each role through
+    its own for :data:`OWN_WINDOW`; ``None`` when it banked none."""
     curves = raw.get("curves")
-    if not isinstance(curves, list) or not curves:
+    if not isinstance(curves, list):
         return None
-    return [curve for curve in curves if isinstance(curve, Mapping)] or None
+    return [curve for curve in curves if isinstance(curve, Mapping)
+            and curve.get("window") == _named(raw, curve.get("role"), window)] or None
 
 
 @overload
-def take_curve(record: Mapping[str, Any], role: str, *, required: Literal[True]) -> Mapping[str, Any]: ...
+def take_curve(
+    record: Mapping[str, Any], role: str, window: str, *, required: Literal[True],
+) -> Mapping[str, Any]: ...
 @overload
-def take_curve(record: Mapping[str, Any], role: str, *, required: bool = False) -> Mapping[str, Any] | None: ...
-def take_curve(record: Mapping[str, Any], role: str, *, required: bool = False) -> Mapping[str, Any] | None:
-    """The curve a take record banked for ``role``; ``None`` when it banked none
-    for it, as a take whose analysis failed banks none (ADR-0383). A record that
-    banked neither, or none for a ``required`` role, refuses by that field,
-    naming the role (#2902)."""
-    curve = next((curve for curve in record.get("curves") or () if curve.get("role") == role), None)
+def take_curve(
+    record: Mapping[str, Any], role: str, window: str, *, required: bool = False,
+) -> Mapping[str, Any] | None: ...
+def take_curve(
+    record: Mapping[str, Any], role: str, window: str, *, required: bool = False,
+) -> Mapping[str, Any] | None:
+    """The curve a take record banked for ``role`` through ``window`` (its own
+    for :data:`OWN_WINDOW`); ``None`` when it banked none for it, as a take
+    whose analysis failed banks none (ADR-0383). A record that banked neither,
+    or none for a ``required`` role, refuses by that field, naming the role and
+    window (#2902)."""
+    window = _named(record, role, window)
+    curve = next((curve for curve in record.get("curves") or ()
+                  if curve.get("role") == role and curve.get("window") == window), None)
     if curve is None and (required or ("curves" not in record and "analysis_error" not in record)):
         raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {
-            "record": record.get("record_id"), "take_id": record.get("take_id"), "field": "curves", "role": role})
+            "record": record.get("record_id"), "take_id": record.get("take_id"), "field": "curves",
+            "role": role, "window": window})
     return curve
 
 
@@ -225,8 +255,8 @@ def select_pose_curve_pair(
     roles: tuple[str, str], vertical_deg: int = 0, take_id: str | None = None,
     search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
-    """Newest matching speaker take the round kept, with both curves and their
-    recorded request facts.
+    """Newest matching speaker take the round kept, with both curves through its
+    own window (:func:`take_window`) and their recorded request facts.
 
     Both roles must ride ONE take: combining transfers from different captures
     would sum across whatever moved between them. Take ids are zero-padded
@@ -244,7 +274,7 @@ def select_pose_curve_pair(
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_id is not None and document.get("take_id") != take_id)):
             continue
-        curves = take_curves(document)
+        curves = take_curves(document, OWN_WINDOW)
         if search_detail is not None:
             search_detail["takes_seen"] += 1
             search_detail["roles_per_take"][row.path] = dict(Counter(

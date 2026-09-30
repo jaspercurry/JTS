@@ -28,7 +28,8 @@ from jasper.active_speaker.crossover_v2.spatial import (
     POSITION_ROLE_ONAX,
     POSITION_ROLE_XOVR,
 )
-from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
+from jasper.audio_measurement import evidence_grid
+from jasper.audio_measurement.evidence_grid import lateral_evidence_grid_hz
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.audio_measurement import gating
 from jasper.audio_measurement.program import build_verify_program
@@ -298,7 +299,7 @@ def test_the_resampler_really_does_raise_on_an_empty_axis():
 
 def test_the_evidence_basis_is_a_bounded_log_grid():
     grid = lateral_evidence_grid_hz()
-    lo, hi = pose_curve.LATERAL_EVIDENCE_BAND_HZ
+    lo, hi = evidence_grid.LATERAL_EVIDENCE_BAND_HZ
     assert grid[0] == pytest.approx(lo)
     assert grid[-1] == pytest.approx(hi)
     ratios = grid[1:] / grid[:-1]
@@ -307,7 +308,7 @@ def test_the_evidence_basis_is_a_bounded_log_grid():
     # the grid lands exactly on both band edges — so this is a bound, not an
     # equality, because that is what is actually true.
     per_octave = math.log(2.0) / math.log(ratios[0])
-    nominal = pose_curve.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
+    nominal = evidence_grid.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
     assert abs(per_octave - nominal) / nominal < 0.01
     # Bounded: a few thousand complex values, not the analysis grid's hundreds
     # of thousands.

@@ -176,7 +176,7 @@ def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> tuple[
         "phase": "measure",
         "measurement_purpose": "speaker",
         "gating_applied": True,
-        "curves": [{**record["curves"][0], "trusted_floor_hz": floor_hz}],
+        "curves": [{**record["curves"][0], "window": "gated", "trusted_floor_hz": floor_hz}],
     }
     take_artifact_path(bundle, row.path).with_name(f"{take_id}.json").write_text(json.dumps(gated))
     return Path(row.path).with_name(f"{take_id}.json").as_posix(), gated

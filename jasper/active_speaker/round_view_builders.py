@@ -61,8 +61,7 @@ def analyzed_frequency_run(path: Path, *, gated_overlay: bool = False) -> Freque
                                and (g["capture_basis"].get("role") or "summed") == role), ({}, {}))
             curve = replace(curve, details={**curve.details, "base": group.get("base", False),
                                            "set_id": group.get("set_id"), "selected": bool(take.get("selected")),
-                                           **gate_fields(curve.details),
-                                           "window": "gated" if curve.details.get("gate_window_ms") else "ungated"})
+                                           **gate_fields(curve.details)})
             series.append(curve)
             if not gated_overlay or not take.get("selected") or role != "summed":
                 continue

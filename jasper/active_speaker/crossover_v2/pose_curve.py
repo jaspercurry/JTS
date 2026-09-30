@@ -6,24 +6,20 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_grid import evidence_bins
+
 __all__ = [
-    "LATERAL_EVIDENCE_BAND_HZ", "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
-    "LateralPoseCurve", "lateral_evidence_grid_hz", "lateral_pose_curve", "pose_curve_record",
+    "WINDOW_GATED", "WINDOW_UNGATED", "LateralPoseCurve", "lateral_pose_curve", "pose_curve_record",
 ]
 
-# One fixed log-spaced basis for every retained pose curve: fixed rather than
-# per-role so both branches land on the SAME frequencies and a consumer can sum
-# them without resampling; log-spaced because a crossover argument is a
-# per-octave one. 1/12 octave is ~118 Hz at 2 kHz — a COARSE gate, never a polar
-# measurement (#1968).
-LATERAL_EVIDENCE_BAND_HZ = (20.0, 20_000.0)
-LATERAL_EVIDENCE_POINTS_PER_OCTAVE = 12
+#: The two windows a banked curve names (ADR-0383 §2).
+WINDOW_GATED = "gated"
+WINDOW_UNGATED = "ungated"
 
 
 @dataclass(frozen=True)
@@ -57,46 +53,27 @@ class LateralPoseCurve:
     late_energy: Mapping[str, float] | None = None
 
 
-def lateral_evidence_grid_hz() -> np.ndarray:
-    """The shared log basis every retained pose curve is sampled onto."""
-    lo, hi = LATERAL_EVIDENCE_BAND_HZ
-    octaves = math.log2(hi / lo)
-    return np.geomspace(
-        lo, hi, num=int(round(octaves * LATERAL_EVIDENCE_POINTS_PER_OCTAVE)) + 1,
-    )
-
-
-def nearest_native_bins(freqs: np.ndarray, grid: np.ndarray) -> np.ndarray:
-    """Indices of the nearest native bins; ties use the lower bin."""
-    # ``searchsorted`` + a one-step comparison is the nearest native bin on a
-    # monotonically increasing rfft grid, without materialising an N x M
-    # distance matrix: the analysis grid is hundreds of thousands of bins.
-    right = np.searchsorted(freqs, grid).clip(1, freqs.size - 1)
-    left = right - 1
-    return np.where(
-        np.abs(grid - freqs[left]) <= np.abs(freqs[right] - grid), left, right
-    )
-
-
 def lateral_pose_curve(
-    response: Any, band_hz: tuple[float, float],
+    response: Any, band_hz: tuple[float, float], *, ungated: bool = False,
 ) -> LateralPoseCurve:
-    """Sample one analyzed driver response onto the shared basis."""
+    """Sample one analyzed driver response onto the shared basis; ``ungated``
+    reads its ``ungated_tf``, already on that basis, a reading no gate floors."""
     freqs = np.asarray(response.freqs_hz, dtype=np.float64)
-    tf = np.asarray(response.complex_tf, dtype=np.complex128)
-    take = nearest_native_bins(freqs, lateral_evidence_grid_hz())
+    take = evidence_bins(freqs)
+    tf = np.asarray(response.ungated_tf if ungated else np.asarray(response.complex_tf)[take], dtype=np.complex128)
+    gating = {} if ungated else response.gating or {}
     return LateralPoseCurve(
         role=str(response.role),
         freqs_hz=freqs[take],
-        complex_tf=tf[take],
+        complex_tf=tf,
         band_hz=(float(band_hz[0]), float(band_hz[1])),
-        validity_floor_hz=response.validity_floor_hz,
-        trusted_floor_hz=(response.gating or {}).get("f_trusted_hz"),
-        gate_window_ms=(response.gating or {}).get("window_ms"),
-        floor_source=(response.gating or {}).get("floor_source"),
+        validity_floor_hz=None if ungated else response.validity_floor_hz,
+        trusted_floor_hz=gating.get("f_trusted_hz"),
+        gate_window_ms=gating.get("window_ms"),
+        floor_source=gating.get("floor_source"),
         late_energy=response.late_energy,
         repeat_curves=tuple(
-            lateral_pose_curve(occurrence, band_hz)
+            lateral_pose_curve(occurrence, band_hz, ungated=ungated)
             for occurrence in response.repeat_responses
         ),
     )
@@ -141,7 +118,7 @@ def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
         # repeat_curves, validity_floor_hz, trusted_floor_hz.
         "validity_floor_hz": curve.validity_floor_hz,
         "trusted_floor_hz": curve.trusted_floor_hz,
-        "window": "ungated" if curve.gate_window_ms is None else "gated",
+        "window": WINDOW_UNGATED if curve.gate_window_ms is None else WINDOW_GATED,
         "gate_window_ms": curve.gate_window_ms,
         "floor_source": curve.floor_source,
         "late_energy": curve.late_energy,

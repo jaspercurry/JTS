@@ -45,7 +45,7 @@ def _ladder(round_dir: Path) -> dict:
 
 def _gated_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict:
     """A summed curve as a gated take banks it, with its gate's window."""
-    return {**_summed_curve(freqs_hz, magnitude_db), "gate_window_ms": 5.0}
+    return {**_summed_curve(freqs_hz, magnitude_db), "window": "gated", "gate_window_ms": 5.0}
 
 
 @pytest.mark.parametrize("source", ["records", "frequency"])
@@ -96,7 +96,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
         assert {key: row[key] for key in position} == position
         assert row["played"] == ["cfg-a", "cfg-b"]
         role, = row["roles"]
-        assert (role["role"], role.get("window"), role["trusted"]) == ("summed", None, True)
+        assert (role["role"], role["window"], role["trusted"]) == ("summed", "gated", True)
         assert [candidate["candidate_id"] for candidate in role["candidates"]] == ["cfg-a", "cfg-b"]
         delta, = role["deltas"]
         assert (delta["a"], delta["b"], delta["bins"]) == ("cfg-a", "cfg-b", 3)

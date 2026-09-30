@@ -29,7 +29,7 @@ MARK = {"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1.0}
 
 
 def _curve(level_db: float) -> dict:
-    return {"role": "woofer", "band_hz": [200.0, 12000.0], "freqs_hz": [100.0, 1000.0, 20000.0],
+    return {"role": "woofer", "window": "gated", "band_hz": [200.0, 12000.0], "freqs_hz": [100.0, 1000.0, 20000.0],
             "magnitude_db": [level_db] * 3, "validity_floor_hz": 300.0}
 
 

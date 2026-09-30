@@ -27,7 +27,7 @@ def live_round():
         fit["boost_evidence"] = fit.pop("cloud")
     for group in packet["manifest"]["sets"]:  # each take as the join reads it: the curve is its record's
         for take in group["takes"]:
-            take["curves"] = [curve] if (curve := take.pop("curve", None)) else []
+            take["curves"] = [{**curve, "window": "gated"}] if (curve := take.pop("curve", None)) else []
     return packet
 
 
@@ -55,7 +55,7 @@ def test_feature_variance_direction(cv, count, total, gain, classification):
 
 
 def _curve(band_hz, floor_hz):
-    return {"curves": [{"role": "woofer", "freqs_hz": [100.0, 20000.0], "magnitude_db": [0.0, 0.0],
+    return {"curves": [{"role": "woofer", "window": "gated", "freqs_hz": [100.0, 20000.0], "magnitude_db": [0.0, 0.0],
                         "band_hz": band_hz, "validity_floor_hz": floor_hz}]}
 
 
@@ -84,6 +84,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     ):
         curve = {
             "role": role,
+            "window": "gated",
             "freqs_hz": [100, 1600, 2400, 4000, 20000],
             "magnitude_db": [100, level, level, level, -100],
             "band_hz": band,
@@ -216,7 +217,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
 ])
 def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
     grid = DEFAULT_ENVELOPE_GRID_HZ[49:54]
-    curve = {"role": "woofer", "freqs_hz": grid.tolist(), "magnitude_db": [0] * 5}
+    curve = {"role": "woofer", "window": "gated", "freqs_hz": grid.tolist(), "magnitude_db": [0] * 5}
     take = {"take_id": "a", "phase": "measure", "selected": True,
             "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0, "run_id": "held", "curves": [curve]}
     other = {**take, "take_id": "unrelated", "curves": [{**curve, "magnitude_db": [100] * 5}], **change}
@@ -242,7 +243,7 @@ def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
 def test_missing_mark_evidence_is_disclosed(marks, curve_change, band, reason):
     takes = [{"take_id": str(i), "selected": True, "phase": "measure",
               "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0,
-              "curves": [{"role": "woofer", "freqs_hz": [500, 1000, 2000], "magnitude_db": [i] * 3,
+              "curves": [{"role": "woofer", "window": "gated", "freqs_hz": [500, 1000, 2000], "magnitude_db": [i] * 3,
                           **(curve_change if i == marks - 1 else {})}]} for i in range(marks)]
     fit = {"set_id": "woofer", "role": "woofer", "fit_band_hz": band, "residual_rms_db": 1}
     round_verdicts({"fits": [fit]}, manifest={"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"},

@@ -727,7 +727,7 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, l
             series = frequency_series(series_id="series", label="seat", kind="measured", role="summed",
                                       take_id="take", freqs_hz=[100, 200, 400, 1000, 4000, 10000],
                                       magnitude_db=[100, -100, *[level + value for value in ripple]],
-                                      gate_window_ms=window,
+                                      gate_window_ms=window, window="ungated" if window is None else "gated",
                                       reference_db=0, smoothing_fractional_octave=6)
             (target / "frequency_view.json").write_text(json.dumps(build_frequency_view(FrequencyRun(
                 id="run", measurement_family="room", series=(series,)))))

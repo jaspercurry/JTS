@@ -16,6 +16,7 @@ from scipy.optimize import minimize_scalar
 
 from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.alignment import _bandlimit
+from jasper.audio_measurement.evidence_grid import evidence_bins
 from jasper.audio_measurement.comparison_bands import (
     branch_snr_band_hz,
     OVERLAP_OCTAVE_RATIO,
@@ -321,7 +322,9 @@ def driver_response(
     arrival window ungated, with :func:`gating.exempt_gating_block` saying why
     and no validity floor claimed (a seat take, ADR-0260; a near-field one,
     ADR-0360). Otherwise the gate searches for a reflection up to
-    ``geometry.declared_first_bounce_s`` (#3665 item 10).
+    ``geometry.declared_first_bounce_s`` (#3665 item 10), and the response also
+    carries that arrival read ungated, on the banked grid, as ``ungated_tf``
+    (ADR-0383 §2). The SNR verdict grades the gated response only.
 
     ``radiated_band_hz`` is the band this capture's excitation actually drove —
     the caller's segment sweep bounds. It is the ONLY input the pre/post-gate
@@ -340,13 +343,15 @@ def driver_response(
     """
     exempt = geometry.gate_exempt_reason
     peak_idx = int(np.argmax(np.abs(full_ir)))
-    window = deconv.direct_arrival_window(
-        full_ir, sample_rate, direct_peak_idx=peak_idx,
-        pre_arrival_ms=IR_PRE_MS,
-        post_arrival_ms=(1000 * DEFAULT_VERIFY_TAIL_S
-                         if exempt is not None else IR_POST_MS),
-    )
-    ir = deconv.apply_arrival_window(full_ir, window)
+
+    def arrival(post_arrival_ms: float) -> tuple[tuple[int, int], np.ndarray]:
+        window = deconv.direct_arrival_window(
+            full_ir, sample_rate, direct_peak_idx=peak_idx,
+            pre_arrival_ms=IR_PRE_MS, post_arrival_ms=post_arrival_ms,
+        )
+        return window, deconv.apply_arrival_window(full_ir, window)
+
+    window, ir = arrival(1000 * DEFAULT_VERIFY_TAIL_S if exempt is not None else IR_POST_MS)
     if exempt is not None:
         gated_ir = ir
         gating_block = gating.exempt_gating_block(ir, sample_rate, reason=exempt)
@@ -369,8 +374,19 @@ def driver_response(
         validity_floor_hz = _gate_floor_hz(fragment)
 
     freqs, H = _complex_tf(gated_ir, sample_rate, n_fft=n_fft, calibration=calibration)
-    if preserve_timing:
-        H = H * np.exp(-2j * np.pi * freqs * window[0] / sample_rate)
+    shift = np.exp(-2j * np.pi * freqs * window[0] / sample_rate) if preserve_timing else None
+    if shift is not None:
+        H = H * shift
+    ungated_tf = None
+    if exempt is None:
+        # Only the banked grid's bins are kept: a full spectrum per response
+        # costs a Pi tens of MB per take (ADR-0226).
+        bins = evidence_bins(freqs)
+        ungated_tf = _complex_tf(arrival(1000 * DEFAULT_VERIFY_TAIL_S)[1], sample_rate,
+                                 n_fft=n_fft, calibration=calibration, bins=bins)[1]
+        if shift is not None:
+            # Both windows open at the same sample, so one shift re-times both.
+            ungated_tf = ungated_tf * shift[bins]
     mag_db = 20.0 * np.log10(np.maximum(np.abs(H), 1e-12))
 
     snr_block = _driver_snr_block(
@@ -390,6 +406,7 @@ def driver_response(
         gating=gating_block,
         snr=snr_block,
         validity_floor_hz=validity_floor_hz,
+        ungated_tf=ungated_tf,
     )
 
 

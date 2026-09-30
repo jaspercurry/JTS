@@ -358,6 +358,7 @@ def _summed_curve(freqs_hz: np.ndarray, magnitude_db: np.ndarray) -> dict[str, A
         "freqs_hz": [float(v) for v in freqs_hz],
         "magnitude_db": [float(v) for v in magnitude_db],
         "phase_deg": [0.0] * len(freqs_hz),
+        "window": "ungated",
     }
 
 

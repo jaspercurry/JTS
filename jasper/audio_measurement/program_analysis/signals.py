@@ -115,10 +115,14 @@ def _complex_tf(
     *,
     n_fft: int,
     calibration: "CalibrationCurve | None",
+    bins: np.ndarray | None = None,
 ):
-    """Complex TF of an IR on a fixed grid, with the mic cal folded in (real)."""
+    """Complex TF of an IR on a fixed grid, with the mic cal folded in (real);
+    only at ``bins`` of that grid when given, sampled before the cal."""
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate)
     H = np.fft.rfft(ir, n=n_fft)
+    if bins is not None:
+        freqs, H = freqs[bins], H[bins]
     if calibration is not None:
         correction_db = calibration_mod.apply_calibration_curve(
             freqs, np.zeros_like(freqs), calibration

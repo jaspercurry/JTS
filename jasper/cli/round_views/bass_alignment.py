@@ -15,7 +15,7 @@ import numpy as np
 from jasper.active_speaker.bass_fit import bass_alignment
 from jasper.active_speaker.crossover_v2.contracts import DRIVER_ROLE_WOOFER
 from jasper.active_speaker.crossover_v2.nearfield_view import nearest_raw
-from jasper.active_speaker.crossover_v2.position_cycle import measured_curve_band, take_curve
+from jasper.active_speaker.crossover_v2.position_cycle import OWN_WINDOW, measured_curve_band, take_curve
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, take_artifact_name
 from jasper.audio_measurement.band_ladders import BASS_ALIGNMENT_BAND_HZ
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable
@@ -63,7 +63,7 @@ def _spoken(curve: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
 def _take_fits(round_dir: Path, args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One take's banked curve for its set's role, fitted as played."""
     read, take_id, role, take = resolve_set_take(round_dir, args.set, args.take, None)
-    freqs, level = stage(EXIT_UNREADABLE, (ValueError,), _spoken, take_curve(take, role, required=True))
+    freqs, level = stage(EXIT_UNREADABLE, (ValueError,), _spoken, take_curve(take, role, OWN_WINDOW, required=True))
     band = take.get("trusted_band")
     return read, [{"role": role, "take_ids": [take_id],
                    **bass_alignment(freqs, level, args.band_hz, banked_band(band) if band else TrustedBand())}]

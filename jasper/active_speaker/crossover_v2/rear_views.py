@@ -69,6 +69,7 @@ from jasper.platform.json_fields import finite_float
 from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
 from .measurement_context import capture_basis, compare_capture_basis
+from .pose_curve import WINDOW_UNGATED
 from .position_cycle import parse_curve_complex, take_curve
 from .record_index import take_pose_kind
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
@@ -531,7 +532,7 @@ def _pair_segments(
     parsed = {}
     for role in PAIR_ROLES:
         # A take that banked an empty list banked no segment, so it refuses by field (#2902).
-        curve = take_curve(record, role, required=record.get("curves") == [])
+        curve = take_curve(record, role, WINDOW_UNGATED, required=record.get("curves") == [])
         found = parse_curve_complex(curve) if curve is not None else None
         if found is None:
             return None

@@ -69,7 +69,8 @@ def unplayed_woofer_round(root: Path) -> Path:
 
 def bass_round(root: Path, magnitude_db: list[float]) -> Path:
     """A bass round of one on-axis take that banked this summed curve."""
-    curve = {"role": "summed", "freqs_hz": FREQS.tolist(), "band_hz": [20.0, 20000.0], "magnitude_db": magnitude_db}
+    curve = {"role": "summed", "window": "ungated", "freqs_hz": FREQS.tolist(), "band_hz": [20.0, 20000.0],
+             "magnitude_db": magnitude_db}
     return _bundle(root, "bass/axis", [{"take_id": "b0", "selected": True, "curves": [curve],
                                         "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}}], {"role": "summed"})
 

@@ -8,6 +8,8 @@ from dataclasses import replace
 
 import numpy as np
 
+from jasper.audio_measurement.evidence_grid import evidence_bins
+
 from .check import _pilot_verdicts
 from .drift import estimate_drift
 from .model import MeasurementGeometry, ProgramAnalysis
@@ -35,9 +37,12 @@ def analyze_branches(program, capture, sample_rate, global_offset, locations, ca
             geometry=geometry,
         )
         # Remove accumulated clock drift, retaining physical branch delay.
-        response = replace(response, complex_tf=response.complex_tf * np.exp(
-            2j * np.pi * response.freqs_hz * shift / sample_rate
-        ), impulse=recorded_impulse(ir, pre, seg, sample_rate, clock_shift_samples=shift))
+        unshift = np.exp(2j * np.pi * response.freqs_hz * shift / sample_rate)
+        response = replace(
+            response, complex_tf=response.complex_tf * unshift,
+            ungated_tf=None if response.ungated_tf is None
+            else response.ungated_tf * unshift[evidence_bins(response.freqs_hz)],
+            impulse=recorded_impulse(ir, pre, seg, sample_rate, clock_shift_samples=shift))
         responses.append(response)
         records.append({
             "role": role, "segment_id": seg.segment_id,
