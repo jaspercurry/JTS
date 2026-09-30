@@ -383,7 +383,7 @@ def driver_response(
         # costs a Pi tens of MB per take (ADR-0226).
         bins = evidence_bins(freqs)
         ungated_tf = _complex_tf(arrival(1000 * DEFAULT_VERIFY_TAIL_S)[1], sample_rate,
-                                 n_fft=n_fft, calibration=calibration)[1][bins]
+                                 n_fft=n_fft, calibration=calibration, bins=bins)[1]
         if shift is not None:
             # Both windows open at the same sample, so one shift re-times both.
             ungated_tf = ungated_tf * shift[bins]
