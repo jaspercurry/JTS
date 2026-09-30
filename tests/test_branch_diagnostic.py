@@ -79,11 +79,12 @@ def test_solo_and_sum_keep_measured_level_phase_and_recording_clock(epsilon, pol
     assert not result.glitch_detected
     lower, upper = result.driver_responses
     mask = (lower.freqs_hz >= 1200) & (lower.freqs_hz <= 4000)
-    ratio = upper.complex_tf[mask] / lower.complex_tf[mask]
-    phase = np.unwrap(np.angle(ratio / polarity))
-    delay = -np.polyfit(lower.freqs_hz[mask], phase, 1)[0] / (2 * np.pi)
-    assert delay * 1e6 == pytest.approx(250, abs=5)
-    assert np.median(20 * np.log10(abs(ratio))) == pytest.approx(20 * np.log10(.7), abs=.08)
+    # Both windows keep the recording clock (ADR-0383 §2).
+    for ratio in (upper.complex_tf[mask] / lower.complex_tf[mask], upper.ungated_tf[mask] / lower.ungated_tf[mask]):
+        phase = np.unwrap(np.angle(ratio / polarity))
+        delay = -np.polyfit(lower.freqs_hz[mask], phase, 1)[0] / (2 * np.pi)
+        assert delay * 1e6 == pytest.approx(250, abs=5)
+        assert np.median(20 * np.log10(abs(ratio))) == pytest.approx(20 * np.log10(.7), abs=.08)
     predicted = lower.complex_tf[mask] + upper.complex_tf[mask]
     summed = result.summed_response.complex_tf[mask]
     assert np.percentile(abs(20 * np.log10(abs(predicted / summed))), 95) < .2

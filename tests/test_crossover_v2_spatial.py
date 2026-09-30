@@ -26,6 +26,9 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
 from jasper.audio_measurement import gating, program
+from jasper.audio_measurement.program_analysis import (
+    MeasurementGeometry, MeasurementPriors, analyze_program_capture,
+)
 from tests.crossover_v2_banked_round import (
     LateralPose,
     TakeClaim,
@@ -565,6 +568,33 @@ def test_every_shape_of_analysis_banks_its_complex_response(
         assert np.any(np.abs(np.asarray(record["phase_deg"])) > 1.0)
         # The band the PROGRAM declared for that role, not a guessed one.
         assert record["band_hz"] == list(bands[record["role"]])
+
+
+@pytest.mark.parametrize("exempt,windows", [(None, ["gated", "ungated"]), (gating.SEAT_EXEMPT, ["ungated"])])
+def test_a_summed_speaker_take_banks_both_windows(exempt, windows):
+    """A summed take the gate windows banks its gated curve, then that arrival
+    read ungated: exactly the curve a seat take of the same capture banks,
+    which banks that one alone (ADR-0383 §2)."""
+    import numpy as np
+    from scipy.signal import fftconvolve
+
+    prog = program.build_verify_program(1600.0, sweep_band_hz=(20, 20000), sweep_s=1.5)
+    rate = prog.sample_rate_hz
+    ir = np.zeros(rate // 4)
+    ir[200], ir[200 + round(0.120 * rate)] = 0.5, 0.2
+    capture = np.concatenate([np.zeros(800), fftconvolve(program.render_program_pcm(prog)[:, 0], ir), np.zeros(5000)])
+    capture += np.random.default_rng(5).normal(0.0, 1e-8, capture.size)
+
+    def banked(reason):
+        analysis = analyze_program_capture(prog, capture, rate, priors=MeasurementPriors(),
+                                           geometry=MeasurementGeometry(gate_exempt_reason=reason))
+        return spatial.analysis_curve_records(analysis, prog)
+
+    records = banked(exempt)
+
+    assert [(record["role"], record["window"]) for record in records] == [("summed", window) for window in windows]
+    assert records[0]["gate_window_ms"] is not None if exempt is None else records[0]["gate_window_ms"] is None
+    assert records[-1] == banked(gating.SEAT_EXEMPT)[0]
 
 
 def test_an_analysis_that_measured_no_response_banks_an_empty_list():
