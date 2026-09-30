@@ -105,6 +105,8 @@ rest on its `budget.max_gain_db` rail. Measure the composed graph, then stop
 when it answers the question.
 
 Settle structure before response. Decide topology and trims in the same document. Re-derive filters fitted to another alignment (`0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`; `docs/research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md`).
+`judge --preview <topology-doc> --round <branches/express round> --vary 'topology.fc_hz=<hz>,<hz>' --vary 'topology.order=<n>,<n>' --out-dir <dir>` forecasts each corner and order, and a corner the contract refuses carries its code.
+A predicted corner makes the shortlist; a trial measures the pick, and the same-round A/B decides.
 
 Read packet `alignment` / `alignment_verdict` (ADR-0319) for timing. Use `delay-landscape` for a prediction, then author candidate variants with the residual delay changes and compare real captures with `jasper-round trial`.
 A 10 dB branch gap limits cancellation to about 3.3 dB relative to the louder branch: `−20·log10(1 − 10^(−Δ/20))` (derivation in `tuning-methodology.md`). That reference differs from shoulder-based null depth.
