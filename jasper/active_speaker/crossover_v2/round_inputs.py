@@ -20,7 +20,7 @@ from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Named
 from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, row_record_id, view_sets
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_TIMING
 from .position_cycle import take_artifact_path
@@ -412,12 +412,6 @@ def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = Non
 
 
 ROUND_INPUT_ERRORS = (OSError, EOFError, ValueError, KeyError, TypeError)
-
-
-class RoundSetRefused(ValueError):
-    def __init__(self, reason: str, **detail: Any) -> None:
-        self.reason, self.detail = reason, detail
-        super().__init__(reason)
 
 
 def capture_identity(capture_basis: Mapping[str, Any], *, set_id: str) -> tuple[Any, ...]:

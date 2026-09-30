@@ -67,12 +67,18 @@ def kept_measurements(
             yield row, document
 
 
+class RoundSetRefused(ValueError):
+    """A round's reader refuses by ``reason``, with ``detail`` naming what it read."""
+
+    def __init__(self, reason: str, **detail: Any) -> None:
+        self.reason, self.detail = reason, detail
+        super().__init__(reason)
+
+
 def row_record_id(row: Mapping[str, Any]) -> str:
     """The record a take row points at. A row with none was banked before the
     rows became pointers, and refuses by that field (#2902, ADR-0395)."""
     if "record_id" not in row:
-        from .crossover_v2.round_inputs import RoundSetRefused  # lazy: round_inputs imports this module
-
         raise RoundSetRefused(TAKE_CURVES_NOT_BANKED, take_id=row.get("take_id"), field="record_id")
     return str(row["record_id"])
 
@@ -111,9 +117,9 @@ def driver_level_mismatches(manifest: Mapping[str, Any]) -> list[dict[str, Any]]
     than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
     ``unit_drive_db_spl`` is the median, over its kept takes, of the level its
     located sweeps read (ADR-0364) less the stimulus gain and the fader its set
-    played at. The takes are read with their records (ADR-0395). Only close poses compare: from one far bearing a rear-facing driver also
-    reads its own off-axis loss and the cabinet's shadow. A finding, never a
-    refusal (#5714)."""
+    played at; the takes are read with their records (ADR-0395). Only close
+    poses compare: from one far bearing a rear-facing driver also reads its own
+    off-axis loss and the cabinet's shadow. A finding, never a refusal (#5714)."""
     heard: dict[tuple[str, str], dict[str, list[float]]] = {}
     for basis, take in ((group["capture_basis"], take) for group in view_sets(manifest)
                         for take in group["takes"] if take.get("selected")):
