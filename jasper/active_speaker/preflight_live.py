@@ -25,6 +25,7 @@ from .movers import MOVER_ARM
 from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile
+from .capture_schedule import takes_timing
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.measure_spec import branch_channels_for
@@ -85,7 +86,8 @@ def read_preflight_facts(
                          resolved_household_sensitivity(device) if device is not None else None,
                          graph=read_graph(compile_graph=True), pose=read_pose(arm_offset_deg=TurntableMover(timeout_s=5.0).offset_deg() if plan.mover == MOVER_ARM else None))
     pilot_band = None
-    if context is not None and anchor.record.get("ambient_report") and any(pose.plays_summed for pose in plan.stops):
+    if context is not None and anchor.record.get("ambient_report") and (
+            takes_timing(plan) or any(pose.plays_summed for pose in plan.stops)):
         program = SessionExcitation(
             roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
             session_volume_db=context.session_volume_db, fc_hz=context.fc_hz,

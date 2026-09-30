@@ -765,13 +765,19 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
 
 
 @pytest.mark.parametrize("level_db,has_ambient,disclosed", [(-24.809, True, False), (-34.809, True, True), (-34.809, False, False)])
+@pytest.mark.parametrize("stop,program", [
+    (AngleStop(0, REGIME_SUMMED, purpose="speaker"), ""),
+    # Its one stop plays per driver; its timing take plays the pilots.
+    (AngleStop(0, REGIME_PER_DRIVER, purpose="speaker"), "speaker/mark"),
+], ids=["summed", "speaker-mark"])
 @pytest.mark.parametrize("fc_hz,band,ambient_row,floor", [
     (2000, (200, 800), (160, 350, -68.4), -43.4),
     (625, (200, 250), (160, 350, -68.4), -43.4),
     (None, (550, 800), (350, 1000, -71.3), -46.3),
 ])
-def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, disclosed, fc_hz, band, ambient_row, floor):
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=level_db))
+def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambient, disclosed, stop, program, fc_hz, band,
+                                                ambient_row, floor):
+    plan = AngleCaptureRequest((stop,), program=program, level=LevelPolicy(level_db=level_db))
     anchor = ready_facts(plan).anchor
     sensitivity = replace(anchor.sensitivity, sens_factor_db=-12.07)
     report = {"bands": [{"band_hz": [lo, hi], "level_dbfs": dbfs} for lo, hi, dbfs in (
@@ -808,21 +814,16 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
 
 
 @pytest.mark.parametrize("level_db,disclosed", [(-18, False), (-38, True)])
-@pytest.mark.parametrize("stops,program,pilots", [
-    ((AngleStop(0, REGIME_SUMMED, purpose="bass"),), "", False),
-    ((AngleStop(0, REGIME_SUMMED, purpose="room"),), "", True),
-    ((AngleStop(0, REGIME_SUMMED, purpose="bass"), AngleStop(0, REGIME_SUMMED, purpose="room")), "", True),
-    # Its per-driver stops play no pilots; its timing take does.
-    ((AngleStop(0, REGIME_PER_DRIVER, purpose="speaker"),), "speaker/mark", True),
-], ids=["bass", "room", "bass-room", "speaker-mark"])
-def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, stops, program, pilots):
-    plan = AngleCaptureRequest(stops, program=program, level=LevelPolicy(level_db=level_db))
+@pytest.mark.parametrize("purposes", [("bass",), ("room",), ("bass", "room")])
+def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purposes):
+    plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, purpose=purpose) for purpose in purposes),
+                               level=LevelPolicy(level_db=level_db))
     facts = ready_facts(plan, summed_pilot_band_hz=(200, 800))
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60},
                                        {"band_hz": [200, 800], "level_dbfs": -60}]}}))
     report = preflight(plan, facts)
-    assert (report.blocking, len(report.issues)) == (False, int(disclosed and pilots))
+    assert (report.blocking, len(report.issues)) == (False, int(disclosed and "room" in purposes))
     for issue in report.issues:
         assert (issue.code, issue.blocking) == ("run_level_pilots_under_ambient", False)
         assert issue.evidence == {
