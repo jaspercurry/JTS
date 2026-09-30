@@ -56,9 +56,14 @@ GAIN_CAP_BACKOFF_DB = 0.01
 # Without a graph-to-anchor gain reference, blind pilots keep a conservative cut.
 CHECK_PROBE_BACKOFF_DB = 12.0
 
-#: A driver pose's level probe starts this far under the seat-equivalent
-#: level, which reads about 96 dB at 15 mm (ADR-0365).
-LEVEL_PROBE_START_BACKOFF_DB = 30.0
+#: A level probe's first burst plays this loud at the output, its fader plus its
+#: digital gain; on the measured chain that reads about 65 dB 15 mm from the
+#: woofer (ADR-0403 §4).
+LEVEL_PROBE_START_OUTPUT_DBFS = -60.0
+
+#: A driver's take plays up to digital full scale, under its cap and the run's
+#: fader: the seat-equivalent cap is removed (ADR-0403 §4).
+DRIVER_TAKE_CEILING_DBFS = 0.0
 
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
@@ -144,16 +149,14 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     return program
 
 
-def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, float, float, int]:
-    """A driver pose's target and band, the peak a far-field take of it plays at,
-    that peak under the target's cap, and the width of the graph that plays it."""
+def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, float, int]:
+    """A driver pose's target and band, its take's ceiling (full scale under the
+    target's cap and the run's fader), and the width of the graph that plays it."""
     from ..camilla_yaml import program_channel_count  # lazy: import cost, the emitter package for one max()
 
     target = solo_target(spec)
-    seat_equivalent = BASE_STIMULUS_PEAK_DBFS - (CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None
-                                                 else max(0.0, spec.scope_gains_db.get(target, 0.0)))
-    return (RoleBand(target, 0, excitation.target_bands[target]), seat_equivalent,
-            back_off_gain(seat_equivalent, excitation.session_volume_db, excitation.caps_dbfs[target]),
+    return (RoleBand(target, 0, excitation.target_bands[target]),
+            back_off_gain(DRIVER_TAKE_CEILING_DBFS, excitation.session_volume_db, excitation.caps_dbfs[target]),
             program_channel_count(branch_channels_for(spec)))
 
 
@@ -178,10 +181,10 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     The program is as wide as the graph that plays it
     (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
     channel but the target's is written silent rather than left to the ring.
-    ``stimulus_dbfs`` is the peak a take asks for, never above the
-    seat-equivalent level (ADR-0361).
+    ``stimulus_dbfs`` is the peak a take asks for, never above its ceiling
+    (ADR-0403 §4).
     """
-    band, _, ceiling, channels = _solo_take(excitation, spec)
+    band, ceiling, channels = _solo_take(excitation, spec)
     gain = ceiling if stimulus_dbfs is None else min(ceiling, stimulus_dbfs)
     return build_measure_program(
         {band.role: gain}, (band,), **_solo_sweeps(spec, band.role),
@@ -192,19 +195,19 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     )
 
 
-def _probe_gains(seat_equivalent: float, ceiling: float) -> tuple[float, ...]:
-    """A probe's burst gains: at most ``MAX_STEP_DB`` apart, from well under the
-    seat-equivalent level to the take's own ceiling (ADR-0365)."""
-    start = min(seat_equivalent - LEVEL_PROBE_START_BACKOFF_DB, ceiling)
+def _probe_gains(fader_db: float, ceiling: float) -> tuple[float, ...]:
+    """A probe's burst gains: at most ``MAX_STEP_DB`` apart, from −60 dBFS at the
+    output to the take's own ceiling (ADR-0365, ADR-0403 §4)."""
+    start = min(LEVEL_PROBE_START_OUTPUT_DBFS - fader_db, ceiling)
     steps = math.ceil(round((ceiling - start) / MAX_STEP_DB, 6))
     return tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1))
 
 
 def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
     """A driver pose's level probe: its take's target, band and ceiling (ADR-0365)."""
-    band, seat_equivalent, ceiling, channels = _solo_take(excitation, spec)
+    band, ceiling, channels = _solo_take(excitation, spec)
     return build_level_probe_program(
-        band, _probe_gains(seat_equivalent, ceiling),
+        band, _probe_gains(excitation.session_volume_db, ceiling),
         sweep_band_hz=_solo_sweeps(spec, band.role)["sweep_band_hz"], gap_s=NEAR_FIELD_SILENCE_S,
         downstream_gain_db=excitation.session_volume_db, channels=channels,
     )
@@ -215,7 +218,7 @@ def compose_summed_probe(excitation: SessionExcitation, spec: Any) -> Excitation
     summed gain its take plays at when no level is asked (ADR-0403)."""
     backoff = _scope_backoff_db(spec)
     return build_summed_level_probe_program(
-        _probe_gains(BASE_STIMULUS_PEAK_DBFS - backoff, excitation._summed_gain(backoff)),
+        _probe_gains(excitation.session_volume_db, excitation._summed_gain(backoff)),
         sweep_band_hz=spec.sweep_band_hz or measurement_band_hz(excitation.roles), gap_s=NEAR_FIELD_SILENCE_S,
         downstream_gain_db=excitation.session_volume_db,
     )
