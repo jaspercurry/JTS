@@ -243,8 +243,8 @@ def select_pose_curve_pair(
     roles: tuple[str, str], vertical_deg: int = 0, take_id: str | None = None,
     search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
-    """Newest matching speaker take the round kept, with both gated curves and
-    their recorded request facts.
+    """Newest matching speaker take the round kept, with both curves through its
+    own window (:func:`take_window`) and their recorded request facts.
 
     Both roles must ride ONE take: combining transfers from different captures
     would sum across whatever moved between them. Take ids are zero-padded
@@ -262,7 +262,7 @@ def select_pose_curve_pair(
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_id is not None and document.get("take_id") != take_id)):
             continue
-        curves = take_curves(document, WINDOW_GATED)
+        curves = take_curves(document, take_window(document))
         if search_detail is not None:
             search_detail["takes_seen"] += 1
             search_detail["roles_per_take"][row.path] = dict(Counter(

@@ -73,8 +73,8 @@ def _only(windows) -> str:
 
 _ROW = Measurement("p", "sess-1", "", PHASE_LATERAL, 0, 0, "", None, "", "", "bearing")
 
-#: Each changed reader, as the window it read from one take; the rear pair reads
-#: ungated, every other reader the window the take's own analysis graded.
+#: Each changed reader, as the window it read from one take: the rear pair reads
+#: ungated, the room ceiling gated, every other reader the take's own window.
 READERS = {
     "take_curve": (lambda take, root: take_curve(take, "summed")["window"], "gated"),
     "room_selection": (lambda take, root: _by_level(room_selection._take(_ROW, take).magnitude_db[0]), "gated"),
