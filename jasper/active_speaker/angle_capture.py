@@ -54,7 +54,6 @@ from .measurement_programs import (
     REGIME_PER_DRIVER,
     REGIME_SUMMED,
     REGIME_BRANCHES,
-    REGIME_NEAR_FIELD,
     REGIMES,
     validated_branch_pair,
     validated_capture_purpose,
@@ -146,7 +145,7 @@ __all__ = [
 
 LEVEL_HOLD_REFERENCE = "hold_reference"
 LEVEL_SOURCES = ("seat_reference", "program_default", "operator")
-REQUEST_SCHEMA_VERSION = 5
+REQUEST_SCHEMA_VERSION = 6
 REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 
@@ -191,7 +190,6 @@ _REGIME_PROGRAM_PHASE = {
     REGIME_PER_DRIVER: PHASE_MEASURE,
     REGIME_SUMMED: PHASE_CLOUD_VERIFY,
     REGIME_BRANCHES: PHASE_CLOUD_VERIFY,
-    REGIME_NEAR_FIELD: PHASE_CLOUD_VERIFY,
 }
 
 
@@ -515,7 +513,8 @@ class AngleCaptureRequest:
     @classmethod
     def from_mapping(cls, doc: Mapping[str, Any]) -> AngleCaptureRequest:
         if doc.get("artifact_schema_version") != REQUEST_SCHEMA_VERSION:
-            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED, "restage the request as version 5")
+            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED,
+                                     f"restage the request as version {REQUEST_SCHEMA_VERSION}")
         if doc.get("kind") != REQUEST_KIND:
             raise ValueError("invalid angle request kind")
         unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
@@ -1046,7 +1045,7 @@ def session_lateral_walk(
     })
     if off_regime and not (
         supported_summed_candidates
-        and (all(stop.regime in (REGIME_SUMMED, REGIME_NEAR_FIELD) for stop in request.stops)
+        and (all(stop.regime == REGIME_SUMMED for stop in request.stops)
              or (len(request.stops) == 1 and request.stops[0].regime == REGIME_BRANCHES
                  and bool(request.stops[0].candidate_id)))
     ):

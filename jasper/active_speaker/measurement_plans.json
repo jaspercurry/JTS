@@ -1,6 +1,7 @@
 {
   "stimuli": {
-    "bass": {"ceiling_hz": 1100.0}
+    "bass": {"ceiling_hz": 1100.0},
+    "near_field": {"band_hz": [20.0, 2000.0], "sweep_s": 8.0, "gap_s": 0.5}
   },
   "layouts": {
     "speaker_mark": {
@@ -154,7 +155,7 @@
     {"preset": "bass/axis", "layout": "bass_axis", "layouts": ["bass_axis", "seat_cloud", "room_quick", "seat_express"], "purposes": ["bass"], "regime": "summed", "levels": "auto", "stimulus": "bass",
      "description": "A bass sweep up to 1.1 kHz, summed at a ladder of levels from the seat reference down, with room correction off, and with the applied bass extension off too when no candidate is named.",
      "use_when": "Use to fit or trial bass extension; by hand, pick seat_express."},
-    {"preset": "nearfield/each", "layout": "nearfield_woofer", "purposes": ["reference"], "regime": "near_field",
+    {"preset": "nearfield/each", "layout": "nearfield_woofer", "purposes": ["reference"], "regime": "per_driver", "stimulus": "near_field",
      "description": "Each declared woofer output alone, close to its dust cap, as reference evidence.",
      "use_when": "Use for near-field woofer references; no tuning program reads them yet."},
     {"preset": "drivers/each", "layout": "drivers_each", "purposes": ["reference"], "regime": "per_driver",

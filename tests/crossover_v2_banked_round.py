@@ -430,7 +430,6 @@ def cloud_position_record(
     glitch_detected: bool,
     wav_sha256: str | None,
     graph_fingerprint: str = "",
-    regime: str = "",
     curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
@@ -460,12 +459,6 @@ def cloud_position_record(
     ordinary on a rig whose first bounce lands while the direct sound is still
     decaying.
 
-    ``regime`` is WHAT PLAYED, in the walk seam's vocabulary
-    (:data:`LATERAL_POSE_REGIME` is the other word in it), ``""`` until a caller
-    states it. That vocabulary is NOT :data:`~.contracts.MEASURE_REGIMES`',
-    which the engine's record spells under the same key — two vocabularies, one
-    key name.
-
     ``geometry`` is WHERE the microphone was, as fields rather than English:
     ``position_deg`` (``None`` where no bearing was commanded),
     ``position_axis``, ``vertical_deg`` and ``mark_distance_m``, stamped from
@@ -485,7 +478,6 @@ def cloud_position_record(
             graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": prompt,
-        "regime": regime,
         "wide": wide,
         # The position's named question: the prompt string alone cannot be
         # parsed back into a role, so the label rides the record explicitly.
@@ -507,13 +499,6 @@ def cloud_position_record(
         "curves": [dict(curve) for curve in curves],
         **pose_kind_fields(geometry, gating_applied=gating_applied),
     }
-
-
-#: What every :data:`~jasper.active_speaker.crossover_v2.journey.PHASE_LATERAL`
-#: pose plays: the anchor's interleaved per-driver MEASURE object. A literal
-#: copy of :data:`jasper.active_speaker.angle_capture.REGIME_PER_DRIVER`,
-#: pinned equal by test.
-LATERAL_POSE_REGIME = "per_driver"
 
 
 def lateral_pose_record(
@@ -545,7 +530,6 @@ def lateral_pose_record(
         "vertical_deg": int(geometry.vertical_deg),
         "offset_cm": float(pose.offset_cm),
         "at_mark": bool(pose.at_mark),
-        "regime": LATERAL_POSE_REGIME,
         "lateral_consumer": lateral_consumer,
         "captured_at": captured_at,
         "curves": [spatial.pose_curve_record(curve) for curve in pose.curves],
@@ -563,7 +547,6 @@ def phase_capture_record(
     captured_at: str,
     wav_sha256: str | None,
     prompt: str = "",
-    regime: str = "",
     curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
@@ -587,8 +570,7 @@ def phase_capture_record(
     the horizontal axis, which is the reading ``session.TuningSession._bearings``
     gives a spec naming no position, so one pose is one record on both sides.
     ``prompt`` is ``""`` because no instruction was issued, a different fact
-    from an unknown one; ``regime`` is the caller's to state and is never
-    guessed from the phase.
+    from an unknown one.
     """
     identity = _take_identity(
         position_id=f"{phase}_{index:02d}",
@@ -602,7 +584,6 @@ def phase_capture_record(
         **identity,
         "captured_at": captured_at,
         "prompt": prompt,
-        "regime": regime,
         "position_deg": DESIGN_AXIS_DEG,
         "position_axis": spatial.POSITION_AXIS_HORIZONTAL,
         "vertical_deg": 0,
@@ -626,7 +607,6 @@ def timing_take_record(
     glitch_detected: bool,
     wav_sha256: str | None,
     prompt: str = "",
-    regime: str = "",
     curves: Sequence[Mapping[str, Any]] = (),
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
@@ -658,7 +638,6 @@ def timing_take_record(
         "position_axis": spatial.POSITION_AXIS_HORIZONTAL,
         "vertical_deg": 0,
         "pose_kind": measurement_programs.POSE_KIND_BEARING,
-        "regime": regime,
         "captured_at": captured_at,
         "validity_floor_hz": validity_floor_hz,
         "gate_window_ms": gate_window_ms,

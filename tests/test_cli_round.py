@@ -608,7 +608,7 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert code == 0
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == ([] if candidates is None else [candidates])
-    assert (plan["artifact_schema_version"], body["run_id"]) == (5, "run-1")
+    assert (plan["artifact_schema_version"], body["run_id"]) == (6, "run-1")
     assert plan["level"]["level_db"] == -25
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["subject"] == ({"candidate_ids": [candidates]} if candidates else {})

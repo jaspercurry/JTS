@@ -36,7 +36,7 @@ from .measured_crossover_candidate import (
 )
 from .movers import MOVER_ARM
 from .measurement_programs import (
-    BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_BASS, PURPOSE_REAR, REGIME_NEAR_FIELD, UnknownPresetError,
+    BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, UnknownPresetError,
     candidate_identity, cleared_layers, run_purposes,
 )
 from .profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB, spl_raise_bound_db_spl
@@ -170,7 +170,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         code = REASON_MEASUREMENT_OUTPUT_MUTED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
     admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
-    if any(stop.regime == REGIME_NEAR_FIELD for stop in plan.stops):
+    # Only a near-field take plays a declared stimulus on one driver.
+    if any(stop.driver and stop.stimulus is not None for stop in plan.stops):
         admission["predicted_spl_basis"] = NEAR_FIELD_SPL_BASIS
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:
@@ -339,8 +340,9 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                             plan = replace(plan, level=replace(level, level_db=admission["level_db"]))
                         fader, predicted = admission["level_db"], admission["admitted_db_spl"]
                 ambient, band = facts.anchor.record.get("ambient_report"), facts.summed_pilot_band_hz
+                # A summed take's declared stimulus is the bass sweep, which plays no pilots (bass_stimulus.py).
                 if (isinstance(ambient, Mapping) and band is not None and (takes_timing(plan) or any(
-                        pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops))):
+                        pose.plays_summed and pose.stimulus is None for pose in plan.stops))):
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
                     rows = ambient_rows_in_band(band, ambient.get("bands") or ())
                     if rows and not clears_snr_floor(ambient, pilot_dbfs, [band]):

@@ -78,12 +78,7 @@ MEASURE_SWEEP_F_LO_HZ = 150.0
 MEASURE_SWEEP_F_HI_HZ = 23_000.0
 MEASURE_SWEEP_BAND_HZ = (MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)
 
-# --- one-driver near-field take (#5684) ---
-# From the driver's own floor to where a close mic stops resolving a woofer's
-# piston; 8 s sweeps buy the low-end SNR the protected drivers graph's missing
-# bass boost costs.
-NEAR_FIELD_SWEEP_BAND_HZ = (ROOM_FLOOR_HZ, 2_000.0)
-NEAR_FIELD_SWEEP_S = 8.0
+# --- one-driver near-field take (#5684; its band and sweep are the plan's near_field stimulus) ---
 # Longest silence after the first sound, so a signal-sensing amplifier (jts3's
 # TPA3255) never drops into standby mid-take. The silence before each sweep must
 # still cover the analysis's deconvolution pre-guard (DECONV_PRE_GUARD_S, 0.25 s).

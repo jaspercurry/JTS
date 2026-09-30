@@ -29,7 +29,7 @@ from .record_index import Measurement, bundle_measurements
 #: The index's own name, so a reader that finds this document anywhere knows
 #: what it is holding without knowing which tool wrote it.
 POSITION_CYCLE_KIND = "jts_crossover_v2_position_cycle"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: The file a round banks it as, inside the round directory.
 POSITION_CYCLE_FILENAME = "position_cycle.json"
@@ -51,7 +51,7 @@ _BANKED_POSITIONS_GLOB = (
 #: the document names its ``sources``. ``candidate_id`` tells apart the takes a
 #: cycled pose measures at ONE bearing.
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
-                "regime", "wav_sha256", "vertical_deg", "candidate_id")
+                "wav_sha256", "vertical_deg", "candidate_id")
 
 #: The keys :func:`read_position_cycle` accepts. Strict in both directions: a
 #: key this module does not know is either a newer schema or a hand edit, and
@@ -107,9 +107,7 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     **The rule is phase, not bearing presence** — a banked cloud position also
     stamps ``position_deg``, so a cloud seat would pass a bearing-shaped filter
     too. What separates them is what they ARE: a lateral pose is a per-driver
-    measurement, a cloud seat is a summed sweep judged by gating and ripple,
-    and they carry different columns (:data:`_TAKE_FIELDS` names a ``regime``
-    no cloud record has).
+    measurement, a cloud seat is a summed sweep judged by gating and ripple.
     Filtering on :data:`~.journey.PHASE_LATERAL` says that directly.
 
     One corrupt sidecar must not cost a reader the takes that are fine, so

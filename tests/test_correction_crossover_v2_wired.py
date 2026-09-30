@@ -1355,7 +1355,7 @@ _TAKE_RECORD_KEYS = frozenset({
     "incident", "index", "inverted_role", "kind", "layout", "level", "level_db", "level_match_trims_db", "level_matched",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
     "pose", "pose_driver", "pose_index", "pose_kind", "position_axis", "position_deg", "preset", "program",
-    "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
+    "prompt", "provenance", "purposes", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
     "stimulus_dbfs", "stimulus_id", "stimulus_ordinal", "stimulus_wav_sha256", "take_id", "targets", "verdict",
     "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
 })

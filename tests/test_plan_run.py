@@ -21,7 +21,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    Preset, ProgramPose, run_preset,
+    Preset, ProgramPose, preset, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -617,14 +617,14 @@ def test_a_take_banked_as_its_run_is_cancelled_is_never_assessed():
     {}, {"pose_kind": "seat", "gating_applied": False}, {"candidate_id": "candidate"}, {"graph_fingerprint": "other"}, {"stimulus_id": "other"},
     {"level_db": -12.0}, {"stimulus_dbfs": -24.0},
     {"capture_calibration": {"applied": True, "calibration_id": "other", "curve_fingerprint": "curve"}},
-    {"regime": "other"}, {"side": "right"}, {"role": "tweeter"},
+    {"side": "right"}, {"role": "tweeter"},
 ])
 def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
     """Neither a pose nor the window it picks (ADR-0400) is a set boundary."""
     manifest = RunManifest("run", _Store(FakeSeams().records))
     record = {"candidate_id": "", "graph_fingerprint": "graph", "stimulus_id": "program",
               "level_db": -20.0, "stimulus_dbfs": -18.0, "pose_kind": "bearing", "gating_applied": True,
-              "regime": "summed", "side": "left", "role": "summed"}
+              "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
             manifest.begin({"index": index, "repeat": 1, "pose": {"deg": degrees}}, attempt=1, pose_index=index - 1)
@@ -805,6 +805,9 @@ def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, pu
                for capture in captures[-repeats:])
 
 
+NEAR_FIELD = preset("nearfield/each").stimulus
+
+
 def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes():
     """Each pose plays its own driver alone, the gate asks for the microphone
     at every pose (the front and rear woofer at one distance included), and
@@ -812,7 +815,7 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
     program = Preset("nearfield/each", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
-        purposes=("reference",), regime="near_field")
+        purposes=("reference",), stimulus=NEAR_FIELD)
     request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_preset(program).to_dict())))
     captures = plan_run.prepare_plan_captures(request)
     gate = AnsweredGate()
@@ -820,8 +823,8 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     result, fakes = asyncio.run(_run_gated(request, gate=gate, captures=captures,
                                            assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept")))
 
-    assert [(c.spec.graph_scope, c.spec.branch_target_ids, c.spec.regime, c.spec.program_phase) for c in captures] == [
-        ("drivers", (driver,), "near_field", "lateral") for driver, _ in layout]
+    assert [(c.spec.graph_scope, c.spec.branch_target_ids, c.spec.stimulus, c.spec.program_phase) for c in captures] == [
+        ("drivers", (driver,), NEAR_FIELD, "lateral") for driver, _ in layout]
     assert result.status == "complete"
     assert len(gate.grants) == result.mic_moves == len(layout)
     assert [(take["measurement_purpose"], take["pose_driver"], take["mark_distance_m"]) for take in fakes.banked] == [
@@ -923,7 +926,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     sent back as drift, though each banks its reading (ADR-0361)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
-        for mm, repeats in ((15, 2), (30, 1), (15, 1))), purposes=("reference",), regime="near_field"))
+        for mm, repeats in ((15, 2), (30, 1), (15, 1))), purposes=("reference",), stimulus=NEAR_FIELD))
     readings = (66.0, 79.0, 81.0, 66.0, 80.0, 64.0, 79.0, 66.0, 82.0)
 
     result, fakes, selected, gate = _run_levelled(request, readings, replace_at=3)
@@ -941,7 +944,7 @@ def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     """A take its ceiling played under the peak it asked for is kept too quiet:
     a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
     request = ac.request_for_preset(Preset("nearfield/each", (
-        ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purposes=("reference",), regime="near_field"))
+        ProgramPose(0, 0, kind="close", distance_m=0.03, driver="woofer"),), purposes=("reference",), stimulus=NEAR_FIELD))
 
     result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
 
@@ -956,7 +959,7 @@ def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
     and packet lines, and logs each once (#5714)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, kind="close", distance_m=mm / 1000, driver=driver)
-        for driver in ("woofer", "woofer:rear") for mm in (15, 30)), purposes=("reference",), regime="near_field"))
+        for driver in ("woofer", "woofer:rear") for mm in (15, 30)), purposes=("reference",), stimulus=NEAR_FIELD))
 
     with caplog.at_level("WARNING", logger=plan_run.logger.name):
         result, fakes, _, gate = _run_levelled(request, (70.0, 80.0) * 2 + (60.0, 80.0) * 2)
@@ -1006,7 +1009,7 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     probe, and a pose's takes play at the level its probe solved (ADR-0365)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
-        for mm, repeats in ((15, 1), (30, 2))), purposes=("reference",), regime="near_field"), retries_per_pose=retries)
+        for mm, repeats in ((15, 1), (30, 2))), purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries)
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
     # The operator presses Redo during each of the first probes, then lets each pose land.
     result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 66.0, 80.0, 80.0),
@@ -1037,7 +1040,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     request = (ac.request_for_preset(Preset("nearfield/each", (
         ProgramPose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
-        purposes=("reference",), regime="near_field"), retries_per_pose=retries) if driver else
+        purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries) if driver else
         replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
     placements = [(66.0, *(80.0,) * repeats)] * 2 if driver else [(70.0,) * repeats, (75.0,) * repeats]
 

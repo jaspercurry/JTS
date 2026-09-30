@@ -211,7 +211,7 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 #: ``crossover_v2_banked_round._take_identity``.
 _ENGINE_RECORD_FIELDS = (
     "run_id", "measure_kind", "baseline_record_id", "position_deg",
-    "position_axis", "vertical_deg", "prompt", "candidate_id", "regime",
+    "position_axis", "vertical_deg", "prompt", "candidate_id",
     "polarity", "level_matched", "graph_fingerprint", "level_db",
     "stimulus_dbfs", "incident", "wav_path",
 )

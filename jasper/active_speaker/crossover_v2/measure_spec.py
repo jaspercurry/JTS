@@ -23,13 +23,11 @@ from .contracts import (
     DRIVER_ROLES,
     DRIVER_ROLE_WOOFER,
     MEASURE_KINDS,
-    MEASURE_REGIMES,
     POLARITIES,
     POLARITY_INVERTED,
     POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
-    REGIME_REFERENCE_AXIS,
 )
 from .journey import CAPTURE_PHASES
 
@@ -85,7 +83,6 @@ class MeasureSpec:
     pose_prompts: tuple[str, ...] = ()
     position_axis: str = POSITION_AXIS_HORIZONTAL
     vertical_deg: int = 0
-    regime: str = REGIME_REFERENCE_AXIS
     polarity: str = POLARITY_NORMAL
     inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
@@ -122,8 +119,8 @@ class MeasureSpec:
     cleared_layers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.stimulus is not None and self.graph_scope != "candidate":
-            raise ValueError("a planned stimulus requires the candidate graph")
+        if self.stimulus is not None and not (self.graph_scope == "candidate" or solo_target(self)):
+            raise ValueError("a planned stimulus plays on the candidate graph or on one driver alone")
         if self.graph_scope not in GRAPH_SCOPES:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
@@ -168,11 +165,6 @@ class MeasureSpec:
         if self.kind not in MEASURE_KINDS:
             raise ValueError(
                 f"a measure kind must be one of {MEASURE_KINDS}, got {self.kind!r}"
-            )
-        if self.regime not in MEASURE_REGIMES:
-            raise ValueError(
-                f"a capture regime must be one of {MEASURE_REGIMES}, "
-                f"got {self.regime!r}"
             )
         if self.polarity not in POLARITIES:
             raise ValueError(
@@ -296,7 +288,7 @@ _FIELD_NAMES = frozenset(spec_field.name for spec_field in fields(MeasureSpec))
 _REQUIRED_FIELDS = frozenset({"kind"})
 
 _TRIMMED_STRINGS = frozenset({
-    "kind", "position_axis", "regime", "polarity", "inverted_role",
+    "kind", "position_axis", "polarity", "inverted_role",
     "candidate_id", "delayed_role", "graph_scope", "program_phase",
 })
 _ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz",

@@ -33,7 +33,7 @@ from .crossover_v2.programs import SessionExcitation, compose_summed_program
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs
 from .measurement_emit import load_tuning_declaration, room_layer_charge_db
-from .measurement_programs import BASE_CANDIDATE, REGIME_NEAR_FIELD, candidate_identity, near_field_drivers
+from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
 from .run_levels import prepare_level_captures
@@ -117,7 +117,7 @@ def read_preflight_facts(
             programs.append(program.stimulus_id)
         return tuple(programs)
 
-    near_field = {stop.driver for stop in plan.stops if stop.regime == REGIME_NEAR_FIELD}
+    near_field = {stop.driver for stop in plan.stops if stop.driver and stop.stimulus is not None}
     output_volume = read_output_volume()
     if output_volume.get("muted"):
         log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)

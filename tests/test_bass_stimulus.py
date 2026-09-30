@@ -104,8 +104,7 @@ def _replay(bass, raw):
 
 def test_registry_stimulus_reaches_the_capture_spec():
     rows = load_presets().values()
-    for row in rows:
-        assert (row.stimulus is not None) == (row.purpose == "bass")
+    assert {row.preset for row in rows if row.stimulus is not None} == {"bass/axis", "nearfield/each"}
     bass, = (row for row in rows if row.purpose == "bass")
     assert bass.layouts == ("bass_axis", "seat_cloud", "room_quick", "seat_express")
     for layout in bass.layouts:
@@ -115,7 +114,7 @@ def test_registry_stimulus_reaches_the_capture_spec():
         assert all(capture.spec.stimulus == run.stimulus for capture in prepare_plan_captures(request))
 
 
-@pytest.mark.parametrize("regime,allowed", [("summed", True), ("near_field", False), ("branches", False), ("per_driver", False), ("reference_axis", False)])
+@pytest.mark.parametrize("regime,allowed", [("summed", True), ("branches", False), ("per_driver", False), ("reference_axis", False)])
 def test_bass_capture_regimes(regime, allowed):
     if allowed:
         assert validated_capture_purpose("bass", regime) == "bass"

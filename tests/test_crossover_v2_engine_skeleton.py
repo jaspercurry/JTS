@@ -38,7 +38,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
-    REGIME_NEAR_FIELD,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     MeasureSpec,
@@ -247,7 +246,6 @@ def _session(
                 {"level_matched": True},
             )
         ],
-        {"kind": MEASURE_KIND_BASELINE, "regime": "far_field"},
         {"kind": MEASURE_KIND_BASELINE, "polarity": "flipped"},
         # R-1: the regime and the branch it flips are one parameter in two
         # halves, so neither half stands alone.
@@ -1130,18 +1128,6 @@ async def test_a_vertical_spec_plays_banks_and_labels_the_take_it_took():
     assert banked["position_axis"] == POSITION_AXIS_VERTICAL
     assert banked["vertical_deg"] == 22
     assert banked["position_deg"] is None
-
-
-async def test_a_near_field_spec_measures_and_banks_its_regime():
-    session, parts = _session()
-
-    async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-        ))
-
-    assert len(outcome.record_ids) == 1
-    assert parts["records"].banked[0]["regime"] == REGIME_NEAR_FIELD
 
 
 async def test_the_outcome_carries_the_spec_it_answers():

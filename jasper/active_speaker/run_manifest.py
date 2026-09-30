@@ -338,7 +338,7 @@ class RunManifest:
             basis = _played_basis(record, role)
             # Pose is an observation axis, never a set boundary (brief §2.4).
             basis.pop("pose_kind", None)
-            basis.update(role=role, stimulus=record.get("regime"), calibration=dict(self.calibration))
+            basis.update(role=role, calibration=dict(self.calibration))
             set_id = json_fingerprint(basis)
             group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
                 "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})
