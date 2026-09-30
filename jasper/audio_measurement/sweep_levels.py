@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -61,7 +61,6 @@ def sweep_band_levels(
     return rows
 
 
-def snr_trusted(band: Mapping[str, Any]) -> bool:
-    """Whether a :func:`sweep_band_levels` row's SNR reaches ``DRIVER.snr_warn_db``."""
-    snr = band["estimated_snr_db"]
-    return snr is not None and snr >= DRIVER.snr_warn_db
+def snr_trusted(snr_db: float | None) -> bool:
+    """Whether a band's SNR, as :func:`sweep_band_levels` estimates it, reaches ``DRIVER.snr_warn_db``."""
+    return snr_db is not None and snr_db >= DRIVER.snr_warn_db

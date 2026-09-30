@@ -40,9 +40,9 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_NO_COMPARISON,
     REASON_NO_EARLIER_REFERENCE,
     REASON_NO_REFERENCE_TAKE,
-    REASON_NO_ROW,
     REASON_REFERENCE_NOT_IN_SET,
     REASON_SEGMENT_MISSING,
+    REASON_TOO_FEW_POSITIONS,
     REASON_UNREADABLE,
     REFUSE_NO_BRANCH_DIAGNOSTIC,
     REFUSE_NO_INCUMBENT,
@@ -71,7 +71,6 @@ from jasper.audio_measurement.seat_figures import (
     figure_level_db, late_energy_change, position_figures, reference_curve_db, repeat_spread,
 )
 from jasper.audio_measurement.series_stats import band_change_db
-from jasper.audio_measurement.sweep_levels import snr_trusted
 from jasper.platform.json_fields import finite_float
 
 from .evidence_packet.incumbent import applied_profile_source
@@ -84,7 +83,7 @@ from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_recor
 from .room_views import room_ceiling
 from .round_captures import doc_pose_key
 from .round_inputs import ROUND_INPUT_ERRORS, RoundInputs, SetTakes, banked_round_of, comparands, round_inputs
-from .take_impulses import IMPULSES_KEY, impulse_for, take_impulses
+from .take_impulses import IMPULSES_KEY, TakeImpulsesUnreadable, impulse_for, take_impulses
 
 
 ROLE_INCUMBENT = "incumbent"
@@ -103,9 +102,10 @@ PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
 LEVEL_FIELDS = ("level_db", "stimulus_id", "calibration_applied", "calibration_reference")
 
 #: The rear score (#5405 comment 5747658591). Behind the box the room refills an
-#: ungated null, so the bands centred from the first figure up read each take's
-#: kept impulse through the window; each band's gain is capped so that one deep
-#: band cannot buy the mean (#5404 comment 5746999024 item 2).
+#: ungated null, so the bands centred at or above REAR_SCORE_WINDOWED_FROM_HZ
+#: read each take's kept impulse through REAR_SCORE_WINDOW_MS; each band's gain
+#: is capped so that one deep band cannot buy the mean (#5404 comment 5746999024
+#: item 2).
 REAR_SCORE_WINDOWED_FROM_HZ = 150.0
 REAR_SCORE_WINDOW_MS = 10.0
 REAR_SCORE_CAP_DB = 12.0
@@ -212,15 +212,20 @@ def _front_guard(grid: np.ndarray, curve_db: np.ndarray, reference_db: np.ndarra
             for band, change in zip(FRONT_GUARD_BANDS_HZ, changes)]
 
 
-def _windowed_db(session_dir: Path, records: Sequence[Mapping[str, Any]], grid: np.ndarray) -> np.ndarray | None:
+def _windowed_db(session_dir: Path, records: Sequence[Mapping[str, Any]], grid: np.ndarray) -> np.ndarray:
     """The takes' kept summed impulses read through :data:`REAR_SCORE_WINDOW_MS`
     from their peaks (ADR-0354, ADR-0355), at 1/6 octave on ``grid``, averaged in
-    dB; ``None`` when one take kept none."""
+    dB. A take that kept none, or whose file does not read back, refuses by name."""
     curves = []
     for record in records:
-        impulse = impulse_for(take_impulses(session_dir, record), "summed")
+        try:
+            impulse = impulse_for(take_impulses(session_dir, record), "summed")
+        except TakeImpulsesUnreadable as exc:
+            raise EvidenceUnavailable(REASON_UNREADABLE, {
+                "take_id": record.get("take_id"), "detail": str(exc)}) from exc
         if impulse is None:
-            return None
+            raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {
+                "take_id": record.get("take_id"), "field": IMPULSES_KEY, "role": "summed"})
         curves.append(impulse_reading.magnitude_db(
             impulse.samples, impulse.sample_rate_hz, peak_index=int(np.argmax(np.abs(impulse.samples))),
             window_ms=REAR_SCORE_WINDOW_MS, lead_ms=PHASE_GATE_LEAD_MS, grid_hz=grid,
@@ -236,29 +241,30 @@ def _rear_score(
     rear-muted: the mean change over the front poses minus the mean over the
     behind ones, whose bands from :data:`REAR_SCORE_WINDOWED_FROM_HZ` read
     through :func:`_windowed_db`. The score is the mean gain, each band's capped
-    at :data:`REAR_SCORE_CAP_DB`."""
+    at :data:`REAR_SCORE_CAP_DB`; an impulse it cannot read gaps the score
+    alone (ADR-0101)."""
     poses = {side: sorted(key for key in keys if key in takes and key in reference)
              for side, keys in (("front", front), ("behind", behind))}
     if not poses["front"] or not poses["behind"]:
-        return unavailable(REASON_NO_ROW, {side: len(keys) for side, keys in poses.items()})
+        return unavailable(REASON_TOO_FEW_POSITIONS, {side: len(keys) for side, keys in poses.items()})
 
     def plain(key: str) -> list[float | None]:
         grid, zero = _mean_curve_db(reference[key])
         level = figure_level_db(grid, _mean_curve_db(takes[key], grid)[1])
         return _changes(grid, level, figure_level_db(grid, zero), REAR_SCORE_BANDS_HZ, swept_hz)
 
-    def through_window(key: str) -> list[float | None] | None:
+    def through_window(key: str) -> list[float | None]:
         grid = reference[key][0].freqs_hz
-        read = [_windowed_db(session_dir, [records[take.take_id] for take in side[key]], grid)
-                for side in (takes, reference)]
-        return None if read[0] is None or read[1] is None else _changes(
-            grid, read[0], read[1], REAR_SCORE_BANDS_HZ, swept_hz)
+        level, zero = (_windowed_db(session_dir, [records[take.take_id] for take in side[key]], grid)
+                       for side in (takes, reference))
+        return _changes(grid, level, zero, REAR_SCORE_BANDS_HZ, swept_hz)
 
     ahead = [plain(key) for key in poses["front"]]
     behind_plain = [plain(key) for key in poses["behind"]]
-    behind_read = [read for key in poses["behind"] if (read := through_window(key)) is not None]
-    if len(behind_read) < len(behind_plain):
-        return unavailable(TAKE_CURVES_NOT_BANKED, {"field": IMPULSES_KEY, "role": "summed"})
+    try:
+        behind_read = [through_window(key) for key in poses["behind"]]
+    except EvidenceUnavailable as refusal:
+        return unavailable(refusal.reason, refusal.detail)
     rows: list[dict[str, Any]] = []
     gains: list[float] = []
     for index, band in enumerate(REAR_SCORE_BANDS_HZ):
@@ -273,7 +279,8 @@ def _rear_score(
                      "below_trusted_floor": window and band[0] < f_trusted_floor_hz(REAR_SCORE_WINDOW_MS / 1e3),
                      "front_change_db": front_db, "behind_change_db": behind_db, "gain_db": gains[-1]})
     return {"status": "available", "ladder": "rear_score", "cap_db": REAR_SCORE_CAP_DB, **poses,
-            "score_db": float(np.mean([min(gain, REAR_SCORE_CAP_DB) for gain in gains])), "bands": rows}
+            "score_db": float(np.mean([min(gain, REAR_SCORE_CAP_DB) for gain in gains])),
+            "below_trusted_floor_bands": sum(row["below_trusted_floor"] for row in rows), "bands": rows}
 
 
 def _position_rows(
@@ -694,15 +701,15 @@ def _pair_position(
         "coverage_hz": coverage_hz, "band_hz": band_hz, "bands": bands, "arrival_gap": gap,
         "ladder": "third_octave_bass",
         "superposition_residual_db": residual,
-        "rear_polarity": rear_polarity(grid, front_tf=front, rear_tf=rear, band_hz=band_hz,
-                                       arrival_gap=gap, trusted_hz=_trusted_snr_hz(first)),
+        "rear_polarity": rear_polarity(grid, front_tf=front, rear_tf=rear, pair_tf=summed, band_hz=band_hz,
+                                       arrival_gap=gap, sum_snr=_sum_snr(first)),
     }, grid
 
 
-def _trusted_snr_hz(record: Mapping[str, Any]) -> list[list[float]] | None:
-    """The bands whose SNR the take's summed sweep banked as trusted (#5737 C4), or ``None`` when it banked none."""
+def _sum_snr(record: Mapping[str, Any]) -> list[tuple[Sequence[float], float | None]] | None:
+    """The SNR the take's summed sweep banked per band (#5737 C4), or ``None`` when it banked none."""
     reading = (record.get("analysis") or {}).get("bass")
-    return None if reading is None else [band["band_hz"] for band in reading["bands"] if snr_trusted(band)]
+    return None if reading is None else [(band["band_hz"], band["estimated_snr_db"]) for band in reading["bands"]]
 
 
 def _pair_document(

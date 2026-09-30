@@ -31,8 +31,10 @@ section is missing evidence.
 Band rows name their `ladder` from `band_ladders.py`: `rear_front_guard`, `rear_score`, `rear_level`, `rear_late_energy`, `rear_arrival_gap`, `bass`, `third_octave_bass`, `octave`, `room` (fixed split edges, with outer edges set by coverage and ceiling), `speaker_spec`, `snr`, or `crossover_snr`.
 
 Numbers below the trusted floor carry `below_trusted_floor` beside their
-`value`. They are not speaker evidence. Use `jasper-round-views` for a question
-the packet did not answer. Never recompute a number it prints.
+`value`. They are not speaker evidence. The rear score is the one exception: it
+may rank candidates on such bands, and `below_trusted_floor_bands` counts them.
+Use `jasper-round-views` for a question the packet did not answer. Never
+recompute a number it prints.
 
 To look inside one take the way you would in REW, ask `impulse` (arrival,
 onset, noise, decay), `group-delay` (phase and group delay by octave, and the
@@ -333,7 +335,8 @@ woofer alone, the rear alone and both on one clock, with the rear stage cleared.
 Read `packet["rear"][].pair.positions[*]`: `superposition_residual_db` tests
 the model; `arrival_gap` gives the rear-minus-front gap, confidence and
 `search_ms`; `rear_polarity` gives the measured sign, read only in the lowest
-bands whose banked SNR is trusted (`snr_short` when none is). The gap uses the applied
+bands where each woofer alone is far enough above the room's noise, which its
+`bands_hz` lists (`polarity_snr_short` when none is). The gap uses the applied
 rear document's band or `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage;
 `band_hz` and `arrival_gap_band_source` disclose `rear_document` or `default`.
 

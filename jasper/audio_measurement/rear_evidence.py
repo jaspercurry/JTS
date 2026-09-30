@@ -19,9 +19,11 @@ from jasper.audio_measurement.band_ladders import (
     THIRD_OCTAVE_BASS_BANDS_HZ,
 )
 from jasper.audio_measurement.evidence_reasons import (
-    REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, REASON_NO_IMPULSE, REASON_SNR_SHORT, TAKE_CURVES_NOT_BANKED,
+    REASON_COVERAGE_SHORT, REASON_GAP_NOT_CONFIDENT, REASON_NO_IMPULSE, REASON_POLARITY_SNR_SHORT,
+    TAKE_CURVES_NOT_BANKED,
 )
 from jasper.audio_measurement.seat_figures import band_indices, figure_level_db
+from jasper.audio_measurement.sweep_levels import snr_trusted
 from jasper.platform.json_fields import finite_float
 
 #: Applied before the log so a bin that cancelled to exactly zero banks a
@@ -153,8 +155,8 @@ def confident_arrival_gap_s(gap: Mapping[str, Any]) -> float | None:
 
 
 def rear_polarity(
-    freqs_hz: Any, *, front_tf: Any, rear_tf: Any, band_hz: Sequence[float] | None,
-    arrival_gap: Mapping[str, Any], trusted_hz: Sequence[Sequence[float]] | None,
+    freqs_hz: Any, *, front_tf: Any, rear_tf: Any, pair_tf: Any, band_hz: Sequence[float] | None,
+    arrival_gap: Mapping[str, Any], sum_snr: Sequence[tuple[Sequence[float], float | None]] | None,
 ) -> dict[str, Any]:
     """Whether the rear woofer tracks the front woofer or opposes it.
 
@@ -162,12 +164,14 @@ def rear_polarity(
     ``positive_delay_has_negative_phase``
     (:data:`~jasper.active_speaker.rear_calibration.PHASE_CONVENTION`), so a gap
     of τ is removed by multiplying by ``exp(+jωτ)`` — averaged as a unit phasor
-    over the lowest :data:`POLARITY_BAND_COUNT` bands of ``band_hz`` whose every
-    bin lies in ``trusted_hz``: the bands whose banked SNR the take trusts, or
-    ``None`` when it banked none. A noise band reads any angle (#5404 item 3).
-    Unclear wherever the mean angle falls between the two thresholds, and
-    wherever the gap or the bands are unavailable — never a guess, and never a
-    claim about the polar pattern.
+    over the lowest :data:`POLARITY_BAND_COUNT` bands of ``band_hz`` where each
+    woofer alone has a trusted SNR (:func:`~.sweep_levels.snr_trusted`): a noise
+    band reads any angle (#5404 item 3). ``sum_snr`` is the SNR the take banked
+    for the sum, as ``(band_hz, snr_db)`` rows, or ``None`` when it banked none;
+    one recording holds one noise, so a woofer's SNR in a band is the sum's there
+    plus the woofer's level over the sum's. Unclear wherever the mean angle falls
+    between the two thresholds, and wherever the gap or the bands are
+    unavailable — never a guess, and never a claim about the polar pattern.
 
     ``arrival_gap`` is the whole :func:`arrival_gap_ms` row, not its seconds,
     so the two ways a gap can be unusable keep their own reasons: one never
@@ -176,21 +180,26 @@ def rear_polarity(
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     bands = [] if band_hz is None else _third_octaves(freqs, band_hz)
-    row: dict[str, Any] = {"state": POLARITY_UNCLEAR, "phase_deg": None, "bands_hz": None}
+    row: dict[str, Any] = {"state": POLARITY_UNCLEAR, "phase_deg": None, "bands_hz": [], "n_bands": 0}
     arrival_gap_s = confident_arrival_gap_s(arrival_gap)
     if arrival_gap_s is None:
         return {**row, "reason": REASON_GAP_NOT_CONFIDENT
                        if arrival_gap.get("ms") is not None else REASON_NO_IMPULSE}
     if not bands:
         return {**row, "reason": REASON_COVERAGE_SHORT}
-    if trusted_hz is None:
+    if sum_snr is None:
         return {**row, "reason": TAKE_CURVES_NOT_BANKED}
-    trusted = np.zeros(freqs.shape, dtype=bool)
-    for band in trusted_hz:
-        trusted[band_indices(freqs, band)] = True
-    read = [band for band in bands if trusted[band_indices(freqs, band)].all()][:POLARITY_BAND_COUNT]
+    floor = np.full(freqs.shape, -np.inf)
+    for band, snr_db in sum_snr:
+        if snr_db is not None:
+            floor[band_indices(freqs, band)] = snr_db
+    pair = _band_levels(freqs, pair_tf, bands)
+    solos = [_band_levels(freqs, tf, bands) for tf in (front_tf, rear_tf)]
+    read = [band for index, band in enumerate(bands)
+            if all(snr_trusted(float(np.min(floor[band_indices(freqs, band)])) + solo[index] - pair[index])
+                   for solo in solos)][:POLARITY_BAND_COUNT]
     if not read:
-        return {**row, "reason": REASON_SNR_SHORT}
+        return {**row, "reason": REASON_POLARITY_SNR_SHORT}
     inside = np.concatenate([band_indices(freqs, band) for band in read])
     ahead = np.asarray(front_tf, dtype=np.complex128)[inside]
     aligned = (np.asarray(rear_tf, dtype=np.complex128)[inside]
@@ -202,7 +211,7 @@ def rear_polarity(
         "state": POLARITY_SAME if degrees <= POLARITY_SAME_MAX_DEG
                  else POLARITY_INVERTED if degrees >= POLARITY_INVERTED_MIN_DEG
                  else POLARITY_UNCLEAR,
-        "phase_deg": degrees, "bands_hz": [read[0][0], read[-1][1]], "reason": "",
+        "phase_deg": degrees, "bands_hz": [list(band) for band in read], "n_bands": len(read), "reason": "",
     }
 
 

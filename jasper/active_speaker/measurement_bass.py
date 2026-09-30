@@ -125,7 +125,7 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
     valid = not diagnostics.get("integrity_failed") and not document["analysis"]["glitch_detected"]
     bands = [dict(band) for band in reading["bands"]]
     for band in bands:
-        band["fundamental_qualified"] = valid and snr_trusted(band)
+        band["fundamental_qualified"] = valid and snr_trusted(band["estimated_snr_db"])
     orders = {}
     harmonics = reading["harmonics"]
     distortion = (unavailable(harmonics["reason"]) if harmonics.get("status") == "unavailable"

@@ -15,6 +15,7 @@ import pytest
 
 from jasper.audio_measurement import seat_figures
 from jasper.audio_measurement.analysis import CANONICAL_SHOULDER_RATIOS
+from jasper.audio_measurement.band_ladders import UPPER_BANDS_HZ
 
 #: Speed of sound, m/s, for the image model below.
 SPEED_OF_SOUND_M_S = 343.0
@@ -349,6 +350,7 @@ def test_upper_band_levels_compare_only_wholly_covered_bands(ceiling, bands):
 
     rows = seat_figures.band_level_changes(
         freqs, np.full_like(freqs, 2.0), reference_db=np.zeros_like(freqs), coverage_hz=(20, ceiling),
+        bands_hz=UPPER_BANDS_HZ,
     )
 
     assert [row["band_hz"] for row in rows] == bands
