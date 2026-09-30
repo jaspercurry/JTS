@@ -847,6 +847,8 @@ def test_a_one_driver_take_routes_its_target_alone(rear, target):
 
 #: The seat-equivalent peak, dBFS: the level a far-field take plays at (ADR-0361 §1).
 SEAT_EQUIVALENT_DBFS = -12.0
+#: dB a driver's take or CHECK keeps under it while its graph's level against the anchor is unknown.
+BLIND_CUT_DB = 12.0
 #: A driver's pose at each kind and distance (ADR-0366 §1).
 DRIVER_POSES = """[
     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"},
@@ -861,9 +863,10 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
     """Every take of every shipped preset and layout, and a driver's pose at each
     kind and distance, at any level asked up to full scale, plays at or under
     that level: one driver alone at or under the seat-equivalent level under
-    that driver's cap (ADR-0361 §1), MEASURE at or under its CHECK plan, or the
-    level asked, under each driver's cap, and every other take at or under the
-    seat-equivalent level under the tightest cap."""
+    that driver's cap (ADR-0361 §1), each MEASURE driver at or under its own
+    CHECK plan, moved with the level asked, under its cap, and every other take
+    at or under the seat-equivalent level under the tightest cap. A driver's
+    take or CHECK whose graph's level is unknown stays its blind cut lower."""
     topology, safety, targets = _profile_and_targets(rear=True, woofer_floor=30, woofer_upper=4000,
                                                      max_sweep_duration_s=8)
     bands = {target: resolve_driver_excitation_ceilings(safety, fingerprint, program_admission=True)[0]
@@ -888,8 +891,10 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
             for spec, asked in product((capture.spec, replace(capture.spec, scope_gains_db={})), asked_levels):
                 program = program_for_spec(spec, excitation, GAIN_PLAN_DB, asked,
                                            safety_profile=safety, role_targets=targets)
+                blind = spec.scope_gains_db is None and (bool(target) or spec.program_phase == journey.PHASE_CHECK)
                 for segment in program.stimulus_segments():
                     cap_db = caps[target or segment.role] if target or measure else min(caps.values())
-                    level_db = (max(GAIN_PLAN_DB.values()) if asked is None else asked) if measure else SEAT_EQUIVALENT_DBFS
+                    level_db = (GAIN_PLAN_DB[segment.role] + (0.0 if asked is None else asked - max(GAIN_PLAN_DB.values()))
+                                if measure else SEAT_EQUIVALENT_DBFS - (BLIND_CUT_DB if blind else 0.0))
                     ceiling = min(cap_db - fader_db, level_db, math.inf if asked is None else asked)
                     assert segment.gain_db <= ceiling + 1e-9, (name, layout, spec.program_phase, asked, segment.segment_id)
