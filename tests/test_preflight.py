@@ -14,7 +14,9 @@ import numpy as np
 import pytest
 import yaml
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_SUMMED, request_for_preset
+from jasper.active_speaker.angle_capture import (
+    AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_PER_DRIVER, REGIME_SUMMED, request_for_preset,
+)
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
@@ -806,16 +808,21 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
 
 
 @pytest.mark.parametrize("level_db,disclosed", [(-18, False), (-38, True)])
-@pytest.mark.parametrize("purposes", [("bass",), ("room",), ("bass", "room")])
-def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purposes):
-    plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, purpose=purpose) for purpose in purposes),
-                               level=LevelPolicy(level_db=level_db))
+@pytest.mark.parametrize("stops,program,pilots", [
+    ((AngleStop(0, REGIME_SUMMED, purpose="bass"),), "", False),
+    ((AngleStop(0, REGIME_SUMMED, purpose="room"),), "", True),
+    ((AngleStop(0, REGIME_SUMMED, purpose="bass"), AngleStop(0, REGIME_SUMMED, purpose="room")), "", True),
+    # Its per-driver stops play no pilots; its timing take does.
+    ((AngleStop(0, REGIME_PER_DRIVER, purpose="speaker"),), "speaker/mark", True),
+], ids=["bass", "room", "bass-room", "speaker-mark"])
+def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, stops, program, pilots):
+    plan = AngleCaptureRequest(stops, program=program, level=LevelPolicy(level_db=level_db))
     facts = ready_facts(plan, summed_pilot_band_hz=(200, 800))
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60},
                                        {"band_hz": [200, 800], "level_dbfs": -60}]}}))
     report = preflight(plan, facts)
-    assert (report.blocking, len(report.issues)) == (False, int(disclosed and "room" in purposes))
+    assert (report.blocking, len(report.issues)) == (False, int(disclosed and pilots))
     for issue in report.issues:
         assert (issue.code, issue.blocking) == ("run_level_pilots_under_ambient", False)
         assert issue.evidence == {

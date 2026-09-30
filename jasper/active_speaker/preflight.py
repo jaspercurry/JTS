@@ -17,7 +17,7 @@ from jasper.platform.biquad import PeqFilter
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.json_fields import finite_float
 
-from .capture_schedule import walk_price
+from .capture_schedule import takes_timing, walk_price
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
     AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
@@ -339,8 +339,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                             plan = replace(plan, level=replace(level, level_db=admission["level_db"]))
                         fader, predicted = admission["level_db"], admission["admitted_db_spl"]
                 ambient, band = facts.anchor.record.get("ambient_report"), facts.summed_pilot_band_hz
-                if (isinstance(ambient, Mapping) and band is not None
-                        and any(pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops)):
+                if (isinstance(ambient, Mapping) and band is not None and (takes_timing(plan) or any(
+                        pose.plays_summed and pose.purpose != PURPOSE_BASS for pose in plan.stops))):
                     pilot_dbfs = check_target_capture_dbfs(facts.anchor.sensitivity, predicted)
                     rows = ambient_rows_in_band(band, ambient.get("bands") or ())
                     if rows and not clears_snr_floor(ambient, pilot_dbfs, [band]):

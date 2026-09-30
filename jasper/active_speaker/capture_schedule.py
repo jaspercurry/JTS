@@ -47,10 +47,7 @@ def prepare_plan_captures(
             AngleStop(0, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
-    # A preset's timing take plays the base's front drivers summed at the mark (ADR-0319), so it
-    # needs a base stop that plays every driver (ADR-0366).
-    if _takes_timing(request.program) and any(
-            candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.driver for stop in request.stops):
+    if takes_timing(request):
         base_request = replace(request, stops=(AngleStop(0, REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request,
@@ -75,12 +72,16 @@ def prepare_plan_captures(
     return tuple(captures)
 
 
-def _takes_timing(program: str) -> bool:
-    """Whether the run's preset takes the timing take; a plan naming no preset takes none."""
+def takes_timing(request: AngleCaptureRequest) -> bool:
+    """Whether the run takes its preset's timing take: the base's front drivers
+    summed at the mark (ADR-0319), so only with a base stop that plays every
+    driver (ADR-0366). A plan naming no preset takes none."""
     try:
-        return preset(program).timing_take
+        timing = preset(request.program).timing_take
     except UnknownPresetError:
         return False
+    return timing and any(
+        candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.driver for stop in request.stops)
 
 
 def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:
