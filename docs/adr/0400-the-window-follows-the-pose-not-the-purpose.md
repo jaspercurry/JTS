@@ -52,11 +52,11 @@ bank its ungated reading (ADR-0383 §2). A purpose then no longer needs to pick 
   rule 1, and is its fallback: 350 Hz, disclosed. The applied candidate's trusted floor has had
   no writer since 4d5353536e (09-23, the Gen A planner's deletion), and this change deletes the
   round gate that ADR-0383 read instead. A writer for the applied tune's trusted floor is tracked
-  in [#6110](https://github.com/jaspercurry/JTS/issues/6110). `round_gate` leaves the ceiling
-  sources, so a room median or candidate that names it no longer reads
-  ([#2902](https://github.com/jaspercurry/JTS/issues/2902)); `applied_candidate` stays, as rule
-  1's source. The ceiling no longer names a take or role, so the room and rear views go to
-  `jts_room/3` and `jts_rear_view/4`.
+  in [#6110](https://github.com/jaspercurry/JTS/issues/6110). Nothing produces `round_gate` now,
+  but it stays a ceiling source: a stored room layer composed before this change may carry it,
+  and an applied tune must keep reopening. It goes when no applied tune carries it (#6110).
+  `applied_candidate` stays, as rule 1's source. The ceiling no longer names a take or role, so
+  the room and rear views go to `jts_room/3` and `jts_rear_view/4`.
 - A take banked before the band moved onto its curves refuses `take_curves_not_banked`
   (`field: trusted_band`) where its band is read
   ([#2902](https://github.com/jaspercurry/JTS/issues/2902)).

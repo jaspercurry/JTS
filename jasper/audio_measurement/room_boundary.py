@@ -33,7 +33,9 @@ AUDIO_BAND_TOP_HZ: float = 20_000.0
 # tune's trusted floor yet (#6110), so only the fallback is produced (ADR-0400).
 CEILING_SOURCE_APPLIED = "applied_candidate"
 CEILING_SOURCE_FALLBACK = "fallback"
-CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK})
+# A stored room layer composed before ADR-0400 may carry it; remove when no applied tune carries it (#6110).
+CEILING_SOURCE_ROUND_GATE = "round_gate"
+CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK, CEILING_SOURCE_ROUND_GATE})
 
 # The window a room median must be read in: the seat cube is the room's own
 # measurement and is analyzed ungated (ADR-0260), so a gated or mixed median

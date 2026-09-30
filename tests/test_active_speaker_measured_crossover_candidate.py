@@ -1034,6 +1034,13 @@ def test_non_empty_room_correction_is_fingerprinted_and_tamper_protected():
     assert excinfo.value.code == "candidate_tampered"
 
 
+def test_an_applied_room_layer_that_names_the_round_gate_still_reopens():
+    """Nothing produces ``round_gate`` now, but a room layer composed before
+    ADR-0400 may carry it, and the applied tune must keep reopening (#6110)."""
+    raw = _candidate(room_correction=_room_correction(ceiling_source="round_gate")).to_dict()
+    assert MeasuredCrossoverCandidate.from_mapping(raw).room_correction["ceiling_source"] == "round_gate"
+
+
 def test_candidate_room_peqs_are_the_first_declared_sides_filters():
     candidate = _candidate(room_correction=_room_correction())
     expected = (
