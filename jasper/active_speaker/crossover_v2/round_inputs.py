@@ -19,7 +19,9 @@ from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, Named
 
 from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose
+from jasper.active_speaker.measurement_programs import (
+    POSE_KIND_BEARING, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose,
+)
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from .journey import PHASE_TIMING
@@ -275,10 +277,16 @@ def banked_rounds(
 
 
 def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
-    """The programs a banked packet counts for: its own, and room when it carries room views."""
+    """The programs a banked packet counts for: its own, and room when it carries room views.
+    A round whose every take plays one driver alone counts for none but reference: it holds
+    no take its program's next step reads, until #5696 (ADR-0360 §2)."""
     try:
         purpose = run_purpose(packet.get("preset"))
     except ValueError:
+        return ()
+    one_driver = [bool((take.get("pose") or {}).get("driver"))
+                  for group in packet.get("sets") or () for take in group.get("takes") or ()]
+    if purpose != PURPOSE_REFERENCE and one_driver and all(one_driver):
         return ()
     return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
 

@@ -16,7 +16,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping, Sequence
 
-from jasper.audio_measurement.piston import at_driver_near_field
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S, NEAR_FIELD_SILENCE_S
+from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M, at_driver_near_field
 from jasper.audio_routes.output_topology import OutputTopology, topology_is_subless_passive_mains
 from jasper.platform.speaker_layout import cardioid_cabinet_channels, measurement_target_id, measurement_target_parts
 
@@ -143,7 +144,7 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
-# A reference take may play one driver alone on any regime (ADR-0366); see validated_pose_driver.
+# Reference evidence is taken on any regime (ADR-0366); see validated_pose_driver.
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
 #: The layout a run banks when its poses are its own inline list, not a named layout's.
 CUSTOM_LAYOUT = "custom"
@@ -213,29 +214,64 @@ def validated_capture_purpose(purpose: str | None, regime: str) -> str:
     return resolved
 
 
-def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> str:
-    """The one driver a pose plays alone, a measurement target id, at any kind
-    and distance (ADR-0366). Only a reference pose names one, until a tuning
-    reader admits a one-driver take, and one on any regime but summed must."""
-    if driver and purpose != PURPOSE_REFERENCE:
-        raise ValueError(f"only a {PURPOSE_REFERENCE} pose names its driver")
-    if not driver and purpose == PURPOSE_REFERENCE and regime != REGIME_SUMMED:
+def validated_pose_driver(pose: Pose, *, regime: str, purpose: str) -> None:
+    """A pose of any purpose but bass may name the one driver it plays alone,
+    at any kind and distance (ADR-0366 §1); the bass tables read the whole
+    speaker (ADR-0360, ADR-0260 §3). A pose within that driver's near-field
+    distance is reference evidence, which no tuning reader admits (ADR-0360
+    §2), until #5926 session C's far-field check proves the near-field model.
+    A reference pose on any regime but summed names its driver."""
+    if pose.driver and purpose == PURPOSE_BASS:
+        raise ValueError(f"a {PURPOSE_BASS} pose plays the whole speaker, not one driver")
+    if pose.near_field and purpose != PURPOSE_REFERENCE:
+        raise ValueError(f"a pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m of its driver is "
+                         f"{PURPOSE_REFERENCE} evidence, not {purpose}")
+    if not pose.driver and purpose == PURPOSE_REFERENCE and regime != REGIME_SUMMED:
         raise ValueError(f"a {PURPOSE_REFERENCE} {regime} pose names the one driver it plays")
-    return driver
 
 
-def validated_purposes(purposes: Sequence[str], regime: str, drivers: Collection[str]) -> tuple[str, ...]:
+def validated_purposes(purposes: Sequence[str], regime: str, poses: Collection[Pose]) -> tuple[str, ...]:
     """What a preset's or a stop's takes serve, each named once. Every purpose,
-    not only the first, must admit the regime and each driver a pose plays
-    alone, so their order never decides what loads (ADR-0383)."""
+    not only the first, must admit the regime and each pose's driver, so their
+    order never decides what loads (ADR-0383)."""
     purposes = tuple(purposes)
     if not purposes or len(set(purposes)) < len(purposes):
         raise ValueError("a measurement names its purposes, each once")
     for purpose in purposes:
         validated_capture_purpose(purpose, regime)
-        for driver in drivers:
-            validated_pose_driver(driver, regime=regime, purpose=purpose)
+        for pose in poses:
+            validated_pose_driver(pose, regime=regime, purpose=purpose)
     return purposes
+
+
+#: A summed take's stimulus row (bass_stimulus reads its ceiling), and a
+#: one-driver take's (ADR-0360 §4).
+_SUMMED_STIMULUS = frozenset({"ceiling_hz"})
+_ONE_DRIVER_STIMULUS = frozenset({"band_hz", "sweep_s", "gap_s"})
+
+
+def validated_stimulus(stimulus: Any, *, one_driver: bool | None = None) -> Mapping[str, Any]:
+    """A declared stimulus, one check for the plan loader, a plan's stop and a
+    spec. A ``ceiling_hz`` row plays summed on the candidate graph; a
+    ``band_hz``, ``sweep_s`` and ``gap_s`` row plays on one driver alone, and
+    the silence before each of its sweeps, ``gap_s``, keeps the analysis's
+    pre-guard and stays under the amplifier's standby bound. ``one_driver``
+    names what plays it; ``None`` checks the row alone. Raises ``ValueError``."""
+    if not isinstance(stimulus, Mapping) or set(stimulus) not in (_SUMMED_STIMULUS, _ONE_DRIVER_STIMULUS):
+        raise ValueError("a stimulus states only ceiling_hz, or band_hz, sweep_s and gap_s")
+    band = stimulus.get("band_hz", ())
+    if "band_hz" in stimulus and not (isinstance(band, (list, tuple)) and len(band) == 2):
+        raise ValueError("a stimulus band_hz is two edges")
+    values = [*band, *(value for key, value in stimulus.items() if key != "band_hz")]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < math.inf for v in values) or (
+            band and band[0] >= band[1]):
+        raise ValueError("stimulus values are positive and finite, band_hz ascending")
+    gap = stimulus.get("gap_s")
+    if gap is not None and not DECONV_PRE_GUARD_S <= gap <= NEAR_FIELD_SILENCE_S:
+        raise ValueError(f"a stimulus gap_s is {DECONV_PRE_GUARD_S:g} to {NEAR_FIELD_SILENCE_S:g} s, got {gap!r}")
+    if one_driver is not None and one_driver != (gap is not None):
+        raise ValueError("a band stimulus plays on one driver alone, a ceiling stimulus on the candidate graph")
+    return stimulus
 
 
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
@@ -300,7 +336,7 @@ class Pose:
     seat_offset_m: tuple[float, float, float] | None = None
     headline: str = ""
     detail: str = ""
-    #: The one driver this pose plays and sits at, a measurement target id
+    #: The one driver this pose plays alone, a measurement target id
     #: (``woofer``, ``woofer:rear``); empty when the pose plays the program's own
     #: scope (:func:`validated_pose_driver`).
     driver: str = ""
@@ -338,6 +374,13 @@ class Pose:
         place = (self.kind, self.azimuth_deg, self.elevation_deg, self.distance_m, self.seat_offset_m)
         return (*place, self.driver) if self.driver else place
 
+    @property
+    def near_field(self) -> bool:
+        """Whether this pose sits at its driver within the near-field distance,
+        where the room reads about 40 dB down; a seat pose is the room's own
+        measurement, never near-field (ADR-0400 §1)."""
+        return self.kind != POSE_KIND_SEAT and at_driver_near_field(self.driver, self.distance_m)
+
 
 @dataclass(frozen=True)
 class Preset:
@@ -365,8 +408,7 @@ class Preset:
     def __post_init__(self) -> None:
         if not self.poses:
             raise ValueError("a measurement preset must contain at least one pose")
-        object.__setattr__(self, "purposes", validated_purposes(
-            self.purposes, self.regime, [pose.driver for pose in self.poses]))
+        object.__setattr__(self, "purposes", validated_purposes(self.purposes, self.regime, self.poses))
         validated_branch_pair(self.branch_pair, self.regime)
         if not isinstance(self.timing_take, bool):
             raise ValueError("timing_take must be a boolean")
@@ -478,16 +520,10 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
         raise ValueError("measurement plan stimuli must be an object")
     for name, spec in stimuli.items():
         _text(name, "stimulus name")
-        # A summed take reads a ceiling (bass_stimulus); a one-driver take a band, sweep and gap.
-        if not isinstance(spec, dict) or set(spec) not in ({"ceiling_hz"}, {"band_hz", "sweep_s", "gap_s"}):
-            raise ValueError(f"stimulus {name!r} must contain only ceiling_hz, or band_hz, sweep_s and gap_s")
-        band = spec.get("band_hz", [])
-        if "band_hz" in spec and not (isinstance(band, list) and len(band) == 2):
-            raise ValueError(f"stimulus {name!r} band_hz must be two edges")
-        values = [*band, *(value for key, value in spec.items() if key != "band_hz")]
-        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < math.inf for v in values) or (
-                band and band[0] >= band[1]):
-            raise ValueError(f"stimulus {name!r} values must be positive and finite, band_hz ascending")
+        try:
+            validated_stimulus(spec)
+        except ValueError as exc:
+            raise ValueError(f"stimulus {name!r}: {exc}") from None
 
     layouts_raw = raw.get("layouts")
     if not isinstance(layouts_raw, dict) or not layouts_raw:

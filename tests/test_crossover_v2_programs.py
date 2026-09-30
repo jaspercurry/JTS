@@ -753,18 +753,24 @@ def test_a_near_field_take_plays_its_declared_stimulus(stimulus):
             round(stimulus["gap_s"] * rate), round(stimulus["gap_s"] / 2 * rate)}
 
 
-@pytest.mark.parametrize("scope,ids,accepted", [
-    ("drivers", ("woofer:rear",), True), ("candidate", (), True), ("drivers", (), False),
-    ("candidate_branches", ("woofer", "tweeter"), False), ("timing", (), False)])
-def test_a_declared_stimulus_plays_on_one_driver_or_the_candidate_graph(scope, ids, accepted):
-    """A take that plays two drivers has no composer for a declared stimulus,
-    so its spec refuses one rather than play without it."""
+BASS = preset("bass/axis").stimulus
+
+
+@pytest.mark.parametrize("scope,ids,stimulus,accepted", [
+    ("drivers", ("woofer:rear",), NEAR_FIELD, True), ("candidate", (), BASS, True),
+    ("drivers", ("woofer:rear",), BASS, False), ("candidate", (), NEAR_FIELD, False),
+    ("drivers", (), NEAR_FIELD, False), ("candidate_branches", ("woofer", "tweeter"), BASS, False),
+    ("timing", (), BASS, False)])
+def test_a_declared_stimulus_plays_on_one_driver_or_the_candidate_graph(scope, ids, stimulus, accepted):
+    """A band stimulus plays on one driver alone and a ceiling stimulus on the
+    candidate graph; a take that plays two drivers has no composer for either,
+    so its spec refuses one rather than play without it (#5737)."""
     def make():
-        return MeasureSpec(kind="baseline", graph_scope=scope, branch_target_ids=ids, stimulus=NEAR_FIELD,
+        return MeasureSpec(kind="baseline", graph_scope=scope, branch_target_ids=ids, stimulus=stimulus,
                            candidate_id="" if scope == "drivers" else "trial")
 
     if accepted:
-        assert make().stimulus == NEAR_FIELD
+        assert make().stimulus == stimulus
     else:
         with pytest.raises(ValueError):
             make()

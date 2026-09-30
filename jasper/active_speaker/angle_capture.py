@@ -57,6 +57,7 @@ from .measurement_programs import (
     validated_capture_purpose,
     validated_purposes,
     validated_angle,
+    validated_stimulus,
 )
 from .crossover_v2.spatial import (
     POSITION_AXIS_HORIZONTAL,
@@ -224,7 +225,7 @@ class AngleStop:
         _validated_angle(self.pose.elevation_deg)
         try:
             purpose = validated_capture_purpose(self.purpose, self.regime)
-            purposes = validated_purposes(self.purposes or (purpose,), self.regime, (self.pose.driver,))
+            purposes = validated_purposes(self.purposes or (purpose,), self.regime, (self.pose,))
             if purposes[0] != purpose:
                 raise ValueError(f"a stop's purposes start with its purpose {purpose!r}, got {list(purposes)}")
             object.__setattr__(self, "purposes", purposes)
@@ -235,6 +236,13 @@ class AngleStop:
                 raise ValueError("a stop is one take of its pose; the request's repeats repeat it")
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
+        if self.stimulus is not None:
+            try:
+                if not self.pose.driver and self.regime != REGIME_SUMMED:
+                    raise ValueError(f"a {self.regime} stop plays a stimulus only on the driver its pose names")
+                validated_stimulus(self.stimulus, one_driver=bool(self.pose.driver))
+            except ValueError as exc:
+                raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from None
 
     @property
     def plays_summed(self) -> bool:
@@ -858,6 +866,7 @@ WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 
 #: The walk's stimulus statement is not one that can be played: a summed sweep
 #: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
+#: stop's declared stimulus its pose and regime cannot play (:class:`AngleStop`), a
 #: template field ``MeasureSpec`` refuses that is neither R-1 half
 #: (:func:`walk_template`), or a stop pose it refuses when the host places the
 #: template (:func:`stop_specs`) -- detail is the spec's own sentence.

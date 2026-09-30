@@ -18,7 +18,7 @@ from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.platform.json_fields import require_finite
 from jasper.platform.speaker_layout import measurement_target_id
 
-from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS
+from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS, validated_stimulus
 from .contracts import (
     DRIVER_ROLES,
     DRIVER_ROLE_WOOFER,
@@ -119,8 +119,11 @@ class MeasureSpec:
     cleared_layers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.stimulus is not None and not (self.graph_scope == "candidate" or solo_target(self)):
-            raise ValueError("a planned stimulus plays on the candidate graph or on one driver alone")
+        if self.stimulus is not None:
+            solo = bool(solo_target(self))
+            validated_stimulus(self.stimulus, one_driver=solo)
+            if not solo and self.graph_scope != "candidate":
+                raise ValueError("a planned stimulus plays on the candidate graph or on one driver alone")
         if self.graph_scope not in GRAPH_SCOPES:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():

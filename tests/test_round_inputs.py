@@ -14,7 +14,7 @@ from jasper.active_speaker.commissioning_coordinator import next_program_action
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import parse_utc_iso
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
-from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, take_artifact_name
+from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, packet_purposes, take_artifact_name
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 
 
@@ -114,6 +114,24 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert after == before
     assert tuple(after) == tuple(before)
     assert next_program_action(profile, identity, after, programs=RUNNABLE_PROGRAMS) == action
+
+
+@pytest.mark.parametrize("drivers,counts", [(("woofer", "tweeter"), False), (("woofer", ""), True), ((), True)],
+                         ids=["every-take-one-driver", "one-summed-take", "no-takes"])
+def test_a_round_of_only_one_driver_takes_is_not_its_programs_latest(tmp_path, monkeypatch, drivers, counts):
+    """A speaker round of only one-driver takes holds no MEASURE take, so until
+    #5696 it is not the latest speaker round, the one its next action and the
+    room's staleness read; a reference round of them stays reference
+    (ADR-0360 §2)."""
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    identity = {"candidate": "saved-speaker", "record": "abcdef012345", "applied_at": None}
+    for name, finalized_at, poses in (("older", 1.0, [{"driver": None}]), ("newer", 2.0, [
+            {"driver": driver or None} for driver in drivers])):
+        _bank_packet(tmp_path / "campaigns" / name, identity, "speaker", finalized_at=finalized_at,
+                     sets=[{"takes": [{"pose": pose} for pose in poses]}])
+    assert latest_banked_rounds(identity)["speaker"]["round_id"] == ("newer" if counts else "older")
+    assert packet_purposes({"preset": "nearfield/each", "sets": [{"takes": [{"pose": {"driver": "woofer"}}]}]}) == (
+        "reference",)
 
 
 def test_a_take_artifact_names_a_rear_target_without_a_colon():

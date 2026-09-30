@@ -951,6 +951,30 @@ def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     assert (fakes.play.rungs, selected) == ([None, -29.0], [False, True])
 
 
+def test_a_speaker_pose_names_its_driver_and_plays_what_the_reference_pose_plays():
+    """A pose of any purpose may name its driver (ADR-0366 §1). A speaker pose
+    at the mark plays exactly what the reference drivers/each pose plays: that
+    driver alone on the protected drivers graph, on MEASURE's band, with no
+    CHECK or timing take, at the level its probe finds (ADR-0365). Its takes
+    bank under its own purpose (#5737 F1)."""
+    runs = []
+    for program in ("speaker/mark", "drivers/each"):
+        request = ac.request_for_preset(
+            run_preset(program, poses='[{"azimuth_deg": 0, "elevation_deg": 0, "driver": "woofer"}]'),
+            targets=("tweeter", "woofer"))
+        captures = plan_run.prepare_plan_captures(request)
+        result, fakes, selected, _ = _run_levelled(request, (66.0, 80.0))
+        runs.append(([capture.spec for capture in captures], fakes.play.rungs, selected,
+                     {take["measurement_purpose"] for take in _takes(result.joined())}))
+    speaker, reference = runs
+
+    assert speaker[:3] == reference[:3]
+    assert [(spec.program_phase, spec.graph_scope, spec.branch_target_ids, spec.stimulus)
+            for spec in speaker[0]] == [("lateral", "drivers", ("woofer",), None)]
+    assert (speaker[1][0], speaker[2]) == (None, [False, True])
+    assert (speaker[3], reference[3]) == ({"speaker"}, {"reference"})
+
+
 def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
     """As on jts3, the rear woofer needs 6 dB more drive than the woofer to read
     80 dB at each distance. A placement's finding shows in the round's facts and

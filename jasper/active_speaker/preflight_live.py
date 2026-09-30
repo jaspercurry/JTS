@@ -117,7 +117,8 @@ def read_preflight_facts(
             programs.append(program.stimulus_id)
         return tuple(programs)
 
-    near_field = {stop.pose.driver for stop in plan.stops if stop.pose.driver and stop.stimulus is not None}
+    swept_floors = [(stop.pose.driver, stop.stimulus["band_hz"][0]) for stop in plan.stops
+                    if stop.pose.driver and stop.stimulus is not None]
     output_volume = read_output_volume()
     if output_volume.get("muted"):
         log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)
@@ -132,10 +133,11 @@ def read_preflight_facts(
         applied_room_charge_db=applied_room_charge_db,
         stimulus_ids_for=stimulus_ids,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
-        # A near-field pose's driver is offered only when its sweep holds the view's top band whole.
+        # A driver sweeping a declared band is offered only when that sweep, clipped to the driver's
+        # own band, starts at or below the near-field view's top band, so its takes read a band.
         near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
-                                  if driver not in near_field
-                                  or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
+                                  if all(max(floor, context.driver_bands[driver].lower_hz) <= NEAR_FIELD_BANDS_HZ[-1][0]
+                                         for named, floor in swept_floors if named == driver))
                             if context is not None and any(stop.pose.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
         driver_caps=published_driver_caps(context.safety_profile, context.role_targets) if context is not None else {},

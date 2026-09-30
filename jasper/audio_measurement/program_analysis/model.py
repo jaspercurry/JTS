@@ -198,10 +198,6 @@ REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0
 IR_PRE_MS = 5.0
 IR_POST_MS = 60.0
 
-# Deconvolution window pre-guard, s, before the scheduled sweep position;
-# shared by both drivers so their IR peaks land pre-guard sample +/- delay.
-DECONV_PRE_GUARD_S = 0.25
-
 # Gain solve: land the MEASURE capture peak in [-12, -9] dBFS with >=6 dB
 # guard. A CEILING rather than a target — see `_solve_role_gain`.
 DEFAULT_TARGET_CAPTURE_DBFS = -10.5

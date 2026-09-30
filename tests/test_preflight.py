@@ -209,6 +209,19 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
         assert report.rung_admission["predicted_spl_basis"] == NEAR_FIELD_SPL_BASIS
 
 
+@pytest.mark.parametrize("distance_m,stimulus,near", [
+    (0.015, NEAR_FIELD, True), (0.015, None, True), (0.15, NEAR_FIELD, False), (None, None, False)])
+def test_the_near_field_spl_basis_follows_the_pose(distance_m, stimulus, near):
+    """The seat anchor under-reads a microphone at a driver within the
+    near-field distance, and preflight says so whatever that pose plays
+    (ADR-0400 §1)."""
+    plan = AngleCaptureRequest((AngleStop(Pose(0, 0, kind="bearing" if distance_m is None else "close",
+                                               distance_m=distance_m, driver="woofer"),
+                                          REGIME_PER_DRIVER, purpose="reference", stimulus=stimulus),))
+    report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer",)))
+    assert (report.rung_admission.get("predicted_spl_basis") == NEAR_FIELD_SPL_BASIS) is near
+
+
 def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
     """A stop naming its driver plays that driver alone on the drivers graph
     whatever its regime, so preflight checks no branch pair for it and prices
@@ -234,13 +247,14 @@ def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, banks
 
 @pytest.mark.parametrize("stimulus,kind,distance_m,tweeter_floor_hz,offered", [
     (NEAR_FIELD, "close", 0.015, 800.0, True), (NEAR_FIELD, "close", 0.015, 1000.0, False),
+    (NEAR_FIELD, "bearing", None, 1000.0, False), (None, "close", 0.015, 1000.0, True),
     (None, "bearing", None, 1000.0, True)])
 def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
         monkeypatch, stimulus, kind, distance_m, tweeter_floor_hz, offered):
-    """The near-field sweep stops at 2 kHz and the view reads its top band,
-    800 Hz - 2 kHz, only whole, so a driver whose band starts above 800 Hz is
-    refused at a near-field pose before a session plays takes no band can read;
-    in the far field it plays MEASURE's band (#5696)."""
+    """The declared near-field sweep stops at 2 kHz and the view reads its top
+    band, 800 Hz - 2 kHz, only whole, so a driver whose band starts above
+    800 Hz is refused that sweep at any distance before a session plays takes
+    no band can read; with no declared band it plays MEASURE's (#5696)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0, kind=kind, distance_m=distance_m, driver="tweeter"), REGIME_PER_DRIVER, purpose="reference", stimulus=stimulus),))
     ready = ready_facts(plan)
     context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), safety_profile={}, role_targets={},

@@ -1209,7 +1209,7 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     from jasper.active_speaker.crossover_v2.capture_plan import (
         CAPTURE_ENTRY_MARGIN_MS, CloudPositionPrompt, _program_duration_ms, build_inline_session_spec,
     )
-    from jasper.audio_measurement.program import NEAR_FIELD_SILENCE_S
+    from jasper.audio_measurement.excitation import NEAR_FIELD_SILENCE_S
 
     topology, safety, context, spec, excitation, program = _cardioid_solo_take(monkeypatch, target)
     lo, hi = spec.stimulus["band_hz"]

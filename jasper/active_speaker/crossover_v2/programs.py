@@ -20,7 +20,6 @@ from jasper.audio_measurement.program import (
     BASE_STIMULUS_PEAK_DBFS,
     DEFAULT_PILOT_LEVELS_DB,
     MEASURE_SWEEP_BAND_HZ,
-    NEAR_FIELD_SILENCE_S,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -28,6 +27,7 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     build_verify_program,
 )
+from jasper.audio_measurement.excitation import NEAR_FIELD_SILENCE_S
 from jasper.audio_measurement.ramp import MAX_STEP_DB
 
 from jasper.audio_measurement.branch_program import build_branch_program

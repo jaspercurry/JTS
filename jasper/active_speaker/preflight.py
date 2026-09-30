@@ -170,8 +170,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         code = REASON_MEASUREMENT_OUTPUT_MUTED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
     admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
-    # Only a near-field take plays a declared stimulus on one driver.
-    if any(stop.pose.driver and stop.stimulus is not None for stop in plan.stops):
+    if any(stop.pose.near_field for stop in plan.stops):
         admission["predicted_spl_basis"] = NEAR_FIELD_SPL_BASIS
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:
