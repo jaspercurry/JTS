@@ -245,10 +245,10 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
         assert {*map(json.dumps, components), "drivers/each: " + mp.preset("drivers/each").use_when,
                 "nearfield/each: " + mp.preset("nearfield/each").use_when} <= set(lines)
         template = handoff["prompt"]
-        for field, blank in ((row.title, "<title>"), (row.description, "<description>"),
+        for value, blank in ((row.title, "<title>"), (row.description, "<description>"),
                              (f"--program {row.purpose}", "--program <p>"), (f"--section {row.purpose}", "--section <p>")):
-            assert field in template
-            template = template.replace(field, blank)
+            assert value in template
+            template = template.replace(value, blank)
         templates.add(template)
     assert len(templates) == 1
 
@@ -261,11 +261,12 @@ def test_the_prompt_points_at_status_the_catalog_and_the_contract(program):
     prompt = th.build_tuning_handoff_prompt({}, program)
     calls = []
     for command in th.pointer_commands(program):
+        assert command in prompt
         _sudo, path, *argv = shlex.split(command)
         args = vars(parsers[Path(path).name].parse_args(argv))
-        calls.append((command in prompt, Path(path).name, args["command"], args.get("program") or args.get("section")))
-    assert calls == [(True, crossover_prescriber.PROG, "status", None), (True, round_views.PROG, "catalog", program),
-                     (True, crossover_prescriber.PROG, "contract", program)]
+        calls.append((Path(path).name, args["command"], args.get("program") or args.get("section")))
+    assert calls == [(crossover_prescriber.PROG, "status", None), (round_views.PROG, "catalog", program),
+                     (crossover_prescriber.PROG, "contract", program)]
 
 
 def test_run_help_names_every_registry_pose_set(capsys):
