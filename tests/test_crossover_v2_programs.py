@@ -80,6 +80,7 @@ from jasper.audio_measurement.program import (
     RoleBand,
     is_level_probe,
 )
+from jasper.active_speaker.profile import ramp_bound_db_spl
 from jasper.audio_measurement.ramp import MAX_STEP_DB
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
@@ -781,13 +782,16 @@ def test_a_declared_stimulus_plays_on_one_driver_or_the_candidate_graph(scope, i
             make()
 
 
+@pytest.mark.parametrize("cap_dbfs,ceiling_dbfs", [(0.0, 0.0), (-40.0, -20.01)])
 @pytest.mark.parametrize("asked_db,played_db", [(-14.0, -14.0), (6.0, 0.0)])
-def test_a_near_field_take_plays_the_peak_it_asks_never_above_the_seat_level(asked_db, played_db):
-    """Levels are relative to the seat-equivalent peak a far-field take plays at (ADR-0361)."""
-    excitation, spec = _near_field_rear(0.0)
-    seat, = {s.gain_db for s in _sweeps(compose_target_program(excitation, spec, 100.0))}
-    played, = {s.gain_db for s in _sweeps(compose_target_program(excitation, spec, seat + asked_db))}
-    assert played == pytest.approx(seat + played_db)
+def test_a_near_field_take_plays_the_peak_it_asks_never_above_its_ceiling(cap_dbfs, ceiling_dbfs, asked_db, played_db):
+    """A driver's take plays the peak it asks for, never above its ceiling: digital
+    full scale under its driver's cap and the run's fader, since the seat-equivalent
+    cap is removed (ADR-0403 §4). The fader here is −20 dB."""
+    excitation, spec = _near_field_rear(cap_dbfs)
+    ceiling, = {s.gain_db for s in _sweeps(compose_target_program(excitation, spec, 100.0))}
+    played, = {s.gain_db for s in _sweeps(compose_target_program(excitation, spec, ceiling + asked_db))}
+    assert (ceiling, played) == pytest.approx((ceiling_dbfs, ceiling + played_db))
 
 
 @pytest.mark.parametrize("cap_dbfs,scope_gains_db,stimulus,band_hz", [
@@ -795,10 +799,10 @@ def test_a_near_field_take_plays_the_peak_it_asks_never_above_the_seat_level(ask
     (0.0, {"woofer:rear": 0.09}, NEAR_FIELD, (20.0, 2000.0)), (0.0, None, None, (150.0, 4000.0))])
 def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, stimulus, band_hz):
     """With no level asked, a driver pose plays its level probe: its take's band,
-    bursts rising at most MAX_STEP_DB from well under the seat level to its take's
-    own ceiling, no two of one length (ADR-0365). A near-field take sweeps to
-    2 kHz; a far-field one sweeps MEASURE's band (#5696), both inside the
-    driver's own."""
+    bursts rising at most MAX_STEP_DB from −60 dBFS at the output to its take's
+    own ceiling, no two of one length (ADR-0365, ADR-0403 §4). A near-field take
+    sweeps to 2 kHz; a far-field one sweeps MEASURE's band (#5696), both inside
+    the driver's own."""
     excitation, spec = _near_field_rear(cap_dbfs, stimulus)
     spec = replace(spec, scope_gains_db=scope_gains_db)
     probe = program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
@@ -807,7 +811,7 @@ def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, 
     gains = [s.gain_db for s in _sweeps(probe)]
 
     assert is_level_probe(probe) and not is_level_probe(take)
-    assert gains[-1] == pytest.approx(ceiling)
+    assert (gains[0] + excitation.session_volume_db, gains[-1]) == pytest.approx((-60.0, ceiling))
     assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
     assert len({s.n_samples for s in _sweeps(probe)}) == len(gains)
     assert {(s.f1_hz, s.f2_hz) for s in _sweeps(probe)} == {(s.f1_hz, s.f2_hz) for s in _sweeps(take)} == {band_hz}
@@ -816,8 +820,8 @@ def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, 
 @pytest.mark.parametrize("scope_gains_db", [None, {"woofer": 3.0, "tweeter": 1.0}])
 def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
     """A driverless summed take that finds its level plays its probe first:
-    bursts of its own summed sweep's band, rising at most MAX_STEP_DB from 30 dB
-    under that take's ceiling to the ceiling, no two of one length (ADR-0365,
+    bursts of its own summed sweep's band, rising at most MAX_STEP_DB from −60 dBFS
+    at the output to that take's ceiling, no two of one length (ADR-0365,
     ADR-0403)."""
     excitation = _excitation({"woofer": 0.0, "tweeter": 0.0}, {"woofer": 4.0, "tweeter": 4.0})
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="trial", program_phase="lateral",
@@ -829,7 +833,7 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
     gains = [burst.gain_db for burst in bursts]
 
     assert is_level_probe(probe) and (probe.phase, probe.channels) == ("verify", 1)
-    assert (gains[0], gains[-1]) == pytest.approx((sweep.gain_db - 30.0, sweep.gain_db))
+    assert (gains[0] + excitation.session_volume_db, gains[-1]) == pytest.approx((-60.0, sweep.gain_db))
     assert all(0.0 < later - earlier <= MAX_STEP_DB for earlier, later in zip(gains, gains[1:]))
     assert len({burst.n_samples for burst in bursts}) == len(bursts)
     assert {(burst.kind, burst.f1_hz, burst.f2_hz) for burst in bursts} == {(KIND_SUMMED_SWEEP, sweep.f1_hz,
@@ -897,10 +901,16 @@ def test_a_one_driver_take_routes_its_target_alone(rear, target):
         ) is (target != "woofer:rear")
 
 
-#: The seat-equivalent peak, dBFS: the level a far-field take plays at (ADR-0361 §1).
+#: The seat-equivalent peak, dBFS: the level a summed take plays at (ADR-0361 §1).
 SEAT_EQUIVALENT_DBFS = -12.0
-#: dB a driver's take or CHECK keeps under it while its graph's level against the anchor is unknown.
+#: dB CHECK keeps under it while its graph's level against the anchor is unknown.
 BLIND_CUT_DB = 12.0
+#: A driver's take plays up to digital full scale under its cap: the seat-equivalent cap is removed (ADR-0403 §4).
+DRIVER_CEILING_DBFS = 0.0
+#: A probe's first burst at the output, fader plus digital gain (ADR-0405).
+PROBE_START_OUTPUT_DBFS = -60.0
+#: Fake chains: what the microphone reads for digital full scale at the output, from a seat to 15 mm.
+FAKE_CHAINS_DB_SPL = (100.0, 115.0, 125.0, 135.0)
 #: A driver's pose at each kind and distance (ADR-0366 §1).
 DRIVER_POSES = """[
     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"},
@@ -910,16 +920,28 @@ DRIVER_POSES = """[
     {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0, 0, 0], "driver": "woofer"}]"""
 
 
+def _assert_probe_rises_from_minus_60_under_its_ramp_bound(program, fader_db):
+    gains = [segment.gain_db for segment in program.stimulus_segments()]
+    assert gains[0] == pytest.approx(min(PROBE_START_OUTPUT_DBFS - fader_db, gains[-1]))
+    assert all(0.0 < later - earlier <= MAX_STEP_DB + 1e-9 for earlier, later in zip(gains, gains[1:]))
+    assert all(gains[0] + fader_db + chain <= ramp_bound_db_spl(85.0) for chain in FAKE_CHAINS_DB_SPL)
+
+
 @pytest.mark.parametrize("fader_db", [-45.0, -20.0, 0.0])
 def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
     """Every take of every shipped preset and layout, and a driver's pose at each
     kind and distance, at any level asked up to full scale, plays at or under
-    that level: one driver alone (a branch take's probes too) at or under the
-    seat-equivalent level under that driver's cap (ADR-0361 §1), each MEASURE
-    driver at or under its own CHECK plan, moved with the level asked, under its
-    cap, and every other take at or under the seat-equivalent level under the
-    tightest cap. A driver's take or CHECK whose graph's level is unknown stays
-    its blind cut lower."""
+    that level: one driver alone (a branch take's probes too) at or under full
+    scale under that driver's cap, since the seat-equivalent cap is removed
+    (ADR-0403 §4); each MEASURE driver at or under its own CHECK plan, moved with
+    the level asked, under its cap; and every other take at or under the
+    seat-equivalent level under the tightest cap. CHECK, whose graph's level is
+    unknown, stays its blind cut lower.
+
+    Every probe's first burst plays at −60 dBFS at the output, or at its ceiling
+    when that is lower, and each burst at most 6 dB over the one before. On fake
+    chains from a seat to 15 mm, its first burst reads under the ramp bound (76 dB
+    under the 85 dB stop), which ends the bursts after it (ADR-0405)."""
     topology, safety, targets = _profile_and_targets(rear=True, woofer_floor=30, woofer_upper=4000,
                                                      max_sweep_duration_s=8)
     bands = {target: resolve_driver_excitation_ceilings(safety, fingerprint, program_admission=True)[0]
@@ -944,10 +966,13 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
             for spec, asked in product((played, replace(played, scope_gains_db={})), asked_levels):
                 program = program_for_spec(spec, excitation, GAIN_PLAN_DB, asked,
                                            safety_profile=safety, role_targets=targets)
-                blind = spec.scope_gains_db is None and (bool(target) or spec.program_phase == journey.PHASE_CHECK)
+                blind = spec.scope_gains_db is None and spec.program_phase == journey.PHASE_CHECK
                 for segment in program.stimulus_segments():
                     cap_db = caps[target or segment.role] if target or measure else min(caps.values())
-                    level_db = (GAIN_PLAN_DB[segment.role] + (0.0 if asked is None else asked - max(GAIN_PLAN_DB.values()))
+                    level_db = (DRIVER_CEILING_DBFS if target else
+                                GAIN_PLAN_DB[segment.role] + (0.0 if asked is None else asked - max(GAIN_PLAN_DB.values()))
                                 if measure else SEAT_EQUIVALENT_DBFS - (BLIND_CUT_DB if blind else 0.0))
                     ceiling = min(cap_db - fader_db, level_db, math.inf if asked is None else asked)
                     assert segment.gain_db <= ceiling + 1e-9, (name, layout, spec.program_phase, asked, segment.segment_id)
+                if is_level_probe(program):
+                    _assert_probe_rises_from_minus_60_under_its_ramp_bound(program, fader_db)
