@@ -126,6 +126,7 @@ class RegisteredCheck:
     is_async: bool = False
     label: str = ""
     exclusive_group: str = ""
+    timeout_s: float = 0.0
     core: bool = False
 
 
@@ -138,6 +139,7 @@ def doctor_check(
     needs_cfg: bool = False,
     is_async: bool = False,
     exclusive_group: str = "",
+    timeout_s: float = 0.0,
     core: bool = False,
 ) -> Callable[[F], F]:
     """Register a doctor check and return it unchanged.
@@ -158,6 +160,10 @@ def doctor_check(
             individually safe but can perturb one another when run at the
             same instant (for example, ALSA open probes and `/proc/asound`
             ownership reads). Empty string means no exclusive lane.
+        timeout_s: hang guard in seconds for one row that legitimately
+            outlasts the run's (``run_async(check_timeout=)``) on the smallest
+            supported box. The row runs under the longer of the two. 0 means
+            the run's guard.
         core: True iff ``--core`` runs this check. The defining module
             must be in ``CORE_MODULES``, or ``--core`` would never import
             it, and the check may not take ``needs_cfg``: a ``--core`` run
@@ -185,6 +191,7 @@ def doctor_check(
                 is_async=is_async,
                 label=label,
                 exclusive_group=exclusive_group,
+                timeout_s=timeout_s,
                 core=core,
             )
         )
