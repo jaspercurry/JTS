@@ -268,7 +268,8 @@ CATALOG: dict[str, CatalogRow] = {
     f"{_PRESCRIBER} judge --preview --vary": CatalogRow(
         argv=("<path=value,value>", "<document.json>", "--round", TAKES_THIS_ROUND, "--set", "<set-id>", "--out-dir", "<dir>"),
         programs=_PREVIEW_PROGRAMS, schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} judge --preview --vary"],
-        question="How does a preview change over a grid of a document's values, without playing?",
+        question="How does a preview change over a grid of a document's values, and which topology corners "
+                 "forecast flattest, without playing?",
         needs="what judge --preview needs, one --vary axis per parameter, and a directory for the variants",
         avoid="one document's preview; judge --preview answers that",
         answer_fields=("adopted", "banked", "section", "variants")),
