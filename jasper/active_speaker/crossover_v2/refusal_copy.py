@@ -425,14 +425,18 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("bank_round", "Bank this round again from its session"): {
         evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
         evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
+        "session_unfinished": "The session has not finished, so it cannot be banked yet.",
         "view_runner_unavailable": "The bank ran with no view runner, so it filed no round views.",
     },
     ("select_round", "Select the round these takes belong to"): {
         evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
     },
     ("name_round", "Name a banked round or a live session bundle"): {
-        evidence_reasons.REASON_UNREADABLE: "The round view could not read its input round.",
+        "already_banked": "The session is already banked as a round.",
         "close_reference_unreadable_round": "The round directory named for the take is not a directory.",
+        "not_a_bundle": "The directory is not a session bundle: it has no readable info.json object.",
+        "round_ambiguous": "The id names a banked round and is also the name of another path.",
+        "round_not_found": "The name is neither a banked round nor a live session bundle.",
     },
     ("name_frequencies", "Name the frequencies to classify"): {
         evidence_reasons.NO_FEATURES_DETECTED: "No feature in the pooled response rises above the scatter between recordings.",
@@ -465,7 +469,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
     ("review_evidence", "Review the evidence the view read"): {
         evidence_reasons.REASON_REFUSED: "The round view declined the evidence it read.",
-        "evidence_unreadable": "The evidence this tool reads could not be read.",
+        evidence_reasons.REASON_UNREADABLE: "The evidence this tool reads could not be read.",
         "field_malformed": "The artifact was read, and its field holds a value of the wrong type.",
         "field_null": "The artifact was read, and the field this block reads is empty.",
         "level_error": "The rear level could not be computed.",
@@ -475,8 +479,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "unusable": "The banked repeat floor gives no stopping thresholds.",
     },
     ("choose_output", "Choose a writable output path"): {
-        evidence_reasons.REASON_UNWRITABLE: "The round view could not write its output artifact.",
-        "output_unwritable": "The prescriber could not write its output artifact.",
+        evidence_reasons.REASON_UNWRITABLE: "The tool could not write its output artifact.",
     },
     ("name_take", "Name a take this round banked"): {
         "close_reference_no_capture": "The round has no take with the named id, or more than one.",
@@ -487,9 +490,11 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "incompatible_measurement_basis": "The candidate and incumbent room medians were measured on different bases.",
         "room_incumbent_set_ambiguous": "More than one set of the run is a base, so the room has no one incumbent.",
         "room_incumbent_set_unavailable": "The run has no base set to grade the room against.",
+        "room_median_unavailable": "The room median is missing, or this door cannot read it into limits.",
         "room_no_seat_takes": "The round has no readable room take at a seat, so no room median exists.",
     },
     ("select_candidate", "Select a candidate with one banked identity"): {
+        "composition_base_required": "The document names no base: it needs a banked candidate fingerprint, or saved.",
         "gate_sweep_mixed_graphs": "The takes played more than one candidate or graph, so their windows cannot compare.",
     },
     ("match_bass_capture", "Measure both graphs at the same pose and settings"): {
@@ -513,17 +518,96 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "aplay_timeout": "The aplay tool timed out, so the speaker cannot list its playback devices.",
     },
     ("read_contract", "Read the section's contract"): {
+        "above_lower_driver_band": "The crossover corner is above the band the lower driver declares.",
         "alignment_no_crossover_region": "A one-way speaker has no crossover, so there is nothing to align.",
+        "alignment_prescription_schema_unsupported": "The alignment document names a schema version this build does not read.",
+        "bass_compressor_attack_s_invalid": "The compressor attack time is not a finite number inside its allowed range.",
+        "bass_compressor_factor_invalid": "The compressor factor is not a finite number inside its allowed range.",
+        "bass_compressor_release_s_invalid": "The compressor release time is not a finite number inside its allowed range.",
+        "bass_compressor_threshold_dbfs_invalid": "The compressor threshold is not a finite level inside its allowed range.",
+        "bass_delta_highpass_hz_invalid": "The delta high-pass corner is not a finite number inside the measured band "
+                                          "below the detector corner.",
+        "bass_descriptor_malformed": "The bass section is not an object, or it names an unknown field, or it lacks a "
+                                     "required one.",
+        "bass_detector_lowpass_hz_invalid": "The detector low-pass corner is not a finite number inside the measured "
+                                            "bass domain.",
+        "bass_linkwitz_transform_invalid": "The Linkwitz transform is not an object of finite corners and Qs inside "
+                                           "their bounds.",
+        "below_declared_floor": "The crossover corner is below the floor the upper driver declares.",
+        "boost_not_admitted": "The measured positions do not admit a boost at this frequency.",
         "boost_route_unavailable": "The blend stage carries no boost.",
+        "composed_boost_exceeded": "The filters together boost more than the section's ceiling allows.",
+        "driver_expectation_malformed": "The expected change or the tilt is not a finite number inside its bound.",
+        "driver_filter_count_exceeded": "A driver role carries more filters than its branch may hold.",
+        "driver_filter_malformed": "A driver filter, or the filter list, is not in the shape or the range the contract allows.",
+        "driver_filter_outside_passband": "A driver filter boosts outside the band its driver declares.",
+        "driver_filter_q_out_of_range": "A driver filter's Q is past the limit for a boost or a cut.",
+        "driver_prescription_malformed": "The driver document is not in the shape the contract allows.",
+        "driver_prescription_prohibited_field": "The driver document names a field it may not write: configuration, "
+                                                "coefficients or a per-role level.",
+        "driver_prescription_schema_unsupported": "The driver document names a schema version this build does not read.",
+        "driver_prescription_too_large": "The driver document is larger than one driver document may be.",
+        "driver_role_unknown": "The document names a driver role for which this speaker declares no band.",
+        "driver_trim_pin_malformed": "The pinned trim does not name each driver role once, with a finite dB value "
+                                     "inside its bound.",
+        "filter_boost_too_high": "A filter boosts more than its section allows.",
+        "filter_count_exceeded": "The document carries more filters than the contract allows.",
+        "filter_malformed": "A filter, or the filter list, is not in the shape or the range the contract allows.",
+        "filter_outside_region": "A filter sits outside the band its section allows.",
+        "filter_q_out_of_range": "A filter's Q is outside the range its section allows.",
+        "prescription_delay_invalid": "The alignment document states no delay, or a delay that is not a finite number.",
+        "prescription_kind_unknown": "The document, or one of its sections, is not of a kind this build knows.",
+        "prescription_malformed": "The document or the request is not in the shape the contract allows.",
+        "prescription_outside_declared_window": "The delay is outside the window the preset declares for it.",
+        "prescription_polarity_invalid": "The polarity is not one of the two words an alignment may pin.",
+        "prescription_prohibited_field": "The document names a field it may not write: configuration, coefficients or a "
+                                         "per-role value.",
+        "prescription_schema_unsupported": "The document names a schema version this build does not read.",
+        "prescription_section_unavailable": "The document names a section that this speaker's topology does not offer.",
+        "prescription_section_unknown": "The document names a section this build does not know.",
+        "prescription_too_large": "The document is larger than one document may be.",
+        "rear_calibration_invalid": "The rear calibration section breaks a rule of the rear calibration document.",
+        "rear_calibration_topology_unsupported": "The declared layout has no cabinet of one front woofer, one rear woofer "
+                                                 "and one tweeter.",
         "region_unavailable": "The blend contract names no band, so a blend prescription has no band to check against.",
+        "side_malformed": "The room document's sides are missing, repeated, or not the sides this speaker declares.",
+        "strict_reader_disagreement": "The reader that loads persisted corrections would not vouch for this filter list, "
+                                      "so it cannot be persisted.",
+        "taper_violated": "The filters together boost the room past the taper the contract allows.",
+        "topology_fc_invalid": "The crossover corner is missing, not a finite number, or not above zero.",
         "topology_malformed": "The topology cannot be checked: its document is malformed, or the declared drivers "
                               "give no crossover range.",
         "topology_no_crossover_region": "A one-way speaker has no crossover corner to change.",
+        "topology_order_invalid": "The order is missing, or not an integer.",
+        "topology_order_unsupported": "The order is not one this build can build.",
+        "topology_prescription_schema_unsupported": "The topology document names a schema version this build does not read.",
+        "topology_slope_below_declared_requirement": "The order's slope is below the minimum the protected driver publishes.",
     },
     ("read_catalog", "Read the tool catalog for the view and its inputs"): {
         "inputs_required": "This view needs inputs that the bank does not supply, so the bank did not run it.",
         "verb_not_registered": "No artifact row registers this view, so the bank did not run it.",
     },
+}
+
+#: The evidence store's failure codes. ``plan_run.failure_reason`` keeps the registered code of an exception that
+#: stops a run, so the household reads these, and the failure envelope answers a session restart with Start over.
+_STORE_COPY: dict[str, str] = {
+    "commissioning_evidence_insufficient_space": "The speaker has too little free space to save this measurement, so free "
+                                                 "space before measuring again.",
+    "commissioning_evidence_integrity_mismatch": "A saved measurement file does not match its record, or cannot be read.",
+    "commissioning_evidence_invalid_path": "A saved measurement file has a path the speaker does not accept.",
+    "commissioning_evidence_malformed": "A saved measurement file is not valid.",
+    "commissioning_evidence_missing": "A saved measurement file is missing.",
+    "commissioning_evidence_not_canonical": "A saved measurement file is not in the exact form the speaker writes.",
+    "commissioning_evidence_not_regular": "A saved measurement entry is a link or another kind of entry, not a regular file.",
+    "commissioning_evidence_path_conflict": "A saved measurement file already holds different data, and a saved file is "
+                                            "written only once.",
+    "commissioning_evidence_persist_failed": "The speaker could not save this measurement.",
+    "commissioning_evidence_persist_outcome_unknown": "The speaker could not confirm that this measurement was saved.",
+    "commissioning_evidence_too_large": "A saved measurement file is larger than its size limit.",
+    "commissioning_evidence_total_too_large": "This session's saved measurements are at their total size limit.",
+    "commissioning_evidence_wrong_authority": "The saved measurements belong to another session, or the session cannot "
+                                              "be opened.",
 }
 
 
@@ -597,16 +681,20 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
                         next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
+                        next_action={"id": "measure_again", "label": "Measure this round again",
+                                     "href": "/sound/speaker/crossover/"})
+       for code, message in _STORE_COPY.items()},
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
            ("compose_refused", "review_candidate", "Review the candidate graph and driver declaration."),
+           ("composition_invalid", "review_candidate", "Review the candidate graph and driver declaration."),
            ("program_headroom_exhausted", "reduce_boosts", "Reduce the room, driver or rear boosts, or lower the Extra headroom setting."),
            ("crossover_below_declared_protection_floor", "raise_crossover", "Raise the crossover to the declared driver protection floor."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
+           ("baseline_config_validation_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
-    "round_not_found": ReasonSpec("round_not_found", TEMPLATE_HARD_STOP, 0, "", "Select a banked round or live session directory."),
-    "round_ambiguous": ReasonSpec("round_ambiguous", TEMPLATE_HARD_STOP, 0, "", "Name the round by its full path, or ./<id> for the local directory."),
     "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
     "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
     "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),

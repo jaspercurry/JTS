@@ -41,7 +41,7 @@ from jasper.active_speaker.crossover_v2.evidence_packet import (
 )
 from jasper.active_speaker.crossover_v2.prescription_contract import SECTIONS, contract_json, contract_programs, prescription_contracts
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    DOCUMENT_KIND, REASON_EVIDENCE_UNREADABLE, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence, blamed_section,
+    DOCUMENT_KIND, SECTION_KINDS, PrescriptionDocumentRefused, PrescriptionEvidence, blamed_section,
     judge_prescription_document, preview_prescription_document, parse_vary_axis, preview_kind,
     read_prescription_document, saved_base, vary_document,
 )
@@ -56,7 +56,7 @@ from jasper.active_speaker.seat_level_reference import seat_level_reference_stat
 from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
+from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE, REASON_UNWRITABLE, EvidenceUnavailable, unavailable
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import sha256_file
 from jasper.audio_routes.output_topology_store import load_output_topology
@@ -64,7 +64,6 @@ from jasper.identity.reader import CROSSOVER_PAGE_PATH, SPEAKER_SETUP_PAGE_PATH,
 
 PROG = "jasper-crossover-prescriber"
 AUTHORITY_TIER = "advisory (judge, contract and status read; compose banks a candidate)"
-REASON_UNWRITABLE = "output_unwritable"
 
 
 #: A preview's shape, answered or written to a file (ADR-0344 §4).
@@ -197,12 +196,12 @@ def _preview_out(args: argparse.Namespace, result: Mapping[str, Any], read: Mapp
 
 def _evidence_code(exc: Exception) -> str:
     """The code an evidence error carries, else ``evidence_unreadable``."""
-    return str(getattr(exc, "code", REASON_EVIDENCE_UNREADABLE))
+    return str(getattr(exc, "code", REASON_UNREADABLE))
 
 
 def _document_failure(refusal: PrescriptionDocumentRefused, exit_code: int | None = None) -> int:
     if exit_code is None:
-        exit_code = {REASON_EVIDENCE_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
+        exit_code = {REASON_UNREADABLE: EXIT_UNREADABLE, REASON_UNWRITABLE: EXIT_WRITE_FAILED}.get(refusal.code, EXIT_REFUSED)
     return failed(exit_code, refusal.code, refusal.failure_detail(), code=refusal.code,
                   next_action=refusal_copy_for(refusal.code)[1])
 

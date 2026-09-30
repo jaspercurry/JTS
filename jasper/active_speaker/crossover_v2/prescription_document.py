@@ -26,6 +26,7 @@ from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PR
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
+from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.audio_routes import output_topology_store as output_topology
 from ._prescription_common import PRESCRIPTION_MALFORMED
@@ -57,9 +58,6 @@ def blamed_section(sections: Mapping[str, Any]) -> str | None:
     named = [name for name in SECTION_KINDS if name in sections]
     stated = [name for name in named if sections[name]]
     return "room" if "room" in stated else next(iter(stated or named), None)
-
-
-REASON_EVIDENCE_UNREADABLE = "evidence_unreadable"
 
 
 class PrescriptionDocumentRefused(ValueError):
@@ -289,14 +287,14 @@ def preview_prescription_document(
                     "rear_calibration_topology_unsupported", kind,
                     "the declared layout has no cabinet of one front woofer, one rear woofer and one tweeter")
             if round_dir is None:
-                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, "a rear preview needs --round <pair round>")
+                raise PrescriptionDocumentRefused(REASON_UNREADABLE, kind, "a rear preview needs --round <pair round>")
             preview_function = preview_rear_section
             inputs = round_inputs(round_dir)
             payload = sections[kind]
             kwargs = {"inputs": inputs, "manifest": read_run_manifest(inputs)}
         else:
             if kind == "emitted_graph" and (round_dir is None or capture_id is None):
-                raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, blamed_section(sections),
+                raise PrescriptionDocumentRefused(REASON_UNREADABLE, blamed_section(sections),
                                                   "a speaker preview needs --round <diagnostic round>")
             if kind == "room":
                 preview_function = room.preview_room_prescription
@@ -326,7 +324,7 @@ def preview_prescription_document(
     except PrescriptionDocumentRefused:
         raise
     except (KeyError, TypeError, ValueError) as exc:
-        raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, kind, str(exc)) from exc
+        raise PrescriptionDocumentRefused(REASON_UNREADABLE, kind, str(exc)) from exc
     return {"section": kind, "sections": sorted(sections), "preview": preview, **extra,
             "adopted": False, "banked": False}
 

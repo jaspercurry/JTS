@@ -2895,7 +2895,7 @@ def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(tm
 
     assert payload["ok"] is False
     assert payload["code"] == "rear_calibration_invalid"
-    assert payload["next_action"] is None
+    assert payload["next_action"]["id"] == "read_contract"
     assert isinstance(payload["error"], str) and payload["error"]
 
 

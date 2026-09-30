@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+from collections.abc import Callable
 from importlib import import_module
 
 import pytest
@@ -14,10 +15,16 @@ import pytest
 import jasper
 from jasper.active_speaker.angle_capture import WALK_REFUSAL_REASONS
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import evidence_packet, intervention, prescription_document, refusal_copy, take_reading
+from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreErrorCode
+from jasper.active_speaker.crossover_v2 import (
+    _prescription_common, corner_admissibility, evidence_packet, intervention, prescription_document, refusal_copy,
+    take_reading,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import offline_reads
 from jasper.active_speaker.crossover_v2.room_views import incumbent_room
+from jasper.active_speaker.round_bank import RoundBankError
 from jasper.audio_measurement import evidence_reasons
+from jasper.bass_extension.dynamic import DYNAMIC_BASS_REFUSAL_REASONS
 from jasper.cli.round_views._common import refused_by_name
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
@@ -169,16 +176,26 @@ def test_every_analysis_reason_is_one_evidence_code_with_a_next_action(module_na
 
 _BASE_SET = {"set_id": "a", "base": True, "capture_basis": {}}
 
-#: Codes a gap forwards through a variable: no raise site names them, so the scan below cannot see them.
+#: Codes a gap or a refusal forwards through a variable: no raise site names them, so the scan below cannot see them.
 _FORWARDED_CODES = {
     evidence_packet.NO_CANDIDATE_TAKES, evidence_packet.REPEAT_FLOOR_UNMEASURED,
     evidence_packet.REPEAT_FLOOR_UNREADABLE, evidence_packet.REPEAT_FLOOR_UNUSABLE,
-    offline_reads.FIELD_MALFORMED, offline_reads.SOURCE_UNREADABLE,
-    prescription_document.REASON_EVIDENCE_UNREADABLE, intervention.NonFiniteTrimError.refusal_reason,
+    offline_reads.FIELD_MALFORMED, offline_reads.SOURCE_UNREADABLE, intervention.NonFiniteTrimError.refusal_reason,
     # A run with no base set, and one with two.
     *(incumbent_room(None, {"sets": sets})[1] for sets in ([], [_BASE_SET, {**_BASE_SET, "set_id": "b"}])),
+    # The evidence store's codes reach ``RoundViewsError`` as ``exc.code.value``, the bass descriptor's reach
+    # ``refuse`` as ``exc.reason``, and a pinned corner's two reach the topology refusal as ``reason``.
+    *(code.value for code in CommissioningEvidenceStoreErrorCode), *DYNAMIC_BASS_REFUSAL_REASONS,
+    corner_admissibility.FC_REJECT_BELOW_DECLARED_FLOOR, corner_admissibility.FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
 }
-_GAP_ENTRY_POINTS = (evidence_reasons.EvidenceUnavailable, evidence_reasons.unavailable, refused_by_name)
+#: Each helper that names a code in a gap or a refusal, and the keyword that carries it (else its first argument).
+#: ``BlendPrescriptionRefused`` is what ``refuse`` raises and what each judge's ``*PrescriptionRefused`` aliases.
+_CODE_KEYWORDS: dict[Callable[..., object], str | None] = {
+    evidence_reasons.EvidenceUnavailable: None, evidence_reasons.unavailable: None, refused_by_name: None,
+    _prescription_common.refuse: None, _prescription_common.BlendPrescriptionRefused: None,
+    prescription_document.PrescriptionDocumentRefused: None, RoundBankError: None,
+    refusal_copy.CrossoverV2Refused: "code",
+}
 
 
 def _resolved(node: ast.expr, namespace: dict[str, object]) -> object:
@@ -200,34 +217,48 @@ def _named_codes(node: ast.expr, namespace: dict[str, object]) -> set[str]:
     return {code} if isinstance(code, str) else set()
 
 
+def _code_argument(call: ast.Call, keyword: str | None) -> ast.expr | None:
+    if keyword is None:
+        return call.args[0] if call.args else None
+    return next((each.value for each in call.keywords if each.arg == keyword), None)
+
+
 def _codes_raised_by_name() -> dict[str, str]:
     """Each code that a raise site or a gap names outright, and the first place it does."""
-    entry_names = {entry.__name__ for entry in _GAP_ENTRY_POINTS}
     root = pathlib.Path(jasper.__file__).parent
+    trees = {path: ast.parse(path.read_text(encoding="utf-8")) for path in sorted(root.rglob("*.py"))}
+    names = {entry.__name__ for entry in _CODE_KEYWORDS}
+    # ``AlignmentPrescriptionRefused = BlendPrescriptionRefused``: an alias raises the same codes.
+    names |= {target.id for tree in trees.values() for node in tree.body
+              if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in names
+              for target in node.targets if isinstance(target, ast.Name)}
     raised: dict[str, str] = {}
-    for path in sorted(root.rglob("*.py")):
-        calls = [call for call in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-                 if isinstance(call, ast.Call) and call.args
-                 and getattr(call.func, "id", getattr(call.func, "attr", None)) in entry_names]
+    for path, tree in trees.items():
+        calls = [call for call in ast.walk(tree) if isinstance(call, ast.Call)
+                 and getattr(call.func, "id", getattr(call.func, "attr", None)) in names]
         if not calls:
             continue
         parts = path.relative_to(root.parent).with_suffix("").parts
         module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
         namespace = vars(import_module(module))
         for call in calls:
-            if any(_resolved(call.func, namespace) is entry for entry in _GAP_ENTRY_POINTS):
-                for code in _named_codes(call.args[0], namespace):
-                    raised.setdefault(code, f"{module}:{call.lineno}")
+            entry = next((each for each in _CODE_KEYWORDS if _resolved(call.func, namespace) is each), None)
+            argument = None if entry is None else _code_argument(call, _CODE_KEYWORDS[entry])
+            for code in () if argument is None else _named_codes(argument, namespace):
+                raised.setdefault(code, f"{module}:{call.lineno}")
     return raised
 
 
 def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action():
     """Guards a recurrence: the scan behind #5928 found dozens of codes raised through the gap
-    shape or the evidence exception with no registry row, so a reader got a code with neither
-    copy nor a next action. A code that reaches a gap through a variable is listed above."""
+    shape, the evidence exception, the prescription refusals or the round bank with no registry
+    row, so a reader got a code with neither copy nor a next action. A code that reaches a gap
+    or a refusal through a variable is listed above."""
     raised = _codes_raised_by_name()
-    assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED,
-            "alignment_no_crossover_region"} <= set(raised), "the scan no longer reads a literal, a name and an attribute"
+    assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED, "alignment_no_crossover_region",
+            "driver_filter_malformed", "prescription_polarity_invalid", "composition_base_required",
+            "already_banked", "baseline_config_validation_failed",
+            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias and a keyword"
     lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
                if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}
     assert not lacking

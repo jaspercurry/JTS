@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStor
 from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA, bass_evidence
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
-from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
@@ -1165,7 +1165,7 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(
     if missing_set:
         assert code == EXIT_UNREADABLE
         assert answer['status'] == 'unreadable'
-        assert answer['reason'] == 'round_views_unreadable_round'
+        assert answer['reason'] == REASON_UNREADABLE
         assert answer['detail']['path'] == str(missing)
         assert not bass_run.out.exists()
         return
@@ -1371,7 +1371,7 @@ def test_bass_file_errors_keep_the_unreadable_exit(bass_run, capsys, verb, fault
     assert round_views_main(argv) == EXIT_UNREADABLE
     answer = json.loads(capsys.readouterr().out)
     assert answer['status'] == 'unreadable'
-    assert answer['reason'] == 'round_views_unreadable_round'
+    assert answer['reason'] == REASON_UNREADABLE
 
 
 @pytest.mark.parametrize('fault', ['extra', 'missing', 'range'])
