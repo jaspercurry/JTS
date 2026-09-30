@@ -26,7 +26,7 @@ from jasper.active_speaker.measurement_programs import (
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import round_lines, packet_lines
 from jasper.active_speaker.wizard_client import (
-    CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST,
+    CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST, REASON_RUN_NOT_LIVE,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
 )
 from jasper.identity.reader import CROSSOVER_PAGE_PATH, speaker_url
@@ -252,7 +252,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
         return failed(EXIT_REFUSED if result["status"] == "failed" else EXIT_UNREADABLE,
                       str(result["reason"]), result)
     if result.get("captured") is False:
-        return failed(EXIT_REFUSED, str(result.get("code") or "run_not_live"), result)
+        return failed(EXIT_REFUSED, str(result.get("code") or REASON_RUN_NOT_LIVE), result)
     session_dir = _round_session_dir(args.run)
     if not session_dir:
         return failed(EXIT_UNREADABLE, "capture_bundle_unavailable", result)
