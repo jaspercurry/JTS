@@ -13,6 +13,7 @@ import yaml
 
 from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER as _DRIVER_DOMAIN_PAIR_TRIM
 from jasper.audio_routes.camilla_emit import mono_sum_sources
+from jasper.platform.biquad import PEAK_EPS_DB
 from jasper.platform.json_fields import as_float, finite_float, issue as _issue
 from jasper.platform.log_event import log_event
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
@@ -73,7 +74,6 @@ from ..output_contract import (
     subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..profile import ADJACENT_PAIRS_BY_WAY, SUPPORTED_LR_ORDERS
-from ..graph_types import PEAK_EPS_DB
 from ..program_headroom import PROGRAM_HEADROOM_FILTER, program_peak
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
 

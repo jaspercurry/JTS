@@ -38,7 +38,8 @@ from jasper.active_speaker.camilla_names import (
 )
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from jasper.active_speaker.linearization_fit import MAX_FILTERS_PER_DRIVER
-from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME, PEAK_EPS_DB
+from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
+from jasper.platform.biquad import PEAK_EPS_DB
 from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
@@ -369,7 +370,7 @@ def test_linearization_boost_is_accepted_and_absorbed_by_baseline_headroom():
     while total boost stays uncapped.
 
     The charged number is the chain's realized peak plus
-    ``branch_chain.HEADROOM_MARGIN_DB``, not the sum of the two gains (#1808).
+    ``biquad.HEADROOM_MARGIN_DB``, not the sum of the two gains (#1808).
     This fixture is exactly the shape that separates them: a +3.0 dB bell at
     1000 Hz and a +1.5 dB bell at 2200 Hz never meet, and BOTH are already
     down the woofer's own 1600 Hz low-pass — the 2200 Hz one by 4.6 dB, inside

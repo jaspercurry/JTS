@@ -53,7 +53,7 @@ filters:
       gain: 1.0000
   room_headroom:
     type: Gain
-    parameters: { gain: -3.0000, inverted: false, mute: false }
+    parameters: { gain: -2.9355, inverted: false, mute: false }
   sound_preamp:
     type: Gain
     parameters: { gain: 0.0000, inverted: false, mute: false }

@@ -251,7 +251,7 @@ def test_room_peqs_right_bakes_per_seat_room_segment_with_shared_tail():
     )
     left, right = _pipeline_chains(yaml)
     # Per-seat ROOM segments differ…  The right seat carries a +1 dB boost,
-    # so a shared -1 dB room_headroom rides the tail (audio-safety; see
+    # so a shared room_headroom rides the tail (audio-safety; see
     # test_room_boost_emits_headroom_preamp).
     assert left.startswith("    names: [room_peq_1, room_headroom, sound_preamp,")
     assert right.startswith(
@@ -282,11 +282,11 @@ def test_room_peqs_right_empty_bakes_flat_right_room_segment():
 
 
 # --- Audio-safety: room-correction boost headroom ---------------------------
-# Room-correction BOOSTS (the assertive strategy, cuts_only=False) raise
-# specific bands with no compensating attenuation, so a hot note in a boosted
-# band can clip above full scale. The emitter pulls the whole signal down by
-# the worst-case additive room boost. Cuts-only correction has zero boost, so
-# the trim emits nothing and the config stays byte-identical.
+# Room-correction BOOSTS raise specific bands with no compensating attenuation,
+# so a hot note in a boosted band can clip above full scale. The emitter pulls
+# the whole signal down by the room chain's netted peak plus the 1.0 dB margin
+# (ADR-0399). Cuts-only correction never leaves unity, so the trim emits
+# nothing and the config stays byte-identical.
 def test_cuts_only_room_correction_emits_no_headroom():
     profile = SoundProfile(enabled=False, curve_id="bk", simple_eq=SimpleEq())
     yaml = emit_sound_config(
@@ -306,13 +306,14 @@ def test_room_boost_emits_headroom_preamp_so_net_gain_stays_at_unity():
         profile,
         room_peqs=[
             PeqFilter(freq=45.0, q=5.0, gain=2.0),   # boost
-            PeqFilter(freq=80.0, q=6.0, gain=-4.0),  # cut (ignored for headroom)
+            PeqFilter(freq=80.0, q=6.0, gain=-4.0),  # cut, netted against both
             PeqFilter(freq=120.0, q=4.0, gain=1.0),  # boost
         ],
     )
-    # Worst-case additive boost is +3 dB (2 + 1); the headroom preamp is -3 dB.
+    # The netted peak is 1.9355 dB, under the 3 dB sum of the boosts; plus the
+    # 1.0 dB margin, the headroom preamp is -2.9355 dB.
     assert "room_headroom:" in yaml
-    assert "gain: -3.0000" in yaml
+    assert "gain: -2.9355" in yaml
     # …and it rides the chain right after the room PEQs.
     assert _room_prefix(yaml) == [
         "room_peq_1", "room_peq_2", "room_peq_3", "room_headroom",
@@ -328,9 +329,10 @@ def test_room_headroom_trims_by_the_louder_channel_for_leader_bake():
         room_peqs=[PeqFilter(freq=50.0, q=4.0, gain=1.0)],        # +1 left
         room_peqs_right=[PeqFilter(freq=90.0, q=4.0, gain=3.0)],  # +3 right (louder)
     )
-    # Trim by the louder (+3 dB) channel, defined once and shared by both chains.
+    # Trim by the louder (+3 dB) channel plus the 1.0 dB margin, defined once
+    # and shared by both chains.
     assert yaml.count("room_headroom:") == 1
-    assert "gain: -3.0000" in yaml
+    assert "gain: -4.0000" in yaml
     left, right = _pipeline_chains(yaml)
     assert "room_headroom" in left and "room_headroom" in right
 

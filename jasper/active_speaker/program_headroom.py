@@ -23,13 +23,12 @@ from typing import Any, Mapping, NamedTuple
 from jasper.bass_extension.dynamic_graph import PREFIX as DYNAMIC_BASS_PREFIX
 from jasper.platform.biquad import (
     EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, EVALUABLE_Q_MAX, EVALUABLE_Q_MIN,
-    SHELF_BIQUAD_TYPES, SHELF_Q, SHELF_Q_EMIT_DECIMALS,
+    SHELF_BIQUAD_TYPES, SHELF_Q, SHELF_Q_EMIT_DECIMALS, headroom_charge_db,
 )
 from jasper.platform.json_fields import finite_float
 
 from .graph_safety import GraphView, view_from_emitted_text
 from .graph_transfer import GraphTransferError, complex_channel_transfer, mixer_mapping
-from .graph_types import PEAK_EPS_DB
 from .profile import ActiveSpeakerConfigError
 
 PROGRAM_HEADROOM_FILTER = "active_baseline_headroom"
@@ -127,20 +126,15 @@ def program_peak(graph: Mapping[str, Any], *, charged: bool = False) -> ProgramP
 def charge_db(graph: Mapping[str, Any], *, output_trim_db: float = 0.0) -> float:
     """The attenuation ``graph`` needs ahead of its split, dB (ADR-0385).
 
-    Its :func:`program_peak` with its own headroom gain held at 0 dB, plus one
-    :data:`~.branch_chain.HEADROOM_MARGIN_DB` when that peak is over
-    :data:`~.graph_types.PEAK_EPS_DB`, plus the household's output trim, which is never netted.
+    :func:`~jasper.platform.biquad.headroom_charge_db` of its :func:`program_peak`
+    with its own headroom gain held at 0 dB, plus the household's output trim,
+    which is never netted.
     """
     try:
         peak = program_peak(graph).db
     except GraphTransferError as exc:
         raise ProgramHeadroomUnreadable(f"the graph's program peak cannot be evaluated: {exc}") from exc
-    trim_db = max(0.0, output_trim_db)
-    if peak <= PEAK_EPS_DB:
-        return trim_db
-    from .branch_chain import headroom_charge_db  # lazy: imports numpy, which a peak over ε has loaded
-
-    return headroom_charge_db(peak) + trim_db
+    return headroom_charge_db(peak) + max(0.0, output_trim_db)
 
 
 def _names(step: Mapping[str, Any]) -> list[str]:

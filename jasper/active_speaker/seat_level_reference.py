@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.ramp import RAMP_MARGIN_DB
 from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
-from jasper.platform.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig
+from jasper.platform.biquad import PeqFilter, peaking_cascade_response_db
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import finite_float, utc_now_iso as _utc_now
 from jasper.platform.log_event import log_event
@@ -67,15 +67,7 @@ def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, f
     lowest response there (ADR-0385). Never negative."""
     if not room_peqs:
         return 0.0
-    low, high = band_hz
-    steps = max(1, math.ceil(48 * math.log2(high / low)))
-    grid = sorted({*(low * (high / low) ** (step / steps) for step in range(steps + 1)),
-                   *(peq.freq for peq in room_peqs if low <= peq.freq <= high)})
-    trig = freq_trig(grid)
-    response = [sum(values) for values in zip(*(
-        filter_response_db(FilterSpec("room", "Peaking", peq.freq, peq.gain, peq.q), grid, trig)
-        for peq in room_peqs))]
-    return max(0.0, charge_db - min(response))
+    return max(0.0, charge_db - min(peaking_cascade_response_db(room_peqs, *band_hz)[1]))
 
 
 def predicted_rung_admission(

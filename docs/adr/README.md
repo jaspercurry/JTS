@@ -79,7 +79,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | ADR | Decision | Status |
 |---|---|---|
 | [0004](0004-duck-release-algebra-and-reference.md) | The duck release algebra — `min(reference, current + own depth)`, and the reference is a reader | amended by 0375 |
-| [0121](0121-preference-boosts-boost-room-boosts-are-compensated.md) | Preference boosts boost; room-correction boosts are headroom-compensated | active-path room rule superseded by 0385 |
+| [0121](0121-preference-boosts-boost-room-boosts-are-compensated.md) | Preference boosts boost; room-correction boosts are headroom-compensated | room rule superseded by 0385 (active path) and 0399 (passive path) |
 | [0176](0176-the-airplay-sender-slider-is-not-a-control-surface.md) | The AirPlay sender slider is not a control surface — AirPlay 2 took the back-channel away | accepted |
 | [0177](0177-duck-ownership-is-asked-of-the-owner-never-inferred-from-a-db-gap.md) | Duck ownership is asked of the owner, never inferred from a dB gap | superseded by 0376 |
 | [0206](0206-the-airplay-sender-slider-is-an-inbound-control-surface.md) | The AirPlay sender slider is an inbound control surface — shairport's volume hook drives the master fader | accepted |
@@ -89,6 +89,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0368](0368-the-volume-floor-audition-holds-the-dsp-writer-lock.md) | The volume-floor audition holds the DSP writer lock, so the reconciler has no quiet carve-out | accepted |
 | [0375](0375-the-volume-owner-arbitrates-levels-only.md) | The volume owner arbitrates levels only; the graph-swap duck stays outside it | accepted |
 | [0376](0376-nothing-locks-camilla-during-a-voice-session.md) | Nothing locks Camilla during a voice session, so there is no duck lock to ask about | accepted |
+| [0399](0399-the-passive-stereo-prefix-charges-the-room-chains-netted-peak.md) | The passive stereo prefix charges the room chain's netted peak: `room_headroom` is `headroom_charge_db` of the louder room chain's peak, read numpy-free by the one Peaking-cascade function the room-off rise also reads, and the charge rule moves to `jasper/platform/biquad.py` | accepted |
 
 ## Local sources & renderers
 

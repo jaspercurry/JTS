@@ -232,10 +232,8 @@ def test_enable_rate_adjust_follows_the_sink(playback_device, rate_adjust):
 
 
 def test_total_positive_boost_db_sums_only_boosts():
-    # The canonical audio-safety primitive: worst-case additive boost.
-    # Cuts are ignored; the result is the headroom a config must reserve so
-    # boosts can't clip above unity. Shared by the emitter trim and the PEQ
-    # boost-cap check, so pin it here.
+    # A room's boost spend, which the room prescription caps. Not its headroom
+    # charge: that nets cuts against boosts (ADR-0399).
     assert total_positive_boost_db([]) == 0.0
     assert total_positive_boost_db([PeqFilter(80, 4, -6.0)]) == 0.0  # cuts-only
     assert total_positive_boost_db(
