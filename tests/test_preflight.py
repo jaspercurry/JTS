@@ -218,7 +218,7 @@ def test_the_spl_basis_names_a_pose_that_levels_itself(distance_m, stimulus, dri
     it plays, and for no pose that plays at the run's fader (ADR-0361, ADR-0366 §2)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0, kind="bearing" if distance_m is None else "close",
                                                distance_m=distance_m, driver=driver),
-                                          REGIME_PER_DRIVER if driver else "summed", purpose="reference",
+                                          REGIME_PER_DRIVER if driver else REGIME_SUMMED, purpose="reference",
                                           stimulus=stimulus),))
     report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer",)))
     assert (report.rung_admission.get("predicted_spl_basis") == POSE_LEVEL_SPL_BASIS) is bool(driver)
