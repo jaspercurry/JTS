@@ -206,8 +206,6 @@ _PRESCRIPTION_FIELDS = frozenset({
     "prescription_class",
     "band_hz",
     "rationale_dropped_chars",
-    # Banked receipts carry it; accepted and never read.
-    "positional_support",
 })
 
 #: Fields ONE filter may carry — the reduced record ``chain_response``, the
@@ -598,6 +596,7 @@ def _parse_prescription(
         refuse(
             BLEND_PRESCRIPTION_MALFORMED,
             f"unknown prescription field(s): {', '.join(unknown)}",
+            unknown=unknown,
         )
     if raw.get("kind") != PRESCRIPTION_KIND:
         refuse(
