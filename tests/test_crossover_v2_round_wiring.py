@@ -17,6 +17,7 @@ from tests.crossover_v2_fixtures import (
     _stage_1,
     _status,
     _topology,
+    with_rear_target,
 )
 
 from jasper.web import correction_crossover_v2_evidence as v2evidence
@@ -31,7 +32,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import candidate_bank, commissioning_coordinator, measurement_view
-from jasper.active_speaker.crossover_v2 import coordinator
+from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx, coordinator
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from jasper.web import correction_crossover_v2 as v2host
@@ -367,6 +368,10 @@ def test_the_pages_rear_pair_choice_starts_a_session_on_the_applied_base(monkeyp
     choice names no candidate and nothing is banked for it (ADR-0386)."""
     monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
         "programs": RUNNABLE_PROGRAMS, "near_field_drivers": (), "next_action": {"program": "rear"}})
+    resolve = v2host.resolve_conductor_context
+    for owner in (v2ctx, v2host):
+        monkeypatch.setattr(owner, "resolve_conductor_context",
+                            lambda status, **kwargs: with_rear_target(resolve(status, **kwargs)))
     choice = next(c for c in measurement_view.round_choices(_status(), "rear/pair") if c["id"] == "rear/pair")
     store = _RecordingCheckStore()
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda topology: (store, store.session_id))
