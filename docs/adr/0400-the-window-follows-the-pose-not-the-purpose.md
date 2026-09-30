@@ -25,7 +25,8 @@ bank its ungated reading (ADR-0383 §2). A purpose then no longer needs to pick 
    and speaker readers read `gated`. A speaker role whose gate found no window banks only
    `ungated`, so a speaker reader reads nothing for it. The views that draw a take's banked
    curves (the measurements page, `frequency`, `candidates`) show both windows, each labelled
-   by its window. The impulse views read the kept impulse through the window they name. The
+   by its window. The impulse views (`group-delay`, `compare`) read the kept impulse through the
+   window the take's program reads, and through another only when `--window-ms` names it. The
    trusted band is banked on each curve: the gated curve gets the gate floor, the ungated curve
    none. So no band reads a purpose.
 3. **Deleted.** `SEAT_EXEMPT`, `room_sweep` and its plans flag, `run_manifest.room_sets`, the
@@ -35,9 +36,13 @@ bank its ungated reading (ADR-0383 §2). A purpose then no longer needs to pick 
 
 ## Consequences
 
-- A bass, rear or room take at a bearing or behind pose banks both windows. Its readers read
-  the ungated one, as before, and the page also draws its gated one. A seat take and a
-  near-field take bank one window, `ungated`.
+- A bass, rear or room take at a bearing or behind pose banks both windows. Its program's
+  readers read the ungated one, as before, and the page also draws its gated one. The round
+  packet's per-take gate fields and the catalog's first takes read each take's own window,
+  which for such a take is its gate. A seat take and a near-field take bank one window,
+  `ungated`.
+- A per-driver MEASURE take at an inline seat pose is now exempt. It banks only `ungated`, so
+  the speaker readers read no curve for it, and its SNR verdicts grade the ungated response.
 - `speaker/mark` walks only its per-driver stops, so it takes fewer captures, and its round
   packet has no room section.
 - A take banked before the band moved onto its curves refuses `take_curves_not_banked`
