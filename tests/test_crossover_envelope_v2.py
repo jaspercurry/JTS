@@ -13,8 +13,11 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     _PHASE_STEP,
     build_crossover_envelope_v2,
 )
+from jasper.active_speaker.measurement_programs import preset
 from jasper.active_speaker.timing_status import timing_status_lines
+from jasper.active_speaker.wizard_client import SESSION_PATH
 from jasper.audio_measurement.timing_verification import timing_verification
+from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
@@ -201,6 +204,22 @@ def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, curre
 ])
 def test_timing_status_lines(profile, round_, expected):
     assert timing_status_lines(profile, round_) == expected
+
+
+@pytest.mark.parametrize("action_id, runs_a_round", [
+    ("measure_timing", True), ("remeasure_timing", True), ("reset_timing", False), ("apply_timing", False),
+])
+def test_a_timing_action_leads_to_the_door_that_does_its_job(action_id, runs_a_round):
+    """#5925: a speaker round measures timing; a reset or an apply opens the speaker page's tuning prompt."""
+    env = build_crossover_envelope_v2({**_status(phase="check"), "timing": {"next_action": {"id": action_id}}})
+    action = env["next_action"]
+    assert action["id"] == action_id
+    if runs_a_round:
+        plan = preset(action["body"]["request"]["program"])
+        assert (action["endpoint"], plan.purpose, plan.timing_take) == (SESSION_PATH, "speaker", True)
+        assert action["body"]["request"]["layout"] in plan.layouts
+    else:
+        assert (action.get("endpoint"), action["href"]) == (None, SPEAKER_SETUP_PAGE_PATH)
 
 
 @pytest.mark.parametrize("fault, action_id, target", [
