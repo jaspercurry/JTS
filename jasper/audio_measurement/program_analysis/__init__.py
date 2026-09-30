@@ -20,6 +20,7 @@ public surface, and a test reaches a private helper through its own submodule.
 from __future__ import annotations
 
 from jasper.audio_measurement.alignment import parabolic_peak
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S
 from jasper.audio_measurement.program import KIND_SWEEP
 from .model import (
     ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
@@ -42,7 +43,6 @@ from .model import (
     DELTA_IMPLAUSIBLE_GAP_DB,
     ConfiguredPathConditioningError,
     CrossoverCandidate,
-    DECONV_PRE_GUARD_S,
     DISCONTINUITY_UNRESOLVED,
     DriftEstimate,
     DRIVER_SNR_ALIGNMENT_KEY,

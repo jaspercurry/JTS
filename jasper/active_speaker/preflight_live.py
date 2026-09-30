@@ -117,7 +117,7 @@ def read_preflight_facts(
             programs.append(program.stimulus_id)
         return tuple(programs)
 
-    near_field = {stop.pose.driver for stop in plan.stops if stop.pose.driver and stop.stimulus is not None}
+    near_field = {stop.pose.driver for stop in plan.stops if stop.pose.near_field}
     output_volume = read_output_volume()
     if output_volume.get("muted"):
         log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)

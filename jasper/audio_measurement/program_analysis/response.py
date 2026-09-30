@@ -17,6 +17,7 @@ from scipy.optimize import minimize_scalar
 from jasper.audio_measurement import analysis, deconv, gate_disclosure, gating, snr_policy
 from jasper.audio_measurement.alignment import _bandlimit
 from jasper.audio_measurement.evidence_grid import evidence_bins
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S
 from jasper.audio_measurement.comparison_bands import (
     branch_snr_band_hz,
     OVERLAP_OCTAVE_RATIO,
@@ -37,7 +38,6 @@ from .model import (
     ALIGNMENT_FLATNESS_SPAN_PERIODS,
     ALIGNMENT_FLATNESS_STEP_US,
     AppliedAlignment,
-    DECONV_PRE_GUARD_S,
     DRIVER_SNR_ALIGNMENT_KEY,
     DriverResponse,
     RecordedImpulse,

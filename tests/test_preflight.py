@@ -209,6 +209,19 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
         assert report.rung_admission["predicted_spl_basis"] == NEAR_FIELD_SPL_BASIS
 
 
+@pytest.mark.parametrize("distance_m,stimulus,near", [
+    (0.015, NEAR_FIELD, True), (0.015, None, True), (0.15, NEAR_FIELD, False), (None, None, False)])
+def test_the_near_field_spl_basis_follows_the_pose(distance_m, stimulus, near):
+    """The seat anchor under-reads a microphone at a driver within the
+    near-field distance, and preflight says so whatever that pose plays
+    (ADR-0360 §3)."""
+    plan = AngleCaptureRequest((AngleStop(Pose(0, 0, kind="bearing" if distance_m is None else "close",
+                                               distance_m=distance_m, driver="woofer"),
+                                          REGIME_PER_DRIVER, purpose="reference", stimulus=stimulus),))
+    report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer",)))
+    assert (report.rung_admission.get("predicted_spl_basis") == NEAR_FIELD_SPL_BASIS) is near
+
+
 def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
     """A stop naming its driver plays that driver alone on the drivers graph
     whatever its regime, so preflight checks no branch pair for it and prices
