@@ -1366,23 +1366,28 @@ def test_the_unprefixed_names_colliding_with_alignment_prescription_are_gone():
 def test_a_supplied_gate_written_field_is_ignored_not_trusted(packet):
     """Round-tripping through one parser must not become a way to dictate.
 
-    ``prescription_class``, ``band_hz`` and ``positional_support`` are accepted
-    on the way in so a receipt reads back through the same parser — so a
-    prescriber can supply them. None of the three may be believed: the class is
-    re-derived from the gains, the band comes from the packet, and the finding
-    is dropped.
+    ``prescription_class`` and ``band_hz`` are accepted on the way in so a
+    receipt reads back through the same parser — so a prescriber can supply
+    them. Neither may be believed: the class is re-derived from the gains, and
+    the band comes from the packet.
     """
     document = _document(
         [_cut(gain=-1.5)],
         packet,
         prescription_class="boost",
         band_hz=[1.0, 2.0],
-        positional_support=[{"n_with_dip": 99}],
     )
     accepted = _gate(packet, document)
     assert accepted.prescription_class == "cut"
     assert accepted.band_hz == BAND
-    assert "positional_support" not in accepted.to_dict()
+
+
+def test_a_document_carrying_the_retired_positional_support_refuses_by_that_field(packet):
+    """No receipt writes it any more, so no reader accepts it (#2902)."""
+    with pytest.raises(BlendPrescriptionRefused) as excinfo:
+        _gate(packet, _document([_cut()], packet, positional_support=[]))
+    assert (excinfo.value.reason, excinfo.value.evidence["unknown"]) == (
+        bp.BLEND_PRESCRIPTION_MALFORMED, ["positional_support"])
 
 
 def test_a_gate_written_class_cannot_launder_a_boost_into_a_cut(packet):
