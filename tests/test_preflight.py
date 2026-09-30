@@ -4,6 +4,8 @@
 
 import json
 import logging
+import math
+import random
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -36,7 +38,7 @@ from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
-from jasper.platform.biquad import PeqFilter
+from jasper.platform.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.platform import control_client
@@ -604,6 +606,34 @@ def test_the_room_off_rise_is_the_rooms_charge_less_its_lowest_response_in_band(
     )["woofer"]) for cleared in ((), ("room_correction",)))
     assert rise == pytest.approx(rise_db, abs=0.02)
     assert rise == pytest.approx(max(0.0, float(np.max(20.0 * np.log10(without / with_room)))), abs=0.01)
+
+
+def _rise_before_the_shared_cascade(room_peqs, band_hz, charge_db):
+    """``rise_without_room_db`` as it read before it shared ``biquad.peaking_cascade_response_db``
+    with the stereo room charge (#5909 H5): the oracle the shared form must match bit for bit."""
+    low, high = band_hz
+    steps = max(1, math.ceil(48 * math.log2(high / low)))
+    grid = sorted({*(low * (high / low) ** (step / steps) for step in range(steps + 1)),
+                   *(peq.freq for peq in room_peqs if low <= peq.freq <= high)})
+    trig = freq_trig(grid)
+    response = [sum(values) for values in zip(*(
+        filter_response_db(FilterSpec("room", "Peaking", peq.freq, peq.gain, peq.q), grid, trig)
+        for peq in room_peqs))]
+    return max(0.0, charge_db - min(response))
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_the_room_off_rise_is_bit_identical_on_the_shared_cascade(seed):
+    """The ADR-0370 rise bounds an SPL raise, so sharing its grid with the stereo room charge
+    must not move one bit of it: random rooms and bands, compared with exact equality."""
+    rng = random.Random(seed)
+    for _ in range(20):
+        room = [PeqFilter(rng.uniform(15.0, 600.0), rng.uniform(0.5, 12.0), rng.uniform(-12.0, 6.0))
+                for _ in range(rng.randint(1, 10))]
+        low = rng.uniform(15.0, 200.0)
+        band_hz, charge_db = (low, low * rng.uniform(1.0, 30.0)), rng.uniform(0.0, 6.0)
+        assert rise_without_room_db(room, band_hz, charge_db=charge_db) == _rise_before_the_shared_cascade(
+            room, band_hz, charge_db)
 
 
 @pytest.mark.parametrize("purpose,candidate_id,stimulus,room,rise_db", [

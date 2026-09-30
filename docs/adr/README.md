@@ -89,7 +89,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0368](0368-the-volume-floor-audition-holds-the-dsp-writer-lock.md) | The volume-floor audition holds the DSP writer lock, so the reconciler has no quiet carve-out | accepted |
 | [0375](0375-the-volume-owner-arbitrates-levels-only.md) | The volume owner arbitrates levels only; the graph-swap duck stays outside it | accepted |
 | [0376](0376-nothing-locks-camilla-during-a-voice-session.md) | Nothing locks Camilla during a voice session, so there is no duck lock to ask about | accepted |
-| [0399](0399-the-passive-stereo-prefix-charges-the-room-chains-netted-peak.md) | The passive stereo prefix charges the room chain's netted peak: `room_headroom` is `headroom_charge_db` of the louder room chain's peak, read numpy-free on the Peaking cascade, and the charge rule moves to `jasper/platform/biquad.py` | accepted |
+| [0399](0399-the-passive-stereo-prefix-charges-the-room-chains-netted-peak.md) | The passive stereo prefix charges the room chain's netted peak: `room_headroom` is `headroom_charge_db` of the louder room chain's peak, read numpy-free by the one Peaking-cascade function the room-off rise also reads, and the charge rule moves to `jasper/platform/biquad.py` | accepted |
 
 ## Local sources & renderers
 

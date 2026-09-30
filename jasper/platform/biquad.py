@@ -302,7 +302,9 @@ PEAK_EPS_DB: float = 1e-3
 # (``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``).
 HEADROOM_MARGIN_DB: float = 1.0
 
-_PEAK_GRID_POINTS_PER_OCTAVE = 48
+# Points per octave of the log grid a response is read on, before any filter's
+# own frequencies are added to it.
+RESPONSE_GRID_POINTS_PER_OCTAVE: int = 48
 
 
 def headroom_charge_db(peak_db: float) -> float:
@@ -314,24 +316,30 @@ def headroom_charge_db(peak_db: float) -> float:
     return float(peak_db) + HEADROOM_MARGIN_DB
 
 
-def peaking_cascade_peak_db(filters: Sequence[PeqFilter]) -> float:
-    """The netted peak of a series cascade of Peaking ``filters``, dB re unity.
+def peaking_cascade_response_db(
+    filters: Sequence[PeqFilter], low_hz: float, high_hz: float,
+) -> tuple[list[float], list[float]]:
+    """A series cascade of one or more Peaking ``filters`` from ``low_hz`` to
+    ``high_hz``: its grid, and its summed response on that grid, dB.
 
-    Cuts net against boosts. The summed response is read on a 48-point-per-octave
-    grid across the evaluable span plus each filter's own centre, so a lone
-    boost reads its gain exactly. A cascade with no boost never leaves unity: it
-    returns 0.0 and evaluates nothing (ADR-0399).
+    The grid is :data:`RESPONSE_GRID_POINTS_PER_OCTAVE` log-spaced points with
+    both ends, plus each filter's own centre inside the span, so a lone filter
+    reads its gain exactly.
+    """
+    steps = max(1, math.ceil(RESPONSE_GRID_POINTS_PER_OCTAVE * math.log2(high_hz / low_hz)))
+    grid = sorted({*(low_hz * (high_hz / low_hz) ** (step / steps) for step in range(steps + 1)),
+                   *(f.freq for f in filters if low_hz <= f.freq <= high_hz)})
+    trig = freq_trig(grid)
+    return grid, [sum(values) for values in zip(*(
+        filter_response_db(FilterSpec("room", "Peaking", f.freq, f.gain, f.q), grid, trig)
+        for f in filters))]
+
+
+def peaking_cascade_peak_db(filters: Sequence[PeqFilter]) -> float:
+    """The netted peak of a series cascade of Peaking ``filters`` across the
+    evaluable span, dB re unity: cuts net against boosts (ADR-0399). A cascade
+    with no boost never leaves unity, so it returns 0.0 and evaluates nothing.
     """
     if not any(f.gain > 0.0 for f in filters):
         return 0.0
-    steps = round(_PEAK_GRID_POINTS_PER_OCTAVE * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN))
-    grid = sorted({
-        *(EVALUABLE_HZ_MIN * (EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN) ** (step / steps)
-          for step in range(steps + 1)),
-        *(f.freq for f in filters if 0.0 < f.freq < RESPONSE_NYQUIST_HZ),
-    })
-    trig = freq_trig(grid)
-    return max(map(sum, zip(*(
-        filter_response_db(FilterSpec("peak", "Peaking", f.freq, f.gain, f.q), grid, trig)
-        for f in filters
-    ))))
+    return max(peaking_cascade_response_db(filters, EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX)[1])

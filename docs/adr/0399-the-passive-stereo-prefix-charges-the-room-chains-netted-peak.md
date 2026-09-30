@@ -18,28 +18,44 @@
      netted peak: that peak plus `HEADROOM_MARGIN_DB` (1.0 dB) when it is over `PEAK_EPS_DB`
      (1e-3 dB), else no filter. The active charge (`program_headroom.charge_db`) calls the same
      function. Room cuts net against room boosts. Preference EQ still rides at unity (ADR-0121).
-  2. **The peak.** `biquad.peaking_cascade_peak_db` reads a room chain as a series cascade of
-     Peaking biquads on the one biquad model, with the standard library only. The grid is 48
-     points per octave across the evaluable span, plus each filter's own centre, so a lone boost
-     reads its gain exactly. A chain with no boost is not evaluated.
-  3. **One home.** `headroom_charge_db`, `HEADROOM_MARGIN_DB` and `PEAK_EPS_DB` move to
-     `jasper/platform/biquad.py`. The stereo prefix imports them without numpy and without
-     `jasper.active_speaker`, and the active path imports them from there. No active graph byte
-     changes.
+  2. **The peak.** `biquad.peaking_cascade_peak_db` is the maximum, across the evaluable span, of
+     `biquad.peaking_cascade_response_db`: the one stdlib function that reads a series cascade of
+     Peaking biquads on the one biquad model. Its grid is `RESPONSE_GRID_POINTS_PER_OCTAVE` (48)
+     log-spaced points plus each filter's own centre, so a lone boost reads its gain exactly. A
+     chain with no boost is not evaluated. The
+     [ADR-0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md)
+     room-off rise (`seat_level_reference.rise_without_room_db`) reads the same function as its
+     minimum across its band, bit for bit as before.
+  3. **One home.** `headroom_charge_db`, `HEADROOM_MARGIN_DB`, `PEAK_EPS_DB` and
+     `RESPONSE_GRID_POINTS_PER_OCTAVE` live in `jasper/platform/biquad.py`. The stereo prefix
+     imports them without numpy and without `jasper.active_speaker`, and the active path imports
+     them from there. `branch_chain`'s grid reads the same density, and its construction does not
+     change. No active graph byte changes.
 - **Consequences:**
-  - A room that never leaves unity emits no `room_headroom`: a cuts-only room stays
-    byte-identical, and so does a boost that a wider cut nets under unity.
-  - A one-boost room charges 1.0 dB more than before. A multi-boost room with overlaps or cuts
-    charges less. The stereo goldens move: `room_boost_headroom` from 3.0 to 2.9355 dB and
-    `leader_bake_delays` from 1.0 to 1.9998 dB.
+  - A room whose netted peak is at or under unity emits no `room_headroom`, like a cuts-only
+    room. A cuts-only config stays byte-identical. A room whose boosts a cut nets under unity
+    loses the `room_headroom` it had, so its config changes.
+  - Against the old sum, a boosted room's charge moves by its netted peak plus 1.0 dB, less the
+    sum of its boosts. The netted peak is at most that sum, so a charge rises by at most 1.0 dB:
+    by exactly 1.0 dB for a lone boost with no cut near it, and by 0.7 dB for +0.3 dB at 40 Hz
+    with +0.3 dB at 300 Hz (q 4). A charge falls only where the boosts sum to more than the
+    netted peak plus the margin, or where a cut nets them under unity. The stereo goldens move:
+    `room_boost_headroom` from 3.0 to 2.9355 dB and `leader_bake_delays` from 1.0 to 1.9998 dB.
   - A config keeps its old `room_headroom` until it is re-emitted. The next `/sound` save or live
     draft writes the new value; a move of that trim alone writes in place
-    ([ADR-0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md)). A multi-boost room
-    can then play louder at the same fader, by up to its drop, and a one-boost room plays 1.0 dB
-    quieter.
-  - On the grid, a charged room chain peaks at -1 dB. Inside the declared room bounds (20-500 Hz,
-    q 1-8, -10 to +6 dB, 8 filters a side) the grid reads the dense peak to within about 0.05 dB,
-    and a property test holds it under 0.1 dB. The margin covers that.
+    ([ADR-0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md)). A room whose
+    charge falls then plays louder at the same fader, by its drop, and one whose charge rises
+    plays quieter, by at most 1.0 dB.
+  - On the grid, a charged room chain peaks at -1 dB. The grid reads the dense peak to within
+    about 0.08 dB inside the active room layer's declared bounds (`room_limits`: 20-500 Hz, q 1-8,
+    -10 to +6 dB, 8 filters a side), and to within about 0.025 dB inside the bounds of the retired
+    passive strategy that made the rooms on disk (at most 500 Hz, q 0.7-10, at most +2 dB a filter
+    and +3 dB in all). A property test holds both under 0.1 dB. The margin covers both.
+  - For inputs far outside every producer's bounds, the grid can read more than the 1.0 dB margin
+    under the true peak, so the charged chain can peak over unity: 1.6 dB under for #2850's
+    near-Nyquist boost and cut pair, and 1.1 dB under for a ±20 dB q 50 pair 0.3 % apart. The old
+    sum of boosts bounded every input. No producer reaches those inputs, so no guard is added
+    ([AGENTS.md](../../AGENTS.md): no guards for hypotheticals).
   - Cost: about 2 ms per boosted 10-band chain on a laptop (Apple M1 Max), and nothing for a
     cuts-only room. The Pi Zero 2 W time is measured after the deploy. A cache follows only if one
     live-draft move measures over about 250 ms (ADR-0385).

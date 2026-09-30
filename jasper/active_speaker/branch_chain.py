@@ -21,7 +21,8 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.platform.biquad import (
-    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_NYQUIST_HZ, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_GRID_POINTS_PER_OCTAVE, RESPONSE_NYQUIST_HZ,
+    RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
     FilterSpec,
     filter_response_complex, freq_trig, headroom_charge_db,
 )
@@ -41,10 +42,6 @@ CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 # limiters REMAIN the backstop there. A shelf cornered outside the audible band is
 # charged against its own asymptote sample (#2846).
 
-# BACKGROUND resolution, points per octave. NOT what makes a narrow filter's own peak
-# visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
-_CHAIN_GRID_POINTS_PER_OCTAVE: int = 48
-
 # Above this corner the background switches from 1/48 octave to a LINEAR tail of
 # ``_GRID_HF_TAIL_STEP_HZ`` (#2850). A constant fraction of an octave is a step that
 # GROWS in absolute Hz -- 315.6 Hz at 21.7 kHz -- and a close mixed-sign Peaking pair up
@@ -60,19 +57,20 @@ _GRID_HF_TAIL_FROM_HZ: float = 14000.0
 _GRID_HF_TAIL_STEP_HZ: float = 25.0
 
 # Grid every chain peak is evaluated on: 1/48 octave to ``_GRID_HF_TAIL_FROM_HZ``, then a
-# linear tail, EDGE TO EDGE. NOT the fit's own 150 Hz-floored
-# ``DEFAULT_ENVELOPE_GRID_HZ``: this grid is read by the runtime contract against an
-# untrusted graph and must see a boost placed at 60 Hz. Full domain, not the audio band,
-# is a correctness requirement (#2758): a shipped-band example peaks 6.8728 dB at
-# 21500.6 Hz, which a 20 Hz-20 kHz background read as 0.8596. Roughly 10 ms per branch
-# for a full 8-filter chain; the cut-only short-circuit below means an ordinary graph
-# pays none of it.
+# linear tail, EDGE TO EDGE. That background is NOT what makes a narrow filter's own peak
+# visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that. NOT the
+# fit's own 150 Hz-floored ``DEFAULT_ENVELOPE_GRID_HZ``: this grid is read by the runtime
+# contract against an untrusted graph and must see a boost placed at 60 Hz. Full domain,
+# not the audio band, is a correctness requirement (#2758): a shipped-band example peaks
+# 6.8728 dB at 21500.6 Hz, which a 20 Hz-20 kHz background read as 0.8596. Roughly 10 ms
+# per branch for a full 8-filter chain; the cut-only short-circuit below means an ordinary
+# graph pays none of it.
 CHAIN_GRID_HZ: np.ndarray = np.unique(np.concatenate([
     np.geomspace(
         EVALUABLE_HZ_MIN,
         EVALUABLE_HZ_MAX,
         round(
-            _CHAIN_GRID_POINTS_PER_OCTAVE
+            RESPONSE_GRID_POINTS_PER_OCTAVE
             * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN)
         ) + 1,
     ),

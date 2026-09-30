@@ -49,7 +49,7 @@ from jasper.audio_routes.camilla_stereo_prefix import build_stereo_prefix, emit_
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The most the room chain's grid peak may read under its dense peak, dB, for a
-#: room inside the declared bounds (measured worst: about 0.05 dB).
+#: room inside the declared bounds (measured worst: about 0.08 dB; ADR-0399).
 _GRID_RESIDUE_DB = 0.1
 
 
@@ -122,7 +122,7 @@ def test_a_boosted_room_charges_its_netted_peak_plus_the_margin(room):
     assert "  sound_preamp:" in yaml
 
 
-def _declared_room(rng: random.Random) -> list[PeqFilter]:
+def _room_limits_room(rng: random.Random) -> list[PeqFilter]:
     return [
         PeqFilter(
             freq=rng.uniform(ROOM_FLOOR_HZ, ROOM_BOUNDARY_MAX_HZ),
@@ -133,9 +133,26 @@ def _declared_room(rng: random.Random) -> list[PeqFilter]:
     ]
 
 
+def _retired_strategy_room(rng: random.Random) -> list[PeqFilter]:
+    """The retired passive strategy's bounds, which made the rooms on disk: q 0.7-10, at
+    most +2 dB a filter and +3 dB in all (ADR-0399)."""
+    while True:
+        room = [
+            PeqFilter(
+                freq=rng.uniform(ROOM_FLOOR_HZ, ROOM_BOUNDARY_MAX_HZ),
+                q=rng.uniform(0.7, 10.0),
+                gain=rng.uniform(ROOM_MAX_CUT_DB, 2.0),
+            )
+            for _ in range(rng.randint(1, ROOM_MAX_FILTERS_PER_SIDE))
+        ]
+        if sum(peq.gain for peq in room if peq.gain > 0.0) <= 3.0:
+            return room
+
+
+@pytest.mark.parametrize("make_room", [_room_limits_room, _retired_strategy_room])
 @pytest.mark.parametrize("seed", range(3))
-def test_the_room_charge_never_under_states_the_netted_peak(seed):
-    """Random boost/cut rooms inside the declared bounds, one per seat (ADR-0399).
+def test_the_room_charge_never_under_states_the_netted_peak(make_room, seed):
+    """Random boost/cut rooms inside each producer's bounds, one per seat (ADR-0399).
 
     The emitted charge covers the louder seat's dense peak within ε plus the grid
     residue; a charged room keeps the margin less that residue; a cuts-only room
@@ -143,7 +160,7 @@ def test_the_room_charge_never_under_states_the_netted_peak(seed):
     """
     rng = random.Random(seed)
     for _ in range(40):
-        left, right = _declared_room(rng), _declared_room(rng)
+        left, right = make_room(rng), make_room(rng)
         yaml, *_ = build_stereo_prefix([], left, room_peqs_right=right)
         charged = _charged_db(yaml)
         truth = max(_dense_peak_db(left), _dense_peak_db(right))
