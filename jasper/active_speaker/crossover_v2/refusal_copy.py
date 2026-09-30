@@ -344,7 +344,8 @@ ARM_STOP_COPY = {
 ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR}
 
 #: The household copy of the analysis-side evidence codes and the command-line tools' own codes, under the next action each names.
-_EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
+#: A group's key is ``(id, label)``, and its action links to the crossover page unless the key adds the page its label names.
+_EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
     ("measure_again", "Measure this round again"): {
         evidence_reasons.REASON_FIT_NOT_FINITE: "A fitted filter term is not a finite number, so the fit is published without numbers.",
         evidence_reasons.REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
@@ -538,7 +539,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "aplay_missing": "The aplay tool is missing, so the speaker cannot list its playback devices.",
         "aplay_timeout": "The aplay tool timed out, so the speaker cannot list its playback devices.",
     },
-    ("speaker_setup", "Review the protected speaker graph."): {
+    ("speaker_setup", "Review the protected speaker graph.", "/sound/speaker/"): {
         "audition_applied_profile_displaced": "The saved applied tune is not the one the speaker plays.",
         "audition_emit_refused": "The reduced graph could not be built, or it failed its safety check.",
         "audition_malformed_graph": "The applied graph is malformed, so no comparison can be built.",
@@ -695,7 +696,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "round_set_unknown": "Select a set listed in the run manifest.",
         "set_required": "Name --set with one of the listed set ids.",
     },
-    ("add_api_key", "Add the provider's API key on the voice page"): {
+    ("add_api_key", "Add the provider's API key on the voice page", "/assistant/voice/"): {
         "key_unset": "The voice provider has no API key set.",
     },
 }
@@ -788,8 +789,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
     ),
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
-                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
-       for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
+                        next_action={"id": action, "label": label, "href": next(iter(page), "/sound/speaker/crossover/")})
+       for (action, label, *page), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
                         next_action={"id": "measure_again", "label": "Measure this round again",
                                      "href": "/sound/speaker/crossover/"})

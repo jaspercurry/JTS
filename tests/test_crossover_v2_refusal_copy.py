@@ -144,6 +144,15 @@ def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):
     assert (spec.code, spec.next_action and spec.next_action["id"]) == (code, action)
 
 
+#: The web failure screen shows a hard stop's action as a link, so each link names the page its label names.
+@pytest.mark.parametrize("code, href", [
+    ("tweeter_unprotected", "/sound/speaker/"), ("delay_graph_proof_failed", "/sound/speaker/"),
+    ("key_unset", "/assistant/voice/"),
+])
+def test_an_action_links_to_the_page_its_label_names(code, href):
+    assert refusal_copy.REASON_REGISTRY[code].next_action["href"] == href
+
+
 @pytest.mark.parametrize("layer", ["base", "tune", "room"])
 def test_upstream_mismatch_reasons_are_retired(layer):
     assert f"measurement_candidate_{layer}_mismatch" not in refusal_copy.REASON_REGISTRY
@@ -192,6 +201,8 @@ _FORWARDED_CODES = {
     # answers with each ``REASON_*`` it names.
     LAYOUT_NOT_OFFERED, POSES_NAME_A_LAYOUT, DRIVER_NOT_OFFERED,
     *(value for name, value in vars(wizard_client).items() if name.startswith("REASON_")),
+    # The candidate refuses each of its mapping-shaped optional fields as ``<name>_invalid``, in a loop.
+    *(f"{name}_invalid" for name, kind in measured_crossover_candidate._OPTIONAL_FIELD_TYPES.items() if kind is dict),
 }
 #: Each helper that names a code in a gap or a refusal: the position of the argument that carries it, and the keywords
 #: that do. ``refuse`` is what each judge's ``*PrescriptionRefused`` aliases raise, and ``_refuse`` what the candidate's
@@ -225,33 +236,9 @@ def _resolved(node: ast.expr, namespace: dict[str, object]) -> object:
     return None
 
 
-def _loop_bindings(
-    node: ast.AST, parents: dict[ast.AST, ast.AST], namespace: dict[str, object],
-) -> list[dict[str, object]]:
-    """Each way the ``for`` loops around ``node`` bind their targets, for the loops that iterate what
-    the module defines. A loop over a local binds nothing."""
-    bindings: list[dict[str, object]] = [{}]
-    while node in parents:
-        node = parents[node]
-        if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
-            try:
-                values = list(eval(compile(ast.Expression(node.iter), "<scan>", "eval"), dict(namespace)))
-            except NameError:
-                continue
-            bindings = [{**each, node.target.id: value} for each in bindings for value in values]
-    return bindings
-
-
-def _named_codes(node: ast.expr, namespace: dict[str, object], bindings: list[dict[str, object]]) -> set[str]:
-    """The codes ``node`` names: a literal or a module constant, either branch of a conditional, and an
-    f-string once for each value its loop takes (``f"{name}_invalid"``)."""
+def _named_codes(node: ast.expr, namespace: dict[str, object]) -> set[str]:
     if isinstance(node, ast.IfExp):
-        return _named_codes(node.body, namespace, bindings) | _named_codes(node.orelse, namespace, bindings)
-    if isinstance(node, ast.JoinedStr):
-        try:
-            return {eval(compile(ast.Expression(node), "<scan>", "eval"), {**namespace, **each}) for each in bindings}
-        except NameError:
-            return set()
+        return _named_codes(node.body, namespace) | _named_codes(node.orelse, namespace)
     code = _resolved(node, namespace)
     return {code} if isinstance(code, str) else set()
 
@@ -300,12 +287,10 @@ def _codes_raised_by_name() -> dict[str, str]:
             continue
         module = _module_name(path)
         namespace = vars(import_module(module))
-        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
         for call in calls:
             entry = next((each for each in arguments if _resolved(call.func, namespace) is each), None)
             found = [] if entry is None else _code_arguments(call, *arguments[entry])
-            bindings = _loop_bindings(call, parents, namespace) if any(isinstance(each, ast.JoinedStr) for each in found) else [{}]
-            for code in {code for argument in found for code in _named_codes(argument, namespace, bindings)}:
+            for code in {code for argument in found for code in _named_codes(argument, namespace)}:
                 raised.setdefault(code, f"{module}:{call.lineno}")
     return raised
 
@@ -325,9 +310,9 @@ def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action()
             # Each class found by its constructor, and ``jasper-round``'s wizard fallbacks.
             "audition_restore_failed", "authored_status_required", "candidate_malformed", "key_unset",
             "not_downloaded", "round_set_unknown", "run_refused",
-            # The candidate's field checks: a literal, a module constant, an f-string over a loop, and a gate.
-            "delay_us_invalid", "room_correction_invalid", "linearization_invalid", "tweeter_unprotected",
-            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias, a keyword, a class and an f-string"
+            # The candidate's field checks: a literal, a module constant, and a gate.
+            "delay_us_invalid", "room_correction_invalid", "tweeter_unprotected",
+            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias, a keyword and a class"
     lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
                if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}
     assert not lacking
