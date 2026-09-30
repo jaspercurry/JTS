@@ -817,6 +817,14 @@ def _topology() -> OutputTopology:
     })
 
 
+def with_rear_target(context: Any) -> Any:
+    """``context`` on a box that also declares its rear woofer, as a box that
+    offers a rear pair does: a branch take probes the rear alone (ADR-0403 §3)."""
+    bands, caps = context.driver_bands, context.driver_caps_dbfs
+    return replace(context, driver_bands={**bands, "woofer:rear": bands["woofer"]},
+                   driver_caps_dbfs={**caps, "woofer:rear": caps["woofer"]})
+
+
 def _status() -> dict[str, Any]:
     return {
         "active": True,

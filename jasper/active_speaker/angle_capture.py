@@ -55,6 +55,7 @@ from .measurement_programs import (
     REGIME_SUMMED,
     REGIME_BRANCHES,
     REGIMES,
+    SPOT_LEVEL,
     validated_branch_pair,
     validated_capture_purpose,
     validated_purposes,
@@ -256,9 +257,13 @@ class AngleStop:
     def level(self) -> PoseLevel | None:
         """The level rule of this stop's takes, where its pose's rule
         (:func:`~.measurement_programs.pose_level`) meets what plays there: a
-        driver's pose always levels itself (ADR-0365); a driverless stop only
-        when it plays the summed sweep, whose probe summed admission reads, and
-        no bass stimulus, whose ladder is a deliberate series (ADR-0403)."""
+        driver's pose always levels itself (ADR-0365), and so does a branch
+        take at any spot, whose branches each play alone; any other driverless
+        stop only when it plays the summed sweep, whose probe summed admission
+        reads, and no bass stimulus, whose ladder is a deliberate series
+        (ADR-0403)."""
+        if self.regime == REGIME_BRANCHES and not self.pose.driver:
+            return SPOT_LEVEL
         if self.pose.driver or (self.regime == REGIME_SUMMED and self.stimulus is None):
             return pose_level(self.pose)
         return None
@@ -268,11 +273,12 @@ def level_sets(stops: Sequence[AngleStop]) -> tuple[int | None, ...]:
     """For each take in run order, the index of the take whose level it shares,
     or ``None`` when it plays at its run's fader (ADR-0366 §2). A driver's
     takes share a level within their placement (ADR-0361). A driverless summed
-    spot closer than the mark shares one with the next spots at its kind and
-    distance -- its candidates, repeats and lateral poses -- found by the set's
-    first take (ADR-0403)."""
+    spot closer than the mark, or a branch take of one pair at any spot, shares
+    one with the next spots at its kind and distance -- its candidates, repeats
+    and lateral poses -- found by the set's first take (ADR-0403)."""
     def key(stop: AngleStop) -> tuple[object, ...]:
-        return stop.pose.place if stop.pose.driver else (stop.pose.kind, stop.pose.distance_m)
+        return (stop.pose.place if stop.pose.driver
+                else (stop.regime, stop.branch_pair, stop.pose.kind, stop.pose.distance_m))
 
     starts: list[int | None] = []
     for index, stop in enumerate(stops):

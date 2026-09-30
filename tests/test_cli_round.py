@@ -60,7 +60,7 @@ from jasper.cli._refusal import STATUS_BY_CODE
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
-from tests.crossover_v2_fixtures import _RecordingCheckStore
+from tests.crossover_v2_fixtures import _RecordingCheckStore, with_rear_target
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
@@ -1032,7 +1032,8 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     """`--request`, the page's start action and the session door resolve one
     request to one plan and one level ladder (#5737 A3)."""
     topology, context = mono_output_topology(), _inline_context()
-    context = replace(context, topology=topology, driver_bands={role.role: role.band for role in context.roles_bands})
+    context = with_rear_target(replace(context, topology=topology,
+                                       driver_bands={role.role: role.band for role in context.roles_bands}))
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *_args, **_kwargs: context)
     monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
