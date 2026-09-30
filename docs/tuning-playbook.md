@@ -28,7 +28,7 @@ each filter's `position_variance`, and the per-pose null ceiling in
 `verdicts`. Then read role gate lines and retake `fault` values. A missing
 section is missing evidence.
 
-Band rows name their `ladder` from `band_ladders.py`: `rear_front_guard`, `rear_level`, `rear_late_energy`, `rear_arrival_gap`, `bass`, `third_octave_bass`, `octave`, `room` (fixed split edges, with outer edges set by coverage and ceiling), `speaker_spec`, `snr`, or `crossover_snr`.
+Band rows name their `ladder` from `band_ladders.py`: `rear_front_guard`, `rear_score`, `rear_level`, `rear_late_energy`, `rear_arrival_gap`, `bass`, `third_octave_bass`, `octave`, `room` (fixed split edges, with outer edges set by coverage and ceiling), `speaker_spec`, `snr`, or `crossover_snr`.
 
 Numbers below the trusted floor carry `below_trusted_floor` beside their
 `value`. They are not speaker evidence. Use `jasper-round-views` for a question
@@ -446,7 +446,7 @@ uses two person-held poses, in front and behind the cabinet. Read the `behind`
 row's `bands[].change_db` only, against rear-muted next to the preview's;
 `late_energy` has no meaning there (no direct arrival behind the cabinet).
 The full trial curves are in `frequency_view.json` (the `frequency` view).
-Rank the candidates by their `rear_score`: per third octave from 100 to 315 Hz,
+Compare the candidates by `rear_score`: per third octave from 100 to 315 Hz,
 the front change minus the behind change, both against rear-muted, so a tune
 that is only quieter everywhere gains nothing. From 160 Hz up, the room refills
 an ungated null behind the box, so those bands read each take's kept impulse
