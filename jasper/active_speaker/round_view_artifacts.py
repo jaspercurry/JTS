@@ -12,7 +12,6 @@ from jasper.audio_measurement.evidence_reasons import (
     REASON_UNWRITABLE as REASON_UNWRITABLE,
 )
 from .answer_schemas import ANSWER_SCHEMAS
-from .run_manifest import RUN_MANIFEST_FILENAME
 from .bench.replay import DSP_LEVELS_SCHEMA, DSP_REPLAY_SCHEMA
 from .measurement_bass import BASS_VIEW_SCHEMA
 from .measurement_programs import (
@@ -20,12 +19,10 @@ from .measurement_programs import (
 )
 from .frequency_view import FREQUENCY_VIEW_FILENAME, SCHEMA as FREQUENCY_VIEW_SCHEMA
 from .crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT
-from .crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 from .crossover_v2.round_inputs import ROOM_ARTIFACT, RoundInputs, banked_round_of, recent_round_sessions
 
 PROG = "jasper-round-views"
 TAKES_THIS_ROUND = "<this-round>"
-TAKES_THIS_BUNDLE = "<this-round's bundle>"
 TAKES_SET = (TAKES_THIS_ROUND, "--set", "<set-id>")
 TAKES_ONE_TAKE = (*TAKES_SET, "--take", "<take-id>")
 TAKES_BEFORE_ANOTHER = (TAKES_THIS_ROUND, "<other-round>")
@@ -52,23 +49,19 @@ class CatalogRow(NamedTuple):
     command, and the ``answer_fields`` its answer carries beside the envelope
     (ADR-0387). A view's or a prescriber verb's row also says what not to use it
     for (``avoid``), as its ``--help`` renders from the row. ``schema`` names the
-    shape of that answer and of the ``artifact`` it files; a script that prints
-    text has none.
-    ``in_artifact_dir`` marks an artifact the round's own evidence holds; every
-    view files beside the round instead, never inside its evidence.
+    shape of that answer and of the ``artifact`` it files beside the round; a
+    script that prints text has none.
     ``producer`` names the command that makes an artifact no tool row answers for.
     ``bookkeeping`` names the purposes whose round publishes this view by
     itself, in :data:`BOOKKEEPING_ORDER`, through ``builder`` — this package's
     ``<module>.<function>`` answering ``(payload, provenance fields)``;
     ``packet`` is the analysis family carrying it in ``packet.json``.
     ``per_take`` marks a view that files one artifact per take it reads
-    (:func:`~.crossover_v2.round_inputs.take_artifact_name`), so no round
-    inventory row stands for it.
+    (:func:`~.crossover_v2.round_inputs.take_artifact_name`).
     """
 
     artifact: str = ""
     argv: tuple[str, ...] = (TAKES_THIS_ROUND,)
-    in_artifact_dir: bool = False
     producer: str | None = None
     programs: tuple[str, ...] = ()
     bookkeeping: tuple[str, ...] = ()
@@ -211,31 +204,19 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         needs="bass rounds with their bass views: each candidate's takes beside its baseline's at every level",
         avoid="rounds with no candidate takes beside their baseline's",
         answer_fields=("level_count", "levels", "run_ids")),
-    "inventory": CatalogRow("inventory.json", TAKES_SET, bookkeeping=(PURPOSE_SPEAKER, PURPOSE_ROOM, PURPOSE_BASS, PURPOSE_REAR),
-                            builder="round_bookkeeping.inventory", schema="jts_inventory/1",
-        question="Which analysis artifacts does a round have, and which command makes each missing one?",
-        needs="any banked round or live session bundle",
-        avoid="what a round measured; jasper-round show lists its sets and takes",
-        answer_fields=("bytes_total", "latest_agent_note", "missing", "present", "program", "total",
-                       "unavailable_repairs")),
     "nearfield": CatalogRow("nearfield_view.json", programs=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1",
         question="What does each driver radiate close up, band by band and per distance, and does its step match a piston?",
         needs="each driver's takes alone: near field at 15 and 30 mm (nearfield/each) or at the mark (drivers/each)",
         avoid="far-field takes; frequency reads those",
         answer_fields=("drivers", "level_mismatches")),
-    "run-manifest": CatalogRow(RUN_MANIFEST_FILENAME, in_artifact_dir=True, producer="plan_run.run_plan"),
     # The banker writes this view; agents read it in packet["rear"].
-    "rear": CatalogRow(
-        "rear_view.json", ("--run", "<run-id>"), producer="jasper-round wait", programs=(PURPOSE_REAR,),
-        bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3",
-    ),
-    # The banker writes this index; inventory reports its presence.
-    "position-cycle": CatalogRow(POSITION_CYCLE_FILENAME, ("--run", "<run-id>"), producer="jasper-round wait"),
+    "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
+                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3"),
 }
 
 #: The run order of the views a finished round publishes: ``room-grade``
 #: grades the median ``room`` wrote, so this is a data dependency.
-BOOKKEEPING_ORDER = ("room", "room-grade", "bass", "rear", "frequency", "inventory")
+BOOKKEEPING_ORDER = ("room", "room-grade", "bass", "rear", "frequency")
 #: The analysis families, in the order ``packet.json`` carries their keys.
 PACKET_FAMILIES = tuple(dict.fromkeys(row.packet for row in map(ARTIFACT_BY_VIEW.__getitem__, BOOKKEEPING_ORDER) if row.packet))
 
@@ -249,7 +230,7 @@ CATALOG: dict[str, CatalogRow] = {
         needs="one set with two or more takes at one 0°/0° pose, each with its banked analysis (speaker/mark)",
         avoid="comparing rounds; repeat without --set reads those",
         answer_fields=("floor", "mark_pairs", "roles", "set_id", "take", "take_ids")),
-    f"{PROG} speaker-fit": CatalogRow(argv=TAKES_SET, programs=(PURPOSE_SPEAKER,), schema=ANSWER_SCHEMAS["speaker-fit"],
+    f"{PROG} speaker-fit": CatalogRow(argv=TAKES_ONE_TAKE, programs=(PURPOSE_SPEAKER,), schema=ANSWER_SCHEMAS["speaker-fit"],
         question="Which driver filters does the fit propose, and which alignment and trims did the round bank?",
         needs="one speaker/mark set with each driver's take at the mark (per_driver)",
         avoid="a set with no per-driver take at the mark",
@@ -310,8 +291,6 @@ CATALOG: dict[str, CatalogRow] = {
         question="Which rear stage gives the smoothest response at the seat, the wall behind the speaker included?",
         needs="bem-transfer.py's output and a nearfield/each round's nearfield view"),
 }
-
-INVENTORY_ARTIFACT = ARTIFACT_BY_VIEW["inventory"].artifact
 
 
 def view_rows(view: str, prog: str = PROG) -> dict[str, CatalogRow]:

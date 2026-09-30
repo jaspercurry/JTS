@@ -170,15 +170,14 @@ def diagnostic_round(tmp_path: Path) -> Path:
     return root
 
 
-def test_forward_model_is_absent_from_the_cli_and_inventory(diagnostic_round, capsys):
+def test_forward_model_is_absent_from_the_cli_and_catalog(diagnostic_round, capsys):
     assert "forward-model" not in ARTIFACT_BY_VIEW
     with pytest.raises(SystemExit) as caught:
         build_parser().parse_args(["forward-model", str(diagnostic_round)])
     assert caught.value.code == 2
     capture_record(diagnostic_round, "old").write_text("{")
-    assert cli_main(["inventory", str(diagnostic_round)]) == 0
-    payload = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
-    assert all(row["view"] != "forward-model" for row in payload["artifacts"])
+    assert cli_main(["catalog", str(diagnostic_round)]) == 0
+    assert all("forward-model" not in tool["tool"] for tool in json.loads(capsys.readouterr().out)["tools"])
 
 
 def _bind_candidate_take(

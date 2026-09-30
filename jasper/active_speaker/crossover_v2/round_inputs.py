@@ -327,7 +327,7 @@ def default_out(inputs: RoundInputs, round_dir: Path, name: str, set_id: str | N
     beside the evidence they were computed from — including a view pointed at
     the bundle INSIDE that tree, which is the only way the bundle-taking verbs
     can be called: filing beside the caller there would leave every artifact
-    somewhere ``inventory`` never looks. A LIVE session bundle is the daemon's
+    where ``catalog`` never looks. A LIVE session bundle is the daemon's
     (``/var/lib/jasper/active_speaker/sessions/<id>``, written by the web host
     as its own user): defaulting inside it made the ordinary invocation —
     grade the round I just ran — raise ``PermissionError`` for the operator

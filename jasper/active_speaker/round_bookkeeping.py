@@ -13,7 +13,6 @@ from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unava
 from .crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for
 from .crossover_v2.room_prescription import RoomPrescriptionRefused
 from .crossover_v2.round_inputs import ROUND_INPUT_ERRORS, RoundSetRefused, default_out, round_inputs
-from .round_inventory import inventory_payload, inventory_summary
 from .round_view_artifacts import ARTIFACT_BY_VIEW, REASON_UNREADABLE, REASON_UNWRITABLE
 from .round_view_builders import (
     analyzed_frequency_run, frequency_payload, frequency_image, bass_payload, room_payload, room_grade_payload,
@@ -41,10 +40,6 @@ def bass(inputs, target, set_id, incumbent) -> _Answer:
 def frequency(inputs, target, set_id, incumbent) -> _Answer:
     payload, series = frequency_payload(analyzed_frequency_run(target, gated_overlay=True))
     return payload, {"runs": [run["id"] for run in payload["runs"]], "series": series}
-
-
-def inventory(inputs, target, set_id, incumbent) -> _Answer:
-    return (payload := inventory_payload(inputs, target, set_id)), inventory_summary(payload)
 
 
 def run_bookkeeping(view: str, target: Path, *, set_id: str | None = None,

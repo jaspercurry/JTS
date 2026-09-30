@@ -129,7 +129,7 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
     packet = json.loads(destination.read_text())
     packet["bass_table"] = table
     atomic_write_json(destination, packet)
-    (round_dir / INDEX_FILENAME).write_text(packet_index(packet, round_dir, packet["artifacts"]["bass_views"], manifest))
+    (round_dir / INDEX_FILENAME).write_text(packet_index(packet, round_dir, manifest))
     return destination
 
 
@@ -285,7 +285,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     if packet["fits"] or purpose == PURPOSE_SPEAKER:
         packet["verdicts"] = round_verdicts(packet, manifest=manifest, clouds=clouds, sources=sources)
     atomic_write_json(target / PACKET_FILENAME, packet)
-    (target / INDEX_FILENAME).write_text(packet_index(packet, target, views, manifest))
+    (target / INDEX_FILENAME).write_text(packet_index(packet, target, manifest))
     return packet
 
 

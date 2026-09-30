@@ -65,7 +65,7 @@ __all__ = [
 _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
     "catalog", "repeat", "candidates", "directivity", "sweeps", "impulse", "compare",
     "frequency", "distortion", "dsp_replay", "classify_features",
-    "delay", "room", "room_grade", "bass", "inventory", "speaker_fit", "nearfield",
+    "delay", "room", "room_grade", "bass", "speaker_fit", "nearfield",
 ))
 
 
@@ -74,13 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROG,
         description=(
             "Read measured round evidence. `catalog` lists every tuning tool with the\n"
-            "question it answers, and each view's --help adds when not to use it, an\n"
-            "example and its exit codes. Answers use stdout; detailed reports use files."
+            "question it answers, and with a round, what to run next on it. Each view's\n"
+            "--help adds when not to use it, an example and its exit codes. Answers use\n"
+            "stdout; detailed reports use files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "EXAMPLES\n"
             "  jasper-round-views catalog --program rear\n"
+            "  jasper-round-views catalog <round-dir>\n"
             "  jasper-round-views directivity --help\n"
             "\n"
             "OPTIONAL MODEL-ERROR FLOOR (Python)\n"

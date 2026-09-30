@@ -918,9 +918,8 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
     assert positions == sorted(positions)
     tools = [shlex.split(line[3:-1]) for line in index if line.startswith("- `")]
     for group in packet["sets"]:
-        count = pose_count if group["base"] else candidate_count
-        command = ["jasper-round-views", "sweep", str(banked.path), "--scope", "round", "--set", group["set_id"]]
-        assert (command in tools) == (count >= 2)
+        first = next(take["take_id"] for take in group["takes"] if take["selected"])
+        assert ["jasper-round-views", "speaker-fit", str(banked.path), "--set", group["set_id"], "--take", first] in tools
         for take in group["takes"]:  # a deselected take's record is never read, so it states no gate
             gates = {"gate_window_ms": 7.0, "validity_floor_hz": 142.9,
                      "trusted_floor_hz": f_trusted_floor_hz(.007), "floor_source": FLOOR_SEARCH_BOUND}

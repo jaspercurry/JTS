@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +14,6 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT
-from jasper.active_speaker.crossover_v2.position_cycle import POSITION_CYCLE_FILENAME
 
 from jasper.active_speaker.crossover_v2 import round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.candidate_ladder import REFUSE_NO_LADDER
@@ -27,11 +24,9 @@ from jasper.active_speaker.crossover_v2.round_views import (
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import REFUSE_SINGLE_POSE
 from jasper.active_speaker.crossover_v2.round_captures import REFUSE_CAPTURE_UNREADABLE, REFUSE_NO_CAPTURES
-from jasper.active_speaker.frequency_view import FREQUENCY_VIEW_FILENAME
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.repeat_floor import derive_repeat_floor
 from jasper.active_speaker.round_packet import store_banked_evidence
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import CAPTURE_RECORDS, bank_capture_round
@@ -174,65 +169,6 @@ def test_load_banked_round_reads_a_repeat_floor_banked_beside_it(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_cli_inventory_names_what_is_missing_and_what_produces_it(tmp_path):
-    from jasper.cli import round_views as cli
-
-    round_dir = _make_round_dir(tmp_path, "r1", take=True)
-
-    def inventory():
-        assert cli.main(["inventory", str(round_dir)]) == 0
-        payload = json.loads((round_dir / "inventory.json").read_text())
-        assert payload["bytes_total"] == sum(row["bytes"] or 0 for row in payload["artifacts"])
-        return {row["artifact"]: row for row in payload["artifacts"]}
-
-    rows = inventory()
-    # Every path this round can fill is filled: the row is a line to run.
-    missing = rows[FREQUENCY_VIEW_FILENAME]
-    assert missing["present"] is False
-    assert missing["bytes"] is None
-    assert missing["produced_by"] == f"jasper-round-views frequency {round_dir}"
-    assert missing["producer_needs_more_than_this_round"] is False
-    assert missing["path"] == str(round_dir / FREQUENCY_VIEW_FILENAME)
-    # The producer it named writes the artifact it named as missing.
-    assert cli.main(shlex.split(missing["produced_by"])[1:]) == 0
-    present = inventory()[FREQUENCY_VIEW_FILENAME]
-    assert present["present"] is True
-    assert present["bytes"] == Path(missing["path"]).stat().st_size
-
-    # A view whose subcommand takes MORE than this round says so, and places
-    # this round in its own slot. What is left in brackets is what no
-    # inventory of one round can fill.
-    multi = rows["repeatability.json"]
-    assert shlex.split(multi["produced_by"]) == [
-        "jasper-round-views", "repeat", str(round_dir), "<other-round>",
-    ]
-    assert multi["producer_needs_more_than_this_round"] is True
-
-    assert rows[CLASSIFICATION_ARTIFACT]["produced_by"] == (
-        f"jasper-round-views classify-features {round_dir}"
-    )
-    assert rows[CLASSIFICATION_ARTIFACT][
-        "producer_needs_more_than_this_round"
-    ] is False
-
-    assert "forward_model.json" not in rows
-    # A take read files one artifact per take; no round row stands for it.
-    assert {row["view"] for row in rows.values()}.isdisjoint({"impulse", "group-delay", "compare"})
-
-    # One row no view here writes: the banker's own pose index, named with the
-    # command that makes it rather than with this tool's prog.
-    assert rows[POSITION_CYCLE_FILENAME]["produced_by"] == (
-        "jasper-round wait --run '<run-id>'"
-    )
-
-    # Every view files beside the round, the ones the evidence packet cites
-    # too; only the executor's run manifest sits inside the round's evidence.
-    assert rows["harmonic_distortion.json"]["path"] == str(round_dir / "harmonic_distortion.json")
-    assert rows[RUN_MANIFEST_FILENAME]["path"] == str(
-        round_dir / "bundle/sess1/evidence/v1/artifacts/crossover_v2/cap1" / RUN_MANIFEST_FILENAME
-    )
-
-
 def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
     from jasper.cli.round_views import main
 
@@ -277,7 +213,7 @@ def test_cli_frequency_rejects_a_json_document_without_curves(tmp_path, capsys):
 def test_cli_reports_the_unreadable_exit_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli import round_views as cli
 
-    rc = cli.main(["inventory", str(tmp_path / "nope")])
+    rc = cli.main(["catalog", str(tmp_path / "nope")])
     assert rc == cli.EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["status"] == "unreadable"
 
@@ -288,10 +224,10 @@ def test_cli_reports_the_write_exit_when_the_view_cannot_be_written(tmp_path, ca
     places, and neither is a traceback out of the writer."""
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(tmp_path, "r1")
+    round_dir = _make_round_dir(tmp_path, "r1", take=True)
 
     rc = cli.main([
-        "inventory", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
+        "frequency", str(round_dir), "--out", str(tmp_path / "no-such-dir" / "o.json"),
     ])
 
     assert rc == cli.EXIT_WRITE_FAILED
@@ -310,14 +246,14 @@ def test_a_payload_the_strict_writer_rejects_is_not_a_filesystem_problem(
     """
     from jasper.cli import round_views as cli
 
-    round_dir = _make_round_dir(tmp_path, "r1")
+    round_dir = _make_round_dir(tmp_path, "r1", take=True)
 
     def _strict(*_args, **_kwargs):
         raise ValueError("Out of range float values are not JSON compliant")
 
     monkeypatch.setattr(cli._common, "write_report", _strict)
 
-    rc = cli.main(["inventory", str(round_dir)])
+    rc = cli.main(["frequency", str(round_dir)])
 
     assert rc == cli.EXIT_REFUSED
     assert json.loads(capsys.readouterr().out)["status"] == "refused"
@@ -330,13 +266,11 @@ def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
 
     A bundle a round was banked AROUND files beside that round: the
     bundle-taking verbs can only be pointed at the bundle, and filing beside
-    the caller would leave every artifact where ``inventory`` never looks. A
+    the caller would leave every artifact where ``catalog`` never looks. A
     bundle no round holds is the daemon's own directory, and defaulting inside
     it made the ordinary invocation — grade the round I just ran — depend on
     writing into the web host's tree (#3498).
     """
-    from jasper.cli.round_views import main
-
     round_dir = _make_round_dir(tmp_path, "r1")
     banked_bundle = round_dir / "bundle" / "sess1"
     # The on-speaker shape: /var/lib/jasper/active_speaker/sessions/<id>.
@@ -349,19 +283,8 @@ def test_where_a_view_pointed_at_a_session_bundle_files_its_artifact(
     here.mkdir()
     monkeypatch.chdir(here)
 
-    assert main(["inventory", str(banked_bundle)]) == 0
-    assert main(["inventory", str(live)]) == 0
-
-    assert (round_dir / "inventory.json").is_file()
-    assert not (banked_bundle / "inventory.json").exists()
-    assert (here / "live-1-inventory.json").is_file()
-    assert not (live / "inventory.json").exists()
-
-
-#: The views one round directory answers, as the operator's own argv. One
-#: fixture drives them all, so the ANSWER's shape is pinned once here rather
-#: than re-asserted verb by verb.
-_SINGLE_ROUND_VIEWS = ("frequency", "inventory")
+    for bundle, home in ((banked_bundle, round_dir / "view.json"), (live, here / "live-1-view.json")):
+        assert round_inputs_mod.default_out(round_inputs_mod.round_inputs(bundle), bundle, "view.json") == home
 
 
 def _longest_numeric_list(node: Any) -> int:
@@ -380,18 +303,15 @@ def _longest_numeric_list(node: Any) -> int:
     return 0
 
 
-@pytest.mark.parametrize("view", _SINGLE_ROUND_VIEWS)
-def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(
-    tmp_path, capsys, view
-):
+def test_a_view_answers_on_stdout_and_leaves_the_curves_in_its_artifact(tmp_path, capsys):
     from jasper.cli import round_views as cli
 
     round_dir = _make_round_dir(tmp_path, "r1", take=True)
 
-    assert cli.main([*shlex.split(view), str(round_dir)]) == cli.EXIT_OK
+    assert cli.main(["frequency", str(round_dir)]) == cli.EXIT_OK
 
     answer = json.loads(capsys.readouterr().out)
-    assert answer["view"] == shlex.split(view)[0]
+    assert answer["view"] == "frequency"
     # ``status`` is how a FAILURE is recognised; a success never carries one.
     assert "status" not in answer
     written = Path(answer["out"])
@@ -622,24 +542,3 @@ def test_cli_candidates_publishes_the_ladders_named_refusal(tmp_path, capsys):
     record = json.loads(capsys.readouterr().out)
     assert record["status"] == "refused"
     assert record["reason"] == REFUSE_NO_LADDER
-
-
-def test_inventory_commands_preserve_path_tokens_and_required_inputs(tmp_path, capsys):
-    from jasper.cli.round_views import main, build_parser
-
-    round_dir = _make_round_dir(tmp_path, "round's $(touch surprise) <x>", take=True)
-    assert main(["inventory", str(round_dir)]) == 0
-    rows = {row["artifact"]: row for row in json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())["artifacts"]}
-    command = shlex.split(rows[FREQUENCY_VIEW_FILENAME]["next_command"])
-    assert command == ["jasper-round-views", "frequency", str(round_dir)]
-    assert main(command[1:]) == 0
-    assert (round_dir / FREQUENCY_VIEW_FILENAME).is_file()
-    distortion = rows["harmonic_distortion.json"]
-    args = build_parser().parse_args(shlex.split(distortion["next_command"])[1:])
-    assert args.bundle_dir == round_dir
-    assert distortion["required_inputs"] == []
-    assert rows[FREQUENCY_VIEW_FILENAME]["required_inputs"] == []
-    assert rows[POSITION_CYCLE_FILENAME]["next_command"] is None
-    assert rows[POSITION_CYCLE_FILENAME]["repair_reason"] == "banked_pose_index_missing"
-
-

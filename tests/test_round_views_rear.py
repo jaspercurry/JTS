@@ -565,8 +565,7 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
         incumbent["positions"][on_axis]["band_level_db"] - 3.0, abs=0.2)
     assert variant["across_positions"]["worst_regression"]["figure"] == "handover.hole_db"
     assert incumbent["across_positions"]["worst_regression"]["change_db"] == 0.0
-    assert {row["view"] for row in views if row["status"] == "written"} == {
-        "rear", "frequency", "inventory"}
+    assert {row["view"] for row in views if row["status"] == "written"} == {"rear", "frequency"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
 
@@ -831,7 +830,7 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     # One candidate, so no figure spread for a difference to be real against.
     # How the index renders that line is pinned with the other index cases.
     assert comparison["repeat_spread"]["reason"] == REASON_NO_COMPARISON
-    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "frequency", "inventory"}
+    assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "frequency"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
 

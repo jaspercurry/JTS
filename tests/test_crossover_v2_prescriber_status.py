@@ -133,7 +133,7 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("banked", [False, True])
-def test_status_and_inventory_find_notes_and_current_evidence(
+def test_status_finds_notes_and_current_evidence(
     tmp_path, capsys, monkeypatch, banked
 ):
     monkeypatch.chdir(tmp_path)
@@ -162,14 +162,10 @@ def test_status_and_inventory_find_notes_and_current_evidence(
     assert status["latest_agent_note"] == {
         "path": str(note), "present": True, "bytes": note.stat().st_size,
     }
-    # No view run is a next step: a view changes no evidence.
-    assert [shlex.split(command)[1] for command in status["next_commands"][:2]] == [
-        "inventory", "contract",
-    ]
-    assert round_views.main(["inventory", str(current)]) == 0
-    inventory = json.loads(capsys.readouterr().out)
-    assert inventory["latest_agent_note"] == status["latest_agent_note"]
-    assert "frozen_packet" not in inventory
+    # No view run is a next step: a view changes no evidence, and the catalog lists them.
+    assert [shlex.split(command)[1] for command in status["next_commands"][:2]] == ["catalog", "contract"]
+    assert round_views.main(shlex.split(status["next_commands"][0])[1:]) == 0
+    capsys.readouterr()
     assert "frozen_packet" not in status
 
     beside = round_views.default_out(round_inputs_mod.round_inputs(current), current, CLASSIFICATION_ARTIFACT)
@@ -706,19 +702,20 @@ def test_bare_status_offers_bounded_live_and_banked_history_without_selecting(
     for entry, (path, bundle) in zip(payload["recent_rounds"], reversed(paths), strict=False):
         assert entry["path"] == str(path)
         assert entry["bundle_session_dir"] == str(bundle)
-        status, inventory = map(shlex.split, entry["next"])
+        status, catalog = map(shlex.split, entry["next"])
         assert status == [cli.PROG, "status", str(path)]
-        assert inventory == ["jasper-round-views", "inventory", str(path)]
+        assert catalog == ["jasper-round-views", "catalog", str(path)]
     selected = shlex.split(payload["recent_rounds"][0]["next"][0])
     assert cli.main(selected[1:]) == cli.EXIT_OK
     current = json.loads(capsys.readouterr().out)
     assert current["selected_round"] == str(paths[-1][0])
     assert current["packet_fingerprint"]
     assert _tree(tmp_path) == before
-    inventory = shlex.split(payload["recent_rounds"][0]["next"][1])
-    assert round_views.main(inventory[1:]) == cli.EXIT_OK
-    detail = Path(json.loads(capsys.readouterr().out)["out"])
-    assert json.loads(detail.read_text())["round_dir"] == str(paths[-1][0])
+    catalog = shlex.split(payload["recent_rounds"][0]["next"][1])
+    assert round_views.main(catalog[1:]) == cli.EXIT_OK
+    tools = json.loads(capsys.readouterr().out)["tools"]
+    assert tools and all(str(paths[-1][0]) in call["argv"] for tool in tools for call in tool["calls"])
+    assert _tree(tmp_path) == before
 
 
 def test_a_missing_declaration_carries_the_reason_and_the_page_that_fixes_it(

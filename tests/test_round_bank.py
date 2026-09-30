@@ -330,10 +330,9 @@ def test_bank_keeps_an_aggregate_view_beside_timing_evidence(tmp_path, real_set)
         return {"view": view, "status": "written"}
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run if real_set else None)
-    assert calls == ([None, None] if real_set else [])
+    assert calls == ([None] if real_set else [])
     answer = {"status": "written"} if real_set else {"status": "unavailable", "reason": "view_runner_unavailable"}
-    assert banked.provenance["views"] == [{"view": "frequency", **answer},
-                                          {"view": "inventory", **answer, **({"set_id": "speaker"} if real_set else {})}]
+    assert banked.provenance["views"] == [{"view": "frequency", **answer}]
     if not real_set:
         with pytest.raises(RoundSetRefused) as refused:
             resolve_set(round_inputs(banked.path))
@@ -341,11 +340,11 @@ def test_bank_keeps_an_aggregate_view_beside_timing_evidence(tmp_path, real_set)
 
 
 @pytest.mark.parametrize("purpose,expected", [
-    ("speaker", ("frequency", "inventory")),
-    ("room", ("room", "room-grade", "frequency", "inventory")),
-    ("bass", ("bass", "frequency", "inventory")),
+    ("speaker", ("frequency",)),
+    ("room", ("room", "room-grade", "frequency")),
+    ("bass", ("bass", "frequency")),
 ])
-def test_bank_runs_the_programs_registered_views(tmp_path, purpose, expected):
+def test_bank_runs_the_programs_registered_views(tmp_path, capsys, purpose, expected):
     session, state = _live_session(tmp_path)
     write_manifest(session, program=purpose)
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
@@ -357,17 +356,22 @@ def test_bank_runs_the_programs_registered_views(tmp_path, purpose, expected):
         else:
             assert row["status"] == "unavailable" and row["reason"]
             assert row["reason"] not in {"inputs_required", "verb_not_registered"}
-    assert views[-1]["status"] == "written"
-    inventory = json.loads(Path(views[-1]["out"]).read_text())
-    present = {row["view"] for row in inventory["artifacts"] if row["present"]}
-    assert {row["view"] for row in views[:-1] if row["status"] == "written"} <= present
+    assert {row["view"] for row in views if row["status"] == "written"} <= _present(banked.path, capsys)
     if purpose == "speaker":
         packet = json.loads((banked.path / "packet.json").read_text())
         assert packet["room"] == packet["bass"] == []
 
 
+def _present(round_dir: Path, capsys: pytest.CaptureFixture[str]) -> set[str]:
+    """The views whose artifact ``catalog`` finds beside the round."""
+    capsys.readouterr()
+    assert round_views_main(["catalog", str(round_dir)]) == 0
+    return {call["argv"][1] for tool in json.loads(capsys.readouterr().out)["tools"]
+            for call in tool["calls"] if call["present"]}
+
+
 @pytest.mark.parametrize("purpose,base", [("room", False), ("room", True), ("speaker", True), ("rear/seat", True)])
-def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
+def test_bank_fans_out_views_with_the_base(tmp_path, request, capsys, purpose, base):
     groups = [{"set_id": "base", "base": True, "capture_basis": {"candidate_id": "base-graph"},
                "takes": []}] if base else []
     groups += [{"set_id": f"trial-{i}", "base": False, "capture_basis": {"candidate_id": f"trial-{i}"},
@@ -399,12 +403,11 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, view_runner=run)
     if purpose == "speaker":
-        assert calls == [("frequency", None, None)] + [("inventory", row["set_id"], None) for row in groups]
+        assert calls == [("frequency", None, None)]
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
             ("room-grade", row["set_id"], None) for row in trials if base] + [
-            (view, None, None) for view in (("rear", "frequency") if purpose == "rear/seat" else ("frequency",))] + [
-            ("inventory", row["set_id"], None) for row in groups]
+            (view, None, None) for view in (("rear", "frequency") if purpose == "rear/seat" else ("frequency",))]
         assert [{key: row[key] for key in ("view", "set_id", "status", "incumbent_set_id", "reason") if key in row}
                 for row in banked.provenance["views"] if row["view"] == "room-grade"] == [
             {"view": "room-grade", "set_id": row["set_id"], **(
@@ -418,11 +421,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, purpose, base):
         for entry in packet["room"]:
             assert entry["median"]["n_positions"] == 3
             assert set(entry["median"]["evidence"]["take_ids"]) == {f"{entry['set_id']}-{index}" for index in range(3)}
-        for view in banked.provenance["views"]:
-            if view["view"] == "inventory":
-                inventory = json.loads(Path(view["out"]).read_text())
-                assert {row["view"] for row in inventory["artifacts"] if row["present"]} >= {"room", "rear"}
-                assert {row["view"] for row in inventory["artifacts"]} >= {"room", "room-grade"}
+        assert _present(banked.path, capsys) >= {"room", "room-grade"}
 
 
 @pytest.mark.parametrize("purpose,view", [

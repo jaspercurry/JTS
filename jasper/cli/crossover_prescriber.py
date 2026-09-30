@@ -23,7 +23,8 @@ from .round_views._common import (
 )
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.applied_identity import applied_identity
-from jasper.active_speaker.round_view_artifacts import PROG as ROUND_VIEWS_PROG, TAKES_THIS_ROUND, CatalogRow, view_rows
+from jasper.active_speaker.round_catalog import catalog_command
+from jasper.active_speaker.round_view_artifacts import TAKES_THIS_ROUND, CatalogRow, view_rows
 from jasper.active_speaker.baseline_profile import applied_layer_names, load_applied_baseline_profile_state
 from jasper.active_speaker.commissioning_coordinator import next_program_action, programs_for_topology
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal, banked_candidates, find_banked_candidate, publish_authored_candidate
@@ -521,7 +522,7 @@ def _next_commands(
     # Nothing that would fail for the reason already reported: these two read
     # the same evidence this verb just could not.
     if session_dir and not packet_gap:
-        commands.append(shlex.join([ROUND_VIEWS_PROG, "inventory", session_dir]))
+        commands.append(catalog_command(session_dir))
         commands.append(shlex.join([
             PROG, "contract", "--round", session_dir,
         ]))
@@ -567,7 +568,7 @@ def status_document(
                     "bundle_session_dir": str(bundle),
                     "next": [
                         shlex.join([PROG, "status", path]),
-                        shlex.join([ROUND_VIEWS_PROG, "inventory", path]),
+                        catalog_command(path),
                     ],
                 })
     except (CrossoverEvidencePacketError, OSError) as exc:

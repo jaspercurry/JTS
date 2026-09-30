@@ -208,7 +208,7 @@ _REFUSING_ARGV: dict[str, Callable[[Path, pytest.MonkeyPatch], list[str]]] = {
     "jasper.cli.round": lambda tmp, mp: [
         "run", "--poses", "not-a-layout",
     ],
-    "jasper.cli.round_views": lambda tmp, mp: ["inventory", str(tmp / "absent-round")],
+    "jasper.cli.round_views": lambda tmp, mp: ["catalog", str(tmp / "absent-round")],
     "jasper.cli.audition": _audition_argv,
 }
 
@@ -409,7 +409,7 @@ _ROUND_SET_TAKES = frozenset({"round_id", "set_id", "take_ids"})
 #: How each view is run to an answer -- or, for a view no fixture here can
 #: feed, why not.
 _VIEW_RUN: dict[str, str | _ViewRun] = {
-    "catalog": "the catalog reads no round and writes no artifact; test_round_views_catalog pins its answer",
+    "catalog": "the catalog writes no artifact; test_round_views_catalog pins its answer",
     "repeat": _ViewRun(_on_fixture_round(_repeat_argv)),
     "candidates": _ViewRun(_on_fixture_round(lambda r: ["candidates", str(r.measured)])),
     "directivity": _ViewRun(
@@ -478,7 +478,6 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         _on_fixture_round(lambda r: ["delay-landscape", str(r.bundle), "--fc-hz", "1800"]),
         frozenset({"fc_hz", "step_us", "path_difference_m", "inverted_role"}), frozenset({"round_id", "take_ids"}),
         lambda p, a: p["step_us"] == a["landscape"]["spec"]["step_us"]),
-    "inventory": _ViewRun(_on_fixture_round(lambda r: ["inventory", str(r.measured)])),
     "nearfield": _ViewRun(
         _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_tolerance_db", "level_mismatch_db"}),
         frozenset({"take_ids"}),

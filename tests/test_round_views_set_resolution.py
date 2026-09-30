@@ -4,7 +4,6 @@
 """Manifest selection, artifact isolation, and the retired CLI doors."""
 
 import json
-import shlex
 from pathlib import Path
 
 import numpy as np
@@ -124,37 +123,25 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
     assert Path(answer["out"]).name == "room.json"
 
 
-@pytest.mark.parametrize("program,first", [
-    ("speaker", ("room", "room-grade")),
-    ("room", ("room", "room-grade")),
-    ("bass", ("bass",)),
-])
-def test_inventory_groups_and_orders_the_program(tmp_path, capsys, program, first):
-    root = bank_seat_round(tmp_path)
-    write_manifest(root, program=program)
-    assert main(["inventory", str(root)]) == 0
-    answer, doc = artifact_answer(capsys)
-    assert answer["program"] == doc["program"] == program
-    assert all(row["program"] == program for row in doc["artifacts"])
-    assert tuple(row["view"] for row in doc["artifacts"][:len(first)]) == first
+_BASS = {"bass", "bass-compare", "bass-fit-table"}
+_SPEAKER = {"directivity", "delay-landscape", "distortion", "classify-features"}
 
 
-@pytest.mark.parametrize("program,excluded", [
-    ("speaker", {"bass", "bass-compare", "bass-fit-table"}),
-    ("room", {"directivity", "delay-landscape",
-              "distortion", "classify-features",
-              "bass", "bass-compare", "bass-fit-table"}),
-    ("bass", {"directivity", "delay-landscape",
-              "distortion", "classify-features", "room", "room-grade"}),
+@pytest.mark.parametrize("program,listed,excluded", [
+    ("speaker", {"room", "room-grade"}, _BASS),
+    ("room", {"room", "room-grade"}, _SPEAKER | _BASS),
+    ("bass", _BASS, _SPEAKER | {"room", "room-grade"}),
 ])
-def test_inventory_excludes_views_for_other_programs(tmp_path, capsys, program, excluded):
+def test_catalog_lists_a_rounds_views_for_its_programs_only(tmp_path, capsys, program, listed, excluded):
+    """A speaker round's seat sweeps are room sets, so the room views read it too."""
     root = bank_seat_round(tmp_path)
     write_manifest(root, program=program)
 
-    assert main(["inventory", str(root)]) == 0
-    _, document = artifact_answer(capsys)
+    assert main(["catalog", str(root)]) == 0
+    views = {tool["tool"].split()[1] for tool in json.loads(capsys.readouterr().out)["tools"]
+             if tool["tool"].startswith("jasper-round-views ")}
 
-    assert {row["view"].split()[0] for row in document["artifacts"]}.isdisjoint(excluded)
+    assert listed <= views and views.isdisjoint(excluded)
 
 
 @pytest.mark.parametrize("argv", [
@@ -322,29 +309,6 @@ def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys):
     assert answer["reason"] in REASON_REGISTRY
 
 
-@pytest.mark.parametrize("named", [False, True])
-def test_inventory_reads_one_manifest_and_uses_optional_set_arguments(two_sets, capsys, monkeypatch, named):
-    root, manifest = two_sets
-    if not named:
-        write_manifest(root, groups=manifest["sets"][:1])
-    reads = []
-    read_text = Path.read_text
-    def read(path, *args, **kwargs):
-        if path.name == RUN_MANIFEST_FILENAME:
-            reads.append(path)
-        return read_text(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", read)
-    assert main(["inventory", str(root)]) == 0
-    _, doc = artifact_answer(capsys)
-    assert len(reads) == 1
-    for row in doc["artifacts"]:
-        if row["view"] == "bass-compare":
-            assert row["required_inputs"] == ["<before-round>", "<change>"]
-            tokens = shlex.split(row["next_command"])
-            assert "--before-set" not in tokens
-            assert ("--after-set" in tokens) == named
-
-
 @pytest.mark.parametrize("poses,selected,requested,expected", [
     ([(0, 0), (15, 0)], [True, True], None, "take-0"),
     ([(15, 0), (0, 0)], [True, True], None, "take-1"),
@@ -390,7 +354,7 @@ def test_a_joined_timing_take_is_no_take_of_its_set(two_sets):
     assert group["takes"][0]["take_id"] not in joined.selected_ids
 
 
-@pytest.mark.parametrize("reader", ["kept_measurements", "bank", "room", "inventory"])
+@pytest.mark.parametrize("reader", ["kept_measurements", "bank", "room", "catalog"])
 def test_a_round_banked_before_pointer_rows_refuses_by_that_field(tmp_path, capsys, reader):
     """A manifest banked before the rows became pointers names its preset
     ``program`` and each record under ``artifacts``, and no reader reads that
@@ -407,7 +371,7 @@ def test_a_round_banked_before_pointer_rows_refuses_by_that_field(tmp_path, caps
     old = {"program" if key == "preset" else key: value for key, value in manifest.items()}
     path.write_text(json.dumps({**old, "schema_version": 2}))
 
-    if reader in ("room", "inventory"):
+    if reader in ("room", "catalog"):
         assert main([reader, str(root)]) == EXIT_REFUSED
         answer = json.loads(capsys.readouterr().out)
         refusal = answer["reason"], answer["detail"]["field"]
