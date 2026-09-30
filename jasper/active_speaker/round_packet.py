@@ -244,9 +244,10 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
         sources = {}
     profile = sources.get("applied_profile") or {}
     limits = {}
-    for group in view_sets(manifest):
+    sets = view_sets(manifest)
+    for group in sets:
         try:
-            section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(manifest["sets"]) > 1 else None)
+            section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(sets) > 1 else None)
             if purpose in contract_programs(section_sources):
                 contract = prescription_contracts(programs=(purpose,), **section_sources)[purpose]
                 limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}

@@ -484,10 +484,8 @@ def test_a_speaker_packet_holds_driver_fits_and_a_room_packet_holds_the_room(
             take.update(role=role, analysis=analysis,
                         curve=next(curve for curve in record["curves"] if curve["role"] == role))
         groups.append(group)
-    if purpose == "speaker":
-        groups.append({**groups[-1], "set_id": "timing", "takes": [{**groups[-1]["takes"][0], "phase": "timing"}],
-                       "capture_basis": {**groups[-1]["capture_basis"], "graph_scope": "timing",
-                                         "candidate_id": "projected-timing"}})
+    groups.append({**groups[-1], "set_id": "timing", "takes": [{**groups[-1]["takes"][0], "phase": "timing"}],
+                   "capture_basis": {**groups[-1]["capture_basis"], "graph_scope": "timing", "candidate_id": "projected-timing"}})
     write_manifest(root, program=purpose, groups=groups)
     manifest_path, views = _bookkeeping(root, inputs.session_dir, round_views.run_bookkeeping)
     packet = write_round_packet(root, manifest_path, views)
