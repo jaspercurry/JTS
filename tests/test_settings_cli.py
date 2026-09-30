@@ -66,13 +66,13 @@ CASES = {
         writes={"JASPER_OPENAI_MODEL": "gpt-realtime-new"},
     ),
     "unknown_provider_is_refused": Case(
-        ["voice", "--provider", "nope"], 1, {"reason": "unknown_provider"},
+        ["voice", "--provider", "nope"], 1, {"reason": "unknown_provider", "next_action.id": "name_value"},
     ),
     "unknown_model_is_refused": Case(
-        ["voice", "--model", "nope"], 1, {"reason": "unknown_model"},
+        ["voice", "--model", "nope"], 1, {"reason": "unknown_model", "next_action.id": "name_value"},
     ),
     "provider_without_a_key_is_refused": Case(
-        ["voice", "--provider", "grok"], 1, {"reason": "key_unset"},
+        ["voice", "--provider", "grok"], 1, {"reason": "key_unset", "next_action.id": "add_api_key"},
     ),
     "unreadable_keys_file_exits_2_before_any_write": Case(
         ["voice", "--provider", "gemini"], 2, {"reason": "settings_unreadable"}, keys=b"\xff\xfe\n",
@@ -100,10 +100,10 @@ CASES = {
         writes={"JASPER_WAKE_MODEL": "alexa"}, provider="", restart=SKIPPED,
     ),
     "unknown_wake_model_is_refused": Case(
-        ["wake", "--model", "nope"], 1, {"reason": "unknown_model"},
+        ["wake", "--model", "nope"], 1, {"reason": "unknown_model", "next_action.id": "name_value"},
     ),
     "undownloaded_wake_model_is_refused": Case(
-        ["wake", "--model", "jarvis_v2"], 1, {"reason": "not_downloaded"},
+        ["wake", "--model", "jarvis_v2"], 1, {"reason": "not_downloaded", "next_action.id": "name_value"},
     ),
     "voice_name_writes": Case(
         ["voice", "--voice", "cedar"], 0, {"voice": "cedar", "changed": ["voice"]},
@@ -119,7 +119,7 @@ CASES = {
         writes={"JASPER_VOICE_PROVIDER": "gemini", "JASPER_GEMINI_VOICE": "Puck", "JASPER_BARGE_IN_GEMINI": "true"},
     ),
     "unknown_voice_saves_nothing": Case(
-        ["voice", "--model", "gpt-realtime-new", "--voice", "unknown"], 1, {"reason": "unknown_voice"},
+        ["voice", "--model", "gpt-realtime-new", "--voice", "unknown"], 1, {"reason": "unknown_voice", "next_action.id": "name_value"},
     ),
     "threshold_writes": Case(
         ["wake", "--threshold", "0.426"], 0, {"threshold": 0.43, "restart": "ran"},

@@ -24,6 +24,7 @@ from jasper.active_speaker.audition import (
     END_SUPERSEDED,
     REFUSE_MEASUREMENT_ACTIVE,
 )
+from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.cli import audition as cli
 from jasper.cli._refusal import STATUS_BY_CODE
 
@@ -49,8 +50,9 @@ def test_status_answers_with_the_state_document(capsys):
 
 @pytest.mark.parametrize("verb", ["start", "stop"])
 def test_a_refusal_publishes_the_shared_document(capsys, monkeypatch, verb):
-    """The reason is the engine's own slug; the exit code and the ``status``
-    word can never disagree, because one table maps the two."""
+    """The reason is the engine's own slug, with the next action the registry holds
+    for it; the exit code and the ``status`` word can never disagree, because one
+    table maps the two."""
 
     async def _refuse(**_kw: Any) -> dict[str, Any]:
         raise AuditionRefused(REFUSE_MEASUREMENT_ACTIVE, "a round is measuring")
@@ -62,6 +64,7 @@ def test_a_refusal_publishes_the_shared_document(capsys, monkeypatch, verb):
         "status": STATUS_BY_CODE[cli.EXIT_REFUSED],
         "reason": REFUSE_MEASUREMENT_ACTIVE,
         "detail": "a round is measuring",
+        "next_action": refusal_copy_for(REFUSE_MEASUREMENT_ACTIVE)[1],
     }
 
 
