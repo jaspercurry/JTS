@@ -102,7 +102,6 @@ class V2ConductorSnapshot:
     applied: bool = False
     gain_plan_db: Mapping[str, float] | None = None
     measure_gain_ceiling_db: Mapping[str, float] | None = None
-    measure_sweep_durations_s: Mapping[str, float] | None = None
     candidate_fingerprint: str | None = None
     session_phases: tuple[str, ...] = ()
     attempt_history: tuple[AttemptRecord, ...] = ()
@@ -114,11 +113,6 @@ class V2ConductorSnapshot:
             "applied": self.applied,
             "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
             "measure_gain_ceiling_db": dict(self.measure_gain_ceiling_db or {}),
-            "measure_sweep_durations_s": (
-                dict(self.measure_sweep_durations_s)
-                if self.measure_sweep_durations_s
-                else None
-            ),
             "candidate_fingerprint": self.candidate_fingerprint,
             "session_phases": list(self.session_phases),
             "attempt_history": [item.to_dict() for item in self.attempt_history],
@@ -407,7 +401,6 @@ def build_conductor_state(
     """
 
     snap = conductor.snapshot()
-    measure_sweep_durations_s = getattr(snap, "measure_sweep_durations_s", None)
     if (
         prior.get("applied") is False
         and prior.get("session_id") == snap.session_id
@@ -436,9 +429,6 @@ def build_conductor_state(
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(
             getattr(snap, "measure_gain_ceiling_db", None) or {}
-        ),
-        "measure_sweep_durations_s": (
-            dict(measure_sweep_durations_s) if measure_sweep_durations_s else None
         ),
         "attempts_loop": attempts_loop_state,
         "candidate": None,

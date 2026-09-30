@@ -44,6 +44,7 @@ from tests import nginx_site
 from jasper.active_speaker.crossover_v2.contracts import POLARITY_INVERT
 from jasper.active_speaker.crossover_v2 import evidence_packet, round_inputs as round_inputs_mod
 from jasper.active_speaker.crossover_v2.evidence_packet import CLASSIFICATION_ARTIFACT
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.driver_safety import DriverSafetyProfileError
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.round_packet import store_banked_evidence
@@ -452,6 +453,15 @@ def test_a_take_banked_before_its_pose_kind_is_a_gap_status_names(tmp_path, caps
 
     assert (code, payload["declared"]["reason"], payload["declared"]["detail"]["field"]) == (
         0, TAKE_CURVES_NOT_BANKED, "pose_kind")
+
+
+def test_a_round_status_cannot_read_is_a_gap_with_a_registered_code(tmp_path, capsys):
+    """``context_error`` is the one gap shape (#5928), and its code has registry copy."""
+    code, payload = _status([str(tmp_path / "no-such-round")], capsys)
+
+    gap = payload["context_error"]
+    assert (code, gap["status"], gap["reason"]) == (0, "unavailable", "round_not_found")
+    assert gap["detail"] and gap["reason"] in REASON_REGISTRY
 
 
 @pytest.mark.parametrize(

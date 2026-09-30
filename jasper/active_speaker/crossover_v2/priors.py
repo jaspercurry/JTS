@@ -15,7 +15,7 @@ session evidence arrives as arguments.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..branch_chain import crossover_response_complex, radiating_band_hz
 from ..crossover_section import sections_by_role
@@ -27,14 +27,10 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
 )
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from jasper.audio_measurement.program import ExcitationProgram, ProgramSegment
-
 __all__ = [
     "role_transfers",
     "configured_crossover_transfers",
     "candidate_required_band_hz",
-    "measure_sweep_durations_s",
     "check_priors",
     "measure_priors",
     "lateral_priors",
@@ -87,42 +83,6 @@ def candidate_required_band_hz(
                max(radiating_band_hz(sec)[1], overlap[1]))
         for role, sec in sections_by_role_map.items()
     }
-
-
-def _sweep_branches(
-    measure_program: "ExcitationProgram | None",
-) -> tuple["ProgramSegment", ...]:
-    """Every branch's first-occurrence sweep, lowest first.
-
-    ``build_measure_program`` pins ``sweep_w`` for the lower driver and
-    ``sweep_t`` for the upper, and a 1-way main's solo keeps the ``sweep_w``
-    spelling, so a missing ``sweep_t`` is a one-branch program.
-    """
-    if measure_program is None:
-        return ()
-    branches: list["ProgramSegment"] = []
-    for segment_id in ("sweep_w", "sweep_t"):
-        try:
-            branches.append(measure_program.segment(segment_id))
-        except KeyError:
-            break
-    return tuple(branches)
-
-
-def measure_sweep_durations_s(
-    measure_program: "ExcitationProgram | None",
-) -> dict[str, float] | None:
-    """MEASURE's ACTUAL per-role sweep length, realized — possibly fitted.
-
-    #2921's duration fit is a continuous float no search grid can reach, so an
-    offline rebuild can only reproduce a fitted program by reading this back.
-    ``None`` when there is no MEASURE program yet, as for the band above.
-    """
-    branches = _sweep_branches(measure_program)
-    if measure_program is None or not branches:
-        return None
-    rate = measure_program.sample_rate_hz
-    return {str(seg.role): seg.n_samples / rate for seg in branches}
 
 
 def check_priors(*, fc_hz: float | None) -> MeasurementPriors:
