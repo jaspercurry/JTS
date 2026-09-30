@@ -323,8 +323,8 @@ def peaking_cascade_response_db(
     ``high_hz``: its grid, and its summed response on that grid, dB.
 
     The grid is :data:`RESPONSE_GRID_POINTS_PER_OCTAVE` log-spaced points with
-    both ends, plus each filter's own centre inside the span, so a lone filter
-    reads its gain exactly.
+    both ends, plus each filter's own centre inside the span, where a lone
+    filter reads its gain.
     """
     steps = max(1, math.ceil(RESPONSE_GRID_POINTS_PER_OCTAVE * math.log2(high_hz / low_hz)))
     grid = sorted({*(low_hz * (high_hz / low_hz) ** (step / steps) for step in range(steps + 1)),
@@ -336,10 +336,15 @@ def peaking_cascade_response_db(
 
 
 def peaking_cascade_peak_db(filters: Sequence[PeqFilter]) -> float:
-    """The netted peak of a series cascade of Peaking ``filters`` across the
-    evaluable span, dB re unity: cuts net against boosts (ADR-0399). A cascade
-    with no boost never leaves unity, so it returns 0.0 and evaluates nothing.
+    """The netted peak of a series cascade of Peaking ``filters``, dB re unity:
+    cuts net against boosts (ADR-0399). It is read across the evaluable span,
+    widened to hold every filter's centre below Nyquist, so every centre is
+    sampled and a lone boost reads its gain. A cascade with no boost never
+    leaves unity, so it returns 0.0 and evaluates nothing.
     """
     if not any(f.gain > 0.0 for f in filters):
         return 0.0
-    return max(peaking_cascade_response_db(filters, EVALUABLE_HZ_MIN, EVALUABLE_HZ_MAX)[1])
+    centres = [f.freq for f in filters if 0.0 < f.freq < RESPONSE_NYQUIST_HZ]
+    return max(peaking_cascade_response_db(
+        filters, min([EVALUABLE_HZ_MIN, *centres]), max([EVALUABLE_HZ_MAX, *centres]),
+    )[1])

@@ -122,6 +122,19 @@ def test_a_boosted_room_charges_its_netted_peak_plus_the_margin(room):
     assert "  sound_preamp:" in yaml
 
 
+@pytest.mark.parametrize("boost", [
+    PeqFilter(freq=23998.0, q=8.0, gain=6.0),
+    PeqFilter(freq=23997.0, q=1.0, gain=6.0),
+    PeqFilter(freq=0.5, q=8.0, gain=6.0),
+])
+def test_a_lone_boost_outside_the_evaluable_span_reads_its_gain(boost):
+    """Near Nyquist or DC a bell is too narrow for the background grid, so the peak's
+    span widens to hold every centre below Nyquist (ADR-0399)."""
+    yaml, *_ = build_stereo_prefix([], [boost])
+
+    assert _charged_db(yaml) == pytest.approx(boost.gain + HEADROOM_MARGIN_DB, abs=1e-4)
+
+
 def _room_limits_room(rng: random.Random) -> list[PeqFilter]:
     return [
         PeqFilter(

@@ -18,11 +18,13 @@
      netted peak: that peak plus `HEADROOM_MARGIN_DB` (1.0 dB) when it is over `PEAK_EPS_DB`
      (1e-3 dB), else no filter. The active charge (`program_headroom.charge_db`) calls the same
      function. Room cuts net against room boosts. Preference EQ still rides at unity (ADR-0121).
-  2. **The peak.** `biquad.peaking_cascade_peak_db` is the maximum, across the evaluable span, of
+  2. **The peak.** `biquad.peaking_cascade_peak_db` is the maximum of
      `biquad.peaking_cascade_response_db`: the one stdlib function that reads a series cascade of
-     Peaking biquads on the one biquad model. Its grid is `RESPONSE_GRID_POINTS_PER_OCTAVE` (48)
-     log-spaced points plus each filter's own centre, so a lone boost reads its gain exactly. A
-     chain with no boost is not evaluated. The
+     Peaking biquads on the one biquad model. Across a span, its grid is
+     `RESPONSE_GRID_POINTS_PER_OCTAVE` (48) log-spaced points plus each filter's own centre inside
+     that span. The peak's span is the evaluable span, widened to hold every filter's centre below
+     Nyquist. So every centre is sampled, and a lone boost reads its own gain. A chain with no
+     boost is not evaluated. The
      [ADR-0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md)
      room-off rise (`seat_level_reference.rise_without_room_db`) reads the same function as its
      minimum across its band, bit for bit as before.
@@ -39,8 +41,9 @@
     sum of its boosts. The netted peak is at most that sum, so a charge rises by at most 1.0 dB:
     by exactly 1.0 dB for a lone boost with no cut near it, and by 0.7 dB for +0.3 dB at 40 Hz
     with +0.3 dB at 300 Hz (q 4). A charge falls only where the boosts sum to more than the
-    netted peak plus the margin, or where a cut nets them under unity. The stereo goldens move:
-    `room_boost_headroom` from 3.0 to 2.9355 dB and `leader_bake_delays` from 1.0 to 1.9998 dB.
+    netted peak plus the margin, or where the netted peak is at or under unity. The stereo goldens
+    move: `room_boost_headroom` from 3.0 to 2.9355 dB and `leader_bake_delays` from 1.0 to
+    1.9998 dB.
   - A config keeps its old `room_headroom` until it is re-emitted. The next `/sound` save or live
     draft writes the new value; a move of that trim alone writes in place
     ([ADR-0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md)). A room whose
