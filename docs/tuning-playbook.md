@@ -108,6 +108,7 @@ when it answers the question.
 
 Settle structure before response. Decide topology and trims in the same document. Re-derive filters fitted to another alignment (`0203-the-incumbent-tune-retires-recommissioning-is-structure-first.md`; `docs/research/2026-08-31-tuning-methodology-deep-research/00-adjudications.md`).
 `judge --preview <topology-doc> --round <branches/express round> --vary 'topology.fc_hz=<hz>,<hz>' --vary 'topology.order=<n>,<n>' --out-dir <dir>` forecasts each corner and order, and a corner the contract refuses carries its code.
+The rows come back in `rank` order: `rank` 1 has the smallest `flatness.rms_db`, the forecast's deviation from a flat line over `parameters.rank_band_hz` (ADR-0401).
 A predicted corner makes the shortlist; a trial measures the pick, and the same-round A/B decides.
 
 Read packet `alignment` / `alignment_verdict` (ADR-0319) for timing. Use `delay-landscape` for a prediction, then author candidate variants with the residual delay changes and compare real captures with `jasper-round trial`.
