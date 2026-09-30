@@ -677,24 +677,28 @@ def test_driver_grid_writes_full_previews_but_reports_only_summaries(emitted_pre
         assert full["preview"]["prediction"]["predicted_db"]
 
 
-def test_a_topology_grid_forecasts_each_admitted_corner_and_names_each_refused_one(emitted_preview, tmp_path, capsys):
+def test_a_topology_grid_ranks_its_forecast_corners_and_names_each_refused_one(emitted_preview, tmp_path, capsys):
     source, _, _, argv, args = emitted_preview
     Path(args.document).write_text(json.dumps(document(source.fingerprint, {
         "topology": {"fc_hz": 1600.0, "order": 4, "basis_artifacts": ["fc.json"]}})))
     assert crossover_prescriber.main([*argv, "--vary", "topology.fc_hz=1400,1600,2000", "--vary", "topology.order=2,4,8",
                                       "--out-dir", str(tmp_path / "corners")]) == 0
-    rows = {tuple(row["values"].values()): row for row in json.loads(capsys.readouterr().out)["variants"]}
-    assert {corner: row.get("reason") for corner, row in rows.items()} == {
-        **{(1400, order): "below_declared_floor" for order in (2, 4, 8)},
-        **{(fc, 2): "topology_slope_below_declared_requirement" for fc in (1600, 2000)},
-        (1600, 4): None, (1600, 8): None, (2000, 4): None, (2000, 8): None,
-    }
+    answer = json.loads(capsys.readouterr().out)
+    rows = answer["variants"]
+    assert [(tuple(row["values"].values()), row.get("rank"), row.get("reason")) for row in rows] == [
+        ((1600, 8), 1, None), ((2000, 8), 2, None), ((2000, 4), 3, None), ((1600, 4), 4, None),
+        *(((1400, order), None, "below_declared_floor") for order in (2, 4, 8)),
+        *(((fc, 2), None, "topology_slope_below_declared_requirement") for fc in (1600, 2000)),
+    ]
+    band = answer["parameters"]["rank_band_hz"]
+    assert band == [800.0, 4000.0]
     moved = {}
-    for corner, row in rows.items():
-        if row["out"]:
-            preview = json.loads(Path(row["out"]).with_suffix(".preview.json").read_text())["preview"]
-            moved[corner] = np.max(np.abs(np.subtract(preview["prediction"]["predicted_db"],
-                                                      preview["reconstruction"]["predicted_db"])))
+    for row in rows[:4]:
+        preview = json.loads(Path(row["out"]).with_suffix(".preview.json").read_text())["preview"]
+        freqs, predicted = np.asarray(preview["prediction"]["freqs_hz"]), np.asarray(preview["prediction"]["predicted_db"])
+        in_band = predicted[(freqs >= band[0]) & (freqs <= band[1])]
+        assert row["flatness"]["rms_db"] == pytest.approx(np.sqrt(np.mean((in_band - np.median(in_band)) ** 2)))
+        moved[tuple(row["values"].values())] = np.max(np.abs(predicted - preview["reconstruction"]["predicted_db"]))
     # The base's own corner forecasts the take itself; another corner or order moves the forecast.
     assert moved.pop((1600, 4)) < 1e-6 and min(moved.values()) > 1.0
 

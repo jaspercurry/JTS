@@ -24,7 +24,6 @@ from .contracts import POLARITY_INVERT, POLARITY_KEEP
 
 __all__ = [
     "ALIGNMENT_NO_CROSSOVER_REGION",
-    "ALIGNMENT_PRESCRIPTION_KEY",
     "ALIGNMENT_PRESCRIPTION_KIND",
     "ALIGNMENT_PRESCRIPTION_MALFORMED",
     "ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS",
@@ -73,9 +72,6 @@ def alignment_delay_search_bounds_us(
     hi_ms += margin_ms
     return lo_ms * 1000.0, hi_ms * 1000.0
 
-
-#: The request-body key a prescription arrives under.
-ALIGNMENT_PRESCRIPTION_KEY = "alignment_prescription"
 
 #: A document naming another version is refused, never best-effort parsed.
 ALIGNMENT_PRESCRIPTION_SCHEMA_VERSION = 1
@@ -325,18 +321,11 @@ def alignment_to_candidate_fields(
 
 
 def alignment_prescription_response_format() -> dict[str, Any]:
-    """What a prescriber must send to pin the inter-driver delay, and where."""
+    """What a prescriber writes in a document's ``alignment`` section to pin the inter-driver delay."""
     return {
-        "key": ALIGNMENT_PRESCRIPTION_KEY,
-        "entry": "request_body",
-        "entry_detail": (
-            "staged as the '" + ALIGNMENT_PRESCRIPTION_KEY + "' section through "
-            "jasper-crossover-prescriber judge|compose"
-        ),
         "severity": (
-            "a refused prescription refuses the whole session at the tap; it "
-            "is never clamped to the nearest legal delay and never partially "
-            "applied"
+            "a refused section refuses the whole document; it is never "
+            "clamped to the nearest legal delay and never partially applied"
         ),
         "fields": {
             "kind": f"required, must be exactly {ALIGNMENT_PRESCRIPTION_KIND!r}",

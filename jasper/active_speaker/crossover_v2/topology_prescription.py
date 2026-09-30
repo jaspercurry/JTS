@@ -39,7 +39,6 @@ from .corner_admissibility import (
 __all__ = [
     "TOPOLOGY_AUTHORITY_OPERATOR_PINNED",
     "TOPOLOGY_NO_CROSSOVER_REGION",
-    "TOPOLOGY_PRESCRIPTION_KEY",
     "TOPOLOGY_PRESCRIPTION_KIND",
     "TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS",
     "TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED",
@@ -51,9 +50,6 @@ __all__ = [
     "read_topology_prescription",
     "topology_prescription_response_format",
 ]
-
-#: The request-body key a prescription arrives under.
-TOPOLOGY_PRESCRIPTION_KEY = "topology_prescription"
 
 #: A document naming another version is refused, never best-effort parsed.
 TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION = 1
@@ -432,25 +428,17 @@ def candidate_topology(candidate: Any) -> dict[str, Any] | None:
 
 
 def topology_prescription_response_format() -> dict[str, Any]:
-    """What a prescriber must send to pin a topology, and where to send it."""
+    """What a prescriber writes in a document's ``topology`` section to pin a corner."""
     return {
-        "key": TOPOLOGY_PRESCRIPTION_KEY,
-        "entry": "request_body",
-        "entry_detail": (
-            "sent as the '" + TOPOLOGY_PRESCRIPTION_KEY + "' key on "
-            "POST /crossover/v2/session, not staged through "
-            "jasper-crossover-prescriber"
-        ),
         "severity": (
-            "a refused prescription refuses the whole session at the tap; it "
-            "is never clamped to a legal corner and never partially applied"
+            "a refused section refuses the whole document; it is never "
+            "clamped to a legal corner and never partially applied"
         ),
         "authority": TOPOLOGY_AUTHORITY_OPERATOR_PINNED,
         "authority_detail": (
-            "a pinned corner is an operator's choice from an offline argument, "
-            "not a measured ranking: no shipped path scores one topology "
-            "against another, so the round measures the candidate you asked for and "
-            "says nothing about whether a different corner would be better"
+            "a pinned corner is an operator's choice, not a measured ranking: "
+            "judge --preview --vary ranks corners by a forecast to make a "
+            "shortlist (ADR-0401), and only a trial measures one"
         ),
         "fields": {
             "kind": (
@@ -477,8 +465,8 @@ def topology_prescription_response_format() -> dict[str, Any]:
         "refusals": sorted(TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS),
         "not_accepted": {
             "polarity": (
-                "pinned through the alignment_prescription request key, which "
-                "owns the field; sending it here is refused as an unknown field"
+                "pinned in the document's alignment section, which owns the "
+                "field; sending it here is refused as an unknown field"
             ),
         },
     }
