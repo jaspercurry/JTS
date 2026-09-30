@@ -190,9 +190,11 @@ name when the entry says the set is ambiguous.
 Read `spread_rms_db` beside `median`: RMS of the per-bin cross-position spread from the coverage floor to the ceiling, with `n_positions`; `None` below two positions.
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the
-curve. The ceiling follows the highest trusted floor from the round's gated
-summed or driver takes, with its source take and any pure-room fallback
-disclosed. The clamp and room/speaker ownership remain defined in ADR-0256
+curve. The ceiling is the applied tune's trusted floor, clamped, else the
+350 Hz default with the fallback disclosed. No applied tune carries a trusted
+floor yet ([#6110](https://github.com/jaspercurry/JTS/issues/6110)), so every
+room document prints the fallback (ADR-0400). The rule, the clamp and
+room/speaker ownership are defined in ADR-0256
 (`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`).
 Full-speaker sweeps use the resolved 20 Hz–20 kHz audio band (ADR-0328); room prescriptions still start at the evidence floor, `coverage_hz[0]`.
 Seats are ungated so room reflections remain in the response.

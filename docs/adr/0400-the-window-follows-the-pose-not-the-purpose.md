@@ -4,6 +4,8 @@
 - **Status:** Accepted. Amends
   [ADR-0366](0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) §3: a
   take whose purpose is the room (room, bass, rear) is no longer read ungated for that purpose.
+  Supersedes [ADR-0383](0383-one-take-record-for-every-purpose.md)'s consequence that the room
+  ceiling reads a speaker round's own gate.
 
 ## Context
 
@@ -45,6 +47,16 @@ bank its ungated reading (ADR-0383 §2). A purpose then no longer needs to pick 
   the speaker readers read no curve for it, and its SNR verdicts grade the ungated response.
 - `speaker/mark` walks only its per-driver stops, so it takes fewer captures, and its round
   packet has no room section.
+- The room ceiling returns to
+  [ADR-0256](0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md)
+  rule 1, and is its fallback: 350 Hz, disclosed. The applied candidate's trusted floor has had
+  no writer since 4d5353536e (09-23, the Gen A planner's deletion), and this change deletes the
+  round gate that ADR-0383 read instead. A writer for the applied tune's trusted floor is tracked
+  in [#6110](https://github.com/jaspercurry/JTS/issues/6110). `round_gate` leaves the ceiling
+  sources, so a room median or candidate that names it no longer reads
+  ([#2902](https://github.com/jaspercurry/JTS/issues/2902)); `applied_candidate` stays, as rule
+  1's source. The ceiling no longer names a take or role, so the room and rear views go to
+  `jts_room/3` and `jts_rear_view/4`.
 - A take banked before the band moved onto its curves refuses `take_curves_not_banked`
   (`field: trusted_band`) where its band is read
   ([#2902](https://github.com/jaspercurry/JTS/issues/2902)).

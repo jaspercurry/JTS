@@ -323,7 +323,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         doc = document["median"]
         assert document["persistence"]["n_positions"] == doc["n_positions"]
         assert doc["median_db"] == room_views.room_median(
-            legacy.takes, room_views.room_ceiling(root),
+            legacy.takes, room_views.room_ceiling(),
         )["median_db"]
         assert answer["n_positions"] == doc["n_positions"] == 7
         assert len({p["pose_key"] for p in doc["positions"]}) == 7

@@ -19,7 +19,6 @@ from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, Evi
 from jasper.audio_measurement.excess_phase import local_features
 from jasper.audio_measurement.room_boundary import (
     CEILING_SOURCE_FALLBACK,
-    CEILING_SOURCE_ROUND_GATE,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
     ROOM_FLOOR_HZ,
@@ -29,14 +28,9 @@ from jasper.audio_measurement.room_boundary import (
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.seat_figures import spread_rms_db
-from jasper.platform.json_fields import finite_float
-from ..measurement_programs import PURPOSE_SPEAKER
-from ..run_manifest import kept_measurements, view_sets
+from ..run_manifest import view_sets
 
 from .evidence_packet.incumbent import applied_profile_source
-from .journey import PHASE_LATERAL, PHASE_MEASURE
-from .pose_curve import WINDOW_GATED
-from .position_cycle import take_curves
 from .prescription_contract import room_analysis_bounds
 from .room_prescription import ROOM_MEDIAN_FIELD, read_room_median
 from .room_selection import SeatTake
@@ -79,8 +73,6 @@ class Ceiling:
     ceiling_hz: float
     source: str
     trusted_floor_hz: float | None
-    source_take_id: str | None
-    source_curve_role: str | None
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,33 +80,17 @@ class Ceiling:
             "ceiling_hz": self.ceiling_hz,
             "ceiling_source": self.source,
             "trusted_floor_hz": self.trusted_floor_hz,
-            "source_take_id": self.source_take_id,
-            "source_curve_role": self.source_curve_role,
             "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
             "reason": self.reason,
         }
 
 
-def room_ceiling(bundle_dir: Path) -> Ceiling:
-    """The highest trusted floor disclosed by a gated curve of a speaker take the round kept (ADR-0256)."""
-    floors = []
-    for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
-        take_id = str(record.get("take_id") or row.path)
-        for curve in take_curves(record, WINDOW_GATED) or ():
-            role = curve.get("role")
-            trusted = finite_float(curve.get("trusted_floor_hz"))
-            if isinstance(role, str) and role and trusted is not None and trusted > 0:
-                floors.append((trusted, take_id, role))
-    source = max(floors, default=None)
-    trusted = source[0] if source is not None else None
-    return Ceiling(
-        ceiling_hz=room_ceiling_hz(trusted),
-        source=CEILING_SOURCE_FALLBACK if source is None else CEILING_SOURCE_ROUND_GATE,
-        trusted_floor_hz=trusted,
-        source_take_id=source[1] if source is not None else None,
-        source_curve_role=source[2] if source is not None else None,
-        reason="the round has no gated summed or driver take" if source is None else "",
-    )
+def room_ceiling() -> Ceiling:
+    """Where the room layer stops: the applied tune's trusted floor, clamped,
+    else the default, disclosed (ADR-0256 rule 1). No applied tune carries a
+    floor yet (#6110), so it is the default (ADR-0400)."""
+    return Ceiling(ceiling_hz=room_ceiling_hz(None), source=CEILING_SOURCE_FALLBACK, trusted_floor_hz=None,
+                   reason="the applied tune carries no trusted floor")
 
 
 def _stacked(
@@ -302,11 +278,11 @@ def room_median_sha256(median: Mapping[str, Any]) -> str:
 
 def room_document(
     takes: Sequence[SeatTake], *, set_id: str, evidence: Mapping[str, Any],
-    bundle_dir: Path, applied_profile_path: Path | None, geometry_path: Path | None,
+    applied_profile_path: Path | None, geometry_path: Path | None,
     manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     profile, _ = applied_profile_source(applied_profile_path)
-    ceiling = room_ceiling(bundle_dir)
+    ceiling = room_ceiling()
     median = {**room_median(takes, ceiling), "set_id": set_id, "evidence": dict(evidence)}
     value = read_room_median(median)
     persistence = room_persistence(takes, ceiling)

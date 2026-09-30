@@ -111,7 +111,7 @@ def test_room_band_follows_coverage_and_support_counts_positions(tmp_path, floor
     selected = select_seat_takes(inputs.session_dir)
     takes = tuple(replace(take, band_hz=(floor_hz, take.band_hz[1])) for take in selected.takes)
     room = room_views.room_document(
-        takes, set_id="base", evidence=selected.evidence, bundle_dir=inputs.session_dir,
+        takes, set_id="base", evidence=selected.evidence,
         applied_profile_path=None, geometry_path=None, manifest={},
     )
     document, persistence = room["median"], room["persistence"]
@@ -182,44 +182,29 @@ def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> tuple[
     return Path(row.path).with_name(f"{take_id}.json").as_posix(), gated
 
 
-def test_the_ceiling_uses_the_highest_round_gate_and_discloses_its_take(tmp_path, capsys) -> None:
+@pytest.mark.parametrize("gated", [False, True])
+def test_the_ceiling_is_the_disclosed_fallback_whatever_the_round_gated(tmp_path, capsys, gated) -> None:
+    """ADR-0256 rule 1: no applied tune carries a trusted floor (#6110), so the
+    room layer stops at the default and says why. A gated take in the round
+    does not move it (ADR-0400)."""
     round_dir = bank_seat_round(tmp_path)
-    seats = [(row.path, record) for row, record in measurement_documents(round_inputs(round_dir).session_dir)]
-    gates = [_add_gated_take(round_dir, take_id="gate-low", floor_hz=350.0),
-             _add_gated_take(round_dir, take_id="gate-source", floor_hz=357.1428571428571)]
-    write_manifest(round_dir, program="room", groups=[manifest_set(seats, set_id="seats"),
-                                                      manifest_set(gates, set_id="speaker")])
+    flags = []
+    if gated:
+        seats = [(row.path, record) for row, record in measurement_documents(round_inputs(round_dir).session_dir)]
+        write_manifest(round_dir, program="room", groups=[
+            manifest_set(seats, set_id="seats"),
+            manifest_set([_add_gated_take(round_dir, take_id="gate", floor_hz=450.0)], set_id="speaker")])
+        flags = ["--set", "seats"]
 
-    answer = _run(capsys, ["room", str(round_dir), "--set", "seats"])
+    answer = _run(capsys, ["room", str(round_dir), *flags])
     ceiling = json.loads(Path(answer["out"]).read_text())["ceiling"]
 
-    assert ceiling["hz"] == pytest.approx(357.1428571428571)
-    assert ceiling["provenance"] == {
-        "ceiling_hz": pytest.approx(357.1428571428571),
-        "ceiling_source": "round_gate",
-        "trusted_floor_hz": pytest.approx(357.1428571428571),
-        "source_take_id": "gate-source",
-        "source_curve_role": "summed",
-        "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
-        "reason": "",
-    }
-
-
-def test_a_pure_room_round_uses_the_fixed_ceiling(tmp_path, capsys) -> None:
-    round_dir = bank_seat_round(tmp_path)
-
-    _run(capsys, ["room", str(round_dir)])
-    ceiling = json.loads((round_dir / "room.json").read_text())["ceiling"]
-
-    assert ceiling == {"hz": ROOM_BOUNDARY_DEFAULT_HZ, "provenance": {
-        "ceiling_hz": ROOM_BOUNDARY_DEFAULT_HZ,
-        "ceiling_source": "fallback",
-        "trusted_floor_hz": None,
-        "source_take_id": None,
-        "source_curve_role": None,
-        "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ],
-        "reason": "the round has no gated summed or driver take",
-    }}
+    provenance = ceiling.pop("provenance")
+    reason = provenance.pop("reason")
+    assert ceiling == {"hz": ROOM_BOUNDARY_DEFAULT_HZ}
+    assert provenance == {"ceiling_hz": ROOM_BOUNDARY_DEFAULT_HZ, "ceiling_source": "fallback",
+                          "trusted_floor_hz": None, "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]}
+    assert isinstance(reason, str) and reason
 
 
 def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_path, capsys):
@@ -317,7 +302,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
                                   basis=selected.capture_basis)
-    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling(inputs.session_dir)),
+    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling()),
                       "set_id": selected.set_id, "evidence": selection.evidence}
     value = read_room_median(median)
     assert document["limits"] == {
@@ -358,7 +343,6 @@ def test_room_without_an_incumbent_discloses_null_and_reason(room_round, capsys,
     selection = select_seat_takes(inputs.session_dir)
     document = room_views.room_document(
         selection.takes, set_id="candidate", evidence=selection.evidence,
-        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None, manifest={"sets": groups},
     )
     assert document["incumbent"] is document["boundary"] is None
@@ -389,7 +373,6 @@ def test_room_grade_never_grades_a_set_against_itself(room_round, capsys):
     selection = select_seat_takes(inputs.session_dir)
     document = room_views.room_document(
         selection.takes, set_id=own, evidence=selection.evidence,
-        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=None,
         manifest={"sets": [{"set_id": own, "base": True, "capture_basis": {}, "takes": []}]},
     )

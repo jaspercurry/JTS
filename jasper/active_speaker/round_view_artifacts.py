@@ -174,7 +174,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("best_coordinate_us", "confirmation_coordinates_us", "next", "phase", "phase_composition",
                        "take_path")),
     "room": CatalogRow(ROOM_ARTIFACT, TAKES_SET, programs=(PURPOSE_ROOM,), bookkeeping=(PURPOSE_ROOM,),
-                       builder="round_bookkeeping.room", packet="room", schema="jts_room/2",
+                       builder="round_bookkeeping.room", packet="room", schema="jts_room/3",
         question="What is the room's median response at the seats, with its ceiling, lasting features and incumbent?",
         needs="one set of summed takes at the seat poses (room/seat or rear/seat)",
         avoid="the speaker's own response; directivity and frequency read that",
@@ -233,7 +233,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("document", "preview", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
-                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3"),
+                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/4"),
 }
 
 #: The run order of the views a finished round publishes: ``room-grade``

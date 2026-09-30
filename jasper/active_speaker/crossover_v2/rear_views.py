@@ -348,7 +348,7 @@ def rear_document(
                               profile=profile, profile_reason=profile_reason)
     incumbent_section = sections[incumbent_id][0]
     stage = rear_operating_facts(incumbent_section)
-    ceiling = room_ceiling(inputs.session_dir)
+    ceiling = room_ceiling()
     takes = [take for poses in batch.values() for group in poses.values() for take in group]
     swept_hz = [max(take.band_hz[0] for take in takes), min(take.band_hz[1] for take in takes)]
     coverage_hz = [swept_hz[0], min(ceiling.ceiling_hz, swept_hz[1])]
@@ -620,7 +620,7 @@ def _pair_document(
                                   for record in every}),
             "takes": len(every),
         })
-    ceiling = room_ceiling(inputs.session_dir)
+    ceiling = room_ceiling()
     profile, _profile_reason = applied_profile_source(inputs.applied_profile_path)
     section = ((profile or {}).get("recomposition_snapshot") or {}).get("rear_calibration") or {}
     stage = rear_operating_facts(section)

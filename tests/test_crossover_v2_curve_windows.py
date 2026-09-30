@@ -22,7 +22,6 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 )
 from jasper.active_speaker.crossover_v2.rear_views import PAIR_ROLES, _pair_segments
 from jasper.active_speaker.crossover_v2.record_index import Measurement
-from jasper.active_speaker.crossover_v2.room_views import room_ceiling
 from jasper.active_speaker.crossover_v2.round_captures import record_captures
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, SetTakes, round_inputs
 from jasper.active_speaker.crossover_v2.round_views import set_directivity
@@ -161,8 +160,6 @@ READERS = {
         roles=("woofer", "tweeter")).lower["window"], "gated"),
     "pose_bank": (lambda order, root: _only(_by_level(curve.magnitude_db[0]) for curve in
                                            load_round_pose_curves(_bundle(root, _banked(order)))), "gated"),
-    "room_ceiling": (lambda order, root: _by_floor(room_ceiling(_bundle(root, _banked(order))).trusted_floor_hz),
-                     "gated"),
 }
 
 

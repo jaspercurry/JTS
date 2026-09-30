@@ -13,7 +13,6 @@ the-files claim is now structural — the files are the only thing read.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
@@ -40,12 +39,10 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.position_cycle import select_pose_curve_pair
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-from jasper.active_speaker.crossover_v2.room_views import room_ceiling
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand, build_measure_program
-from jasper.audio_measurement.room_boundary import CEILING_SOURCE_ROUND_GATE
 from tests.crossover_v2_banked_round import (
     _DESIGN_AXIS_GEOMETRY,
     LateralPose,
@@ -53,7 +50,6 @@ from tests.crossover_v2_banked_round import (
     bank_executor_take,
     lateral_pose_record,
 )
-from tests.crossover_v2_fixtures import _measure_analysis
 from tests.run_manifest_fixture import write_bundle_manifest
 from tests.test_crossover_v2_record_store import (
     CAPTURE,
@@ -286,9 +282,6 @@ def _session(round_dir: Path) -> Path:
 
 
 _SCANNERS = {
-    "room_ceiling": _Scanner(
-        lambda root: room_ceiling(_session(root)).trusted_floor_hz,
-        PHASE_MEASURE, PHASE_TIMING, PURPOSE_ROOM, 300.0, 450.0),
     "delay_pair": _Scanner(
         lambda root: Path(select_pose_curve_pair(
             _session(root), phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
@@ -341,24 +334,18 @@ def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intrud
 
 def test_the_scanners_read_the_speaker_takes_the_host_banks(tmp_path, monkeypatch):
     """Every take banks its curves (ADR-0383), so the scanners read speaker
-    takes: a gated MEASURE take gives the room ceiling its round gate, the
-    delay pair both drivers and the pose bank its pose, and a lateral
-    candidate take names its candidate on the ladder."""
+    takes: a gated MEASURE take gives the delay pair both drivers and the pose
+    bank its pose, and a lateral candidate take names its candidate on the
+    ladder."""
     def bundle_of(root: Path) -> Path:
         bundle, = {path.parent for path in (root / "sessions").glob("*/info.json")}
         return bundle
 
     program = build_measure_program({"woofer": -20.0, "tweeter": -24.0}, [
         RoleBand("woofer", 0, FrequencyBand(150, 4000)), RoleBand("tweeter", 1, FrequencyBand(1600, 20000))])
-    gated = tuple(replace(response, gating={**response.gating, "f_trusted_hz": 450.0})
-                  for response in _measure_analysis(program).driver_responses)
-    measure = bank_executor_take(tmp_path / "measure", monkeypatch, program=program,
-                                 analysis_fields={"driver_responses": gated})
+    measure = bank_executor_take(tmp_path / "measure", monkeypatch, program=program)
     bundle = bundle_of(tmp_path / "measure")
     assert {curve["window"] for curve in measure["curves"]} == {"gated", "ungated"}
-    ceiling = room_ceiling(bundle)
-    assert (ceiling.source, ceiling.trusted_floor_hz, ceiling.source_take_id) == (
-        CEILING_SOURCE_ROUND_GATE, 450.0, measure["take_id"])
     pair = select_pose_curve_pair(bundle, phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
                                   roles=("woofer", "tweeter"))
     assert pair is not None and pair.document["take_id"] == measure["take_id"]

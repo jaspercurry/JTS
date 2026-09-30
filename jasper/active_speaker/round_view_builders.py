@@ -120,7 +120,6 @@ def room_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
                                                        "evidence": selection.evidence})
     payload = room_document(
         selection.takes, set_id=selected.set_id, evidence=selection.evidence,
-        bundle_dir=inputs.session_dir,
         applied_profile_path=inputs.applied_profile_path, geometry_path=inputs.declared_geometry_path,
         manifest=manifest,
     )
