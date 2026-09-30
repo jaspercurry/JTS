@@ -30,12 +30,14 @@ import numpy as np
 
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.level import piston_step_db
+from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
 from jasper.audio_measurement.trusted_band import TrustedBand, within_trusted
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
-from .position_cycle import OWN_WINDOW, curve_band, take_curve
+from .pose_curve import WINDOW_GATED, WINDOW_UNGATED
+from .position_cycle import curve_band, take_curve
 from .spatial import MARK_DISTANCE_M
 
 #: Where the distance step is read: above a port, below cone breakup (#5684),
@@ -130,12 +132,13 @@ def nearfield_view(
     raw_rows: list[tuple[np.ndarray, np.ndarray] | None] = []
     placed: dict[str, dict[tuple[float, str], list[int]]] = {}
     for take in takes:
-        driver = (take.get("pose") or {}).get("driver")
-        if not (take.get("selected") and driver and (curve := take_curve(take, driver, OWN_WINDOW))):
+        driver, stated_m = ((take.get("pose") or {}).get(key) for key in ("driver", "distance_m"))
+        # The pose names the window: ungated at the cone, gated past it (ADR-0366 §3).
+        window = WINDOW_UNGATED if at_driver_near_field(driver or "", stated_m) else WINDOW_GATED
+        if not (take.get("selected") and driver and (curve := take_curve(take, driver, window))):
             continue
         freqs, sweeps = _sweeps(curve)
         swept = curve["band_hz"]
-        stated_m = take["pose"].get("distance_m")
         # A pose at the mark banks no distance of its own.
         distance_m = MARK_DISTANCE_M if stated_m is None else float(stated_m)
         trusted = curve_band(take, curve)

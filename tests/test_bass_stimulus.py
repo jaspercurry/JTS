@@ -99,7 +99,7 @@ def _replay(bass, raw):
     samples, rate = decode_wav_to_mono(wav.getvalue())
     analysis = analyze_program_capture(bass, samples, rate, geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT))
     analysis = replace(analysis, bass=bass_evidence(bass, analysis, samples, None))
-    record = {"program": bass.to_dict(), **analysis_blocks(analysis, bass)}
+    record = {"program": bass.to_dict(), **analysis_blocks(analysis, bass, None)}
     return SimpleNamespace(analysis=analysis, view=bass_take(BankedMeasurement(record, "capture")))
 
 

@@ -39,7 +39,7 @@ def finite_json(value: Any) -> Any:
 
 
 def analysis_blocks(
-    analysis: Any, program: ExcitationProgram, bands: Mapping[str, Mapping[str, Any]] | None = None,
+    analysis: Any, program: ExcitationProgram, bands: Mapping[str, Mapping[str, Any]] | None,
 ) -> dict[str, Any]:
     """What one analysis leaves on its banked take, beside its provenance: its
     ``curves`` and ``analysis``, which a round's readers read from the take

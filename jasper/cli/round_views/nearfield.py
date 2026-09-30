@@ -40,7 +40,6 @@ def round_nearfield(inputs: RoundInputs) -> tuple[dict[str, Any], dict[str, Any]
     draft = (read_json_mapping(inputs.design_draft_path) if inputs.design_draft_path else None) or {}
     takes = [take for row in view_sets(manifest) for take in row["takes"]
              if take["selected"] and (take.get("pose") or {}).get("driver")]
-    # The CamillaDSP config each take played, as its record states it.
     graphs = {take["take_id"]: graph for take in takes
               if (graph := ((take.get("provenance") or {}).get("graph") or {}).get("config")) is not None}
     document = nearfield_view(takes, radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),

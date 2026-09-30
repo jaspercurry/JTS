@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -23,12 +24,15 @@ from jasper.active_speaker.crossover_v2.rear_views import PAIR_ROLES, _pair_segm
 from jasper.active_speaker.crossover_v2.record_index import Measurement
 from jasper.active_speaker.crossover_v2.room_views import room_ceiling
 from jasper.active_speaker.crossover_v2.round_captures import record_captures
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, SetTakes, round_inputs
+from jasper.active_speaker.crossover_v2.round_views import set_directivity
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.round_packet import _packet_takes
 from jasper.active_speaker.round_verdicts import common_measured_band
 from jasper.active_speaker.speaker_fit import design_clouds
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.cli.round_views.bass_alignment import _take_fits
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_position_cycle import _bank, _record
 
@@ -94,6 +98,30 @@ def _cloud_windows(order: tuple[str, ...], root: Path) -> str:
     return _only(_by_level(response.magnitude_db[0]) for response in cloud["woofer"].boost_responses)
 
 
+def _directivity(takes: list[dict], role: str) -> str | None:
+    """The window directivity reads of ``role`` from takes at 0° and 20°: its
+    band starts at its curves' trusted floor. ``None`` when it reads no curve."""
+    posed = [{**take, "take_id": f"{role}-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0}}
+             for take, deg in zip(takes, (0, 20))]
+    try:
+        document = set_directivity(SetTakes.from_row({"set_id": role, "capture_basis": {"role": role}, "takes": posed}))
+    except RoundSetRefused:
+        return None
+    return _by_floor(document["parameters"]["band_hz"][0])
+
+
+def _bass_take_window(order: tuple[str, ...], root: Path) -> str:
+    """The window ``bass-alignment --take`` reads of a bass take that banked
+    both windows: the take banked no band, so its refusal names the curve."""
+    take = {**_banked(order), "measurement_purpose": "bass"}
+    _bank(root, [take])
+    write_manifest(root, program="bass", groups=[{"set_id": "bass", "capture_basis": {"role": "summed"},
+                                                  "takes": [take]}])
+    with pytest.raises(EvidenceUnavailable) as refused:
+        _take_fits(root, argparse.Namespace(set="bass", take=take["take_id"], band_hz=[25.0, 300.0]))
+    return refused.value.detail["window"]
+
+
 _ROW = Measurement("p", "sess-1", "", PHASE_LATERAL, 0, 0, "", None, "", "", "bearing")
 
 #: Each changed reader, as the window it read from one take: room and rear
@@ -112,6 +140,9 @@ READERS = {
                                                   .series), "gated"),
     "round_verdicts": (lambda order, root: _by_floor(common_measured_band([_banked(order)], "woofer")[0]), "gated"),
     "design_cloud": (_cloud_windows, "gated"),
+    "directivity": (lambda order, root: _directivity([_banked(order, index=1), _banked(order, index=2)], "woofer"),
+                    "gated"),
+    "bass_alignment_take": (_bass_take_window, "ungated"),
     "round_packet": (lambda order, root: "gated" if _packet_takes({
         "set_id": "s", "capture_basis": {"role": "woofer"}, "takes": [_banked(order)]})[0]["gate_window_ms"]
         else "ungated", "gated"),
@@ -158,6 +189,8 @@ MIXED_READERS = {
     "pose_bank": (lambda take, root: {curve.role: _by_level(curve.magnitude_db[0]) for curve in
                                       load_round_pose_curves(_bundle(root, take)) if curve.role in ("woofer", "tweeter")},
                   {"woofer": "gated"}),
+    "directivity": (lambda take, root: {role: window for role in ("woofer", "tweeter")
+                                        if (window := _directivity([take, take], role))}, {"woofer": "gated"}),
 }
 
 

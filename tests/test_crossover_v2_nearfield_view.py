@@ -124,18 +124,31 @@ def test_a_driver_in_front_and_behind_reads_apart_and_each_take_states_its_gate(
     shortest window (ADR-0383 §2)."""
     takes = [_take("front", "woofer", 500, 86.0, kind="bearing", gate_ms=(6.0, 5.0, 6.0)),
              _take("behind", "woofer", 500, 70.0, seed=1, kind="behind", gate_ms=(6.0, None, 6.0)),
-             _take("behind_far", "woofer", 1000, 64.0, seed=2, kind="behind")]
+             _take("behind_far", "woofer", 1000, 64.0, seed=2, kind="behind", gate_ms=(8.0,) * 3)]
 
     view = _view(takes, {"woofer": 114.0})
 
     ungated = {"window": "ungated", **dict.fromkeys(("window_ms", "validity_floor_hz", "trusted_floor_hz", "floor_source"))}
     assert [row["gate"] for row in view["takes"]] == [
-        {"window": "gated", "window_ms": 5.0, "validity_floor_hz": 200.0, "trusted_floor_hz": 500.0,
-         "floor_source": "measured_reflection"}, ungated, ungated]
+        {"window": "gated", "window_ms": ms, "validity_floor_hz": 1000.0 / ms, "trusted_floor_hz": 2500.0 / ms,
+         "floor_source": "measured_reflection"} if ms else ungated for ms in (5.0, None, 8.0)]
     driver, = view["drivers"]
     assert [(placement["distance_mm"], placement["kind"], placement["take_ids"]) for placement in driver["placements"]] == [
         (500.0, "bearing", ["front"]), (500.0, "behind", ["behind"]), (1000.0, "behind", ["behind_far"])]
     assert [(step["near_mm"], step["far_mm"]) for step in driver["steps"]] == [(500.0, 1000.0)]
+
+
+def test_the_pose_names_the_window_a_one_driver_take_is_read_through():
+    """A take within 100 mm of its driver reads its ungated curve and one past
+    it its gated curve, so a far take whose gate found no window, which banked
+    only its ungated curve, gives no placement (ADR-0366 §3)."""
+    takes = [_take("near", "woofer", 15, 90.0), _take("far", "woofer", 1000, 80.0, seed=1),
+             _take("far_gated", "woofer", 1000, 80.0, seed=2, kind="bearing", gate_ms=(5.0,) * 3)]
+
+    view = _view(takes, {"woofer": 114.0})
+
+    assert [(row["take_id"], row["gate"]["window"]) for row in view["takes"]] == [
+        ("near", "ungated"), ("far_gated", "gated")]
 
 
 def test_placements_past_the_near_field_read_the_gated_band_their_takes_banked(tmp_path, capsys):
@@ -174,7 +187,8 @@ def test_a_placement_states_the_band_its_take_banked_and_a_curve_without_one_ref
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
     banked = {"low_hz": 123.0, "low_source": "gate_floor", "high_hz": 4000.0, "high_source": "far_field_ceiling",
               "undeclared": []}
-    take, unbanked = _take("w500", "woofer", 500, 86.0), _take("w1000", "woofer", 1000, 80.0, seed=1)
+    take, unbanked = (_take(take_id, "woofer", mm, level, seed=seed, gate_ms=(5.0,) * 3)
+                      for take_id, mm, level, seed in (("w500", 500, 86.0, 0), ("w1000", 1000, 80.0, 1)))
     take["curves"][0]["trusted_band"] = banked
     del unbanked["curves"][0]["trusted_band"]
     out = ["--out", str(tmp_path / "nearfield.json")]
@@ -189,7 +203,7 @@ def test_a_placement_states_the_band_its_take_banked_and_a_curve_without_one_ref
     assert round_views.main(["nearfield", str(bundle), *out]) == round_views.EXIT_REFUSED
     refusal = json.loads(capsys.readouterr().out)
     assert (refusal["reason"], {key: json.loads(refusal["detail"])[key] for key in ("field", "take_id", "window")}) == (
-        TAKE_CURVES_NOT_BANKED, {"field": "trusted_band", "take_id": "w1000", "window": "ungated"})
+        TAKE_CURVES_NOT_BANKED, {"field": "trusted_band", "take_id": "w1000", "window": "gated"})
 
 
 def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():

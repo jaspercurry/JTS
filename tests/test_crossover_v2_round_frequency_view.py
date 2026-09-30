@@ -676,7 +676,7 @@ def summed_capture_bundle(tmp_path, request):
         analysis = analyze_program_capture(played, samples, rate, calibration=curve,
                                            geometry=geometry, capture_report=answer.capture_integrity)
         analysis = replace(analysis, bass=bass_evidence(played, analysis, samples, curve))
-        return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played)}
+        return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played, None)}
 
     async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
@@ -868,8 +868,8 @@ def test_a_take_banked_before_its_bass_reading_refuses_the_bass_view_by_that_fie
     bundle, _, _, bank = summed_capture_bundle
     banked_blocks = analysis_blocks
 
-    def before_the_field(analysis, program):
-        blocks = banked_blocks(analysis, program)
+    def before_the_field(analysis, program, bands):
+        blocks = banked_blocks(analysis, program, bands)
         del blocks["analysis"]["bass"]
         return blocks
 
