@@ -25,6 +25,7 @@ from jasper.active_speaker.measurement_programs import (
     Pose, Preset, preset, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, with_records
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
@@ -864,20 +865,35 @@ class _LevelRecords:
         return await self.manifest.bank(record)
 
 
+#: The drivers the fake chain's plays compose on, each from 20 Hz.
+_CHAIN_BANDS = dict.fromkeys(("woofer", "woofer:rear"), FrequencyBand(20, 4000))
+_CHAIN_EXCITATION = SessionExcitation((RoleBand("woofer", 0, _CHAIN_BANDS["woofer"]),), dict.fromkeys(_CHAIN_BANDS, 0.0),
+                                      0.0, None, dict.fromkeys(_CHAIN_BANDS, 8.0), target_bands=_CHAIN_BANDS)
+
+
 class _BranchChain:
     """A fake chain at one spot. One target alone reads its sensitivity over the
-    peak it played, and a branch take's two branches add in phase, as a raw rear
-    woofer and the front woofer do in the bass."""
+    peak it played, and the room adds ``room_gain_db`` to a play whose band, as
+    the composer builds it, reaches under 150 Hz. A branch take sweeps down to
+    the woofer's floor, and its two branches add in phase, as a raw rear woofer
+    and the front woofer do in the bass."""
 
-    def __init__(self, manifest, sensitivity_db, *, ceiling_db):
+    def __init__(self, manifest, sensitivity_db, *, ceiling_db, play, room_gain_db):
         self.manifest, self.sensitivity_db, self.ceiling_db = manifest, sensitivity_db, ceiling_db
+        self.play, self.room_gain_db = play, room_gain_db
 
     async def bank(self, record):
         record = self.manifest.capture_record(record)
         targets, asked = record["targets"], record.get("stimulus_dbfs")
+        played = self.play.calls[-1]["spec"]
+        floor_hz = min(segment.f1_hz for segment in program_for_spec(
+            played, _CHAIN_EXCITATION, None, safety_profile={}, role_targets={}).stimulus_segments()) if (
+            played.graph_scope == "drivers") else 20.0
+        room_db = self.room_gain_db if floor_hz < 150.0 else 0.0
         peak = min(-42.0 if asked is None else asked, self.ceiling_db)
         band = RoleBand(targets[0], 0, FrequencyBand(20, 2000))
-        reading = 20 * math.log10(sum(10 ** ((peak + self.sensitivity_db[target]) / 20) for target in targets))
+        reading = 20 * math.log10(sum(10 ** ((peak + self.sensitivity_db[target] + room_db) / 20)
+                                      for target in targets))
         program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
                                              downstream_gain_db=0.0, channels=1) if asked is None else
                    build_measure_program({band.role: peak}, (band,), repeat_count=1, sweep_durations={band.role: 0.2}))
@@ -915,13 +931,15 @@ def _heard_analysis(record):
                    stimulus_levels=(LevelReading(stimulus_peak_dbfs(program), heard, heard - 30.0),))
 
 
-def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True, chain=None):
+def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True, chain=None,
+                  room_gain_db=0.0):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
     (or, not ``web``, run as the bass ladder runs it: no gate, no ``admit``) and
     judged on the level each take read; the microphone is re-placed at take
     ``replace_at``, and the operator presses Redo during each take in
     ``redo_at``, take 0 being just after the first placement is confirmed. A
-    ``chain`` reads each take from its targets' sensitivities (:class:`_BranchChain`)."""
+    ``chain`` reads each take from its targets' sensitivities and the room's
+    gain under 150 Hz (:class:`_BranchChain`)."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
     manifest = RunManifest("run", _Store(fakes.records))
@@ -937,7 +955,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         return capture_dispatch.assess(analysis, **kwargs)
 
     async def run():
-        records = (_BranchChain(manifest, chain, ceiling_db=ceiling_db) if chain else
+        records = (_BranchChain(manifest, chain, ceiling_db=ceiling_db, play=fakes.play, room_gain_db=room_gain_db)
+                   if chain else
                    _LevelRecords(manifest, readings, probe_db=-42.0, ceiling_db=ceiling_db))
         async with open_session(replace(fakes, records=records), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
@@ -1073,17 +1092,19 @@ def test_a_close_driverless_set_shares_one_level():
     assert selected == [False] + [True] * 4
 
 
-@pytest.mark.parametrize("front_db, rear_db, ask_db", [(110.0, 110.0, -37.0), (106.0, 112.0, -39.0)],
-                         ids=["equal", "rear-louder"])
-def test_a_branch_take_at_the_mark_plays_6_db_under_its_quieter_branch(front_db, rear_db, ask_db):
+@pytest.mark.parametrize("front_db, rear_db, room_gain_db, ask_db", [
+    (110.0, 110.0, 0.0, -37.0), (106.0, 112.0, 0.0, -39.0), (110.0, 110.0, 8.0, -45.0)],
+    ids=["equal", "rear-louder", "room-gain"])
+def test_a_branch_take_at_the_mark_plays_6_db_under_its_quieter_branch(front_db, rear_db, room_gain_db, ask_db):
     """At the mark, each branch plays alone the probe a driver's pose plays, on
-    the drivers graph. The take, and the next take of its set, play 6 dB under
-    the lower level found, so a raw rear branch in phase with the front woofer
-    reads at most 80 dB. The take is never levelled by its own reading
-    (ADR-0403 §3)."""
+    the drivers graph, over its take's band down to the woofer's floor, so it
+    reads the room's gain under 150 Hz as the take does. The take, and the next
+    take of its set, play 6 dB under the lower level found, so a raw rear branch
+    in phase with the front woofer reads at most 80 dB. The take is never
+    levelled by its own reading (ADR-0403 §3)."""
     request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
 
-    result, fakes, selected, _ = _run_levelled(request, (), ceiling_db=-12.0,
+    result, fakes, selected, _ = _run_levelled(request, (), ceiling_db=-12.0, room_gain_db=room_gain_db,
                                                chain={"woofer": front_db, "woofer:rear": rear_db})
 
     assert result.status == "complete"

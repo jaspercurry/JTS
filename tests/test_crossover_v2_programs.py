@@ -836,23 +836,32 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
                                                                           sweep.f2_hz)}
 
 
-def test_a_branch_take_finds_its_level_from_a_drivers_probe_of_each_branch():
+@pytest.mark.parametrize("take_band_hz,probe_bands_hz", [
+    ((), [(20.0, 4000.0), (30.0, 3000.0)]), ((40.0, 1000.0), [(40.0, 1000.0)] * 2)], ids=["unstated", "stated"])
+def test_a_branch_take_finds_its_level_from_a_drivers_probe_of_each_branch(take_band_hz, probe_bands_hz):
     """A branch set's first take plays each branch alone first: the probe a
-    driver's pose plays, on the drivers graph, measuring no candidate. The take
-    has no probe of its own and plays at its ceiling until a level is asked
-    (ADR-0403 §3)."""
-    band, targets = FrequencyBand(20.0, 4000.0), ("woofer", "woofer:rear")
-    excitation = SessionExcitation((RoleBand("woofer", 0, band),), dict.fromkeys(targets, 0.0), -20.0, None,
-                                   dict.fromkeys(targets, 8.0), target_bands=dict.fromkeys(targets, band))
+    driver's pose plays, on the drivers graph, measuring no candidate, over the
+    take's own band within that driver's, down to its floor. A take that states
+    no band sweeps every role's whole band, so its probes sweep their drivers'.
+    The take has no probe of its own and plays at its ceiling until a level is
+    asked (ADR-0403 §3)."""
+    targets = ("woofer", "woofer:rear")
+    bands = dict(zip(targets, (FrequencyBand(20.0, 4000.0), FrequencyBand(30.0, 3000.0))))
+    excitation = SessionExcitation((RoleBand("woofer", 0, bands["woofer"]),), dict.fromkeys(targets, 0.0), -20.0,
+                                   None, dict.fromkeys(targets, 8.0), target_bands=bands)
     take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial", program_phase="lateral",
-                       branch_target_ids=targets, cleared_layers=("rear_calibration",), level_probe=True)
+                       branch_target_ids=targets, cleared_layers=("rear_calibration",), sweep_band_hz=take_band_hz,
+                       level_probe=True)
 
     probes = branch_probes(take)
+    programs = [program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
+                for spec in (*probes, take)]
 
     assert [(p.graph_scope, p.branch_target_ids, p.candidate_id, p.cleared_layers) for p in probes] == [
         ("drivers", (target,), "", ()) for target in targets]
-    assert [is_level_probe(program_for_spec(spec, excitation, None, safety_profile={}, role_targets={}))
-            for spec in (*probes, take)] == [True, True, False]
+    assert [is_level_probe(program) for program in programs] == [True, True, False]
+    assert [{(s.f1_hz, s.f2_hz) for s in program.stimulus_segments()} for program in programs[:2]] == [
+        {band} for band in probe_bands_hz]
     assert branch_probes(replace(take, level_probe=False)) == ()
 
 

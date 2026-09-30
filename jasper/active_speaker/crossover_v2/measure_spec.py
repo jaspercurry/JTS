@@ -19,6 +19,7 @@ from jasper.platform.json_fields import require_finite
 from jasper.platform.speaker_layout import measurement_target_id
 
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS, validated_stimulus
+from ..test_signal_plan import MAX_DRIVER_TEST_FREQUENCY_HZ, MIN_DRIVER_TEST_FREQUENCY_HZ
 from .contracts import (
     DRIVER_ROLES,
     DRIVER_ROLE_WOOFER,
@@ -155,8 +156,8 @@ class MeasureSpec:
             raise ValueError(f"cleared_layers names layers of a candidate graph, each one of {CANDIDATE_LAYERS}, "
                              f"got {self.cleared_layers!r} on {self.graph_scope!r}")
         if self.sweep_band_hz:
-            if self.graph_scope == GRAPH_SCOPE_DRIVERS:
-                raise ValueError("sweep_band_hz requires a summed graph_scope")
+            if self.graph_scope == GRAPH_SCOPE_DRIVERS and not solo_target(self):
+                raise ValueError("sweep_band_hz requires a summed graph_scope or one driver alone")
             if len(self.sweep_band_hz) != 2 or not (
                 0 < self.sweep_band_hz[0] < self.sweep_band_hz[1] < 24_000
             ):
@@ -358,12 +359,15 @@ def branch_target_ids_for(branch_pair: str, roles_bands: Sequence[Any]) -> tuple
 
 def branch_probes(spec: MeasureSpec) -> tuple[MeasureSpec, ...]:
     """What a branch take that finds its level plays before it: each branch
-    alone on the drivers graph, the probe a driver's pose plays (ADR-0365,
-    ADR-0403 §3). Empty for any other take."""
+    alone on the drivers graph, the probe a driver's pose plays, over the take's
+    own band, as a near-field probe sweeps its row's (ADR-0360 §4, ADR-0365,
+    ADR-0403 §3). A take that states no band sweeps every role's whole band, so
+    each probe then sweeps its own driver's. Empty for any other take."""
     if not (spec.level_probe and spec.graph_scope == "candidate_branches"):
         return ()
+    band_hz = spec.sweep_band_hz or (MIN_DRIVER_TEST_FREQUENCY_HZ, MAX_DRIVER_TEST_FREQUENCY_HZ)
     return tuple(replace(spec, kind=MEASURE_KIND_CANDIDATE, graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
-                         branch_target_ids=(target,), sweep_band_hz=(), sweep_s=None, cleared_layers=(),
+                         branch_target_ids=(target,), sweep_band_hz=band_hz, sweep_s=None, cleared_layers=(),
                          scope_gains_db=None, level_ladder_dbfs=())
                  for target in spec.branch_target_ids)
 

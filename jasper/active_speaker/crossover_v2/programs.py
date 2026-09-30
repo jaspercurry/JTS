@@ -159,10 +159,11 @@ def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, floa
 
 def _solo_sweeps(spec: Any, role: str) -> dict[str, Any]:
     """A one-driver take plays its declared stimulus's band, sweep length and
-    silences (the near-field row: ADR-0360 §4, #5684); with none, MEASURE's
-    band and spacing (#5696)."""
+    silences (the near-field row: ADR-0360 §4, #5684); with none, the band its
+    spec states (a branch probe's: ADR-0403 §3), else MEASURE's band, with
+    MEASURE's spacing (#5696)."""
     if spec.stimulus is None:
-        return {"sweep_band_hz": MEASURE_SWEEP_BAND_HZ}
+        return {"sweep_band_hz": spec.sweep_band_hz or MEASURE_SWEEP_BAND_HZ}
     gap_s = spec.stimulus["gap_s"]
     return {"sweep_band_hz": tuple(spec.stimulus["band_hz"]), "sweep_durations": {role: spec.stimulus["sweep_s"]},
             "gap_s": gap_s, "guard_s": gap_s / 2, "pilot_gap_s": gap_s / 2}
