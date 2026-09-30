@@ -345,17 +345,19 @@ ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INT
 #: The analysis-side evidence codes' household copy, under the next action that gets their evidence.
 _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("measure_again", "Measure this round again"): {
-        evidence_reasons.CAPTURE_PROGRAM_UNIDENTIFIED: "This recording banked no stimulus hash, so the program it played cannot be named.",
-        evidence_reasons.CAPTURE_UNSTAMPED_NAME: "This recording's file name lacks the timestamp that timing analysis needs.",
         evidence_reasons.REASON_FIT_NOT_FINITE: "A fitted filter term is not a finite number, so the fit is published without numbers.",
         evidence_reasons.REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
         evidence_reasons.REASON_GRAPH_MISMATCH: "The summed take played an output the driver-take prediction does not model, "
                                                 "so the two sums are not comparable.",
+        evidence_reasons.REASON_HARMONIC_WINDOW_OUT_OF_RANGE: "A recording starts too close to a sweep for its harmonic "
+                                                              "images to be read.",
         evidence_reasons.REASON_MARK_RESPONSE_UNAVAILABLE: "A mark take's curve cannot be read for the repeat-spread comparison.",
         evidence_reasons.REASON_NO_IMPULSE: "No usable impulse segments are available to measure the arrival gap.",
         evidence_reasons.REASON_SEGMENT_MISSING: "The pair take lacks all three segments on one shared frequency grid.",
         evidence_reasons.REASON_SNR_SHORT: "A driver take is below the alignment signal-to-noise floor, so its predicted sum "
                                            "is not comparable with the measured sum.",
+        evidence_reasons.REASON_SWEEP_GRIDS_DISAGREE: "One driver's sweeps in a take were read on different "
+                                                      "frequency grids, so they cannot be pooled.",
         evidence_reasons.TAKE_CURVES_NOT_BANKED: "A take in the measurement did not bank the analysed curves this view reads.",
         "measurement_captures_missing": "No take in the measurement was captured and analysed.",
     },
@@ -394,27 +396,18 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",
     },
     ("measure_classification_round", "Measure a verify or lateral round"): {
-        evidence_reasons.CAPTURE_PHASE_NOT_ADMISSIBLE: "This recording's phase cannot be used for feature classification.",
         evidence_reasons.NO_KEPT_TAKES: "The round kept none of its verify or lateral takes for the speaker.",
         evidence_reasons.ROUND_SHAPE_INADMISSIBLE: "The round banked no recording shape that feature classification can use.",
     },
     ("bank_round", "Bank this round again from its session"): {
-        evidence_reasons.CAPTURES_UNREADABLE: "The round's recording shape is right, but its stamped audio cannot be read.",
-        evidence_reasons.CAPTURE_PROGRAM_MISSING: "No banked program matches this recording's stimulus hash.",
         evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
-        evidence_reasons.CAPTURE_WAV_MISSING: "This recording's audio is missing from the ring.",
         evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
-        evidence_reasons.PROGRAM_MISSING: "No banked program matches the stimulus the round's recordings played.",
     },
     ("select_round", "Select the round these takes belong to"): {
-        evidence_reasons.CAPTURE_OTHER_SESSION: "This recording belongs to a different session.",
-        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "No readable recording in the ring belongs to this round.",
+        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
     },
     ("name_round", "Name a banked round or a live session bundle"): {
         evidence_reasons.REASON_UNREADABLE: "The round view could not read its input round.",
-    },
-    ("classify_features", "Classify this round's features"): {
-        evidence_reasons.CAPTURE_ADMISSIBLE: "This recording can be used for feature classification.",
     },
     ("name_frequencies", "Name the frequencies to classify"): {
         evidence_reasons.NO_FEATURES_DETECTED: "No feature in the pooled response rises above the scatter between recordings.",

@@ -1003,3 +1003,7 @@ class ProgramAnalysis:
     # analysis seam takes from the same samples (#5737 C4). ``None`` for any
     # other program, and outside that seam.
     bass: dict[str, Any] | None = None
+    # The distortion view's reading of the per-driver sweeps, taken in the
+    # same seam (ADR-0394). ``None`` for any other program, a level probe,
+    # and outside that seam.
+    distortion: dict[str, Any] | None = None

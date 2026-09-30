@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -29,16 +28,8 @@ from ..round_inputs import RoundInputs, view_path
 CLASSIFICATION_ARTIFACT = "feature_classification.json"
 
 #: The ``jasper-round-views distortion`` artifact (:mod:`.harmonic_evidence`),
-#: same posture. Defined HERE rather than in that module because it imports
-#: this one (for :data:`RING_SIDECAR_GLOB`): the packet owns the names of what
-#: it reads.
+#: same posture: the packet owns the names of what it reads.
 HARMONICS_ARTIFACT = "harmonic_distortion.json"
-
-#: :func:`~jasper.active_speaker.round_bank.bank_round` owns the sidecar/WAV layout.
-#: ``**/`` also admits older pulled rings with a directory per phase. Both
-#: :func:`~.feature_classifier.load_round_captures` and
-#: :func:`~.harmonic_evidence.read_round_harmonics` use this ring-root pattern.
-RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
 
 #: A file handed to the builder that could not be read or parsed.
@@ -93,7 +84,7 @@ def exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
 
     Two inputs legitimately carry ``NaN``: a classification row (the instrument
     writes one for ``z_local``, ``frac_of_nmp`` and ``excess_loss_vs_null``
-    when the underlying scale is zero) and a dump-ring sidecar. Both are banked
+    when the underlying scale is zero) and a take's ``diagnostic``. Both are banked
     with a plain ``json.dumps``, which writes ``NaN`` verbatim, and
     :func:`~jasper.audio_measurement.evidence_identity.json_fingerprint`
     refuses a non-finite number — so copying one through would cost the round
@@ -129,20 +120,6 @@ def exact_json_value(value: Any, column: str, non_finite: set[str]) -> Any:
     return value
 
 
-def round_program_dir(
-    session_dir: Path, round_dir: Path, phases: Iterable[str]
-) -> Path:
-    phases = tuple(phases)
-    for directory in (round_dir, session_dir / "crossover_v2" / round_dir.name):
-        if any(
-            (directory / f"{phase}_program.wav").is_file()
-            or any(directory.glob(f"{phase}_*_program.wav"))
-            for phase in phases
-        ):
-            return directory
-    return round_dir
-
-
 def _harmonics_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
     """The round's banked H2/H3 reading, copied through with its declarations.
 
@@ -150,10 +127,8 @@ def _harmonics_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
     :mod:`.harmonic_evidence`) owns what the numbers mean. What this adds is
     the uncertainty declarations the artifact does not carry.
 
-    The packet does not compute it: reading H2/H3
-    means re-opening every banked capture WAV and re-deconvolving it at a
-    pre-guard wide enough for the harmonic images to exist, and this module
-    publishes ``privacy.raw_audio_excluded``. Absence is ordinary and reported.
+    The packet does not compute it: the view files beside the round
+    (ADR-0346). Absence is ordinary and reported.
     """
     if not isinstance(raw, dict):
         return {
@@ -204,17 +179,10 @@ def _harmonics_block(raw: Any, reason: str, detail: str = "") -> dict[str, Any]:
         "orders": orders,
         "n_roles": len(roles),
         "roles": roles,
-        # What the instrument could NOT read, beside what it could. A round
-        # where three of four captures failed the fidelity gate is a different
-        # round from one where all four passed, and a reader given only the
-        # survivors could not tell them apart.
+        # What the instrument could NOT read, beside what it could.
         "captures": captures,
-        "program": as_mapping(raw.get("program")),
-        # Whether a microphone calibration was applied, under which sign
-        # convention, and from which banked calibration id. Load-bearing rather
-        # than housekeeping: an uncalibrated read carries the microphone's own
-        # response inside every ratio, and a file read under the wrong sign
-        # moves every magnitude without moving one timing diagnostic.
+        # Load-bearing rather than housekeeping: an uncalibrated read carries
+        # the microphone's own response inside every ratio.
         "calibration": as_mapping(raw.get("calibration")),
         "source": HARMONICS_ARTIFACT,
         "uncertainty": CONTRACT_COMMAND,

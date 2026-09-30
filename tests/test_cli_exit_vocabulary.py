@@ -38,7 +38,7 @@ from jasper.active_speaker import baseline_profile, bundles, candidate_bank, rou
 from jasper.active_speaker.bench.replay import DSP_REPLAY_SCHEMA
 from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.wizard_client import WizardClient
-from jasper.active_speaker.crossover_v2 import prescription_document, room_selection
+from jasper.active_speaker.crossover_v2 import harmonic_evidence, prescription_document, room_selection
 from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
@@ -46,6 +46,7 @@ from jasper.active_speaker.round_view_artifacts import CATALOG
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli import _refusal, _run_request, crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import (
+    bank_executor_take,
     bank_measure_round,
     bank_seat_round,
     bank_verify_round,
@@ -57,9 +58,8 @@ from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _flat_ir as flat_ir, _resonant_ir as resonant_ir
 from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
-from tests.test_crossover_v2_harmonic_evidence import bank_measure_capture
+from tests.test_crossover_v2_harmonic_evidence import bank_driver_take
 from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
-from tests.test_crossover_v2_harmonic_evidence import harmonic_capture  # noqa: F401
 from tests.test_crossover_v2_room_prescription import _document as room_document
 from tests.test_prescription_document import bank, base, bass_packet, document as prescription, evidence  # noqa: F401
 from tests.test_preflight import ready_facts
@@ -270,8 +270,6 @@ MAX_ANSWER_ARRAY = 16
 #: The keys every answer shares; the rest are the fields its catalog row names.
 _ENVELOPE = {"view", "schema", "subject", "parameters", "out", "bytes"}
 
-_NO_CAPTURES = "the fixture banks no WAVs, so no capture ring and no summed takes"
-
 
 class _FixtureRound(NamedTuple):
     """The two rounds ``tests/crossover_v2_banked_round`` banks -- stage 1's
@@ -382,7 +380,7 @@ def _bass_run_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
 
 
 def _distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
-    return ["distortion", str(bank_measure_capture(request.getfixturevalue("harmonic_capture"), root))]
+    return ["distortion", str(bank_driver_take(root, request.getfixturevalue("monkeypatch"))[0])]
 
 
 def _classify_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
@@ -452,7 +450,7 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         recorded=lambda p, a: all(curve["plot"]["ref_band_hz"] == p["ref_band_hz"]
                                   for run in a["runs"] for curve in run["series"])),
     "distortion": _ViewRun(
-        _distortion_argv, frozenset({"band_hz", "setup_calibration_id"}), frozenset({"round_id", "take_ids"}),
+        _distortion_argv, frozenset({"band_hz", "calibration_id"}), frozenset({"take_ids"}),
         lambda p, a: all(block["sweep"]["read_band_hz"] in p["band_hz"][block["role"]] for block in a["roles"])),
     "bass": _ViewRun(
         _bass_argv, frozenset({"calibration_id"}), frozenset({"set_id", "candidate_id"}),
@@ -711,11 +709,24 @@ def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: 
     return ["frequency", str(bundle), "--analyze-wavs", *(["--reference-db=nan"] if fault == "reference" else [])]
 
 
-def _stateless_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
-    (root / "bundle" / "evidence/v1/artifacts/crossover_v2/cap-1").mkdir(parents=True)
-    (root / "bundle" / "info.json").write_text(json.dumps({"session_id": "s-1"}))
-    (root / "bundle" / "crossover-v2-state.json").write_text(json.dumps({"session_id": "cap-1"}))
-    return ["distortion", str(root / "bundle")]
+def _disagreeing_grids_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    """A MEASURE take whose woofer repeat reads on a shifted grid, which no pooling by index may hide."""
+    monkeypatch, read = request.getfixturevalue("monkeypatch"), harmonic_evidence.read_segment_distortion
+
+    def shifted(program: Any, capture: Any, segment_id: str, *args: Any, **kwargs: Any) -> Any:
+        reading = read(program, capture, segment_id, *args, **kwargs)
+        return replace(reading, freqs_hz=reading.freqs_hz + 1.0) if segment_id == "sweep_w_rep" else reading
+
+    monkeypatch.setattr(harmonic_evidence, "read_segment_distortion", shifted)
+    return ["distortion", str(bank_driver_take(root, monkeypatch)[0])]
+
+
+def _malformed_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
+    """A branch take whose banked reading is not an object."""
+    record = bank_executor_take(root, request.getfixturevalue("monkeypatch"), raw_record={"graph_scope": "candidate_branches"})
+    path, = root.glob("sessions/*/evidence/v1/artifacts/crossover_v2/*/positions/*.json")
+    path.write_text(json.dumps({**record, "analysis": {**record["analysis"], "distortion": ["not an object"]}}))
+    return ["distortion", str(next(root.glob("sessions/*")))]
 
 
 def _ghost_bass_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
@@ -752,7 +763,7 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
     "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
     "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],
                           "classification_no_features_detected"),
-    "distortion": (_stateless_distortion_argv, "state_unreadable"),
+    "distortion": (_disagreeing_grids_distortion_argv, "sweep_grids_disagree"),
     "dsp-levels (past the render)": (lambda request, root: [*_dsp_levels_argv(request, root)[:-2], "1", "2"],
                                      "dsp_replay_window_unavailable"),
     "dsp-levels (pre-ADR-0359 bass)": (_pre_adr_0359_levels_argv, "bass_replay_manifest_predates_adr_0359"),
@@ -783,6 +794,7 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
 #: that names a take with no record.
 _UNREADABLE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str | None]] = {
     "bass (a take with no record)": (_ghost_bass_argv, None),
+    "distortion (a reading that is not an object)": (_malformed_distortion_argv, "field_not_object"),
     "frequency (record)": (lambda request, root: _analyzed_frequency_argv(request, root, "record"),
                            "commissioning_evidence_integrity_mismatch"),
     "frequency (reference)": (lambda request, root: _analyzed_frequency_argv(request, root, "reference"), None),

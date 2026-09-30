@@ -33,21 +33,17 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     resolve_plan_shape,
 )
 from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_ONAX, POSITION_ROLES
-from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE, BASE_STIMULUS_PEAK_DBFS,
     build_check_program, build_measure_program,
 )
 from tests.crossover_v2_fixtures import (
-    FC_HZ,
     FakeSeams,
-    SESSION,
     SESSION_VOLUME_DB,
     _conductor,
     _inline_spec,
     _dummy_program,
-    _preset,
     _roles,
     _run_phase,
 )
@@ -89,8 +85,7 @@ def test_the_measure_sweep_fit_rides_the_snapshot():
     assert snap.to_dict()["measure_sweep_durations_s"] == pytest.approx(expected)
 
     # Round-trips through the exact JSON encoding ``save_v2_state`` uses, so
-    # no float precision is lost across the real persistence path — the same
-    # encoding ``jasper-round-views distortion --state`` later reads back.
+    # no float precision is lost across the real persistence path.
     roundtripped = json.loads(json.dumps(snap.to_dict()))["measure_sweep_durations_s"]
     assert roundtripped == pytest.approx(expected)
 
@@ -98,62 +93,6 @@ def test_the_measure_sweep_fit_rides_the_snapshot():
     # absent rather than a guessed nominal — mirrors ``gain_plan_db`` beside it.
     undeclared = _conductor(FakeSeams())
     assert undeclared.snapshot().measure_sweep_durations_s is None
-
-
-def test_the_measure_sweep_fit_survives_conductor_to_rebuild_end_to_end():
-    """#2923 gate fix round, nit 2: nothing previously joined this seam
-    end to end.
-
-    ``priors.measure_sweep_durations_s`` keys its returned dict by
-    ``str(segment.role)`` — whatever the composed program's own roles are
-    called. ``harmonic_evidence._banked_sweep_durations_s`` reads it back
-    through a hardcoded ``("woofer", "tweeter")``. In this session's own
-    2-way convention the two always agree, but nothing walked the WHOLE
-    chain — conductor compose -> ``.snapshot()`` -> a durable-state-shaped
-    dict -> the offline rebuild — to prove it; a future key-shape change on
-    either half should fail here, not on a campaign.
-
-    Caps are widened past the fixture default so the solved gain plan
-    clears both ceilings with margin (``back_off_gain`` is then the
-    identity for both roles, byte for byte) — the ordinary, non-clipped
-    case this reproduction path is meant to serve. The rebuild is proved
-    against the stimulus id the round's MEASURE takes recorded, here the
-    composed program's own.
-    """
-    import json
-
-    from jasper.active_speaker.crossover_v2 import harmonic_evidence as he
-
-    fakes = FakeSeams()
-    # Constructed directly rather than through ``_conductor()``: that helper
-    # hardcodes ``driver_caps_dbfs=CAPS``, which collides with overriding it
-    # here. Skipping ``_conductor()``'s entry-baseline stash is safe: that
-    # stash is for stage-1 cloud grading this test never reaches, and CHECK's
-    # assessor (``capture_dispatch.assess``) does not read it.
-    c = CrossoverV2Session(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs={"woofer": 0.0, "tweeter": 0.0},
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=fakes.seams(),
-        driver_spacing_m=0.15,
-        driver_sweep_duration_limits_s={"woofer": 3.5, "tweeter": 10.0},
-    )
-    _run_phase(c, 1, 1)  # CHECK solve -> MEASURE composed, woofer sweep fitted
-
-    program = c.program_for_phase(PHASE_MEASURE)
-    durable = json.loads(json.dumps(c.snapshot().to_dict()))
-    state = {
-        "gain_plan_db": durable["gain_plan_db"],
-        "measure_sweep_durations_s": durable["measure_sweep_durations_s"],
-    }
-    bands = {"woofer": (150.0, 6000.0), "tweeter": (300.0, 20000.0)}
-
-    rebuilt, _prelude = he.rebuild_measure_program(state, bands, {program.stimulus_id})
-
-    assert rebuilt.stimulus_id == program.stimulus_id
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])

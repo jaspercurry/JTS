@@ -2,102 +2,57 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read per-take H2/H3 with capture bytes and stimulus identity checked.
+"""The H2/H3 reading a take banks at capture, and the distortion view over it.
 
 Harmonic images precede the linear IR by L·ln(order), so the distortion
-kernel uses a wider pre-guard than the normal response analysis. A MEASURE
-take is read only under the stimulus id it recorded, and a branch take under
-the program it banked; a branch take whose provenance recorded no stimulus id
-keeps its ratios with drive unknown, since timing agreement alone cannot prove
-the played program's level. A take banked under an older program schema is
-refused as superseded (#2902). The id leaves the fader out (#5012), so a
-MEASURE take's drive rests on the session volume it recorded, labelled so and
-checked against the fader readback it banked.
+kernel uses a wider pre-guard than the normal response analysis. The reading
+deconvolves each per-driver sweep on the samples, anchors, drift and
+calibration its take's analysis read, and the view opens no recording
+(ADR-0394). The id leaves the fader out (#5012), so a MEASURE take's drive
+rests on the session volume it recorded, labelled so and checked against
+the fader readback it banked.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 import math
 import statistics
-import tempfile
-import wave
-from collections.abc import Collection, Mapping, Sequence, Set
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from jasper.attribution.session_identity import ALIAS_CAPTURE_SESSION_ID, SESSION_IDENTITY_KEY
 from jasper.audio_measurement.program import (
     ExcitationProgram,
-    FrequencyBand,
-    KIND_COURTESY_TONE,
     KIND_SWEEP,
-    MEASURE_SWEEP_F_HI_HZ,
-    MEASURE_SWEEP_F_LO_HZ,
-    PROGRAM_SAMPLE_RATE_HZ,
-    PROGRAM_SCHEMA_VERSION,
-    RoleBand,
-    _intersect_band,
-    build_measure_program,
-    write_program_wav,
+    is_level_probe,
 )
-from jasper.platform.json_fields import finite_float, sha256_file
+from jasper.platform.json_fields import CodedFieldError, JsonFields, finite_float
+from jasper.platform.log_event import log_event
 from jasper.platform.volume_latch import fader_matches
 
-from jasper.active_speaker.round_bank import CAPTURE_RING_DIR, bundle_session_id
 from jasper.audio_measurement import deconv
 from jasper.audio_measurement.calibration import (
-    DEFAULT_SIGN_CONVENTION,
-    SUPPORTED_MODELS,
-    parse_calibration_text,
+    CalibrationCurve,
 )
 from jasper.audio_measurement.distortion import read_segment_distortion, worst_clear_of_floor
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.audio_measurement.program_analysis import (
-    CAPTURE_BOUND_MARGIN_S,
-    MeasurementGeometry,
-    MeasurementPriors,
-    analysis_diagnostic_summary,
-    analyze_program_capture,
-    estimate_drift,
-    locate_global_offset,
-    locate_segments,
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_COVERAGE_SHORT,
+    REASON_HARMONIC_WINDOW_OUT_OF_RANGE,
+    REASON_SWEEP_GRIDS_DISAGREE,
+    TAKE_CURVES_NOT_BANKED,
+    EvidenceUnavailable,
+    unavailable,
 )
-from jasper.audio_measurement.sweep import synchronized_sweep_metadata
-from .round_inputs import banked_round_of, round_inputs
 
-from ..profile import DRIVER_ROLES_BY_WAY
-from .evidence_packet import (
-    HARMONICS_ARTIFACT,
-    RING_SIDECAR_GLOB,
-    applied_profile_source,
-    round_artifact_dir,
-)
 from .journey import PHASE_MEASURE
-from .programs import courtesy_prelude_for_phase, leading_pilot_role, pilot_gains
+from .record_index import measurement_documents, record_path
 
-__all__ = [
-    "DEFAULT_BANDS_HZ",
-    "DEFAULT_FULL_RANGE_BAND_HZ",
-    "FIDELITY_FIELDS",
-    "FIDELITY_TOLERANCE",
-    "HARMONICS_ARTIFACT",
-    "HARMONICS_ARTIFACT_KIND",
-    "HARMONIC_ORDERS",
-    "NO_ADMISSIBLE_CAPTURES",
-    "NO_CAPTURE_PASSED_THE_GATES",
-    "PROBE_FREQUENCIES_HZ",
-    "PROGRAM_NOT_REPRODUCIBLE",
-    "RING_NOT_SCOPED_TO_ONE_SESSION",
-    "STATE_UNREADABLE",
-    "banked_roles",
-    "read_bundle_harmonics",
-    "read_round_harmonics",
-    "rebuild_measure_program",
-    "round_bands_hz",
-]
+logger = logging.getLogger(__name__)
+_FIELDS = JsonFields(CodedFieldError)
 
 #: The artifact's own kind tag, so a file found loose says what it is.
 HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
@@ -109,17 +64,6 @@ HARMONICS_ARTIFACT_KIND = "jts_crossover_v2_harmonic_distortion"
 #: to publish.
 HARMONIC_ORDERS: tuple[int, ...] = (2, 3)
 
-#: The shipped MEASURE driver bands for a PAIR. A default, not a constant: a
-#: wrong pair fails the ``stimulus_id`` proof rather than misreading the round.
-DEFAULT_BANDS_HZ: dict[str, tuple[float, float]] = {
-    "woofer": (150.0, 4000.0),
-    "tweeter": (1600.0, 20000.0),
-}
-
-#: The 1-way default: the whole measurable span in Hz, since a passive main's
-#: own declared band is not derivable here.
-DEFAULT_FULL_RANGE_BAND_HZ: tuple[float, float] = (150.0, 20000.0)
-
 #: Excitation frequencies the rows are sampled at. A fixed ladder rather than
 #: the full FFT grid, because this document is read by an LLM operator and
 #: by a human at a terminal. Roughly third-octave from 150 Hz. Points
@@ -129,35 +73,6 @@ PROBE_FREQUENCIES_HZ: tuple[float, ...] = (
     150.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1000.0,
     1500.0, 2000.0, 3000.0, 4000.0, 6000.0, 8000.0,
 )
-
-#: Sidecar diagnostics compared against the replay. Each is a value the banked
-#: analysis recorded about ITSELF, so a mismatch means the reconstruction
-#: reads different bytes than the session did. Scoped to what a DISTORTION
-#: read rides on: the clock-drift estimate divided out of the reference,
-#: the repeat agreement, and the integrity flags.
-#:
-#: ``max_residual_samples`` and ``glitch_detected`` are deliberately ABSENT.
-#: Commit ``b98e9380f`` replaced the estimator behind them, so
-#: every capture banked before that commit records a value from the blunter
-#: instrument and comparing either would report a deliberate product
-#: improvement as a broken reconstruction. A banked-vs-replay disagreement
-#: on ``glitch_detected`` is DISCLOSED per capture instead.
-#: ``alignment_confidence`` / ``anchor_delay_us`` are absent for a
-#: different reason: they are not deterministic across re-analyses of one
-#: capture, so they cannot be a fidelity signal for anything.
-FIDELITY_FIELDS: tuple[str, ...] = (
-    "epsilon_ppm",
-    "woofer_repeat_epsilon_ppm",
-    "tweeter_repeat_epsilon_ppm",
-    "repeat_level_delta_db",
-    "linearity_ok",
-)
-
-#: How far a replayed fidelity field may sit from the banked one. The banked
-#: values are rounded to 3 decimals by ``analysis_diagnostic_summary``, so
-#: this is five times the rounding grain — tight enough that a different
-#: capture cannot pass, loose enough that the rounding cannot fail.
-FIDELITY_TOLERANCE = 5e-3
 
 #: Decimal places the published dB figures carry. One, because the pooling
 #: below is a median over sweeps whose own scatter is tenths of a dB.
@@ -169,551 +84,39 @@ _DB_DECIMALS = 1
 #: significant digit often sits three places in.
 _PERCENT_DECIMALS = 3
 
-
-#: The round banks no MEASURE capture this instrument can read.
+#: The round banks no MEASURE or branch take this view can read.
 NO_ADMISSIBLE_CAPTURES = "no_admissible_captures"
 
-#: The MEASURE program could not be rebuilt to any stimulus id its takes recorded.
-PROGRAM_NOT_REPRODUCIBLE = "program_not_reproducible"
 
-#: The round's flow state or applied profile lacks what the rebuild reads.
-STATE_UNREADABLE = "state_unreadable"
-
-#: Captures were found and every one of them failed a gate.
-NO_CAPTURE_PASSED_THE_GATES = "no_capture_passed_the_gates"
-
-#: No scope was supplied and the ring holds MEASURE captures this reader
-#: cannot attribute to one session. See :func:`_scope_captures` for what
-#: reading them together would silently publish.
-RING_NOT_SCOPED_TO_ONE_SESSION = "ring_not_scoped_to_one_session"
+class SweepGridsDisagree(ValueError):
+    """One role's sweeps were read on different grids, which pooling by index would hide."""
 
 
-def _read_mono(path: Path, *, sample_rate_hz: int | None = None) -> np.ndarray:
-    """One WAV as mono float64 in [-1, 1), at whatever width it was written.
-
-    Width comes from the container's own ``fmt`` chunk, never assumed: the dump
-    ring holds 16-bit phone captures AND 32-bit wired captures, and reading one
-    as the other is a 96 dB level error that would read as a distortion finding.
-    """
-    with wave.open(str(path)) as handle:
-        channels = handle.getnchannels()
-        width = handle.getsampwidth()
-        frames = handle.getnframes()
-        raw = handle.readframes(frames)
-        if sample_rate_hz is not None and handle.getframerate() != sample_rate_hz:
-            raise ValueError("capture sample rate does not match the stimulus")
-        if len(raw) != frames * channels * width:
-            raise ValueError("capture WAV is truncated")
-    if width == 2:
-        samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / 2**15
-    elif width == 4:
-        samples = np.frombuffer(raw, dtype="<i4").astype(np.float64) / 2**31
-    else:
-        raise ValueError(f"{path.name}: unsupported sample width {width} bytes")
-    return samples[::channels] if channels > 1 else samples
-
-
-def _banked_sweep_durations_s(
-    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]]
-) -> dict[str, float] | None:
-    """The round's OWN realized per-role MEASURE sweep length, if it banked one.
-
-    #2923: a round composed since #2921 may have had either sweep FITTED to a
-    declared duration limit — a continuous float no search grid can reach — so
-    a round that banked the realized length (``V2ConductorSnapshot.
-    measure_sweep_durations_s``) is read back EXACTLY here instead of
-    re-derived. ``None`` for every round banked before that field existed.
-
-    **Every VALUE's own failure mode is fail-soft: an unusable value makes
-    this return ``None``, never raise.** Malformed or partial values (wrong
-    type, non-finite, non-positive, a missing role) are treated as absent, and
-    so is a value too short to close one cycle at f1 — but the ceiling checked
-    against is the band the COMPOSER will actually sweep,
-    ``_intersect_band(band, MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ)``
-    (150–23,000 Hz), not the raw declared one, so a datasheet-wide tweeter
-    band at or above 24 kHz clamps DOWN before Nyquist (24,000 Hz at this
-    module's 48 kHz sample rate) ever enters the question. Both the kernel
-    function and the intersection are imported rather than restated, so
-    neither rule can drift into a second copy.
-    """
-    raw = state.get("measure_sweep_durations_s")
-    if not isinstance(raw, Mapping):
+def distortion_evidence(program: ExcitationProgram, analysis: Any, samples: np.ndarray,
+                        calibration: CalibrationCurve | None) -> dict[str, Any] | None:
+    """Each role's H2/H3 rows, pooled over its per-driver sweeps in the
+    ``samples`` ``analysis`` read, at its anchors and drift, or their coded
+    gap, so the take banks its curves whatever this can read. A program with
+    no per-driver sweep, and a level probe, have none (ADR-0394)."""
+    sweeps = [segment for segment in program.stimulus_segments() if segment.kind == KIND_SWEEP]
+    if not sweeps or is_level_probe(program):
         return None
-
-    durations: dict[str, float] = {}
-    for role in bands:
-        value = raw.get(role)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        if not math.isfinite(value) or value <= 0.0:
-            return None
-        # The band the composer will actually sweep over — the same clamp, constants
-        # and function ``build_measure_program``'s own ``_band()`` closure calls.
-        # Deliberately OUTSIDE the try/except below: a ``bands`` argument that does
-        # not intersect the measurement window at all is not a malformed VALUE
-        # this function fails soft over, and the caller's own unconditional
-        # ``RoleBand(...)`` reaches the same intersection unguarded moments later.
-        f1, f2 = _intersect_band(
-            FrequencyBand(*bands[role]), MEASURE_SWEEP_F_LO_HZ, MEASURE_SWEEP_F_HI_HZ,
-        )
-        try:
-            synchronized_sweep_metadata(
-                f1=f1, f2=f2, duration_approx_s=float(value),
-                sample_rate=PROGRAM_SAMPLE_RATE_HZ,
-            )
-        except ValueError:
-            return None
-        durations[role] = float(value)
-    return durations
-
-
-def banked_roles(state: Mapping[str, Any]) -> tuple[str, ...]:
-    """Declared target IDs, retaining the channel order of legacy role plans."""
-    gains = state.get("gain_plan_db")
-    banked = tuple(gains) if isinstance(gains, Mapping) else ()
-    return next((roles for roles in DRIVER_ROLES_BY_WAY.values() if set(roles) == set(banked)), banked)
-
-
-def round_bands_hz(
-    state: Mapping[str, Any], overrides: Mapping[str, tuple[float, float]]
-) -> dict[str, tuple[float, float]]:
-    """The band each role THIS round swept, keyed by role.
-
-    Roles come from :func:`banked_roles`, the same set
-    :func:`rebuild_measure_program` composes against, so no caller can hand it
-    a shape it will only refuse. Refuses rather than dropping a role it cannot
-    place, which would compose a program silently missing a sweep.
-    """
-    roles = banked_roles(state)
-    if not roles or not overrides.keys() >= set(roles):
-        gains = state.get("gain_plan_db")
-        raise EvidenceUnavailable(
-            STATE_UNREADABLE,
-            {
-                "missing": "a band for every role this round's gain plan names",
-                "gain_plan_roles": sorted(gains) if isinstance(gains, Mapping) else [],
-                "bands_offered": sorted(overrides),
-            },
-        )
-    return {role: overrides[role] for role in roles}
-
-
-def _measure_program_at(state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]],
-                        session_volume_db: float, prelude: bool) -> ExcitationProgram:
-    """The MEASURE program this round's state composes at one session volume."""
-    roles, gains = banked_roles(state), state["gain_plan_db"]
-    roles_bands = tuple(RoleBand(role, index, FrequencyBand(*bands[role])) for index, role in enumerate(roles))
-    # Both pilot rules asked of the composer, never restated here.
-    pilot_role = leading_pilot_role(roles_bands)
-    return build_measure_program(
-        {role: float(gains[role]) for role in roles}, roles_bands,
-        sweep_durations=_banked_sweep_durations_s(state, bands), downstream_gain_db=session_volume_db,
-        leading_pilot_gains_db=pilot_gains(float(gains[pilot_role])), leading_pilot_role=pilot_role,
-        courtesy_prelude=prelude,
-    )
-
-
-def rebuild_measure_program(
-    state: Mapping[str, Any], bands: Mapping[str, tuple[float, float]], stimulus_ids: Set[str],
-    recorded_schema_versions: Collection[int] = (),
-) -> tuple[ExcitationProgram, bool]:
-    """Return (program, prelude), proved by one of the stimulus ids its MEASURE takes recorded.
-
-    The id leaves the fader out (#5012), so one composition per prelude proves
-    it, and each take is read at the volume it recorded. Use banked sweep
-    durations when present. Refuse an unproved reconstruction: harmonic offsets
-    depend on its sweep L. ``recorded_schema_versions`` are the program schema
-    versions the MEASURE takes banked; an older one is the cause on its own.
-    """
-
-    roles = banked_roles(state)
-    raw_gains = state.get("gain_plan_db")
-    gains = raw_gains if isinstance(raw_gains, Mapping) else {}
-    prefixes = sorted(stimulus_id[:12] for stimulus_id in stimulus_ids)
-    if not roles or set(bands) != set(roles):
-        raise EvidenceUnavailable(
-            STATE_UNREADABLE,
-            {
-                "missing": "a gain plan naming one shape's roles, and a band each",
-                "gain_plan_roles": sorted(gains),
-                "bands_supplied": sorted(bands),
-                "stimulus_ids": prefixes,
-            },
-        )
-    # WHETHER the state carries a banking attempt at all, independent of whether
-    # that attempt turned out usable: :func:`_banked_sweep_durations_s`
-    # collapses "never banked" and "banked something unusable" to the same
-    # ``None``, which is right for COMPOSING and wrong for the refusal note
-    # below.
-    raw_banked_durations = state.get("measure_sweep_durations_s")
-    banked_durations_present = isinstance(raw_banked_durations, Mapping)
-    banked_durations = _banked_sweep_durations_s(state, bands)
-    shipped = courtesy_prelude_for_phase(PHASE_MEASURE)
-    for prelude in (shipped, not shipped):
-        program = _measure_program_at(state, bands, 0.0, prelude)
-        if program.stimulus_id in stimulus_ids:
-            return program, bool(prelude)
-    recorded = sorted(set(recorded_schema_versions))
-    superseded = [version for version in recorded if version < PROGRAM_SCHEMA_VERSION]
-    causes = ["program_schema_superseded"] if superseded else [
-        "sweep_durations_unbanked" if not banked_durations_present
-        else "sweep_durations_unusable" if banked_durations is None else "banked_sweep_durations_wrong",
-        "bands_wrong", "not_a_measure_round",
-    ]
-    if not banked_durations_present:
-        duration_cause = (
-            "this round's sweeps were FITTED to a declared duration limit "
-            "(#2921) — the composer shortens a sweep whose nominal length "
-            "would overshoot that limit. This round did not bank the "
-            "realized durations (#2923), so this replay composes at the "
-            "nominal length and cannot match a fitted program"
-        )
-    elif banked_durations is None:
-        duration_cause = (
-            "this round's state carries a measure_sweep_durations_s entry, "
-            "but the value for at least one role could not be used to "
-            "compose a real sweep (malformed, non-positive, too short for "
-            "one cycle at f1, or outside the measurable band) — TREATED "
-            "THE SAME AS ABSENT, so this replay composes at the nominal "
-            "length and cannot match a fitted program. This is a bank that "
-            "exists but is not usable, not a round that never banked"
-        )
-    else:
-        duration_cause = (
-            "this round banked its realized sweep durations (#2923) and "
-            "this replay composed at exactly them, so a duration fit is a "
-            "LESS LIKELY cause here than it is for an unbanked round — "
-            "check (2) and (3) first — but it is not ruled out: a "
-            "hand-edited banked value, or a genuine duration-limit change "
-            "replayed against a byte-identical band, could still leave the "
-            "banked figure wrong for this program"
-        )
-    raise EvidenceUnavailable(
-        PROGRAM_NOT_REPRODUCIBLE,
-        {
-            "stimulus_ids": prefixes,
-            "causes": causes,
-            "recorded_program_schema_versions": recorded,
-            "bands_hz": {role: list(band) for role, band in sorted(bands.items())},
-            # Two booleans, not one: "was anything banked" and "was what was banked
-            # usable" are different facts (#2923). Absent from banking is
-            # (False, False); banked-something-unusable is (True, False); banked and
-            # used to compose every attempt above is (True, True) — reaching THIS
-            # raise even so means the banked duration was fine and something else is
-            # the actual cause.
-            "measure_sweep_durations_banked": banked_durations_present,
-            "measure_sweep_durations_usable": banked_durations is not None,
-            "note": (
-                f"the MEASURE takes banked program schema {superseded}, which schema "
-                f"{PROGRAM_SCHEMA_VERSION} superseded: no current composition reproduces "
-                "their id (#5012), so the round cannot be read, only re-measured"
-            ) if superseded else (
-                "the rebuilt program does not reproduce any stimulus id the MEASURE "
-                "takes recorded, with the courtesy prelude either on or off. Three "
-                f"causes: (1) {duration_cause}; (2) the driver bands supplied are wrong "
-                "for this round; (3) this state does not describe a MEASURE round. "
-                "Only (2) and (3) are fixable by re-invoking — (1) needs the round "
-                "to bank its sweep durations (#2923) when it has not already"
-            ),
-        },
-    )
-
-
-def _state_capture_session_id(state: Mapping[str, Any]) -> str | None:
-    """The flow state's capture id, distinct from the bundle id."""
-    value = state.get("session_id")
-    return value if isinstance(value, str) and value else None
-
-
-def _crossover_fc_hz(
-    applied_profile: Mapping[str, Any] | None, profile_reason: str
-) -> float:
-    """The round's declared crossover corner, read from the applied-profile SSOT.
-
-    ``analyze_program_capture`` REFUSES a MEASURE capture without one, and the
-    fidelity gate runs that analysis, so this is a precondition rather than a
-    nicety. Read from
-    :func:`~jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state`,
-    never from the flow state: what that state records about the previous
-    apply is one apply behind after any v2 apply and arbitrarily behind after
-    an apply through a door that never touches v2 state.
-    """
-    snapshot = (
-        applied_profile.get("recomposition_snapshot")
-        if isinstance(applied_profile, Mapping)
-        else None
-    )
-    preset = snapshot.get("preset") if isinstance(snapshot, Mapping) else None
-    regions = preset.get("crossover_regions") if isinstance(preset, Mapping) else None
-    first = regions[0] if isinstance(regions, list) and regions else None
-    value = first.get("fc_hz") if isinstance(first, Mapping) else None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise EvidenceUnavailable(
-            STATE_UNREADABLE,
-            {
-                "missing": (
-                    "applied_baseline_profile.recomposition_snapshot.preset."
-                    "crossover_regions[0].fc_hz"
-                ),
-                "reason": profile_reason,
-                "note": (
-                    "the shipped MEASURE analysis refuses a capture without the "
-                    "round's crossover corner, and the fidelity gate runs that "
-                    "analysis, so a round whose applied profile does not record "
-                    "one cannot be read for harmonics at all"
-                ),
-            },
-        )
-    fc = float(value)
-    if not math.isfinite(fc) or fc <= 0.0:
-        raise EvidenceUnavailable(
-            STATE_UNREADABLE,
-            {"field": "crossover_regions[0].fc_hz", "value": value},
-        )
-    return fc
-
-
-def _bind_measure_captures(
-    dumps_dir: Path, *, unscoped_omissions: list[dict[str, str]] | None = None,
-) -> list[dict[str, Any]]:
-    """Bind solo-sweep captures and disclose omissions without a round identity."""
-    bound: list[dict[str, Any]] = []
-    unscoped = unscoped_omissions if unscoped_omissions is not None else []
-    for sidecar_path in sorted(dumps_dir.glob(RING_SIDECAR_GLOB)):
-        try:
-            doc = json.loads(sidecar_path.read_text())
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
-            unscoped.append({"sidecar": sidecar_path.name,
-                             "reason": "sidecar_unreadable" if isinstance(exc, OSError) else "sidecar_malformed"})
-            continue
-        if not isinstance(doc, Mapping) or not isinstance(doc.get("phase"), str) or not doc["phase"]:
-            unscoped.append({"sidecar": sidecar_path.name, "reason": "sidecar_malformed"})
-            continue
-        if doc["phase"] != PHASE_MEASURE and doc.get("graph_scope") != "candidate_branches":
-            continue
-        sha = doc.get("wav_sha256")
-        sha = sha if isinstance(sha, str) else ""
-        wav_path = sidecar_path.parent.parent / "wav" / f"{sidecar_path.stem}.wav"
-        identity = doc.get(SESSION_IDENTITY_KEY)
-        banked = identity.get("session_id") if isinstance(identity, Mapping) else None
-        if not isinstance(banked, str) or not banked:
-            unscoped.append({"sidecar": sidecar_path.name, "reason": "session_identity_missing"})
-        bound.append({
-            "wav": wav_path,
-            "take_id": doc.get("take_id") or sidecar_path.stem,
-            "sidecar_path": sidecar_path.name,
-            "sidecar": dict(doc),
-            "wav_sha256": sha,
-            "session_id": banked if isinstance(banked, str) and banked else None,
-        })
-    return bound
-
-
-def _scope_captures(
-    banked: list[dict[str, Any]], session_id: str | None
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Select one bundle's takes; never pool an ambiguous unscoped ring."""
-    if session_id is not None:
-        return (
-            [capture for capture in banked if capture["session_id"] == session_id],
-            {
-                "session_id": session_id,
-                "source": "supplied by the caller (the bundle's info.json)",
-                "n_ring_captures": len(banked),
-            },
-        )
-    identities = {capture["session_id"] for capture in banked}
-    if len(identities) > 1 or (identities and None in identities):
-        raise EvidenceUnavailable(
-            RING_NOT_SCOPED_TO_ONE_SESSION,
-            {
-                "n_ring_captures": len(banked),
-                "distinct_session_ids": sorted(
-                    identity for identity in identities if identity is not None
-                ),
-                "n_unattributed": sum(
-                    1 for capture in banked if capture["session_id"] is None
-                ),
-                "note": (
-                    "no scope was supplied and this ring's MEASURE captures do "
-                    "not all belong to one session, so which of them this "
-                    "round's program was played through cannot be established. "
-                    "Reading them together would publish one round's drive "
-                    "level against another round's capture, which no gate here "
-                    "can detect because the fidelity fields are all "
-                    "amplitude-invariant. Supply the bundle's session_id"
-                ),
-            },
-        )
-    only = next(iter(identities), None)
-    return (
-        list(banked),
-        {
-            "session_id": only,
-            "source": (
-                "no scope supplied; the ring's MEASURE captures all carry this "
-                "one session identity"
-            ),
-            "n_ring_captures": len(banked),
-        },
-    )
-
-
-def _sign_convention(calibration_id: str) -> str:
-    """How to read this session's calibration file — asked of the product's own
-    registry rather than pinned here.
-
-    A vendor file states either the microphone's RESPONSE or a CORRECTION, and
-    the two differ by a sign. Getting it backwards moves every magnitude in
-    the read without moving one timing diagnostic, so nothing downstream would
-    catch it — which is why the convention is resolved from the id the SESSION
-    banked rather than from a default or a flag.
-    """
-
-    parts = set(str(calibration_id).split("-"))
-    for key, spec in SUPPORTED_MODELS.items():
-        if key in parts:
-            return str(spec["sign_convention"])
-    return DEFAULT_SIGN_CONVENTION
-
-
-def _calibration_for(captures: list[dict[str, Any]], text: str | None):
-    """``(curve, description)`` for this round's captures, or ``(None, why)``.
-
-    The convention comes from the FIRST bound capture's own
-    ``setup_calibration_id``, that being the microphone the session recorded
-    using; a file parsed under the other convention would be applied with its
-    sign flipped.
-    """
-    if text is None:
-        return None, {
-            "applied": False,
-            "note": (
-                "no calibration supplied: every harmonic-to-fundamental ratio "
-                "carries the microphone's own response across an octave"
-            ),
-        }
-
-    calibration_id = str(captures[0]["sidecar"].get("setup_calibration_id") or "")
-    convention = _sign_convention(calibration_id)
-    curve = parse_calibration_text(text, sign_convention=convention)
-    return curve, {
-        "applied": True,
-        "sign_convention": convention,
-        "setup_calibration_id": calibration_id,
-        "n_points": len(curve.freqs_hz),
-    }
-
-
-def _fidelity_failures(
-    replayed: Mapping[str, Any], banked: Mapping[str, Any]
-) -> list[str]:
-    """Which :data:`FIDELITY_FIELDS` the replay failed to reproduce.
-
-    A field the sidecar does not record is not compared — the bank predates some
-    of them — but a field it records and the replay omits IS a failure, because
-    that is the reconstruction losing something the session had.
-    """
-    failures: list[str] = []
-    for field in FIDELITY_FIELDS:
-        if field not in banked or banked[field] is None:
-            continue
-        mine, theirs = replayed.get(field), banked[field]
-        if mine is None:
-            failures.append(f"{field}: replay produced nothing, banked {theirs!r}")
-        elif isinstance(theirs, bool) or isinstance(mine, bool):
-            if bool(mine) != bool(theirs):
-                failures.append(f"{field}: replay {mine!r}, banked {theirs!r}")
-        elif isinstance(theirs, (int, float)) and isinstance(mine, (int, float)):
-            if abs(float(mine) - float(theirs)) > FIDELITY_TOLERANCE:
-                failures.append(f"{field}: replay {mine!r}, banked {theirs!r}")
-        elif mine != theirs:
-            failures.append(f"{field}: replay {mine!r}, banked {theirs!r}")
-    return failures
-
-
-def _glitch_disclosure(
-    replayed: Mapping[str, Any], banked: Mapping[str, Any]
-) -> str | None:
-    """A note when the bank and the replay disagree about capture integrity.
-
-    Not a gate (see :data:`FIDELITY_FIELDS`): a capture the session REJECTED
-    and this read treats as clean is being included on the strength of D7's
-    re-derivation, and the reader should be told which ones those are.
-    """
-    theirs, mine = banked.get("glitch_detected"), replayed.get("glitch_detected")
-    if theirs is None or mine is None or bool(theirs) == bool(mine):
-        return None
-    if bool(theirs):
-        return (
-            "banked glitch_detected=true, replay says false — rejected by the "
-            "pre-D7 desync guard, read here on D7's re-derivation"
-        )
-    return "banked glitch_detected=false, replay says TRUE — read with suspicion"
-
-
-def _read_one_capture(program, samples, sidecar, *, orders, calibration, fc_hz):
-    """Gate one capture, then read every sweep segment's distortion.
-
-    Returns ``(readings, failures, disclosure, compared)``. ``readings`` is
-    empty when a gate failed — a capture whose analysis does not reproduce is
-    not evidence about a speaker — and a sidecar carrying NONE of the gate
-    fields is refused outright: zero comparisons is not a passed gate.
-    """
-
-    banked = sidecar.get("diagnostic") or {}
-    compared = sum(
-        1 for field in FIDELITY_FIELDS
-        if field in banked and banked[field] is not None
-    )
-    if compared == 0:
-        return [], [
-            "sidecar carries none of the gate's diagnostic fields — nothing to "
-            "compare means nothing was validated, so the capture is refused "
-            "rather than read ungated"
-        ], None, 0
-
-    rate = program.sample_rate_hz
-    analysis = analyze_program_capture(
-        program, samples, rate,
-        calibration=calibration,
-        geometry=MeasurementGeometry(),
-        priors=MeasurementPriors(crossover_fc_hz=fc_hz),
-    )
-    replayed = analysis_diagnostic_summary(analysis)
-    failures = _fidelity_failures(replayed, banked)
-    if failures:
-        return [], failures, None, compared
-    disclosure = _glitch_disclosure(replayed, banked)
-
-    # The same bounding `analyze_program_capture` applies before locating, so
-    # the anchors below are the anchors it used.
-    bounded = deconv.cap_capture_length(
-        samples,
-        sweep_len=program.total_samples,
-        sample_rate=rate,
-        max_capture_seconds=program.total_samples / rate + CAPTURE_BOUND_MARGIN_S,
-    )
-    global_offset, _first, stimuli, _ambiguous = locate_global_offset(program, bounded, rate)
-    locations = locate_segments(program, bounded, rate, global_offset, stimuli)
-    epsilon = estimate_drift(program, bounded, rate, locations).epsilon_ppm / 1e6
-
-    readings = []
-    for segment in program.stimulus_segments():
-        if segment.kind != KIND_SWEEP:
-            continue
-        readings.append(
-            read_segment_distortion(
-                program, bounded, segment.segment_id,
-                global_offset + segment.start_sample,
-                orders=orders, calibration=calibration, epsilon=epsilon,
-                level_notes={
-                    "wav_sha256_12": str(sidecar.get("wav_sha256", ""))[:12],
-                    "phase": sidecar.get("phase"),
-                },
-            )
-        )
-    return readings, [], disclosure, compared
+    anchors = {location.segment_id: location.scheduled_start for location in analysis.locations}
+    epsilon = analysis.drift.epsilon_ppm / 1e6 if analysis.drift else 0.0
+    by_role: dict[str, list] = {}
+    try:
+        for segment in sweeps:
+            by_role.setdefault(str(segment.role), []).append(read_segment_distortion(
+                program, samples, segment.segment_id, anchors[segment.segment_id],
+                orders=HARMONIC_ORDERS, calibration=calibration, epsilon=epsilon))
+        roles = [_role_block(role, readings, HARMONIC_ORDERS) for role, readings in sorted(by_role.items())]
+    except ValueError as exc:
+        reason = (REASON_HARMONIC_WINDOW_OUT_OF_RANGE if isinstance(exc, deconv.HarmonicWindowOutOfRange)
+                  else REASON_SWEEP_GRIDS_DISAGREE if isinstance(exc, SweepGridsDisagree) else REASON_COVERAGE_SHORT)
+        log_event(logger, "active_speaker.distortion_not_banked", level=logging.WARNING,
+                  stimulus_id=program.stimulus_id, reason=reason, error_type=type(exc).__name__)
+        return unavailable(reason)
+    return {"orders": list(HARMONIC_ORDERS), "roles": roles}
 
 
 def _median(values: Sequence[float]) -> float:
@@ -749,7 +152,7 @@ def _nullable(value: float, decimals: int = _DB_DECIMALS) -> float | None:
     return round(float(value), decimals) if math.isfinite(value) else None
 
 
-def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) -> dict:
+def _role_block(role: str, readings: list, orders: tuple[int, ...]) -> dict:
     """One (capture, role)'s rows, pooled over that role's in-capture sweeps.
 
     **Pooling is per capture on purpose, and it is what makes the spread below
@@ -765,7 +168,7 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     """
     first = readings[0]
     if not all(np.array_equal(r.freqs_hz, first.freqs_hz) for r in readings):
-        raise ValueError(f"role {role}: sweep grids disagree; cannot pool by index")
+        raise SweepGridsDisagree(role)
 
     fund_pool = np.median(np.stack([r.fundamental_db for r in readings]), axis=0)
     fund_delta = fund_pool - float(np.median(fund_pool))
@@ -824,7 +227,6 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     drives = [r.drive for r in readings]
     return {
         "role": role,
-        "wav_sha256_12": sha12,
         "n_sweeps": len(readings),
         "sweep": {
             "f1_hz": round(float(first.sweep.f1), 1),
@@ -857,66 +259,18 @@ def _role_block(role: str, readings: list, sha12: str, orders: tuple[int, ...]) 
     }
 
 
-def _banked_program_schema(sidecar: Mapping[str, Any]) -> int | None:
-    """The schema version of the program a capture banked, or ``None``."""
-    recorded = sidecar.get("program")
-    version = recorded.get("schema_version") if isinstance(recorded, Mapping) else None
-    return version if type(version) is int else None
-
-
-def _recorded_stimulus(sidecar: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The stimulus a capture's provenance recorded, or an empty mapping."""
-    provenance = sidecar.get("provenance")
-    stimulus = provenance.get("stimulus") if isinstance(provenance, Mapping) else None
-    return stimulus if isinstance(stimulus, Mapping) else {}
-
-
-def _recorded_stimulus_id(sidecar: Mapping[str, Any]) -> str | None:
-    """The stimulus id a capture recorded, when it is a non-empty string."""
-    stimulus_id = _recorded_stimulus(sidecar).get("stimulus_id")
-    return stimulus_id if isinstance(stimulus_id, str) and stimulus_id else None
-
-
-def _capture_program_identity(
-    sidecar: Mapping[str, Any], program: Any, state: Mapping[str, Any],
-    program_sha256: str | None,
-) -> tuple[dict[str, Any], str | None]:
-    identity = sidecar.get(SESSION_IDENTITY_KEY)
-    aliases = identity.get("aliases") if isinstance(identity, Mapping) else None
-    recorded_session = (
-        aliases.get(ALIAS_CAPTURE_SESSION_ID) if isinstance(aliases, Mapping) else None
-    ) or sidecar.get("capture_session_id")
-    recorded_program = _recorded_stimulus_id(sidecar)
-    recorded_sha = _recorded_stimulus(sidecar).get("wav_sha256")
-    state_session = _state_capture_session_id(state)
-    proof = {
-        "stimulus_id": recorded_program,
-        "stimulus_id_status": "matched" if recorded_program == program.stimulus_id else "unknown",
-        "stimulus_wav_status": "matched" if recorded_sha and recorded_sha == program_sha256 else "unknown",
-        "capture_session_id": recorded_session,
-        "state_capture_session_id": state_session,
-    }
-    if recorded_session and state_session and recorded_session != state_session:
-        return proof, "capture_session_mismatch"
-    if recorded_program and recorded_program != program.stimulus_id:
-        return proof, "stimulus_program_mismatch"
-    if recorded_sha and recorded_sha != program_sha256:
-        return proof, "stimulus_wav_mismatch"
-    return proof, None
-
-
-def _session_volume_db(sidecar: Mapping[str, Any]) -> float | None:
-    """The session volume a capture recorded playing at, or ``None``."""
-    provenance = sidecar.get("provenance")
+def _session_volume_db(record: Mapping[str, Any]) -> float | None:
+    """The session volume a take recorded playing at, or ``None``."""
+    provenance = record.get("provenance")
     return finite_float(provenance.get("session_volume_db")) if isinstance(provenance, Mapping) else None
 
 
-def _recorded_volume_drive(sidecar: Mapping[str, Any], volume_db: float | None) -> dict[str, Any]:
+def _recorded_volume_drive(record: Mapping[str, Any], volume_db: float | None) -> dict[str, Any]:
     """A MEASURE take's drive status: the id does not prove its recorded volume (#5012),
     so it is labelled as recorded and checked against the fader readback the take banked."""
     if volume_db is None:
         return {"status": "unknown", "effective_peak_dbfs": None, "reason": "session_volume_unrecorded"}
-    provenance = sidecar.get("provenance")
+    provenance = record.get("provenance")
     readback = provenance.get("main_volume_db") if isinstance(provenance, Mapping) else None
     if readback is None:
         return {"status": "recorded_session_volume", "session_volume_readback": "unrecorded"}
@@ -926,236 +280,51 @@ def _recorded_volume_drive(sidecar: Mapping[str, Any], volume_db: float | None) 
     return {"status": "recorded_session_volume", "session_volume_readback": "matched"}
 
 
-def read_round_harmonics(
-    round_dir: Path,
-    dumps_dir: Path,
-    state: Mapping[str, Any],
-    bands: Mapping[str, tuple[float, float]],
-    *,
-    session_id: str | None = None,
-    orders: Sequence[int] = HARMONIC_ORDERS,
-    calibration_text: str | None = None,
-    applied_profile_path: Path | None = None,
-) -> dict[str, Any]:
-    """Read valid takes and disclose every omitted take and unbound legacy drive."""
-    orders = tuple(int(order) for order in orders)
-    applied_profile, profile_reason = applied_profile_source(applied_profile_path)
-    fc_hz = _crossover_fc_hz(applied_profile, profile_reason)
-    unscoped_omissions: list[dict[str, str]] = []
-    banked = _bind_measure_captures(dumps_dir, unscoped_omissions=unscoped_omissions)
-    omissions = {"n_unscoped_omissions": len(unscoped_omissions),
-                 "unscoped_omissions": unscoped_omissions}
-    try:
-        captures, scope = _scope_captures(banked, session_id)
-    except EvidenceUnavailable as exc:
-        exc.detail.update(omissions)
-        raise
-    if not captures:
-        raise EvidenceUnavailable(
-            NO_ADMISSIBLE_CAPTURES,
-            {
-                "phase": PHASE_MEASURE,
-                "dumps_dir": dumps_dir.name,
-                "scope": scope,
-                **omissions,
-                "note": (
-                    "harmonics require per-driver or branch solo sweeps; "
-                    "a mono summed capture cannot attribute a harmonic to a target"
-                ),
-            },
-        )
-
-    schema_versions = {version for capture in captures
-                       if capture["sidecar"].get("graph_scope") != "candidate_branches"
-                       and (version := _banked_program_schema(capture["sidecar"])) is not None}
-    stimulus_ids = {stimulus_id for capture in captures
-                    if capture["sidecar"].get("graph_scope") != "candidate_branches"
-                    and (stimulus_id := _recorded_stimulus_id(capture["sidecar"]))}
-    measure = None
-
-    def program_for(sidecar):
-        """(program, session volume, prelude, rendered-WAV key) for a take that can be proved."""
-        nonlocal measure
-        if sidecar.get("graph_scope") == "candidate_branches":
-            program = ExcitationProgram.from_dict(sidecar["program"])
-            sweep = program.segment("sweep_w")
-            prelude = any(segment.kind == KIND_COURTESY_TONE for segment in program.segments)
-            return program, sweep.effective_peak_dbfs - sweep.gain_db, prelude, program.stimulus_id
-        if measure is None:
-            round_bands = round_bands_hz(state, bands)
-            proven, prelude = rebuild_measure_program(state, round_bands, stimulus_ids, schema_versions)
-            measure = proven, prelude, round_bands, {0.0: proven}
-        proven, prelude, round_bands, composed = measure
-        volume_db = _session_volume_db(sidecar)
-        if volume_db is None:
-            return proven, None, prelude, proven.stimulus_id
-        if volume_db not in composed:
-            composed[volume_db] = _measure_program_at(state, round_bands, volume_db, prelude)
-        # The fader never reaches the PCM, so every rebuilt take renders proven's WAV.
-        return composed[volume_db], volume_db, prelude, proven.stimulus_id
-
-    program_hashes: dict[str, str] = {}
-    calibration, calibration_note = _calibration_for(captures, calibration_text)
-
+def read_round_harmonics(bundle_dir: Path) -> dict[str, Any]:
+    """The reading every MEASURE and candidate-branch take of this bundle
+    banked, whatever its verdict, with no recording read. A take whose analysis
+    failed, or whose reading banked a gap, is refused by its reason; a take
+    banked before the reading refuses the view (ADR-0394)."""
     blocks: list[dict[str, Any]] = []
     read: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    disclosures: list[dict[str, str]] = []
-    seen: dict[str, str] = {}
-    for capture in captures:
-        sha12 = capture["wav_sha256"][:12]
-        take = {
-            "take_id": capture["take_id"],
-            "sidecar": capture["sidecar_path"],
-            "wav_sha256_12": sha12,
-            "position_deg": capture["sidecar"].get("position_deg"),
-        }
-        sidecar = capture["sidecar"]
-        stimulus = _recorded_stimulus(sidecar)
-        # Nothing reads a take banked under an older schema: no alias, no migration (#2902).
-        version = _banked_program_schema(sidecar)
-        superseded = version is not None and version < PROGRAM_SCHEMA_VERSION
-        if sidecar.get("graph_scope") == "candidate_branches":
-            refusal = "program_schema_superseded" if superseded else None
-        elif _recorded_stimulus_id(sidecar) is None:
-            refusal = "program_schema_superseded" if superseded else "stimulus_id_unrecorded"
-        else:
-            refusal = None
-        if refusal:
-            refused.append({**take, "reason": refusal, "fidelity_fields_compared": 0, "failures": [refusal]})
+    phases: Counter[str] = Counter()
+    for row, document in measurement_documents(bundle_dir):
+        phases[row.phase] += 1
+        branch = row.graph_scope == "candidate_branches"
+        if row.phase != PHASE_MEASURE and not branch:
             continue
-        program, volume_db, prelude, wav_key = program_for(sidecar)
-        if stimulus.get("wav_sha256"):
-            if wav_key not in program_hashes:
-                with tempfile.TemporaryDirectory(prefix="jts-harmonics-") as temporary:
-                    rendered = Path(temporary) / "program.wav"
-                    write_program_wav(rendered, program)
-                    program_hashes[wav_key] = sha256_file(rendered)
-        proof, reason = _capture_program_identity(
-            sidecar, program, state, program_hashes.get(wav_key),
-        )
-        try:
-            if not reason:
-                actual = sha256_file(capture["wav"])
-                if actual != capture["wav_sha256"]:
-                    reason = "capture_wav_mismatch"
-            if reason:
-                refused.append({**take, "reason": reason, "identity": proof,
-                                "fidelity_fields_compared": 0, "failures": [reason]})
-                continue
-            if actual in seen:
-                skipped.append({**take, "reason": "duplicate_wav", "duplicate_of": seen[actual]})
-                continue
-            samples = _read_mono(capture["wav"], sample_rate_hz=program.sample_rate_hz)
-            readings, failures, disclosure, compared = _read_one_capture(
-                program, samples, capture["sidecar"],
-                orders=orders, calibration=calibration, fc_hz=fc_hz,
-            )
-        except (OSError, wave.Error, ValueError, TypeError, EOFError) as exc:
-            refused.append({
-                **take,
-                "reason": "capture_wav_missing" if isinstance(exc, FileNotFoundError) else "capture_unreadable",
-                "fidelity_fields_compared": 0,
-                "failures": [type(exc).__name__],
-            })
+        take = {"take_id": document.get("take_id"), "record": record_path(row),
+                "wav_sha256_12": str(document.get("wav_sha256") or "")[:12], "position_deg": row.position_deg}
+        if "analysis_error" in document:
+            refused.append({**take, "reason": TAKE_CURVES_NOT_BANKED, "analysis_error": document["analysis_error"]})
             continue
-        if failures:
-            refused.append({
-                **take, "reason": "capture_fidelity_mismatch",
-                "fidelity_fields_compared": compared, "failures": failures,
-            })
+        analysis = _FIELDS.mapping(document.get("analysis", {}), f"{take['record']} analysis")
+        if "distortion" not in analysis:
+            raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"record": take["record"], "field": "analysis.distortion"})
+        reading = analysis["distortion"]
+        if reading is None:
+            # Its program plays no per-driver sweep, or is a level probe.
             continue
-        seen[actual] = capture["take_id"]
-        read.append({**take, "identity": proof, "fidelity_fields_compared": compared,
-                     "program": {
-                         "stimulus_id": program.stimulus_id,
-                         "session_volume_db": (
-                             volume_db if proof["stimulus_id_status"] == "matched" else None
-                         ),
-                         "solved_courtesy_prelude": prelude,
-                     }})
-        if disclosure:
-            disclosures.append({"wav_sha256_12": sha12, "note": disclosure})
-        by_role: dict[str, list] = {}
-        for reading in readings:
-            by_role.setdefault(reading.role or "?", []).append(reading)
-        for role, role_readings in sorted(by_role.items()):
-            block = _role_block(role, role_readings, sha12, orders)
-            drive = block["drive"]
-            drive["identity"] = proof
-            if proof["stimulus_id_status"] != "matched":
-                drive.update(stimulus_peak_dbfs=None, effective_peak_dbfs=None, status="unknown",
-                             reason="stimulus_program_identity_missing")
-            elif sidecar.get("graph_scope") == "candidate_branches":
-                drive["status"] = "program_declared"
-            else:
-                drive.update(_recorded_volume_drive(sidecar, volume_db))
-            blocks.append(block)
-
+        if _FIELDS.mapping(reading, f"{take['record']} analysis.distortion").get("status") == "unavailable":
+            refused.append({**take, "reason": reading["reason"]})
+            continue
+        read.append({**take, "calibration": document.get("capture_calibration")})
+        for block in reading["roles"]:
+            drive = {**block["drive"], **({"status": "program_declared"} if branch else
+                                          _recorded_volume_drive(document, _session_volume_db(document)))}
+            blocks.append({**block, "wav_sha256_12": take["wav_sha256_12"], "drive": drive})
     if not blocks:
-        raise EvidenceUnavailable(
-            NO_CAPTURE_PASSED_THE_GATES,
-            {
-                "n_captures": len(captures),
-                "refused": refused,
-                **omissions,
-                "note": (
-                    "every MEASURE capture in the ring failed a gate, so no "
-                    "reading is reportable. A capture whose analysis does not "
-                    "reproduce is not evidence about a speaker"
-                ),
-            },
-        )
-
+        # A round whose takes all refused for one reason refuses by it.
+        reasons = {take["reason"] for take in refused}
+        raise EvidenceUnavailable(reasons.pop() if len(reasons) == 1 else NO_ADMISSIBLE_CAPTURES,
+                                  {"phases_seen": dict(phases), "refused": refused})
+    calibrations = [take["calibration"] for take in read]
     return {
         "artifact_kind": HARMONICS_ARTIFACT_KIND,
-        "round_dir": round_dir.name,
-        "orders": list(orders),
-        "program": {
-            **{key: value if all(take["program"][key] == value for take in read) else None
-               for key, value in read[0]["program"].items()},
-            "crossover_fc_hz": round(fc_hz, 1),
-            "state_capture_session_id": _state_capture_session_id(state),
-        },
-        "captures": {
-            "scope": scope,
-            "n_read": len(read),
-            "n_refused": len(refused),
-            "n_skipped": len(skipped),
-            "skipped": skipped,
-            **omissions,
-            "read": read,
-            "refused": refused,
-            "integrity_disclosures": disclosures,
-            "fidelity_fields": list(FIDELITY_FIELDS),
-        },
-        "calibration": calibration_note,
+        "orders": list(HARMONIC_ORDERS),
+        "captures": {"n_read": len(read), "n_refused": len(refused), "read": read, "refused": refused},
+        # The one calibration every take read was captured through, else none.
+        "calibration": calibrations[0] if calibrations.count(calibrations[0]) == len(calibrations) else None,
         "roles": blocks,
     }
-
-
-def read_bundle_harmonics(
-    bank_dir: Path,
-    band_overrides: Mapping[str, tuple[float, float]],
-    *,
-    calibration_path: Path | None = None,
-) -> dict[str, Any]:
-    """Read the bank's capture ring and its matching saved inputs."""
-    inputs = round_inputs(banked_round_of(bank_dir) or bank_dir)
-    bundle_dir = inputs.session_dir
-    round_dir, why = round_artifact_dir(bundle_dir)
-    if round_dir is None:
-        raise ValueError(why)
-    if inputs.state_path is None:
-        raise EvidenceUnavailable(STATE_UNREADABLE, {"reason": inputs.state_reason})
-    state = json.loads(inputs.state_path.read_text())
-    if not isinstance(state, dict):
-        raise EvidenceUnavailable(STATE_UNREADABLE, {})
-    return read_round_harmonics(
-        round_dir, bundle_dir / CAPTURE_RING_DIR, state,
-        band_overrides,
-        session_id=bundle_session_id(bundle_dir),
-        calibration_text=calibration_path.read_text() if calibration_path else None,
-        applied_profile_path=inputs.applied_profile_path,
-    )

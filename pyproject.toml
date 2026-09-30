@@ -420,7 +420,6 @@ exhaustive = true
 exhaustive_ignores = [
   "accessories",
   "active_speaker",
-  "attribution",
   "audio_hardware",
   "bluetooth",
   "chip_aec",

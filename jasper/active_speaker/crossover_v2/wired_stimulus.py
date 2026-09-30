@@ -282,7 +282,7 @@ class CapturedRecordStore:
         # Analysis owns pose/attempt identity. Engine facts name what actually played.
         payload = {**metadata, **record, **{name: metadata[name] for name in
             ("take_id", "position_deg", "position_axis", "vertical_deg", "prompt", "stimulus_dbfs") if name in metadata}}
-        # The capture ring and the take index order and admit takes by it.
+        # The take index orders takes by it.
         payload.setdefault("captured_at", utc_now_iso())
         if answer is not None:
             for key, attr in (("capture_integrity", "capture_integrity"), ("capture_device", "device"),

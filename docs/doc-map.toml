@@ -539,7 +539,6 @@ id = "room-correction-and-calibration"
 safety = "audio-output-risk"
 code = [
   "jasper/active_speaker/**",
-  "jasper/attribution/**",
   "jasper/bass_extension/**",
   "jasper/runtime/measurement_window.py",
   "jasper/audio_measurement/**",

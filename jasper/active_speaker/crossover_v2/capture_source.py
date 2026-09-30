@@ -7,8 +7,8 @@
 See ADR-0231 §1.
 
 Two ownership rules: the provider mints the session identity (the bundle id
-is canonical for ATTRIBUTION; the provider's rides as the
-``ALIAS_CAPTURE_SESSION_ID`` alias), and the host owns the persisted-code
+is canonical for ATTRIBUTION; the provider's rides as each take's
+``capture_session_id``), and the host owns the persisted-code
 mapping, frozen because hydration and incident replay depend on it.
 """
 
