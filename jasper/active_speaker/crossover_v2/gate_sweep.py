@@ -4,7 +4,7 @@
 
 """Room or speaker: the same feature read through a ladder of gate windows.
 
-A banked round's captures are deconvolved, gated at a ladder of window
+The impulses a banked round's takes kept are gated at a ladder of window
 lengths, and read pose by pose. The discriminator is across-pose sigma that
 GROWS with window length, not sigma that is large: an azimuth-only pose
 cloud produces big, perfectly window-invariant HF scatter that is pure
@@ -17,9 +17,7 @@ delta is null-model corrected, because the window's own bias is not small
 and never vanishes; and every result carries the frame descriptor that
 produced it, one feature reading a materially different depth under each
 defensible frame. Poses are keyed on the full declared (azimuth, elevation,
-distance) triple, never a seat index at an assumed height (#3503), and
-captures are bound to programs by content hash, never by the sidecar's
-declared phase (#3504).
+distance) triple, never a seat index at an assumed height (#3503).
 
 One engine, two doors: :func:`sweep_round` reads a banked round directory,
 :func:`sweep_features` reads captures a caller already holds. The
@@ -235,9 +233,7 @@ def gated_curve(
     return np.interp(grid, freqs[keep], smoothed)
 
 
-def reference_gated_measurement(
-    bundle_dir: Path, record_path: str, *, calibration_root: Path | None = None,
-) -> dict[str, Any]:
+def reference_gated_measurement(bundle_dir: Path, record_path: str) -> dict[str, Any]:
     """One banked summed WAV through the analysis stage's adaptive reference gate."""
     record, wav = reopen_measurement_capture(bundle_dir, take_artifact_path(bundle_dir, record_path))
     if wav is None:
@@ -254,8 +250,7 @@ def reference_gated_measurement(
     averaged = average_summed_capture(program, aligned, offset)
     segment = program.segment("sweep_verify")
     impulse, _ = deconvolve_window(averaged, segment, offset + segment.start_sample, rate)
-    calibration = resolve_setup_calibration(record.get("capture_setup"), device=record.get("capture_device"),
-                                            root=calibration_root)
+    calibration = resolve_setup_calibration(record.get("capture_setup"), device=record.get("capture_device"))
     grid = analysis_grid()
     grid = grid[(grid >= segment.f1_hz) & (grid <= segment.f2_hz)]
     response = driver_response(
@@ -1099,7 +1094,7 @@ def sweep_features(
     grid, normalisation and null model — one engine, two doors. Computes from
     ``capture_id``, ``radiated_band_hz``, ``sample_rate``, ``ir`` and
     ``peak_idx`` alone and echoes the declared pose into each ``poses`` row;
-    ``wav``, ``program``, ``program_sha256`` and ``phase`` are never read, so
+    ``wav``, ``program_sha256`` and ``phase`` are never read, so
     a caller with none passes ``None``. Numbers banked from here need
     :func:`frame_descriptor`'s block beside them.
 
@@ -1164,9 +1159,6 @@ def sweep_round(
                 "vertical_deg": read.capture.vertical_deg,
                 "mark_distance_m": read.capture.mark_distance_m,
                 "capture_wav": read.capture.wav.name if read.capture.wav else None,
-                "program_wav": (
-                    read.capture.program.name if read.capture.program else None
-                ),
                 "program_sha256_12": read.capture.program_sha256[:12],
                 "sample_rate_hz": read.capture.sample_rate,
                 "direct_peak_ms": (

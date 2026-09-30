@@ -434,20 +434,6 @@ def test_neutral_adapter_uses_one_reference_for_the_whole_direct_run():
     assert run.series[1].magnitude_db[0] - run.series[1].reference_db == pytest.approx(-6.0)
 
 
-def test_archive_reference_is_authoritative_for_direct_records():
-    run = frequency_run_from_documents(
-        run_id="saved",
-        run_reference_db=-30.0,
-        documents=({
-            "reference_db": -20.0,
-            "freqs_hz": [300.0, 1000.0],
-            "magnitude_db": [-20.0, -20.0],
-        },),
-    )
-
-    assert run.series[0].reference_db == -30.0
-
-
 def test_neutral_adapter_never_exposes_bins_outside_the_stored_valid_band():
     run = frequency_run_from_documents(
         run_id="saved",
@@ -733,12 +719,10 @@ def summed_capture_bundle(tmp_path, request):
     return bundle, calibration_root, program, bank
 
 
-@pytest.mark.parametrize("summed_capture_bundle,reference_db", [(20000, None), (200, -24.0)],
-                         indirect=["summed_capture_bundle"])
 def test_frequency_reads_recorded_program_and_calibration_without_changing_level(
-    summed_capture_bundle, reference_db, tmp_path, capsys,
+    summed_capture_bundle, tmp_path, capsys,
 ):
-    bundle, calibration_root, program, bank = summed_capture_bundle
+    bundle, _, program, bank = summed_capture_bundle
     first = asyncio.run(bank("baseline"))
     second = asyncio.run(bank("bass", scope="candidate", candidate="bass-6db", setup={
         "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
@@ -752,16 +736,7 @@ def test_frequency_reads_recorded_program_and_calibration_without_changing_level
     record = json.loads((bundle / EVIDENCE_ROOT / "artifacts" / first).read_text())
     assert ExcitationProgram.from_dict(record["program"]).stimulus_id == program.stimulus_id
     destination = tmp_path / "frequency.json"
-    reference_args = [] if reference_db is None else ["--reference-db", str(reference_db)]
-    if reference_db is not None:
-        assert round_views_main([
-            "frequency", str(bundle), "--analyze-wavs", "--calibration-root", str(calibration_root),
-            "--out", str(destination),
-        ]) == EXIT_UNREADABLE
-    assert round_views_main([
-        "frequency", str(bundle), "--analyze-wavs", "--calibration-root", str(calibration_root),
-        "--out", str(destination), *reference_args,
-    ]) == 0
+    assert round_views_main(["frequency", str(bundle), "--out", str(destination)]) == 0
     view = json.loads(destination.read_text())
     baseline, bass = view["runs"][0]["series"]
     assert view["runs"][0]["metadata"]["position_count"] == 1
@@ -778,24 +753,8 @@ def test_frequency_reads_recorded_program_and_calibration_without_changing_level
     band = (frequencies >= 40) & (frequencies <= program.segment("sweep_verify").f2_hz * 0.9)
     assert np.array(baseline["magnitude_db"])[band] == pytest.approx(20 * np.log10(0.4) - 20, abs=0.3)
     assert np.array(bass["magnitude_db"]) - np.array(baseline["magnitude_db"]) == pytest.approx(2, abs=0.001)
-    assert baseline["reference_db"] == pytest.approx(
-        20 * np.log10(0.4) - 20 if reference_db is None else reference_db, abs=0.3,
-    )
-    if reference_db is not None:
-        assert baseline["reference_db"] == bass["reference_db"] == reference_db
-        assert np.array(baseline["display"]["deviation_db"]) == pytest.approx(
-            np.array(baseline["magnitude_db"]) - reference_db,
-        )
+    assert baseline["reference_db"] == pytest.approx(20 * np.log10(0.4) - 20, abs=0.3)
     assert before == {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
-
-
-@pytest.mark.parametrize("reference_db", [float("nan"), float("inf"), float("-inf")])
-def test_frequency_wav_analysis_rejects_nonfinite_reference(tmp_path, reference_db):
-    with pytest.raises(ValueError):
-        analyzed_frequency_run(tmp_path, run_reference_db=reference_db)
-    assert round_views_main([
-        "frequency", str(tmp_path), "--analyze-wavs", f"--reference-db={reference_db}",
-    ]) == EXIT_UNREADABLE
 
 
 @pytest.mark.parametrize("by_take_ids", [False, True])
@@ -885,14 +844,14 @@ def test_a_take_is_read_from_its_record_never_its_recording(summed_capture_bundl
 
 
 def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bundle, monkeypatch):
-    bundle, calibration_root, _, bank = summed_capture_bundle
+    bundle, _, _, bank = summed_capture_bundle
     asyncio.run(bank("seat", phase="lateral", measurement_purpose="room", setup={
         "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
     }))
     write_manifest(bundle, program="room")
     monkeypatch.setattr(gate_sweep, "resolve_setup_calibration", lambda *_args, **_kwargs: None)
 
-    measured, gated = analyzed_frequency_run(bundle, calibration_root=calibration_root).series
+    measured, gated = analyzed_frequency_run(bundle, gated_overlay=True).series
 
     assert measured.details["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
     assert (gated.details["window"], gated.details["calibration"]) == (

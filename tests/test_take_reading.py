@@ -29,7 +29,7 @@ from jasper.active_speaker.crossover_v2.take_reading import (
 )
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_REFUSED
-from tests.crossover_v2_fixtures import bank_capture_round
+from tests.crossover_v2_fixtures import CAPTURE_RECORDS, bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_audio_measurement_decay import _decay
 from tests.test_take_impulses import _response
@@ -47,7 +47,7 @@ def _take(capture_id: str, *, role: str = "summed", delay: int = 100, gain: floa
         if echo_ms is not None:
             ir[ORIGIN + delay + round(echo_ms * RATE / 1000)] = gain / 2
     return TakeRead(PoseCapture(
-        capture_id=capture_id, phase=None, wav=None, program=None, program_sha256="",
+        capture_id=capture_id, phase=None, wav=None, program_sha256="",
         azimuth_deg=0.0, vertical_deg=0.0, mark_distance_m=1.0, radiated_band_hz=band,
         sample_rate=RATE, ir=ir, peak_idx=int(np.argmax(np.abs(ir))),
         preprocessing={"impulse_source": "kept", "pre_guard_samples": ORIGIN, "clock_shift_samples": 0.0},
@@ -155,7 +155,7 @@ def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:
     banking its run and the second of the minute it was captured, or
     :func:`_set`'s takes and capture-basis fields; a set named ``base…`` is
     base, and a driver ``role`` set's takes keep that role's impulse beside
-    their recording."""
+    their summed one."""
     specs = {set_id: spec if isinstance(spec, tuple) else (spec, {}) for set_id, spec in sets.items()}
     rows = {set_id: [take + (None, 0, True)[len(take) - 2:] for take in takes] for set_id, (takes, _) in specs.items()}
     takes = [take for set_takes in rows.values() for take in set_takes]
@@ -164,16 +164,16 @@ def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:
     root = bank_capture_round(store / name, [ir] * len(takes), capture_ids=[take[0] for take in takes],
                               positions_deg=[take[1] for take in takes])
     session = (root / "bundle" / "b0").rename(root / "bundle" / name)
-    (session / "info.json").write_text(json.dumps({"bundle_schema_version": 1}))  # Kept impulses record artifacts.
-    docs = {doc["position_id"]: (str(path.relative_to(session)), doc)
-            for path in session.glob("summed/*.json") for doc in [json.loads(path.read_text())]}
+    docs = {doc["take_id"]: (str(path.relative_to(session)), doc)
+            for path in (session / CAPTURE_RECORDS).glob("*.json") for doc in [json.loads(path.read_text())]}
     groups = []
     for set_id, set_takes in rows.items():
         basis = specs[set_id][1]
         for take_id, *_ in set_takes if basis.get("role") else ():
             record, doc = docs[take_id]
             doc["impulses"] = write_take_impulses(session, take_id, SimpleNamespace(
-                summed_response=None, driver_responses=(_response(basis["role"], 300),)), recording=doc["wav_path"])
+                summed_response=_response("summed", 480), driver_responses=(_response(basis["role"], 300),)),
+                recording=doc["wav_path"])
             (session / record).write_text(json.dumps(doc))
         for take_id, _, run_id, second, _ in set_takes:
             record, doc = docs[take_id]
@@ -284,9 +284,7 @@ def test_a_kept_record_the_rule_cannot_read_is_no_comparand(tmp_path):
     store = tmp_path / "campaigns"
     earlier = _banked(store, "e", "2026-09-20T12:00:00Z", {"base": [("e0", 0)]})
     this = _banked(store, "r", "2026-09-21T12:00:00Z", {"base": [("r0", 0)], "cand": [("c0", 0)]})
-    for record in (this / "bundle" / "r").glob("summed/*.json"):
-        if json.loads(record.read_text())["position_id"] == "r0":
-            record.write_text("{")
+    (this / "bundle" / "r" / CAPTURE_RECORDS / "r0.json").write_text("{")
 
     found = comparand(this, "cand", "c0", "summed")
 
@@ -307,7 +305,7 @@ def _rewritten(change):
     _rewritten(lambda manifest: manifest["sets"][0].pop("capture_basis")),
     _rewritten(lambda manifest: manifest["sets"][0].pop("takes")),
     _rewritten(lambda manifest: manifest["sets"][0]["takes"][0].pop("selected")),
-    lambda root: [record.write_text("{") for record in root.rglob("summed/*.json")],
+    lambda root: [record.write_text("{") for record in root.rglob(f"{CAPTURE_RECORDS}/*.json")],
 ], ids=["set-without-basis", "set-without-takes", "take-without-selected", "kept-record-unreadable"])
 def test_an_earlier_round_that_cannot_be_read_is_passed_over(tmp_path, damage):
     """A default is a convenience, never a refusal (ADR-0101): an earlier round

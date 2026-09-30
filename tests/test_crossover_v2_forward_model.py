@@ -14,7 +14,6 @@ import numpy as np
 import pytest
 import yaml
 
-from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
 from jasper.active_speaker.measurement_emit import compile_tuning_graph
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
@@ -25,7 +24,6 @@ from jasper.active_speaker.crossover_v2.capture_prediction import (
     predict_transfer,
     read_diagnostic,
 )
-from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.forward_model import (
     ACCEPTANCE_NOT_RUN,
     ForwardModelError,
@@ -40,7 +38,6 @@ from jasper.audio_measurement.program_analysis import (
     MeasurementPriors,
     analyze_program_capture,
 )
-from jasper.audio_measurement.sweep import write_sweep_wav
 from jasper.cli import crossover_prescriber
 from jasper.cli.round_views import (
     ARTIFACT_BY_VIEW,
@@ -48,7 +45,7 @@ from jasper.cli.round_views import (
     main as cli_main,
 )
 
-from tests.crossover_v2_fixtures import bank_capture_round
+from tests.crossover_v2_fixtures import bank_capture_round, capture_record
 from tests.run_manifest_fixture import write_manifest, manifest_set
 from tests.test_audio_measurement_program_analysis import (
     SR,
@@ -125,18 +122,18 @@ def diagnostic_round(tmp_path: Path) -> Path:
         "new-level": {"woofer": -4, "tweeter": 2, "summed": -1},
         "new-shape": {"woofer": 2, "tweeter": -3, "summed": 4},
     }
+    # Each take is read through its branch diagnostic, so it keeps no impulses.
     root = bank_capture_round(
         tmp_path,
         [physical[name][2] for name in physical],
         capture_ids=tuple(physical),
         positions_deg=(0.0, 0.0, 0.0),
+        kept_role=None,
     )
-    summed_dir = root / "bundle" / "b0" / "summed"
     for take_id, role_irs in physical.items():
-        path = summed_dir / f"summed_{take_id}.json"
+        path = capture_record(root, take_id)
         document = json.loads(path.read_text())
         document.update({
-            "take_id": take_id,
             "candidate_id": f"candidate-{take_id}",
             "graph_fingerprint": f"graph-{take_id}",
             "branch_diagnostic": {
@@ -169,7 +166,7 @@ def diagnostic_round(tmp_path: Path) -> Path:
         path.write_text(json.dumps(document))
     write_manifest(root, groups=[manifest_set(
         [(str(path.relative_to(root / "bundle/b0")), json.loads(path.read_text()))], set_id=name)
-        for name in physical for path in [root / "bundle/b0/summed" / f"summed_{name}.json"]])
+        for name in physical for path in [capture_record(root, name)]])
     return root
 
 
@@ -178,8 +175,7 @@ def test_forward_model_is_absent_from_the_cli_and_inventory(diagnostic_round, ca
     with pytest.raises(SystemExit) as caught:
         build_parser().parse_args(["forward-model", str(diagnostic_round)])
     assert caught.value.code == 2
-    broken = diagnostic_round / "bundle/b0/summed/summed_old.json"
-    broken.write_text("{")
+    capture_record(diagnostic_round, "old").write_text("{")
     assert cli_main(["inventory", str(diagnostic_round)]) == 0
     payload = json.loads(Path(json.loads(capsys.readouterr().out)["out"]).read_text())
     assert all(row["view"] != "forward-model" for row in payload["artifacts"])
@@ -188,7 +184,7 @@ def test_forward_model_is_absent_from_the_cli_and_inventory(diagnostic_round, ca
 def _bind_candidate_take(
     root: Path, take_id: str, candidate, profile, *, corrupt_graph: bool = False,
 ) -> None:
-    path = root / "bundle" / "b0" / "summed" / f"summed_{take_id}.json"
+    path = capture_record(root, take_id)
     document = json.loads(path.read_text())
     config = yaml.safe_load(compile_tuning_graph(
         profile, scope="candidate_branches", candidate=candidate,
@@ -264,48 +260,27 @@ def test_the_common_window_reconstructs_each_named_take_in_its_recording_clock(
     )
 
 
-@pytest.mark.parametrize("canonical", [False, True])
-def test_a_diagnostic_reads_each_record_and_hashes_each_audio_file_once(
-    diagnostic_round: Path, monkeypatch, canonical: bool,
-) -> None:
-    bundle = diagnostic_round / "bundle" / "b0"
-    record = bundle / "summed" / "summed_old.json"
-    wav = record.with_suffix(".wav")
-    if canonical:
-        document = json.loads(record.read_text())
-        document.update(kind=POSITION_EVIDENCE_KIND, wav_path="summed/summed_old.wav",
-                        wav_sha256=round_captures.sha256_file(wav))
-        record = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/old.json"
-        record.parent.mkdir(parents=True)
-        record.write_text(json.dumps(document))
-    reads, hashes = Counter(), Counter()
-    read_text, load_mapping, hash_file = (
-        Path.read_text, record_index.read_json_mapping, round_captures.sha256_file,
-    )
+def test_a_diagnostic_reads_each_record_once(diagnostic_round: Path, monkeypatch) -> None:
+    record = capture_record(diagnostic_round, "old")
+    reads: Counter = Counter()
+    read_text, load_mapping = Path.read_text, record_index.read_json_mapping
 
     def read(path, *args, **kwargs):
         reads[path] += 1
         return read_text(path, *args, **kwargs)
 
     def load(path):
-        # A canonical record loads through record_index's JSON-mapping owner
-        # (builtin `open`), never `Path.read_text`; count it on the same path
-        # key so the pin covers both loading routes.
+        # A record loads through record_index's JSON-mapping owner (builtin
+        # `open`), never `Path.read_text`; count it on the same path key so the
+        # pin covers both loading routes.
         reads[path] += 1
         return load_mapping(path)
 
-    def digest(path):
-        hashes[path] += 1
-        return hash_file(path)
-
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(record_index, "read_json_mapping", load)
-    monkeypatch.setattr(round_captures, "sha256_file", digest)
     basis = read_diagnostic(diagnostic_round, "old", 7.0)
 
     assert reads[record] == 1
-    assert hashes[wav] == 1
-    assert all(count == 1 for count in hashes.values())
     assert set(basis.captures) == {"woofer", "tweeter", "summed"}
     assert all(capture.record_document is basis.document for capture in basis.captures.values())
 
@@ -382,7 +357,7 @@ def test_the_diagnostic_reader_refuses_an_unanswerable_exact_read(
     diagnostic_round: Path, capture_id: str, window_ms: float, error: type[Exception],
 ) -> None:
     if capture_id == "missing-clock":
-        path = diagnostic_round / "bundle/b0/summed/summed_old.json"
+        path = capture_record(diagnostic_round, "old")
         document = json.loads(path.read_text())
         del document["branch_diagnostic"]["responses"][0]["clock_shift_samples"]
         path.write_text(json.dumps(document))
@@ -418,17 +393,11 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
     analysis = analyze_program_capture(
         program, capture, SR, priors=MeasurementPriors(crossover_fc_hz=1600),
     )
-    root = bank_capture_round(tmp_path, [np.array([0.0, 1.0])], capture_ids=("raw",))
-    sidecar = root / "bundle" / "b0" / "summed" / "summed_raw.json"
-    wav = sidecar.with_suffix(".wav")
-    write_sweep_wav(wav, capture.astype(np.float32), SR)
-    document = json.loads(sidecar.read_text())
-    document.update({
-        "take_id": "raw",
-        "graph_fingerprint": "raw-graph",
-        "branch_diagnostic": analysis.branch_diagnostic,
-    })
-    sidecar.write_text(json.dumps(document))
+    root = bank_capture_round(tmp_path, [np.array([0.0, 1.0])], capture_ids=("raw",), kept_role=None)
+    record = capture_record(root, "raw")
+    document = json.loads(record.read_text())
+    document.update({"graph_fingerprint": "raw-graph", "branch_diagnostic": analysis.branch_diagnostic})
+    record.write_text(json.dumps(document))
 
     basis = read_diagnostic(root, "raw", 7.0, branch_roles=branches)
     assert basis.branches == branches
@@ -448,7 +417,7 @@ def test_an_analyzed_raw_branch_record_reconstructs_after_measured_clock_drift(
 
 
 def test_prediction_reconstructs_selected_physical_branches(diagnostic_round):
-    path = diagnostic_round / "bundle/b0/summed/summed_old.json"
+    path = capture_record(diagnostic_round, "old")
     document = json.loads(path.read_text())
     identities = {"woofer": "left:woofer", "tweeter": "left:woofer:rear", "summed": "summed"}
     for response in document["branch_diagnostic"]["responses"]:
@@ -456,7 +425,7 @@ def test_prediction_reconstructs_selected_physical_branches(diagnostic_round):
     path.write_text(json.dumps(document))
     with pytest.raises(EvidenceUnavailable) as caught:
         read_diagnostic(diagnostic_round, "old", 7.0)
-    assert caught.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
+    assert caught.value.reason == round_captures.REFUSE_ROLE_NOT_RECORDED
     basis = read_diagnostic(diagnostic_round, "old", 7.0,
                             branch_roles=("left:woofer", "left:woofer:rear"))
     assert basis.branches == ("left:woofer", "left:woofer:rear")
@@ -476,13 +445,11 @@ def test_the_forecast_is_unjudged_and_keeps_its_identity_when_relocated(
     target = _trial_candidate(tuning_profile, trim=-5.0, gain=4.0)
     _bind_candidate_take(diagnostic_round, "old", source, tuning_profile)
     bundle = diagnostic_round / "bundle/b0"
-    path = bundle / "summed/summed_old.json"
+    path = capture_record(diagnostic_round, "old")
     document = json.loads(path.read_text())
-    extra = dict(document, take_id="old-off", position_id="old-off", position_deg=15.0,
-                 wav_path="summed/summed_old-off.wav")
-    extra_path = path.with_stem("summed_old-off")
+    extra = dict(document, take_id="old-off", position_deg=15.0, wav_path="summed/summed_old-off.wav")
+    extra_path = capture_record(diagnostic_round, "old-off")
     extra_path.write_text(json.dumps(extra))
-    shutil.copyfile(path.with_suffix(".wav"), extra_path.with_suffix(".wav"))
     write_manifest(diagnostic_round, groups=[manifest_set([
         (str(path.relative_to(bundle)), document),
         (str(extra_path.relative_to(bundle)), extra),
@@ -502,15 +469,8 @@ def test_the_forecast_is_unjudged_and_keeps_its_identity_when_relocated(
 
     relocated = tmp_path / "relocated"
     shutil.copytree(diagnostic_round, relocated)
-    bundle = relocated / "bundle" / "b0"
-    source_record = bundle / "summed" / f"summed_{source_id}.json"
-    document = json.loads(source_record.read_text())
-    document.update(kind=POSITION_EVIDENCE_KIND, wav_path=f"summed/summed_{source_id}.wav",
-                    wav_sha256=round_captures.sha256_file(source_record.with_suffix(".wav")))
-    canonical = bundle / EVIDENCE_ROOT / "artifacts/crossover_v2/wired-test/positions/source.json"
-    canonical.parent.mkdir(parents=True, exist_ok=True)
-    canonical.write_text(json.dumps(document))
-    source_record.unlink()
+    source_record = capture_record(relocated, source_id)
+    source_record.rename(source_record.with_name("source.json"))
     relocated_forecast = capture_prediction(relocated, capture_id=source_id,
                                             candidate=target, basis_candidate=source)
     assert relocated_forecast["summary"]["basis"]["record_path"] != forecast["summary"]["basis"]["record_path"]
@@ -644,7 +604,7 @@ def test_preview_matches_the_old_forward_model_exactly(emitted_preview, capsys):
 
 
 @pytest.mark.parametrize("fault,code,section,status", [
-    ("no-diagnostic", "round_branch_diagnostic_missing", "driver", 1),
+    ("no-diagnostic", "take_curves_not_banked", "driver", 1),
     ("wrong-base", "forward_model_candidate_mismatch", "driver", 1),
     ("corrupt-graph", "forward_model_graph_mismatch", "driver", 1),
     ("no-round", "evidence_unreadable", "driver", 2),
@@ -655,7 +615,7 @@ def test_preview_refuses_an_unanswerable_document(emitted_preview, capsys, fault
     _, target, doc, argv, args = emitted_preview
     root = Path(args.round)
     if fault in {"no-diagnostic", "corrupt-graph"}:
-        path = root / "bundle/b0/summed/summed_old.json"
+        path = capture_record(root, "old")
         record = json.loads(path.read_text())
         if fault == "no-diagnostic":
             del record["branch_diagnostic"]
@@ -723,13 +683,11 @@ def test_preview_resolves_an_exact_take_from_the_set(emitted_preview, capsys, ta
     _, _, doc, argv, args = emitted_preview
     root = Path(args.round)
     bundle = root / "bundle/b0"
-    path = bundle / "summed/summed_old.json"
+    path = capture_record(root, "old")
     record = json.loads(path.read_text())
-    extra = dict(record, take_id="old-off", position_id="old-off", position_deg=azimuth,
-                 wav_path="summed/summed_old-off.wav")
-    extra_path = path.with_stem("summed_old-off")
+    extra = dict(record, take_id="old-off", position_deg=azimuth, wav_path="summed/summed_old-off.wav")
+    extra_path = capture_record(root, "old-off")
     extra_path.write_text(json.dumps(extra))
-    shutil.copyfile(path.with_suffix(".wav"), extra_path.with_suffix(".wav"))
     write_manifest(root, groups=[manifest_set([(str(path.relative_to(bundle)), record),
                                               (str(extra_path.relative_to(bundle)), extra)], set_id="old")])
     packet = crossover_prescriber._load_packet(args)

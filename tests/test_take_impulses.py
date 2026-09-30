@@ -18,7 +18,6 @@ from jasper.active_speaker.crossover_v2.capture_prediction import read_diagnosti
 from jasper.active_speaker.crossover_v2.gate_sweep import sweep_round
 from jasper.active_speaker.crossover_v2.round_captures import select_capture
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.active_speaker.crossover_v2.take_reading import read_take
 from jasper.active_speaker.crossover_v2.take_impulses import (
     IMPULSES_KIND, TakeImpulsesUnreadable, analysis_impulses, impulse_for, take_impulses,
     write_take_impulses,
@@ -30,11 +29,10 @@ from jasper.audio_measurement.program_analysis import (
 )
 from jasper.audio_measurement.program_analysis.response import recorded_impulse
 from tests.crossover_v2_banked_round import bank_executor_take
-from tests.crossover_v2_fixtures import _verify_analysis
+from tests.crossover_v2_fixtures import _verify_analysis, bank_capture_round, capture_record
 from tests.test_audio_measurement_program_analysis import (
     FC_HZ, SR, _band_impulse, _roles, _synthesize,
 )
-from tests.test_crossover_v2_round_captures import PEAK_IDX, _bank_canonical, _write_round
 
 
 def _arrival(impulse: RecordedImpulse) -> float:
@@ -135,36 +133,25 @@ def _response(role: str, peak: int) -> SimpleNamespace:
 
 
 def test_readers_take_each_role_from_the_kept_impulses(tmp_path):
-    round_dir = _write_round(tmp_path)
-    record, doc = _bank_canonical(tmp_path)
-    bundle = tmp_path / "bundle" / "b0"
-    (bundle / "info.json").write_text(json.dumps({"bundle_schema_version": 1}))
+    """A role is read from the impulse the take kept. A MEASURE take keeps its
+    drivers' and no summed one, so a summed read refuses by name: nothing is
+    rebuilt from the recording against the whole program (#5928 TB7b)."""
+    round_dir = bank_capture_round(tmp_path, [np.zeros(4800)] * 2)
     analysis = SimpleNamespace(summed_response=None,
                                driver_responses=(_response("woofer", 300), _response("tweeter", 310)))
-    doc["impulses"] = write_take_impulses(bundle, doc["take_id"], analysis, recording=doc["wav_path"])
-    record.write_text(json.dumps(doc))
-    second = bundle / "summed" / "summed_cloud_verify_01.json"
-    sidecar = json.loads(second.read_text())
-    sidecar["impulses"] = write_take_impulses(bundle, "cloud_verify_01", analysis, recording=None)
-    sidecar["candidate_id"] = doc["candidate_id"]
-    second.write_text(json.dumps(sidecar))
+    for take_id in ("cloud_verify_00", "cloud_verify_01"):
+        record = capture_record(round_dir, take_id)
+        doc = json.loads(record.read_text())
+        doc["impulses"] = write_take_impulses(round_dir / "bundle" / "b0", take_id, analysis, recording=doc["wav_path"])
+        record.write_text(json.dumps(doc))
 
-    tweeter = select_capture(round_dir, capture_id=doc["take_id"], role="tweeter")
+    tweeter = select_capture(round_dir, capture_id="cloud_verify_00", role="tweeter")
     assert (tweeter.peak_idx, tweeter.preprocessing["impulse_source"],
             tweeter.preprocessing["pre_guard_samples"]) == (310, "kept", 240)
-    summed = select_capture(round_dir, capture_id=doc["take_id"], role="summed")
-    assert "impulse_source" not in summed.preprocessing
-    assert abs(summed.peak_idx - PEAK_IDX) <= 1
-    # A take view reads that rebuilt sum over the span a kept impulse holds.
-    rebuilt = read_take(round_dir, take_id=doc["take_id"], role="summed").capture
-    assert rebuilt.ir.size <= round((DECONV_PRE_GUARD_S + DEFAULT_VERIFY_TAIL_S) * 48000) + 1 < summed.ir.size
-    with pytest.raises(EvidenceUnavailable) as refused:
-        select_capture(round_dir, capture_id=doc["take_id"], role="mid")
-    assert (refused.value.reason, refused.value.detail["roles"]) == (
-        "round_role_not_recorded", ["tweeter", "woofer"])
     ladder = sweep_round(round_dir, role="tweeter")
     assert [pose["direct_peak_ms"] for pose in ladder["poses"]] == [pytest.approx(1000 * 310 / 48000)] * 2
-    # The rebuilt sum stands off the take's recording clock, so the forecast refuses it by name.
-    with pytest.raises(EvidenceUnavailable) as unclocked:
-        read_diagnostic(round_dir, doc["take_id"], 5.0)
-    assert (unclocked.value.reason, unclocked.value.detail["role"]) == ("round_branch_diagnostic_missing", "summed")
+    for read in (lambda: select_capture(round_dir, capture_id="cloud_verify_00", role="mid"),
+                 lambda: read_diagnostic(round_dir, "cloud_verify_00", 5.0)):
+        with pytest.raises(EvidenceUnavailable) as refused:
+            read()
+        assert (refused.value.reason, refused.value.detail["roles"]) == ("round_role_not_recorded", ["tweeter", "woofer"])

@@ -166,7 +166,7 @@ def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, read
         "staged_stop": lambda: ac.AngleCaptureRequest.from_mapping(plan),
         "kept_take": lambda: list(kept_measurements(session, phases=("lateral",), purposes=("room",))),
         "purpose_take": lambda: purpose_take_records(session, purpose="room"),
-        "gated_overlay": lambda: analyzed_frequency_run(root),
+        "gated_overlay": lambda: analyzed_frequency_run(root, gated_overlay=True),
     }
     with pytest.raises(refusal) as refused:
         reads[reader]()

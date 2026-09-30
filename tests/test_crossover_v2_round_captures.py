@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The shared round loader: what a capture binds to, and what it refuses.
+"""The shared round loader: what a capture reads, and what it refuses.
 
-Every fixture here is built, not banked — a program sweep, a known impulse
-response, and the convolution of the two written as a capture — so the
-binding the loader has to get right is known in advance. The views that read
-a round through it pin their own answers; what is pinned here is the loader.
+Every fixture here is built, not banked: a known impulse response kept as each
+take's impulse, so what the loader reads is known in advance. The views that
+read a round through it pin their own answers; what is pinned here is the
+loader.
 """
 
 from __future__ import annotations
@@ -19,24 +19,21 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import round_captures
-from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.record_index import played_graph_fingerprint
 from jasper.active_speaker.crossover_v2.round_captures import (
     discover_captures,
     doc_pose_key,
     select_capture,
 )
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.platform.json_fields import sha256_file
-from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from tests.crossover_v2_fixtures import CAPTURE_RATE as RATE, bank_capture_round, capture_record
 
 PEAK_IDX = 480
 IR_LEN = 4800
-PLAYED_PROGRAM = "cloud_verify_program.wav"
 
 
 def _write_round(root: Path, *, poses: int = 2, curves: bool = True, **kwargs) -> Path:
-    """This suite's round: every pose a bare delta, so only the BINDING varies.
+    """This suite's round: every pose a bare delta, so only what is READ varies.
 
     ``curves=False`` banks a round with no declared radiated band.
     """
@@ -53,62 +50,35 @@ def _write_round(root: Path, *, poses: int = 2, curves: bool = True, **kwargs) -
 def _omissions(reason: str) -> list[dict[str, str]]:
     """Both captures of :func:`_write_round`'s round, left out under one reason."""
     return [
-        {"capture_id": f"cloud_verify_{index:02d}",
-         "sidecar": f"summed_cloud_verify_{index:02d}.json", "reason": reason}
+        {"capture_id": f"cloud_verify_{index:02d}", "sidecar": f"cloud_verify_{index:02d}.json", "reason": reason}
         for index in range(2)
     ]
 
 
-def _bank_canonical(root: Path) -> tuple[Path, dict]:
-    """Move the first capture's metadata into a canonical record."""
-    bundle = root / "bundle" / "b0"
-    sidecar = bundle / "summed" / "summed_cloud_verify_00.json"
-    doc = json.loads(sidecar.read_text())
-    doc.update({
-        "kind": POSITION_EVIDENCE_KIND, "run_id": "wired-test",
-        "candidate_id": "reviewed-candidate", "graph_scope": "candidate",
-        "take_id": "cloud_verify_00_a02", "wav_sha256": sha256_file(sidecar.with_suffix(".wav")),
-    })
-    record = bundle / "evidence/v1/artifacts/crossover_v2/wired-test/positions/take-00.json"
-    record.parent.mkdir(parents=True)
-    record.write_text(json.dumps(doc))
-    sidecar.write_text(json.dumps({"phase": "verify", "measurement_status": "captured"}))
-    return record, doc
-
-
-@pytest.mark.parametrize("metadata", ["legacy", "canonical", "two_rounds"])
-def test_a_capture_binds_to_the_program_its_bytes_name(tmp_path: Path, metadata: str) -> None:
+@pytest.mark.parametrize("rounds", ["one", "two"])
+def test_a_capture_reads_the_impulse_its_take_kept(tmp_path: Path, rounds: str) -> None:
+    """On the take's own clock, with no recording or program opened: the
+    fixture writes none."""
     root = _write_round(tmp_path)
-    bundle = root / "bundle" / "b0"
-    wav = bundle / "summed" / "summed_cloud_verify_00.wav"
-    if metadata != "legacy":
-        record, _ = _bank_canonical(root)
-        if metadata == "two_rounds":
-            (record.parents[2] / "other-candidate-round").mkdir()
-            with pytest.raises(EvidenceUnavailable) as excinfo:
-                discover_captures(root)
-            assert excinfo.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
-            return
+    if rounds == "two":
+        (capture_record(root, "cloud_verify_00").parents[2] / "other-candidate-round").mkdir()
+        with pytest.raises(EvidenceUnavailable) as excinfo:
+            discover_captures(root)
+        assert excinfo.value.reason == round_captures.REFUSE_CAPTURE_UNREADABLE
+        return
     captures = discover_captures(root)
 
-    first_id = "cloud_verify_00" if metadata == "legacy" else "cloud_verify_00_a02"
-    assert [capture.capture_id for capture in captures] == [first_id, "cloud_verify_01"]
-    assert {capture.program.name for capture in captures} == {PLAYED_PROGRAM}
-    assert all(abs(capture.peak_idx - PEAK_IDX) <= 1 for capture in captures)
-    assert all(capture.sample_rate == RATE for capture in captures)
-    assert select_capture(bundle, capture_id=wav.stem).capture_id == first_id
-    assert select_capture(bundle, capture_id=first_id).capture_id == first_id
-    if metadata == "canonical":
-        selected = discover_captures(root, select=lambda doc: doc.get("candidate_id") == "reviewed-candidate")
-        assert [capture.capture_id for capture in selected] == [first_id]
+    assert [capture.capture_id for capture in captures] == ["cloud_verify_00", "cloud_verify_01"]
+    assert all((capture.peak_idx, capture.sample_rate, capture.preprocessing["impulse_source"])
+               == (PEAK_IDX, RATE, "kept") for capture in captures)
+    assert select_capture(root, capture_id="summed_cloud_verify_00").capture_id == "cloud_verify_00"
+    assert [capture.capture_id for capture in discover_captures(
+        root, select=lambda doc: doc["take_id"] == "cloud_verify_01")] == ["cloud_verify_01"]
 
 
 @pytest.mark.parametrize("fault, reason", [
-    ("wav_missing", round_captures.REFUSE_CAPTURE_UNREADABLE),
-    ("capture_hash_mismatch", round_captures.REFUSE_CAPTURE_UNREADABLE),
     ("capture_hash_missing", round_captures.REFUSE_CAPTURE_UNREADABLE),
-    ("program_unmatched", round_captures.REFUSE_PROGRAM_UNMATCHED),
-    ("provenance_not_a_mapping", round_captures.REFUSE_PROGRAM_UNMATCHED),
+    ("impulses_unreadable", round_captures.REFUSE_CAPTURE_UNREADABLE),
     ("band_missing", round_captures.REFUSE_RADIATED_BAND_MISSING),
 ])
 def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
@@ -118,25 +88,19 @@ def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
 
     A view that did not ask for it never checks it; one that asked for it
     alone has nothing usable left and refuses under the take's own reason.
-    The first view selects on the played graph, as ``sweep --graph`` does,
-    so a record's malformed provenance is an omission, never a traceback.
+    The first view selects on the played graph, as ``sweep --graph`` does.
     """
     root = _write_round(tmp_path)
-    record, doc = _bank_canonical(root)
-    if fault == "wav_missing":
-        (root / "bundle" / "b0" / doc["wav_path"]).unlink()
-    elif fault == "capture_hash_mismatch":
-        doc["wav_sha256"] = "0" * 64
-    elif fault == "capture_hash_missing":
+    record = capture_record(root, "cloud_verify_00")
+    doc = json.loads(record.read_text())
+    if fault == "capture_hash_missing":
         del doc["wav_sha256"]
-    elif fault == "program_unmatched":
-        doc["provenance"]["stimulus"]["wav_sha256"] = "0" * 64
-    elif fault == "provenance_not_a_mapping":
-        doc["provenance"] = "not-a-mapping"
+    elif fault == "impulses_unreadable":
+        (root / "bundle" / "b0" / doc["impulses"]["path"]).write_bytes(b"not the file that was banked")
     else:
         del doc["curves"]
     record.write_text(json.dumps(doc))
-    omission = {"capture_id": "cloud_verify_00_a02", "sidecar": record.name, "reason": reason}
+    omission = {"capture_id": "cloud_verify_00", "sidecar": record.name, "reason": reason}
 
     omitted: list[dict[str, str]] = []
     assert [
@@ -149,24 +113,9 @@ def test_a_capture_that_fails_its_binding_is_omitted_by_identity(
     assert select_capture(root, capture_id="cloud_verify_01", omitted=unasked).capture_id == "cloud_verify_01"
     assert unasked == []
     with pytest.raises(EvidenceUnavailable) as excinfo:
-        select_capture(root, capture_id="cloud_verify_00_a02")
+        select_capture(root, capture_id="cloud_verify_00")
     assert excinfo.value.reason == reason
     assert excinfo.value.detail["omitted"] == [omission]
-
-
-def test_an_unreadable_sidecar_is_named_to_every_view(tmp_path: Path) -> None:
-    """A record nothing can read cannot be deselected, so no view is silent
-    about it, and a view that names its capture still reads it."""
-    root = _write_round(tmp_path)
-    sidecar = root / "bundle" / "b0" / "summed" / "summed_cloud_verify_01.json"
-    sidecar.write_text("{")
-    omitted: list[dict[str, str]] = []
-
-    assert select_capture(root, capture_id="cloud_verify_00", omitted=omitted).capture_id == "cloud_verify_00"
-    assert omitted == [{
-        "capture_id": sidecar.stem, "sidecar": sidecar.name,
-        "reason": round_captures.REFUSE_CAPTURE_UNREADABLE,
-    }]
 
 
 def test_one_capture_is_a_round(tmp_path: Path) -> None:
@@ -178,30 +127,20 @@ def test_one_capture_is_a_round(tmp_path: Path) -> None:
     assert len(discover_captures(_write_round(tmp_path, poses=1))) == 1
 
 
-def test_a_filtered_pose_is_never_decoded(tmp_path: Path, monkeypatch) -> None:
-    """The reader's filter runs on the sidecar DOC, before the expensive half.
-
-    A close reference keeps one pose out of a round; deconvolving the other
-    two is work nothing reads. The count is of capture WAVs decoded — the
-    program WAV is decoded once whatever the filter says.
-    """
+def test_a_filtered_pose_is_never_read(tmp_path: Path, monkeypatch) -> None:
+    """The reader's filter runs on the record, before its impulses are read."""
     root = _write_round(tmp_path, poses=3)
-    decoded: list[str] = []
-    real = round_captures.read_wav_mono
+    read: list[str] = []
+    real = round_captures.take_impulses
 
-    def counting(path: Path):
-        decoded.append(Path(path).name)
-        return real(path)
+    def counting(bundle: Path, doc):
+        read.append(doc["take_id"])
+        return real(bundle, doc)
 
-    monkeypatch.setattr(round_captures, "read_wav_mono", counting)
-    captures = discover_captures(
-        root, select=lambda doc: doc.get("position_id") == "cloud_verify_01"
-    )
+    monkeypatch.setattr(round_captures, "take_impulses", counting)
+    captures = discover_captures(root, select=lambda doc: doc["take_id"] == "cloud_verify_01")
 
-    assert [capture.capture_id for capture in captures] == ["cloud_verify_01"]
-    assert [name for name in decoded if name.startswith("summed_")] == [
-        "summed_cloud_verify_01.wav"
-    ]
+    assert [capture.capture_id for capture in captures] == read == ["cloud_verify_01"]
 
 
 def test_a_filter_that_matches_nothing_is_an_answer_not_a_refusal(
@@ -228,9 +167,10 @@ def test_a_capture_keys_its_driver_pose_as_its_record_does(tmp_path: Path) -> No
     bound capture or its record alike (ADR-0360)."""
     root = _write_round(tmp_path, distance_m=0.015, positions_deg=[0, 0])
     docs = []
-    for sidecar, driver in zip(sorted((root / "bundle" / "b0" / "summed").glob("*.json")), ("woofer", "woofer:rear")):
-        docs.append({**json.loads(sidecar.read_text()), "pose_kind": "close", "pose_driver": driver})
-        sidecar.write_text(json.dumps(docs[-1]))
+    for capture_id, driver in (("cloud_verify_00", "woofer"), ("cloud_verify_01", "woofer:rear")):
+        record = capture_record(root, capture_id)
+        docs.append({**json.loads(record.read_text()), "pose_kind": "close", "pose_driver": driver})
+        record.write_text(json.dumps(docs[-1]))
 
     keys = [capture.pose_key for capture in discover_captures(root)]
 
@@ -244,22 +184,19 @@ def test_a_capture_keys_its_driver_pose_as_its_record_does(tmp_path: Path) -> No
         (
             lambda root: root,
             round_captures.REFUSE_NO_CAPTURES,
-            {"looked_for": "**/summed/summed_*.json"},
+            {"looked_for": "evidence/v1/artifacts/crossover_v2/*/positions/*.json"},
         ),
+        # Nothing is rebuilt from a recording (#5928 TB7b).
         (
-            lambda root: _write_round(root, declared_sha="0" * 64),
-            round_captures.REFUSE_PROGRAM_UNMATCHED,
-            {
-                "declared_stimulus_sha256": "0" * 64,
-                "programs_present": [PLAYED_PROGRAM, "verify_program.wav"],
-                "omitted": _omissions(round_captures.REFUSE_PROGRAM_UNMATCHED),
-            },
+            lambda root: _write_round(root, kept_role=None),
+            TAKE_CURVES_NOT_BANKED,
+            {"field": "impulses", "role": "summed", "omitted": _omissions(TAKE_CURVES_NOT_BANKED)},
         ),
         (
             lambda root: _write_round(root, curves=False),
             round_captures.REFUSE_RADIATED_BAND_MISSING,
             {
-                "sidecar": "summed_cloud_verify_00.json",
+                "sidecar": "cloud_verify_00.json",
                 "omitted": _omissions(round_captures.REFUSE_RADIATED_BAND_MISSING),
             },
         ),
@@ -268,11 +205,11 @@ def test_a_capture_keys_its_driver_pose_as_its_record_does(tmp_path: Path) -> No
 def test_a_missing_input_is_refused_by_name(
     tmp_path: Path, make, reason, evidence
 ) -> None:
-    """A capture is never bound to a plausible program, or graded bandless.
+    """A capture is never read without its impulse, or graded bandless.
 
     Each refusal carries the evidence an operator needs to act on it: what
-    was looked for, what was declared, what was actually there and, when
-    every capture failed, which ones were left out.
+    was looked for, what the take lacks and, when every capture failed, which
+    ones were left out.
     """
     with pytest.raises(EvidenceUnavailable) as excinfo:
         discover_captures(make(tmp_path))
@@ -282,7 +219,7 @@ def test_a_missing_input_is_refused_by_name(
 
 def test_a_round_that_is_not_a_directory_refuses_by_name(tmp_path: Path) -> None:
     with pytest.raises(EvidenceUnavailable) as excinfo:
-        select_capture(tmp_path / "absent")
+        select_capture(tmp_path / "absent", capture_id="cloud_verify_00")
     assert excinfo.value.reason == round_captures.REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND
 
 

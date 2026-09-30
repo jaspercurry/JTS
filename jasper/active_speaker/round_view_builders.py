@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from dataclasses import replace
 from typing import Any, Mapping
@@ -31,13 +30,12 @@ from .round_packet_report import gate_fields
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
 
 
-def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
-                           run_reference_db: float | None = None) -> FrequencyRun:
+def analyzed_frequency_run(path: Path, *, gated_overlay: bool = False) -> FrequencyRun:
     """Every banked take's curves, read as the measurements page reads them and
-    tagged with the set and selection its run manifest gives them; a selected
-    room take's summed curve gains the gated overlay."""
-    if run_reference_db is not None and not math.isfinite(run_reference_db):
-        raise ValueError(f"measurement_reference_invalid: {run_reference_db}")
+    tagged with the set and selection its run manifest gives them. With
+    ``gated_overlay``, a selected room take's summed curve gains the gated
+    overlay, decoded from its recording; only the bookkeeping asks for it, until
+    #5737 C3 deletes it."""
     try:
         inputs = round_inputs(path)
         try:
@@ -49,8 +47,7 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
         info = json.loads((inputs.session_dir / "info.json").read_text())
         documents = list(measurement_documents(inputs.session_dir))
         run = load_measurement(ArchivedMeasurement(info["session_id"], inputs.session_dir, info.get("started_at"),
-                                                   info.get("state")), run_reference_db=run_reference_db,
-                               documents=documents)
+                                                   info.get("state")), documents=documents)
         if unbanked := run.metadata.get("curves"):
             raise EvidenceUnavailable(unbanked["reason"], {"bundle_dir": str(inputs.session_dir)})
         by_take = {document.get("take_id"): (row, document) for row, document in documents}
@@ -67,15 +64,14 @@ def analyzed_frequency_run(path: Path, *, calibration_root: Path | None = None,
                                            **gate_fields(curve.details),
                                            "window": "gated" if curve.details.get("gate_window_ms") else "ungated"})
             series.append(curve)
-            if not take.get("selected") or role != "summed":
+            if not gated_overlay or not take.get("selected") or role != "summed":
                 continue
             row, document = by_take[take["take_id"]]
             if take_purpose(row, document) != PURPOSE_ROOM:
                 continue
             record_path = row.path
             if record_path not in derived:
-                derived[record_path] = reference_gated_measurement(inputs.session_dir, record_path,
-                                                                 calibration_root=calibration_root)
+                derived[record_path] = reference_gated_measurement(inputs.session_dir, record_path)
             gated = derived[record_path]
             series.append(replace(curve, id=f"{curve.id}:gated", label=f"{curve.label} · Gated",
                                   freqs_hz=gated["freqs_hz"], magnitude_db=gated["magnitude_db"],

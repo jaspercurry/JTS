@@ -34,7 +34,7 @@ from jasper.active_speaker.round_packet import store_banked_evidence
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 
 from tests.crossover_v2_banked_round import bank_measure_round
-from tests.crossover_v2_fixtures import bank_capture_round
+from tests.crossover_v2_fixtures import CAPTURE_RECORDS, bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
 # The gate sweep's own pose IRs, reused rather than copied, so a deconvolved
 # round's answer is as knowable here as it is there.
@@ -241,7 +241,7 @@ def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
 
     assert rc == 0
     payload = json.loads((round_dir / "frequency_view.json").read_text())
-    assert payload["schema"] == "jts_frequency_view/2"
+    assert payload["schema"] == "jts_frequency_view/3"
     assert payload["runs"][0]["series"][0]["kind"] == "measurement"
 
 
@@ -450,7 +450,7 @@ def gate_sweep_round(tmp_path):
     root = bank_capture_round(tmp_path, [_pose_ir(i, late_copy_ms=8.0) for i in range(3)])
     bundle = root / "bundle/b0"
     records = []
-    for i, path in enumerate(sorted((bundle / "summed").glob("*.json"))):
+    for i, path in enumerate(sorted((bundle / CAPTURE_RECORDS).glob("*.json"))):
         record = json.loads(path.read_text())
         record["level_db"] = -30.0 if i < 2 else -20.0
         path.write_text(json.dumps(record))
@@ -524,18 +524,17 @@ def test_cli_gate_sweep_refusal_names_the_missing_input(tmp_path, capsys):
 
 @pytest.mark.parametrize("bad", [1, 2])
 def test_cli_gate_sweep_names_the_captures_it_left_out(gate_sweep_round, capsys, bad):
-    """A capture whose WAV is gone is never read and never costs the round its
-    other poses: the sweep answers while two remain, and names what it left
-    out either way."""
+    """A capture whose kept impulses are gone is never read and never costs the
+    round its other poses: the sweep answers while two remain, and names what
+    it left out either way."""
     from jasper.cli import round_views as cli
 
-    sidecars = sorted((gate_sweep_round / "bundle/b0/summed").glob("*.json"))[:bad]
-    for sidecar in sidecars:
-        sidecar.with_suffix(".wav").unlink()
+    records = sorted((gate_sweep_round / "bundle/b0" / CAPTURE_RECORDS).glob("*.json"))[:bad]
+    for record in records:
+        (gate_sweep_round / "bundle/b0" / json.loads(record.read_text())["impulses"]["path"]).unlink()
     omitted = [
-        {"capture_id": sidecar.stem.removeprefix("summed_"), "sidecar": sidecar.name,
-         "reason": REFUSE_CAPTURE_UNREADABLE}
-        for sidecar in sidecars
+        {"capture_id": record.stem, "sidecar": record.name, "reason": REFUSE_CAPTURE_UNREADABLE}
+        for record in records
     ]
     rc = cli.main(["sweep", "--scope", "round", str(gate_sweep_round), "--rungs-ms", "5", "20"])
 

@@ -167,8 +167,9 @@ The reflection-path floor and the gate's validity floor answer different
 questions. Read `entanglement_floor_source` and its uncertainty before claiming
 speaker-only evidence. More repeats do not remove a systematic room contribution.
 
-A gate sweep varies the analysis window over existing raw captures. It costs no
-new sound, but it cannot recover missing WAVs or make an invalid capture valid.
+A gate sweep varies the analysis window over the impulses the takes kept. It
+costs no new sound, but a take that kept no impulse refuses `take_curves_not_banked`,
+and no window makes an invalid capture valid.
 
 ESS harmonic extraction separates orders in time. The window may overlap a
 neighboring order or extend past available samples. Read per-order status,

@@ -7,16 +7,14 @@
 Synchronized rather than vanilla Farina ESS: harmonic-distortion impulses fall
 at integer-fraction offsets of the linear IR, so deconvolution can discard them
 (JAES 61(7), Novak, Lotton, Simon). Generated at the playback rate (48 kHz, to
-match CamillaDSP) and saved as 16-bit S16_LE WAV so ``aplay`` can consume it.
-The sweep only, no inverse filter: :mod:`.deconv` inverts at IR-extract time.
+match CamillaDSP). The sweep only, no inverse filter: :mod:`.deconv` inverts at
+IR-extract time.
 """
 from __future__ import annotations
 
 import logging
 import math
 from dataclasses import dataclass
-from pathlib import Path
-from typing import BinaryIO
 
 import numpy as np
 
@@ -174,44 +172,3 @@ def phase_closing_duration_s(
             sample_rate=sample_rate,
         )
     return meta.duration_s
-
-
-def write_sweep_wav(
-    path: str | Path | BinaryIO,
-    sweep: np.ndarray,
-    sample_rate: int,
-) -> None:
-    """Write a mono float32 sweep as 16-bit PCM WAV (S16_LE)."""
-    from scipy.io import wavfile
-
-    if sweep.ndim != 1:
-        raise ValueError(
-            f"sweep must be mono (1-D), got shape {sweep.shape}"
-        )
-    clipped = np.clip(sweep, -1.0, 1.0)
-    int16 = (clipped * 32767.0).astype(np.int16)
-    wavfile.write(path if hasattr(path, "write") else str(path), sample_rate, int16)
-
-
-def read_wav_mono(
-    path: str | Path,
-) -> tuple[np.ndarray, int]:
-    """Read a WAV file as mono float32 in [-1, 1]; stereo downmixed by average.
-
-    Accepts 16-bit and 32-bit-float WAVs.
-    """
-    from scipy.io import wavfile
-
-    sr, data = wavfile.read(str(path))
-    # Capture the source dtype BEFORE downmixing: np.mean promotes an integer
-    # array to float, so keying normalization off it afterwards would leave the
-    # signal at ±32767 instead of ±1.0.
-    source_dtype = data.dtype
-    if data.ndim == 2:
-        data = data.mean(axis=1)
-    if np.issubdtype(source_dtype, np.integer):
-        max_val = float(np.iinfo(source_dtype).max)
-        signal = data.astype(np.float32) / max_val
-    else:
-        signal = data.astype(np.float32)
-    return signal, int(sr)

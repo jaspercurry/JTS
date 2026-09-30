@@ -13,8 +13,6 @@ CamillaDSP reload) is downstream of these.
 Key invariants:
   - synchronized_swept_sine produces the right length / amplitude /
     monotonic instantaneous frequency.
-  - WAV round-trip (write_sweep_wav → read_wav_mono) preserves the
-    signal within 16-bit quantization noise.
   - deconvolve(captured, sweep) recovers a delta IR within a sample
     of the right offset, when captured = sweep convolved with delta.
   - deconvolve recovers a known-magnitude bell-shaped IR's magnitude
@@ -136,48 +134,6 @@ def test_synchronized_swept_sine_instantaneous_frequency_monotonic():
     diffs = np.diff(freqs_est)
     # At least 80% of consecutive windows should show non-decreasing freq.
     assert (diffs >= -5).mean() > 0.8
-
-
-def test_write_sweep_wav_roundtrip(tmp_path):
-    sig, meta = sweep.synchronized_swept_sine(
-        duration_approx_s=0.5, sample_rate=48000, amplitude_dbfs=-6,
-    )
-    wav_path = tmp_path / "sweep.wav"
-    sweep.write_sweep_wav(wav_path, sig, meta.sample_rate)
-    assert wav_path.exists()
-
-    read_sig, read_sr = sweep.read_wav_mono(wav_path)
-    assert read_sr == meta.sample_rate
-    assert len(read_sig) == len(sig)
-    # 16-bit quantization adds noise on the order of 2^-15 ≈ 3e-5 in
-    # peak. RMS error should be well under 1e-3 for a sweep at
-    # -6 dBFS.
-    rmse = float(np.sqrt(np.mean((read_sig - sig) ** 2)))
-    assert rmse < 1e-3
-
-
-def test_read_wav_mono_normalizes_stereo_int16(tmp_path):
-    """A stereo int16 WAV is downmixed AND normalized to [-1, 1]. np.mean
-    promotes the array to float, so normalization must key off the SOURCE
-    dtype — keying off the post-mean dtype leaves the signal at int scale
-    (±32767 instead of ±1.0)."""
-    from scipy.io import wavfile
-
-    sr = 48000
-    half = np.iinfo(np.int16).max // 2  # 16383
-    stereo = np.column_stack([
-        np.full(100, half, dtype=np.int16),
-        np.full(100, half, dtype=np.int16),
-    ])
-    wav_path = tmp_path / "stereo.wav"
-    wavfile.write(str(wav_path), sr, stereo)
-
-    signal, read_sr = sweep.read_wav_mono(wav_path)
-
-    assert read_sr == sr
-    assert signal.dtype == np.float32
-    # ~0.5 (normalized), NOT ~16383 (raw int scale).
-    assert abs(float(signal[0]) - 0.5) < 0.01
 
 
 # ---------- deconvolution roundtrips ----------------------------------------
