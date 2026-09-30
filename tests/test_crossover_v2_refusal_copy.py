@@ -180,8 +180,7 @@ _BASE_SET = {"set_id": "a", "base": True, "capture_basis": {}}
 _FORWARDED_CODES = {
     evidence_packet.NO_CANDIDATE_TAKES, evidence_packet.REPEAT_FLOOR_UNMEASURED,
     evidence_packet.REPEAT_FLOOR_UNREADABLE, evidence_packet.REPEAT_FLOOR_UNUSABLE,
-    offline_reads.FIELD_MALFORMED, offline_reads.SOURCE_UNREADABLE,
-    prescription_document.REASON_EVIDENCE_UNREADABLE, intervention.NonFiniteTrimError.refusal_reason,
+    offline_reads.FIELD_MALFORMED, offline_reads.SOURCE_UNREADABLE, intervention.NonFiniteTrimError.refusal_reason,
     # A run with no base set, and one with two.
     *(incumbent_room(None, {"sets": sets})[1] for sets in ([], [_BASE_SET, {**_BASE_SET, "set_id": "b"}])),
     # The evidence store's codes reach ``RoundViewsError`` as ``exc.code.value``, the bass descriptor's reach

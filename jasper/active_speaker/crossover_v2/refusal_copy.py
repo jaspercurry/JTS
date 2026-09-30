@@ -450,7 +450,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
     },
     ("name_round", "Name a banked round or a live session bundle"): {
-        evidence_reasons.REASON_UNREADABLE: "The round view could not read its input round.",
         "already_banked": "The session is already banked as a round.",
         "close_reference_unreadable_round": "The round directory named for the take is not a directory.",
         "not_a_bundle": "The directory is not a session bundle: it has no readable info.json object.",
@@ -488,7 +487,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
     ("review_evidence", "Review the evidence the view read"): {
         evidence_reasons.REASON_REFUSED: "The round view declined the evidence it read.",
-        "evidence_unreadable": "The evidence this tool reads could not be read.",
+        evidence_reasons.REASON_UNREADABLE: "The evidence this tool reads could not be read.",
         "field_malformed": "The artifact was read, and its field holds a value of the wrong type.",
         "field_null": "The artifact was read, and the field this block reads is empty.",
         "level_error": "The rear level could not be computed.",
@@ -498,8 +497,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "unusable": "The banked repeat floor gives no stopping thresholds.",
     },
     ("choose_output", "Choose a writable output path"): {
-        evidence_reasons.REASON_UNWRITABLE: "The round view could not write its output artifact.",
-        "output_unwritable": "The prescriber could not write its output artifact.",
+        evidence_reasons.REASON_UNWRITABLE: "The tool could not write its output artifact.",
     },
     ("name_take", "Name a take this round banked"): {
         "close_reference_no_capture": "The round has no take with the named id, or more than one.",
