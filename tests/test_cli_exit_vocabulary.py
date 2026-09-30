@@ -486,6 +486,7 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         _nearfield_argv, frozenset({"ladder", "trusted_snr_db", "step_tolerance_db", "level_mismatch_db"}),
         frozenset({"take_ids"}),
         lambda p, a: p["step_tolerance_db"] == a["parameters"]["step_tolerance_db"]),
+    "rear-fit": "the fit reads a rear/pair round and a target document; test_rear_fit pins its answer",
 }
 
 
