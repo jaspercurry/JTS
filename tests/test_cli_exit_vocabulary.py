@@ -63,7 +63,7 @@ from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
 from tests.test_crossover_v2_room_prescription import _document as room_document
 from tests.test_prescription_document import bank, base, bass_packet, document as prescription, evidence  # noqa: F401
 from tests.test_preflight import ready_facts
-from tests.test_round_views_bass_alignment import nearfield_round
+from tests.test_round_views_bass_alignment import bass_round, nearfield_round, unplayed_woofer_round
 from tests.test_round_views_directivity import BASELINE, _take as directivity_take
 from tests.test_round_views_repeat import _mark_take as mark_take
 
@@ -755,6 +755,9 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
     # A band above every woofer's corner cannot place it.
     "bass-alignment": (lambda request, root: ["bass-alignment", str(nearfield_round(root)), "--band-hz", "150", "300"],
                        "coverage_short"),
+    # Gaps that differ refuse by the woofer's, not by the tweeter's that sorts first.
+    "bass-alignment (a woofer with no raw curve)": (
+        lambda request, root: ["bass-alignment", str(unplayed_woofer_round(root))], "take_curves_not_banked"),
     "candidates": (lambda request, root: ["candidates", str(bank_measure_round(root))], "candidates_no_ladder"),
     "classify-features": (lambda request, root: ["classify-features", str(feature_bundle(root, flat_ir())[0])],
                           "classification_no_features_detected"),
@@ -791,6 +794,8 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
 #: a take with no record, and a banked reading that is not an object.
 _UNREADABLE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str | None]] = {
     "bass (a take with no record)": (_ghost_bass_argv, None),
+    "bass-alignment (a banked curve it cannot parse)": (
+        lambda request, root: ["bass-alignment", str(bass_round(root, [0.0])), "--take", "b0"], None),
     "distortion (a reading that is not an object)": (_malformed_distortion_argv, "field_not_object"),
 }
 

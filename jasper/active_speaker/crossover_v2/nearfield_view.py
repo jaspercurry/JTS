@@ -33,7 +33,7 @@ from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
-from jasper.audio_measurement.trusted_band import TrustedBand
+from jasper.audio_measurement.trusted_band import TrustedBand, within_trusted
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
 from .capture_provenance import take_trusted_band
@@ -90,13 +90,6 @@ def _within(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
 
 def _inside(band_hz: tuple[float, float], trusted: TrustedBand) -> bool:
     return (trusted.low_hz or 0.0) <= band_hz[0] and band_hz[1] <= (trusted.high_hz or math.inf)
-
-
-def _step_band(*trusted: TrustedBand) -> tuple[float, float] | None:
-    """:data:`STEP_BAND_HZ` inside every placement's trusted band; ``None`` when none is left."""
-    low = max(STEP_BAND_HZ[0], *(band.low_hz or 0.0 for band in trusted))
-    high = min(STEP_BAND_HZ[1], *(band.high_hz or math.inf for band in trusted))
-    return (low, high) if low < high else None
 
 
 def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
@@ -196,7 +189,7 @@ def nearfield_view(
                 continue
             near_at, far_at = at[near_mm, kind], at[far_mm, kind]
             # With no band left inside both placements' trusted bands, the step is stated, never graded.
-            step_band = _step_band(take_bands[near_at[0]], take_bands[far_at[0]])
+            step_band = within_trusted(STEP_BAND_HZ, take_bands[near_at[0]], take_bands[far_at[0]])
             near, far = (level_over(near_at, step_band), level_over(far_at, step_band)) if step_band else (None, None)
             if step_band and (near is None or far is None):
                 continue

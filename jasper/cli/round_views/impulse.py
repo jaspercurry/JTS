@@ -24,7 +24,7 @@ from ._common import (
 
 def _run(args: argparse.Namespace, report: Callable[[TakeRead], dict[str, Any]], line: str) -> int:
     round_dir = Path(args.round_dir)
-    take_subject, take_id, role = resolve_set_take(round_dir, args.set, args.take, args.role)
+    take_subject, take_id, role, _ = resolve_set_take(round_dir, args.set, args.take, args.role)
     written_report = report(read_take(round_dir, take_id=take_id, role=role))
     spec = ARTIFACT_BY_VIEW[args.command]
     written = _write(written_report, args.out,

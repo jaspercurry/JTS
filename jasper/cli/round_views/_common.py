@@ -104,14 +104,15 @@ def _write(
 
 def resolve_set_take(
     round_dir: Path, set_id: str | None, take: str | None, role: str | None,
-) -> tuple[dict[str, Any], str, str]:
-    """One take of a set: the subject naming it, its id, and ``role`` or else
-    the response the set measured."""
+) -> tuple[dict[str, Any], str, str, Mapping[str, Any]]:
+    """One take of a set: the subject naming it, its id, ``role`` or else the
+    response the set measured, and the take read with its record."""
     inputs = round_inputs(round_dir)
     # A named take the run did not keep refuses with its record's verdict (#6067).
     selected = resolve_set(inputs, set_id).with_records(inputs.session_dir, every_take=take is not None)
     take_id = selected.take_id(take)
-    return subject(inputs, selected, take_ids=[take_id]), take_id, role or selected.role
+    joined = next(one for one in selected.takes if one["take_id"] == take_id)
+    return subject(inputs, selected, take_ids=[take_id]), take_id, role or selected.role, joined
 
 
 def calibration_id(calibration: Mapping[str, Any] | None) -> str | None:

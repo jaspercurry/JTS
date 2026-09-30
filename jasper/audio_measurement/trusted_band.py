@@ -8,8 +8,10 @@ it and says so; no reader refuses a take for its band (ADR-0101)."""
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 from .gating import f_trusted_floor_hz, search_bound_ms
 from .measurement_geometry import DeclaredGeometry
@@ -34,6 +36,18 @@ class TrustedBand:
     high_hz: float | None = None
     high_source: str | None = None
     undeclared: tuple[str, ...] = ()
+
+
+def banked_band(band: Mapping[str, Any]) -> TrustedBand:
+    """The band a take banked (ADR-0366 §3), read back from its record."""
+    return TrustedBand(**{**band, "undeclared": tuple(band.get("undeclared") or ())})
+
+
+def within_trusted(band_hz: Sequence[float], *trusted: TrustedBand) -> tuple[float, float] | None:
+    """``band_hz`` clipped to every one of ``trusted``; ``None`` when none of it is left."""
+    low = max([band_hz[0], *(band.low_hz or 0.0 for band in trusted)])
+    high = min([band_hz[1], *(band.high_hz or math.inf for band in trusted)])
+    return (low, high) if low < high else None
 
 
 def trusted_band(

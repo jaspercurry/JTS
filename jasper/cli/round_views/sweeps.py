@@ -75,7 +75,7 @@ def _cmd_gate_sweep(args: argparse.Namespace) -> int:
 
 
 def _cmd_windows(args: argparse.Namespace) -> int:
-    take_subject, take_id, role = resolve_set_take(Path(args.round_dir), args.set, args.take, args.role)
+    take_subject, take_id, role, _ = resolve_set_take(Path(args.round_dir), args.set, args.take, args.role)
     report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=role)
     spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
     written = _write(report, args.out, resolved_out(Path(args.round_dir), take_artifact_name(spec.artifact, take_id, role)),

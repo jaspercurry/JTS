@@ -10,7 +10,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Literal, Mapping, NamedTuple, overload
 
 import numpy as np
 
@@ -143,6 +143,10 @@ def take_curves(raw: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
     return [curve for curve in curves if isinstance(curve, Mapping)] or None
 
 
+@overload
+def take_curve(record: Mapping[str, Any], role: str, *, required: Literal[True]) -> Mapping[str, Any]: ...
+@overload
+def take_curve(record: Mapping[str, Any], role: str, *, required: bool = False) -> Mapping[str, Any] | None: ...
 def take_curve(record: Mapping[str, Any], role: str, *, required: bool = False) -> Mapping[str, Any] | None:
     """The curve a take record banked for ``role``; ``None`` when it banked none
     for it, as a take whose analysis failed banks none (ADR-0383). A record that
