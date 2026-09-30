@@ -113,7 +113,7 @@ def frequency_run_from_documents(
 
         for curve_index, (path, curve) in enumerate(_curve_nodes(document)):
             role = str(curve.get("role") or document.get("role") or "")
-            # A take draws each window it banked, each series named by its window (ADR-0400).
+            # See ADR-0400.
             window = curve.get("window")
             base_id = f"{source_id}:{role or path or curve_index}" + (f":{window}" if window else "")
             series_id = base_id

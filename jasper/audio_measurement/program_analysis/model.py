@@ -365,9 +365,9 @@ class MeasurementGeometry:
     driver_spacing_m: float = 0.0
     mic_distance_m: float = 1.0
     speed_of_sound_m_s: float = DEFAULT_SOUND_SPEED_M_S
-    #: ``None`` gates the summed response to the direct sound; a reason (why
-    #: the pose reads ungated, ADR-0400) analyzes it ungated and says so in its
-    #: gating block.
+    #: ``None`` gates each response (summed, driver or branch) to the direct
+    #: sound; a reason (why the pose reads ungated, ADR-0400) analyzes each
+    #: ungated and says so in its gating block.
     gate_exempt_reason: str | None = None
     #: The declared room's first bounce at this capture's distance, in seconds:
     #: the gate searches for a reflection up to it, and to

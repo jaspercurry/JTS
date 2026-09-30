@@ -136,7 +136,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                   conductor.lateral_priors())
         if phase == PHASE_CHECK and check_target_capture_dbfs is not None:
             priors = replace(priors, target_capture_dbfs=check_target_capture_dbfs)
-        # The take's pose picks its window in every phase (ADR-0400).
+        # See ADR-0400.
         kind = record.get("pose_kind")
         exemption = gate_exemption(kind, driver=record.get("pose_driver") or "",
                                    distance_m=take_distance_m(kind, record.get("mark_distance_m")))
