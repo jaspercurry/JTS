@@ -32,6 +32,12 @@ POSE_KIND_CLOSE = "close"
 POSE_KIND_BEHIND = "behind"
 POSE_KINDS = (POSE_KIND_BEARING, POSE_KIND_SEAT, POSE_KIND_CLOSE, POSE_KIND_BEHIND)
 
+# The mark distance the CHECK screen asks for ("about 1 m in front of the
+# speaker") — the reference length that turns this flow's lateral OFFSETS into
+# the BEARINGS a positioner can act on. A default, not a pin: a categorized
+# pose states its own distance (ADR-0260).
+MARK_DISTANCE_M = 1.0
+
 PURPOSE_SPEAKER = "speaker"
 PURPOSE_ROOM = "room"
 PURPOSE_BASS = "bass"
@@ -401,8 +407,6 @@ def pose_level(pose: Pose) -> PoseLevel | None:
     driver alone levels itself, at any kind and distance (ADR-0361), and so does
     a driverless spot closer than the mark that is not a seat (ADR-0403); any
     other pose plays at its run's fader and answers to its repeats (``None``)."""
-    from .crossover_v2.spatial import MARK_DISTANCE_M  # lazy: spatial imports NumPy; keeps jasper.web numpy-free
-
     close = pose.kind != POSE_KIND_SEAT and pose.distance_m is not None and pose.distance_m < MARK_DISTANCE_M
     return SPOT_LEVEL if pose.driver or close else None
 

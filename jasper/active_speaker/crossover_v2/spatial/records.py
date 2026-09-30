@@ -188,9 +188,3 @@ POSITION_ROLE_ONAX = "onax"
 POSITION_ROLE_OFFAX = "offax"
 POSITION_ROLE_XOVR = "xovr"
 POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
-
-# The mark distance the CHECK screen asks for ("about 1 m in front of the
-# speaker") — the reference length that turns this flow's lateral OFFSETS into
-# the BEARINGS a positioner can act on. A default, not a pin: a categorized
-# pose states its own distance (ADR-0260).
-MARK_DISTANCE_M = 1.0

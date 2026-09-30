@@ -13,6 +13,7 @@ from jasper.audio_measurement.evidence_grid import (
     lateral_evidence_grid_hz as lateral_evidence_grid_hz,
 )
 
+from ...measurement_programs import MARK_DISTANCE_M as MARK_DISTANCE_M
 from ..contracts import (
     POSITION_AXES as POSITION_AXES,
     POSITION_AXIS_HORIZONTAL as POSITION_AXIS_HORIZONTAL,
@@ -26,7 +27,6 @@ from .group_floor import (
     GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
 )
 from .records import (
-    MARK_DISTANCE_M as MARK_DISTANCE_M,
     POSITION_ROLES as POSITION_ROLES,
     POSITION_ROLE_OFFAX as POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX as POSITION_ROLE_ONAX,
