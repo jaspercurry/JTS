@@ -21,8 +21,7 @@ from jasper.audio_measurement.evidence_reasons import (
 )
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SUMMED_SWEEP, preceding_silence_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
-from jasper.audio_measurement.quality_model import DRIVER
-from jasper.audio_measurement.sweep_levels import sweep_band_levels
+from jasper.audio_measurement.sweep_levels import snr_trusted, sweep_band_levels
 from jasper.audio_measurement.repeated_sweep import average_summed_capture, sweep_ambient_id
 from jasper.platform.log_event import log_event
 
@@ -126,8 +125,7 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
     valid = not diagnostics.get("integrity_failed") and not document["analysis"]["glitch_detected"]
     bands = [dict(band) for band in reading["bands"]]
     for band in bands:
-        snr = band["estimated_snr_db"]
-        band["fundamental_qualified"] = valid and snr is not None and snr >= DRIVER.snr_warn_db
+        band["fundamental_qualified"] = valid and snr_trusted(band["estimated_snr_db"])
     orders = {}
     harmonics = reading["harmonics"]
     distortion = (unavailable(harmonics["reason"]) if harmonics.get("status") == "unavailable"

@@ -407,6 +407,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
                                                  "played alone and raw.",
         evidence_reasons.REFUSE_PAIR_UNDERSAMPLED: "The two woofers' relative phase turns more than a quarter turn "
                                                    "between two readings, so the fit cannot follow it.",
+        evidence_reasons.REASON_POLARITY_SNR_SHORT: "No band holds both woofers far enough above the room's noise to read their polarity.",
         "rear_preview_needs_pair_round": "The rear preview needs a banked pair round, and there is none.",
     },
     ("name_target", "Name a target that covers the fit band"): {

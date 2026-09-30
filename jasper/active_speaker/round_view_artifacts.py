@@ -233,7 +233,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("document", "preview", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
-                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/4"),
+                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/5"),
 }
 
 #: The run order of the views a finished round publishes: ``room-grade``

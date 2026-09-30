@@ -23,7 +23,7 @@ import numpy as np
 from jasper.audio_measurement.analysis import (
     CANONICAL_SHOULDER_RATIOS, band_levels_from_magnitude, smooth_fractional_octave,
 )
-from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, UPPER_BANDS_HZ
+from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ
 from jasper.audio_measurement.evidence_reasons import (
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_REPEATS, REASON_NO_ROW,
 )
@@ -141,7 +141,7 @@ def late_energy_change(
 
 def band_level_changes(
     freqs_hz: Any, curve_db: Any, *, reference_db: Any, coverage_hz: Sequence[float],
-    bands_hz: Sequence[tuple[float, float]] = UPPER_BANDS_HZ,
+    bands_hz: Sequence[tuple[float, float]],
 ) -> list[dict[str, Any]]:
     """Candidate levels against REAR-MUTED on the same grid;
     power means of the 1/6-octave level. ``coverage_hz`` is the swept band,

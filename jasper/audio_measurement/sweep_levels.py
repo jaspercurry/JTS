@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from .quality_model import DRIVER
 from .snr_policy import band_levels_dbfs
 from .sweep import SweepMeta
 
@@ -58,3 +59,8 @@ def sweep_band_levels(
             "window_ms": 1000 * size / sample_rate, "resolution_hz": sample_rate / size,
         })
     return rows
+
+
+def snr_trusted(snr_db: float | None) -> bool:
+    """Whether a band's SNR, as :func:`sweep_band_levels` estimates it, reaches ``DRIVER.snr_warn_db``."""
+    return snr_db is not None and snr_db >= DRIVER.snr_warn_db

@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from unittest.mock import Mock
 
 import numpy as np
@@ -30,10 +30,12 @@ from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room_selection
+from jasper.active_speaker.crossover_v2.rear_views import REAR_SCORE_CAP_DB
 from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, pose_curve_record
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, round_inputs
+from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
 from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping, bank_round
@@ -45,14 +47,20 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.program import ExcitationProgram
-from jasper.audio_measurement.band_ladders import ARRIVAL_GAP_BAND_HZ, LEVEL_BANDS_HZ
+from jasper.audio_measurement.band_ladders import (
+    ARRIVAL_GAP_BAND_HZ, BAND_LADDERS, BASS_BANDS_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ,
+    THIRD_OCTAVE_BASS_BANDS_HZ, UPPER_BANDS_HZ,
+)
 from jasper.audio_measurement.evidence_reasons import (
     EvidenceUnavailable,
     REASON_COVERAGE_SHORT, REASON_NO_COMPARISON, REASON_NO_EARLIER_REFERENCE, REASON_NO_REPEATS,
-    REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
+    REASON_POLARITY_SNR_SHORT, REASON_TOO_FEW_POSITIONS, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED,
 )
-from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED
-from jasper.audio_measurement.seat_figures import BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP
+from jasper.audio_measurement.rear_evidence import POLARITY_INVERTED, POLARITY_SAME, POLARITY_UNCLEAR
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
+from jasper.audio_measurement.seat_figures import (
+    BAND_SOURCE_DECLARED_GEOMETRY, BAND_SOURCE_MEASURED_DIP, band_level_changes,
+)
 from jasper.cli import round_views
 from tests.crossover_v2_banked_round import (
     SEAT_BAND_HZ, SEAT_GRID_HZ, _reopen, bank_seat_round,
@@ -198,7 +206,8 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                on_axis_kind: str = "bearing", name: str = "r3-seat",
                curves: Mapping[str, list[float] | None] = _CURVES, retake: Mapping[str, float] = {},
                unlisted: Mapping[str, Sequence[int]] = {}, failed: Mapping[str, Sequence[int]] = {},
-               band_hz: Sequence[float] | None = None, superseded: bool = False) -> Path:
+               band_hz: Sequence[float] | None = None, superseded: bool = False,
+               behind: Mapping[str, tuple[Sequence[float], Sequence[tuple[float, float]] | None]] = {}) -> Path:
     """One banked ``rear`` round, ``name`` in the one rear store: every
     candidate at every pose, on-axis repeated, each playing its ``curves``
     over ``band_hz`` (the seat round's by default). A candidate's ``None``
@@ -212,7 +221,10 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
     adds one on-axis retake, that many dB off, that the manifest deselects;
     ``unlisted`` leaves a candidate's takes at named bearings out of its
     manifest set. ``on_axis_kind`` banks every azimuth-0 take as a non-bearing
-    pose, for the on-axis-reference guard (review, PR #5362).
+    pose, for the on-axis-reference guard (review, PR #5362). ``behind`` adds
+    one take behind the cabinet per candidate it names: its ungated curve,
+    and the ``(seconds, dB)`` arrivals its kept impulse holds, which only the
+    windowed read sees (``None`` keeps no impulse).
     """
     root = bank_seat_round(tmp_path / "rear", name=name)
     source, store = _round_source(root)
@@ -247,6 +259,16 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
                                     "early_late_db": 1.0 if candidate == _MUTED else 4.0,
                                     "centroid_ms": 6.0 if candidate == _MUTED else 5.0,
                                 }}]})})
+        if candidate in behind:
+            curve_db, arrivals = behind[candidate]
+            take_id = f"{candidate}-behind-1"
+            records.append({**base, "take_id": take_id, "position_id": take_id, "repeat": 1,
+                            "pose_kind": POSE_KIND_BEHIND, "position_deg": 0, "vertical_deg": 0,
+                            "mark_distance_m": 0.5, "measurement_purpose": "rear",
+                            "gating_applied": False, "graph_scope": "candidate",
+                            "candidate_id": candidate, "level_db": -30.0, "seat_offset_m": None,
+                            **({} if arrivals is None else {"impulses": _kept_impulse(root, take_id, arrivals)}),
+                            "curves": [{**source["curves"][0], "magnitude_db": list(curve_db)}]})
         group = manifest_set(_banked(store, records), set_id=candidate)
         group["base"] = candidate == BASE_CANDIDATE
         group["takes"] = [dict(take, selected=take["selected"] and take["take_id"] != f"{candidate}-0-{repeats + 1}")
@@ -265,12 +287,25 @@ def _pulse(arrival_s: float, *, gain: float = 1.0, inverted: bool = False) -> li
     return (pulse * (-gain if inverted else gain)).tolist()
 
 
-def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ) -> list[dict]:
+def _kept_impulse(root: Path, take_id: str, arrivals: Sequence[tuple[float, float]]) -> dict:
+    """The block a take keeps its summed impulse under (ADR-0354), one pulse per
+    ``(seconds, dB)`` arrival, written by the product's own writer."""
+    samples = np.sum([_pulse(at_s, gain=10.0 ** (level_db / 20.0)) for at_s, level_db in arrivals], axis=0)
+    impulse = RecordedImpulse(samples, _SAMPLE_RATE_HZ, 0, "sweep_verify")
+    summed = SimpleNamespace(role="summed", repeat_index=0, impulse=impulse, repeat_responses=())
+    return write_take_impulses(round_inputs(root).session_dir, take_id,
+                               SimpleNamespace(driver_responses=(), summed_response=summed), recording=None)
+
+
+def _pair_curves(band_hz: Sequence[float] = SEAT_BAND_HZ, *, noise_below_hz: float | None = None) -> list[dict]:
     """The three segments a pair take banks, in the product's own curve shape:
-    each woofer alone and their exact sum, so the trust number reads zero."""
+    each woofer alone and their exact sum, so the trust number reads zero.
+    ``noise_below_hz`` puts the woofers in phase, with an inverted rear below it,
+    as the rumble in jts3's 22–45 Hz bands read (#5404 item 3)."""
     gain = 10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0)
     front = np.ones_like(SEAT_GRID_HZ, dtype=np.complex128)
-    rear = -gain * np.exp(-2j * np.pi * SEAT_GRID_HZ * _PAIR_GAP_MS / 1000.0)
+    sign = -1.0 if noise_below_hz is None else np.where(SEAT_GRID_HZ < noise_below_hz, -1.0, 1.0)
+    rear = sign * gain * np.exp(-2j * np.pi * SEAT_GRID_HZ * _PAIR_GAP_MS / 1000.0)
     return [pose_curve_record(LateralPoseCurve(role=role, freqs_hz=SEAT_GRID_HZ,
                                                complex_tf=transfer,
                                                band_hz=(band_hz[0], band_hz[1])))
@@ -312,11 +347,18 @@ def test_pair_takes_clamp_the_window_and_skip_incomplete_solos():
         assert rear_views.pair_takes([{"branch_diagnostic": missing}]) == []
 
 
+def _band_snr(snr_db: Callable[[float], float]) -> dict:
+    """The band SNR a take's summed sweep banks on the bass ladder (#5737 C4), by band floor."""
+    return {"segment_id": "sweep_verify", "quiet_samples": [0, _SAMPLE_RATE_HZ],
+            "bands": [{"band_hz": list(band), "estimated_snr_db": snr_db(band[0])} for band in BASS_BANDS_HZ]}
+
+
 def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                applied: str = BASE_CANDIDATE, diagnostic: bool = True,
                swept_hz: Sequence[float] = SEAT_BAND_HZ,
                off_axis_gap_ms: float | None = None,
-               behind_gap_ms: float | None = None) -> Path:
+               behind_gap_ms: float | None = None, noise_below_hz: float | None = None,
+               snr_db: Callable[[float], float] | None = lambda lo_hz: 40.0) -> Path:
     """One banked ``rear/pair`` round: its parent at every pose,
     each take banking both woofers alone, their sum and the branch diagnostic.
 
@@ -332,15 +374,18 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
     from a single shared gap. ``behind_gap_ms`` additionally banks one pose
     behind the cabinet (kind ``behind``, 0.1 m) with its own gap — the
     ``rear/pair_behind`` shape (#5362) — to pin that a document-level figure
-    pools bearing positions only (review, PR #5362).
+    pools bearing positions only (review, PR #5362). ``noise_below_hz`` shapes
+    the woofers as :func:`_pair_curves` does, and ``snr_db`` banks each take's
+    band SNR by band floor, ``None`` none.
     """
     root = bank_seat_round(tmp_path / "pair")
     source, store = _round_source(root)
     branch_program = _branch_program(source["program"])
+    snr = {} if snr_db is None else {"analysis": {"bass": _band_snr(snr_db)}}
     records = []
     for degrees, repeat in _poses(repeats):
         take_id = f"{_PARENT}-{degrees}-{repeat}"
-        curves = source["curves"] if degrees in missing else _pair_curves(swept_hz)
+        curves = source["curves"] if degrees in missing else _pair_curves(swept_hz, noise_below_hz=noise_below_hz)
         gap_ms = off_axis_gap_ms if degrees != 0 and off_axis_gap_ms is not None else _PAIR_GAP_MS
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
                         "pose_kind": "bearing", "position_deg": degrees, "vertical_deg": 0,
@@ -351,7 +396,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         "level_db": -30.0, "seat_offset_m": None,
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(gap_ms)} if diagnostic else {}),
-                        "curves": curves})
+                        **snr, "curves": curves})
     if behind_gap_ms is not None:
         take_id = f"{_PARENT}-behind-1"
         records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
@@ -364,7 +409,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         **({"regime": "branches",
                             "branch_diagnostic": _branch_diagnostic(behind_gap_ms)}
                            if diagnostic else {}),
-                        "curves": _pair_curves(swept_hz)})
+                        **snr, "curves": _pair_curves(swept_hz, noise_below_hz=noise_below_hz)})
     banked = _banked(store, records)
     groups = []
     # Role order as the runner banks it, the SUM first — so a reader that kept
@@ -549,16 +594,17 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     # A rear section's program charge is judge --preview's to report (#5909).
     assert [set(row) for row in entry["candidates"]] == [{
         "candidate_id", "set_id", "role", "changed", "change_family", "section_reason",
-        "level_db", "repeats", "positions", "across_positions"}] * len(entry["candidates"])
+        "level_db", "repeats", "positions", "across_positions", "rear_score"}] * len(entry["candidates"])
+    # A round with no pose behind the cabinet has no front-to-back gain to score.
+    assert {row["rear_score"]["reason"] for row in entry["candidates"]} == {REASON_TOO_FEW_POSITIONS}
     # The variant's hole AND its lower output are both reported, and the worst
     # regression names the shape figure rather than the level it also lost.
     on_axis = min(comparison["positions"])
     row = variant["positions"][on_axis]
     assert row["late_energy"]["early_late_change_db"] == 3.0
     assert row["late_energy"]["arrival_shift_ms"] == -1.0
-    assert len(row["upper_bands"]) == 3
     assert comparison["coverage_hz"][1] == comparison["ceiling"]["ceiling_hz"]
-    assert [band["change_db"] for band in row["upper_bands"]] == pytest.approx([-3.0] * 3)
+    assert [band["change_db"] for band in row["front_guard"]] == pytest.approx([-3.0] * len(FRONT_GUARD_BANDS_HZ))
     assert variant["positions"][on_axis]["handover"]["hole_db"] > (
         incumbent["positions"][on_axis]["handover"]["hole_db"] + 5.0)
     assert variant["positions"][on_axis]["band_level_db"] == pytest.approx(
@@ -568,6 +614,78 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     assert {row["view"] for row in views if row["status"] == "written"} == {"rear", "frequency"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
+
+
+def test_the_front_guard_shows_a_narrow_dip_the_band_mean_hid(tmp_path, banked_candidates):
+    """A 1.2 dB dip at 500 Hz in front, as the cancellation branch's delay dug on jts3 (#5404
+    item 4): the 350–700 Hz band mean reads it inside the playbook's 0.4 dB; its third octave does not."""
+    dip = 1.2 * np.exp(-0.5 * (np.log2(SEAT_GRID_HZ / 500.0) / 0.1) ** 2)
+    curves = {**_CURVES, BASE_CANDIDATE: (np.asarray(_CURVES[BASE_CANDIDATE]) - dip).tolist()}
+    entry, = packet_of(rear_round(tmp_path, curves=curves))[0]["rear"]
+    incumbent = next(row for row in entry["candidates"] if row["candidate_id"] == BASE_CANDIDATE)
+
+    band_mean, = band_level_changes(SEAT_GRID_HZ, curves[BASE_CANDIDATE], reference_db=curves[_MUTED],
+                                    coverage_hz=SEAT_BAND_HZ, bands_hz=UPPER_BANDS_HZ[:1])
+    for row in incumbent["positions"].values():
+        guard = {tuple(band["band_hz"]): band["change_db"] for band in row["front_guard"]}
+        assert band_mean["change_db"] > -0.4 > guard.pop(FRONT_GUARD_BANDS_HZ[1]) + 0.2
+        assert max(map(abs, guard.values())) < 0.1
+
+
+def test_the_rear_score_caps_each_band_so_one_deep_null_cannot_buy_it(tmp_path, banked_candidates):
+    """Behind the box, the variant nulls 87-115 Hz by 40 dB, which the old 90-350 Hz mean hid
+    (#5404 item 2), and the incumbent every band by 4 dB, ungated and in its kept impulse alike.
+    Uncapped, that one band buys the variant the better mean gain; capped, the broad null wins."""
+    flat = np.full(SEAT_GRID_HZ.shape, -30.0)
+    null = flat - 40.0 * (np.abs(np.log2(SEAT_GRID_HZ / 100.0)) < 0.2)
+    entry, = packet_of(rear_round(tmp_path, curves=dict.fromkeys(_SECTIONS, flat.tolist()), behind={
+        _MUTED: (flat, [(_FRONT_ARRIVAL_S, 0.0)]), BASE_CANDIDATE: (flat - 4.0, [(_FRONT_ARRIVAL_S, -4.0)]),
+        _VARIANT: (null, [(_FRONT_ARRIVAL_S, 0.0)])}))[0]["rear"]
+    by_candidate = {row["candidate_id"]: row for row in entry["candidates"]}
+    broad, deep = (by_candidate[name]["rear_score"] for name in (BASE_CANDIDATE, _VARIANT))
+    behind_row, = (row for key, row in by_candidate[_VARIANT]["positions"].items() if key.startswith("behind_"))
+
+    assert next(band["change_db"] for band in behind_row["bands"] if band["band_hz"] == [90.0, 350.0]) > -1.0
+    assert [tuple(band["band_hz"]) for band in deep["bands"]] == list(BAND_LADDERS[deep["ladder"]])
+    assert [band["window_ms"] for band in deep["bands"]] == [None, None, 10.0, 10.0, 10.0, 10.0]
+    assert [band["gain_db"] for band in broad["bands"]] == pytest.approx([4.0] * 6, abs=0.01)
+    assert deep["bands"][0]["gain_db"] > 3 * REAR_SCORE_CAP_DB
+    assert np.mean([band["gain_db"] for band in deep["bands"]]) > np.mean([band["gain_db"] for band in broad["bands"]])
+    capped = np.mean([min(band["gain_db"], REAR_SCORE_CAP_DB) for band in deep["bands"]])
+    assert (broad["score_db"], deep["score_db"]) == (pytest.approx(4.0, abs=0.01), pytest.approx(capped))
+    assert deep["score_db"] < broad["score_db"]
+
+
+#: A room behind the box: ten arrivals from 15 ms after the direct sound, the same for every
+#: candidate, each below the quietest direct arrival, so every window opens on the direct one.
+_ROOM_ARRIVALS = [(_FRONT_ARRIVAL_S + 0.015 + 0.004 * index, -14.0) for index in range(10)]
+
+
+@pytest.mark.parametrize("variant_impulse,reason", [
+    ("absent", TAKE_CURVES_NOT_BANKED), ("corrupt", REASON_UNREADABLE)])
+def test_the_rear_score_reads_its_upper_bands_behind_through_the_window(
+    tmp_path, banked_candidates, variant_impulse, reason,
+):
+    """Behind the box the room refills the incumbent's null in the ungated curve, while its direct
+    sound is 12 dB down: the bands from 160 Hz read that through the 10 ms window only (#5404 item 2).
+    A behind take whose impulse is missing or does not read back gaps its own score, and the rear
+    view still writes (ADR-0101)."""
+    flat = np.full(SEAT_GRID_HZ.shape, -30.0)
+    root = rear_round(tmp_path, curves=dict.fromkeys(_SECTIONS, flat.tolist()), behind={
+        _MUTED: (flat, [(_FRONT_ARRIVAL_S, 0.0), *_ROOM_ARRIVALS]),
+        BASE_CANDIDATE: (flat, [(_FRONT_ARRIVAL_S, -12.0), *_ROOM_ARRIVALS]),
+        _VARIANT: (flat, None if variant_impulse == "absent" else [(_FRONT_ARRIVAL_S, 0.0)])})
+    if variant_impulse == "corrupt":
+        (round_inputs(root).session_dir / "impulses" / f"{_VARIANT}-behind-1.npz").write_bytes(b"not an npz")
+
+    entry, = packet_of(root)[0]["rear"]
+    by_candidate = {row["candidate_id"]: row for row in entry["candidates"]}
+    score = by_candidate[BASE_CANDIDATE]["rear_score"]
+
+    assert [band["gain_db"] for band in score["bands"]] == pytest.approx([0.0, 0.0, 12.0, 12.0, 12.0, 12.0], abs=0.1)
+    assert [band["below_trusted_floor"] for band in score["bands"]] == [False, False, True, True, True, False]
+    assert score["below_trusted_floor_bands"] == 3
+    assert by_candidate[_VARIANT]["rear_score"]["reason"] == reason
 
 
 @pytest.mark.parametrize("summed_capture_bundle,covered_bands", [(20000, 7), (200, 2)], indirect=["summed_capture_bundle"])
@@ -581,7 +699,8 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
             asyncio.run(bank(f"{candidate}-{kind}", candidate=candidate, measurement_purpose="rear", phase="lateral",
                              pose_kind=kind, mark_distance_m=distance, vertical_deg=0,
                              seat_offset_m=[0.0, 0.0, 0.0] if kind == "seat" else None,
-                             capture_gain_db=gain if kind == pose_kind else 0.0, gating_applied=False))
+                             capture_gain_db=gain if kind == pose_kind else 0.0, gating_applied=False,
+                             keep_impulses=True))
     groups = []
     records = [(row.path, record) for row, record in measurement_documents(bundle)]
     for candidate in gains:
@@ -603,13 +722,13 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
         placed, = (row for key, row in positions.items() if key.startswith(f"{pose_kind}_"))
         front, = (row for key, row in positions.items() if not key.startswith(f"{pose_kind}_"))
         assert set(front) == {"reason", "dip", "dip_shift", "ripple_db", "own_trend_ripple_db", "handover", "low_bass",
-                              "band_level_db", "late_energy", "upper_bands", "ladder"}
-        assert [band["band_hz"] for band in front["upper_bands"]] == (
-            [list(band) for band in LEVEL_BANDS_HZ[-3:]] if covered_bands == 7 else [])
-        for band in front["upper_bands"]:
-            assert set(band) == {"band_hz", "level_db", "reference_db", "change_db"}
-            assert band["change_db"] == pytest.approx(0.0, abs=0.01)
-        assert placed["upper_bands"] == []
+                              "band_level_db", "late_energy", "front_guard", "ladder"}
+        assert [band["band_hz"] for band in front["front_guard"]] == [list(band) for band in FRONT_GUARD_BANDS_HZ]
+        for band in front["front_guard"]:
+            assert band == ({"status": "available", "band_hz": band["band_hz"], "change_db": pytest.approx(0.0, abs=0.01)}
+                            if covered_bands == 7 else
+                            {"status": "unavailable", "reason": REASON_COVERAGE_SHORT, "band_hz": band["band_hz"]})
+        assert placed["front_guard"] == []
         assert placed["reason"] == ""
         assert isinstance(placed["ripple_db"], float)
         assert isinstance(placed["own_trend_ripple_db"], float)
@@ -630,6 +749,13 @@ def test_rear_views_banked_non_bearing_trial(summed_capture_bundle, covered_band
                 assert band["reason"] == REASON_COVERAGE_SHORT
         assert set(placed) == set(front) | {"trough_fill_db", "trough_fill_reason", "bands"}
         assert candidate["repeats"] == dict.fromkeys(positions, 1)
+        # Front minus behind, behind read in part through a 10 ms window of each real kept impulse.
+        score = candidate["rear_score"]
+        if pose_kind != "behind" or covered_bands < 7:
+            assert score["reason"] == (REASON_TOO_FEW_POSITIONS if pose_kind != "behind" else REASON_COVERAGE_SHORT)
+        else:
+            assert [band["gain_db"] for band in score["bands"]] == pytest.approx(
+                [-gains[candidate["candidate_id"]]] * 6, abs=0.01)
 
 
 def test_a_position_the_reference_missed_is_disclosed_rather_than_dropped(
@@ -759,10 +885,11 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
                                                 "kind": "incumbent", "set_id": BASE_CANDIDATE}
     assert entry["comparison"]["repeat_spread"]["reason"] == REASON_NO_REPEATS
     for candidate in entry["candidates"]:
+        assert candidate["rear_score"] == {"status": "unavailable", "reason": REASON_NO_COMPARISON}
         for row in candidate["positions"].values():
             assert row["late_energy"]["reason"] == REASON_NO_COMPARISON
             assert row["late_energy"]["early_late_change_db"] is None
-            assert row["upper_bands"] == []
+            assert row["front_guard"] == []
     assert set(entry["comparison"]["repeat_spread"]["spread_db"].values()) == {None}
     assert all(row["across_positions"]["worst_regression"]["exceeds_repeat_spread"] is None
                for row in entry["candidates"])
@@ -782,7 +909,7 @@ def test_a_non_bearing_take_has_figures_without_becoming_the_on_axis_reference(
         assert row["reason"] == ""
         assert isinstance(row["ripple_db"], float)
         assert (row["ripple_db"], row["dip"]) == (bearing["ripple_db"], bearing["dip"])
-        assert row["upper_bands"] == []
+        assert row["front_guard"] == []
         assert row["trough_fill_db"] is None
         assert row["trough_fill_reason"] == rear_views.REASON_NON_BEARING
 
@@ -834,6 +961,32 @@ def test_a_pair_round_packets_each_woofer_alone_and_the_trust_number(
     assert {r["view"] for r in views if r["status"] == "written"} == {"rear", "frequency"}
     assert json.loads((root / ARTIFACT_BY_VIEW["rear"].artifact).read_text()) == {
         key: value for key, value in entry.items() if key != "out"}
+
+
+#: The lowest three third octaves in the rumble (25-40 Hz) and above it (63-100 Hz).
+_RUMBLE_BANDS_HZ, _ABOVE_RUMBLE_HZ = THIRD_OCTAVE_BASS_BANDS_HZ[1:4], THIRD_OCTAVE_BASS_BANDS_HZ[5:8]
+
+
+@pytest.mark.parametrize("noise_below_hz,snr_db,state,bands_hz,reason", [
+    (45.0, lambda lo_hz: 40.0, POLARITY_INVERTED, _RUMBLE_BANDS_HZ, ""),
+    (45.0, lambda lo_hz: 0.0 if lo_hz < 50.0 else 40.0, POLARITY_SAME, _ABOVE_RUMBLE_HZ, ""),
+    (None, lambda lo_hz: 12.0 if lo_hz < 50.0 else 40.0, POLARITY_INVERTED, _RUMBLE_BANDS_HZ, ""),
+    (45.0, lambda lo_hz: 0.0, POLARITY_UNCLEAR, (), REASON_POLARITY_SNR_SHORT),
+    (45.0, None, POLARITY_UNCLEAR, (), TAKE_CURVES_NOT_BANKED),
+], ids=["noise_trusted", "noise_untrusted", "sum_cancels", "none_trusted", "not_banked"])
+def test_rear_polarity_reads_only_the_bands_where_each_woofer_clears_the_noise(
+    tmp_path, banked_candidates, noise_below_hz, snr_db, state, bands_hz, reason,
+):
+    """Two woofers in phase whose 22–45 Hz bands are rumble that reads inverted (#5404 item 3):
+    the rumble decides only where each woofer alone clears the noise. A woofer's SNR is the sum's
+    banked SNR plus its level over the sum's, so an inverted pair, whose sum cancels at 20-50 Hz,
+    still reads its lowest bands."""
+    entry, = packet_of(pair_round(tmp_path, noise_below_hz=noise_below_hz, snr_db=snr_db))[0]["rear"]
+
+    for row in entry["pair"]["positions"].values():
+        polarity = row["rear_polarity"]
+        assert (polarity["state"], polarity["reason"], polarity["n_bands"]) == (state, reason, len(bands_hz))
+        assert [tuple(band) for band in polarity["bands_hz"]] == list(bands_hz)
 
 
 def test_a_muted_rear_is_the_whole_ideal_gradient_away_from_one(tmp_path, banked_candidates):
