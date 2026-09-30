@@ -27,7 +27,6 @@ import pytest
 
 from jasper.active_speaker.measurement_programs import BASE_CANDIDATE
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
-from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal
 from jasper.active_speaker import measurement_analysis
 from jasper.active_speaker.crossover_v2 import rear_pair_round, rear_views, room_selection
@@ -547,11 +546,10 @@ def test_a_rear_round_packets_one_comparison_for_the_whole_batch(tmp_path, banke
     assert (muted["changed"], muted["change_family"]) == (["rear_muted"], "mute")
     assert variant["change_family"] == "band_edge"
     assert variant["changed"] == ["rear.bass.filters.0.parameters.freq"]
-    assert incumbent["headroom_change_db"] == 0.0
-    assert variant["headroom_charge_db"] == pytest.approx(
-        rear_branch_sum_headroom_db(_SECTIONS[_VARIANT]))
-    assert variant["headroom_change_db"] == pytest.approx(
-        variant["headroom_charge_db"] - incumbent["headroom_charge_db"])
+    # A rear section's program charge is judge --preview's to report (#5909).
+    assert [set(row) for row in entry["candidates"]] == [{
+        "candidate_id", "set_id", "role", "changed", "change_family", "section_reason",
+        "level_db", "repeats", "positions", "across_positions"}] * len(entry["candidates"])
     # The variant's hole AND its lower output are both reported, and the worst
     # regression names the shape figure rather than the level it also lost.
     on_axis = min(comparison["positions"])

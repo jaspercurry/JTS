@@ -17,7 +17,7 @@ from typing import Any
 from jasper.active_speaker.candidate_bank import BankedCandidate, CandidateBankRefusal
 from jasper.active_speaker.alignment_evidence import commissioning_alignment, round_alignment
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, compose_candidate
+from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, candidate_from_applied_profile, compose_candidate, program_charge_db
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
@@ -270,8 +270,8 @@ def preview_kind(document: Mapping[str, Any]) -> str:
 
 
 def preview_prescription_document(
-    document: Mapping[str, Any], *, round_dir: Path | None, base: BankedCandidate | None = None,
-    evidence: PrescriptionEvidence | None = None, capture_id: str | None = None,
+    document: Mapping[str, Any], *, round_dir: Path | None, base: BankedCandidate,
+    evidence: PrescriptionEvidence, capture_id: str | None = None,
     cabinet: tuple[int, int, int] | None = None,
 ) -> dict[str, Any]:
     """``cabinet`` is the declared ``(front woofer, rear woofer, tweeter)``
@@ -298,7 +298,6 @@ def preview_prescription_document(
             if kind == "emitted_graph" and (round_dir is None or capture_id is None):
                 raise PrescriptionDocumentRefused(REASON_EVIDENCE_UNREADABLE, blamed_section(sections),
                                                   "a driver/blend preview needs --round <diagnostic round>")
-            assert base is not None and evidence is not None
             if kind == "room":
                 preview_function = room.preview_room_prescription
                 if not sections[kind]:
@@ -319,6 +318,7 @@ def preview_prescription_document(
             extra["compiled_stage"] = rear_calibration.compile_rear_stage(
                 validated, front_channel=front, rear_channel=rear, tweeter_channel=tweeter,
                 channel_count=max(cabinet) + 1) if validated["case"] == "electrical_dsp" else None
+            extra["program_charge_db"] = program_charge_db(judge_prescription_document(document, base=base, evidence=evidence))
     except room.RoomPrescriptionRefused as exc:
         raise PrescriptionDocumentRefused(exc.reason, kind, exc.detail, evidence=exc.evidence) from exc
     except rear_calibration.RearCalibrationError as exc:

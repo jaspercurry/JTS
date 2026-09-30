@@ -11,14 +11,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
+from jasper.active_speaker.branch_chain import rear_stage_response
+from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.crossover_v2 import rear_preview
 from jasper.active_speaker.crossover_v2.pose_curve import lateral_pose_curve
 from jasper.active_speaker.crossover_v2.prescription_document import read_prescription_document
 from jasper.active_speaker.crossover_v2.rear_views import pair_takes
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
-from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, diagnostic_seed
+from jasper.active_speaker.crossover_v2.round_inputs import read_run_manifest, round_inputs
+from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, diagnostic_seed, rear_operating_facts
+from jasper.active_speaker.rear_compare import rear_compare_level
 from jasper.audio_measurement import seat_figures as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import LATE_ENERGY_BAND_HZ, LEVEL_BANDS_HZ
@@ -26,9 +28,10 @@ from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REA
 from jasper.audio_measurement.rear_evidence import confident_arrival_gap_s, gradient_residual_db, magnitude_db
 from jasper.cli import crossover_prescriber
 from jasper.cli._refusal import EXIT_UNREADABLE
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_runtime_contract import _active_topology
 from tests.test_prescription_document import document
-from tests.test_rear_output_foundation import _rear_pair
+from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_round_views_rear import (
     _PAIR_GAP_MS, _PAIR_LEVEL_GAP_DB, _branch_diagnostic,
     banked_candidates, packet_of, pair_round, rear_round,
@@ -40,8 +43,12 @@ __all__ = ["banked_candidates"]
 @pytest.fixture(autouse=True)
 def cardioid_box(monkeypatch):
     """The declared layout a rear preview compiles its stage at: one mono
-    cabinet of front woofer 0, tweeter 1 and rear woofer 2."""
-    monkeypatch.setattr(crossover_prescriber, "load_output_topology", lambda: _rear_pair("mono")[1])
+    cabinet of front woofer 0, tweeter 1 and rear woofer 2, and its applied
+    tune, the ``saved`` base a preview composes its document on."""
+    preset, topology = _rear_pair("mono")
+    monkeypatch.setattr(crossover_prescriber, "load_output_topology", lambda: topology)
+    saved = BankedCandidate(_candidate(preset=preset, rear_calibration=_rear_document()), "", "", Path())
+    monkeypatch.setattr(crossover_prescriber, "saved_base", lambda: (saved, None))
 
 
 def _preview(tmp_path, capsys, sections, root=None, extra=()):
@@ -82,7 +89,7 @@ def test_grid_writes_complete_documents_and_full_previews(tmp_path, capsys):
         full = json.loads(path.with_suffix(".preview.json").read_text())
         single = _preview(tmp_path, capsys, variant["sections"], root)
         assert full == {key: value for key, value in single.items() if key not in ("view", "subject", "parameters")}
-        assert row["headroom_charge_db"] == full["preview"]["stage"]["headroom_charge_db"]
+        assert row["program_charge_db"] == full["program_charge_db"]
         for key, position in row["positions"].items():
             source = full["preview"]["positions"][key]
             assert set(position["bands"]) == {"30-60", "60-100", "90-350", "200-300", "350-700", "700-1500", "1500-5000"}
@@ -131,19 +138,9 @@ def test_grid_requires_preview_and_out_dir(extra):
 
 
 @pytest.mark.parametrize("front_gain,filter_gain", [(0.0, 0.0), (-0.51, -6.36), (0.0, 4.0)])
-def test_muted_document_is_exactly_zero_and_needs_no_document_base(
-    tmp_path, capsys, monkeypatch, banked_candidates, front_gain, filter_gain,
-):
+def test_muted_document_is_exactly_zero(tmp_path, capsys, banked_candidates, front_gain, filter_gain):
     root = pair_round(tmp_path, behind_gap_ms=-0.5)
     pair = packet_of(root)[0]["rear"][0]["pair"]
-
-    def unavailable(*args, **kwargs):
-        pytest.fail("preview resolved the document base or evidence")
-
-    for module, name in ((crossover_prescriber, "saved_base"),
-                         (crossover_prescriber, "find_banked_candidate"),
-                         (crossover_prescriber, "_document_evidence")):
-        monkeypatch.setattr(module, name, unavailable)
     section = diagnostic_seed(48000)
     section["front"]["gain_db"] = front_gain
     section["front"]["filters"] = [{"type": "Biquad", "parameters": {
@@ -191,9 +188,7 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
         section["rear"]["cancellation"]["filters"].append({"type": "Biquad", "parameters": {
             "type": "Lowshelf", "freq": 100.0, "q": 0.7, "gain": boost_db}})
     preview = _preview(tmp_path, capsys, {"rear_calibration": section}, root)["preview"]
-    assert (preview["stage"]["headroom_charge_db"] > 0) == bool(boost_db)
-    charge = rear_branch_sum_headroom_db(section) - rear_branch_sum_headroom_db({**section, "rear_muted": True})
-    assert preview["stage"]["relative_charge"] == pytest.approx(charge, abs=0.0005)
+    assert set(preview["stage"]) == {*rear_operating_facts(section), "round_id", "pair_candidate_id"}
     takes = pair_takes(record for _, record in purpose_take_records(round_inputs(root).session_dir, purpose="rear"))
     for take in takes:
         row = preview["positions"][take.pose_key]
@@ -214,11 +209,11 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
             reference.freqs_hz, magnitude_db(reference.complex_tf), fraction=figures.FIGURE_FRACTION)
         display = (sampled.freqs_hz >= row["coverage_hz"][0]) & (sampled.freqs_hz <= min(row["coverage_hz"][1], 5000.0))
         assert row["curve"]["freqs_hz"] == [round(float(hz), 3) for hz in sampled.freqs_hz[display]]
-        assert row["curve"]["change_db"] == pytest.approx(change[display] - charge, abs=0.0005)
+        assert row["curve"]["change_db"] == pytest.approx(change[display], abs=0.0005)
         dip = row["figures"]["muted"]["dip"]
         assert dip is not None
         assert row["trough_fill_db"] == pytest.approx(
-            change[np.argmin(abs(sampled.freqs_hz - dip["hz"]))] - charge, abs=0.0005)
+            change[np.argmin(abs(sampled.freqs_hz - dip["hz"]))], abs=0.0005)
         assert row["trough_fill_db"] == row["curve"]["change_db"][row["curve"]["freqs_hz"].index(dip["hz"])]
         keep = (take.freqs_hz >= row["coverage_hz"][0]) & (take.freqs_hz <= row["coverage_hz"][1])
         expected_gradient = gradient_residual_db(
@@ -230,8 +225,7 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
             if not band["reason"]:
                 level, = band_levels_from_magnitude(sampled.freqs_hz, display_db, [band["band_hz"]])
                 assert band["predicted_db"] == pytest.approx(level, abs=0.0005)
-                assert band["change_db"] == pytest.approx(
-                    band["predicted_db"] - band["muted_db"] - preview["stage"]["headroom_charge_db"], abs=0.001)
+                assert band["change_db"] == pytest.approx(band["predicted_db"] - band["muted_db"], abs=0.001)
         muted, predicted_energy = [figures.impulse_energy_figures(
             figures.band_limited_impulse(take.freqs_hz, tf, LATE_ENERGY_BAND_HZ),
             sample_rate_hz=take.sample_rate_hz,
@@ -270,6 +264,16 @@ def test_the_preview_compiles_the_stage_at_the_declared_cabinet(tmp_path, capsys
     stage = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, pair_round(tmp_path))["compiled_stage"]
     assert stage["filters"]["rear_out2_output_gain"]["parameters"]["mute"] is True
     assert [step["channels"] for step in stage["pipeline"] if step.get("type") == "Filter"][0] == [0]
+
+
+@pytest.mark.parametrize("rear_muted", [True, False])
+def test_the_preview_answers_the_program_charge_judge_answers(tmp_path, capsys, rear_muted):
+    """The one charge (ADR-0385): the document composed on its base, as ``judge`` composes it."""
+    root = pair_round(tmp_path)
+    preview = _preview(tmp_path, capsys, {"rear_calibration": _rear_document(rear_muted=rear_muted)}, root)
+    assert crossover_prescriber.main(["judge", str(tmp_path / "document.json"), "--round", str(root)]) == 0
+    assert preview["program_charge_db"] == json.loads(capsys.readouterr().out)["program_charge_db"]
+    assert (preview["program_charge_db"] > 0) == (not rear_muted)
 
 
 def test_pair_takes_share_a_window_and_remove_each_clock_shift():
@@ -363,15 +367,15 @@ def test_repeats_use_mean_magnitudes_and_median_per_take_energy(tmp_path, capsys
                                      ("bearing", "az+90.00_el+0.00_d+1.00"),
                                      ("behind", "behind_az+0.00_el+0.00_d+0.10"),
                                      ("seat", "az+0.00_el+0.00_d+1.00")])
-def test_compare_delta_is_broadband_with_retained_headroom(pose, key):
-    preview = {"stage": {"relative_charge": 0.5}, "positions": {key: {
+def test_compare_delta_is_broadband(pose, key):
+    preview = {"positions": {key: {
         "pose_kind": pose, "curve": {"freqs_hz": [40, 350], "change_db": [3, 3]}}}}
     delta = rear_preview.rear_compare_delta_db(preview)
     if pose != "bearing" or "90.00" in key:
         assert delta is None
     else:
         grid = np.geomspace(40, 16000, 1024, endpoint=False)
-        expected = 10 * np.log10(np.mean(10 ** (np.where(grid <= 350, 3.5, 0) / 10)))
+        expected = 10 * np.log10(np.mean(10 ** (np.where(grid <= 350, 3, 0) / 10)))
         assert delta == pytest.approx(expected, abs=0.01)
 
 
@@ -437,6 +441,24 @@ def test_compare_trim_is_a_plain_float(compare_evidence, monkeypatch):
     monkeypatch.setattr(rear_preview, "rear_compare_delta_db", lambda preview: np.float64(0.41))
     level = rear_compare.rear_compare_level()
     assert (level["status"], level["trim_db"], type(level["trim_db"])) == ("matched", 0.41, float)
+
+
+@pytest.mark.parametrize("seed,delta,trim,louder", [
+    pytest.param(False, 2.1056, 2.11, "on", id="stage_within_unity"),
+    pytest.param(True, -0.8288, 0.83, "off", id="stage_over_unity"),
+])
+def test_compare_trim_is_the_previewed_change_alone(compare_evidence, seed, delta, trim, louder):
+    """The switch keeps the applied headroom in both states (ADR-0329), so the
+    trim follows the previewed change alone, also for a stage that peaks over unity."""
+    root, applied = compare_evidence
+    if seed:
+        applied["recomposition_snapshot"]["rear_calibration"] = _rear_document()
+    inputs = round_inputs(root)
+    preview = rear_preview.preview_rear_section(
+        applied["recomposition_snapshot"]["rear_calibration"], inputs=inputs, manifest=read_run_manifest(inputs))
+    assert rear_preview.rear_compare_delta_db(preview) == pytest.approx(delta, abs=1e-3)
+    level = rear_compare_level()
+    assert (level["status"], level["trim_db"], level["louder"]) == ("matched", trim, louder)
 
 
 

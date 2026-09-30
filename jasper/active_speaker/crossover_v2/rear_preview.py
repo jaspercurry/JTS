@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from jasper.active_speaker.branch_chain import rear_branch_sum_headroom_db, rear_stage_response
+from jasper.active_speaker.branch_chain import rear_stage_response
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR
 from jasper.active_speaker.rear_calibration import read_rear_calibration, rear_operating_facts
 from jasper.audio_measurement import rear_evidence, seat_figures as figures
@@ -26,21 +26,20 @@ REAR_PREVIEW_NEEDS_PAIR_ROUND = "rear_preview_needs_pair_round"
 
 def rear_compare_delta_db(preview: Mapping[str, Any]) -> float | None:
     """Front on minus off: 10*log10(mean(10**(delta/10))) on 1024 log bins
-    from 40 Hz to 16 kHz (upper endpoint excluded). Delta is change_db plus
-    relative_charge inside the curve's band, and 0 dB outside it.
+    from 40 Hz to 16 kHz (upper endpoint excluded). Delta is change_db inside
+    the curve's band, and 0 dB outside it.
     """
     for key, row in preview["positions"].items():
         if front_on_axis(key, row["pose_kind"]):
             curve = row["curve"]
             grid = np.geomspace(40.0, 16000.0, 1024, endpoint=False)
-            change = np.asarray(curve["change_db"]) + preview["stage"]["relative_charge"]
-            delta = np.interp(grid, curve["freqs_hz"], change, left=0.0, right=0.0)
+            delta = np.interp(grid, curve["freqs_hz"], curve["change_db"], left=0.0, right=0.0)
             return band_levels_from_magnitude(grid, delta, [(40.0, 16000.0)])[0]
     return None
 
 
 def summary_rows(preview: Mapping[str, Any]) -> dict[str, Any]:
-    return {"headroom_charge_db": preview["stage"]["headroom_charge_db"], "positions": {
+    return {"positions": {
         key: {"trough_fill_db": row["trough_fill_db"],
               "gradient_residual_db": row["gradient_residual"]["db"],
               **{name: row["late_energy"][name] for name in ("early_late_change_db", "arrival_shift_ms")},
@@ -59,7 +58,7 @@ def _rounded(value: Any) -> Any:
 
 
 def _position(takes: list[PairTake], row: Mapping[str, Any],
-              section: Mapping[str, Any], charge_delta: float) -> dict[str, Any]:
+              section: Mapping[str, Any]) -> dict[str, Any]:
     take = takes[0]
     grid = take.freqs_hz
     rear, front = rear_stage_response(section, grid)
@@ -84,7 +83,7 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
     dip = symptoms["muted"]["dip"]
     muted_db, predicted_db = (smooth_fractional_octave(
         freqs, curve, fraction=figures.FIGURE_FRACTION) for curve in (muted_db, predicted_db))
-    change = predicted_db - muted_db - charge_delta
+    change = predicted_db - muted_db
     front_db = rear_evidence.magnitude_db(front)
     bands = []
     for low, high in LEVEL_BANDS_HZ:
@@ -95,7 +94,7 @@ def _position(takes: list[PairTake], row: Mapping[str, Any],
             muted_level = band_levels_from_magnitude(freqs, muted_db, [(low, high)])[0]
             predicted_level = band_levels_from_magnitude(freqs, predicted_db, [(low, high)])[0]
         bands.append({"band_hz": [low, high], "muted_db": muted_level, "predicted_db": predicted_level,
-                      "change_db": None if muted_level is None or predicted_level is None else predicted_level - muted_level - charge_delta,
+                      "change_db": None if muted_level is None or predicted_level is None else predicted_level - muted_level,
                       "front_chain_db": electrical, "reason": "" if covered else REASON_COVERAGE_SHORT})
     late_covered = coverage[0] <= LATE_ENERGY_BAND_HZ[0] and LATE_ENERGY_BAND_HZ[1] <= coverage[1]
     energies = [[figures.impulse_energy_figures(
@@ -131,11 +130,9 @@ def preview_rear_section(section: Mapping[str, Any], *, inputs: RoundInputs,
     grouped: dict[str, list[PairTake]] = {}
     for take in takes:
         grouped.setdefault(take.pose_key, []).append(take)
-    charge = rear_branch_sum_headroom_db(validated)
-    relative_charge = charge - rear_branch_sum_headroom_db({**validated, "rear_muted": True})
-    positions = {key: _position(grouped[key], row, validated, relative_charge)
+    positions = {key: _position(grouped[key], row, validated)
                  for key, row in view["pair"]["positions"].items() if key in grouped}
     return _rounded({"reason": "", "stage": {
-        "headroom_charge_db": charge, "relative_charge": relative_charge, **rear_operating_facts(validated),
-        "round_id": inputs.session_dir.name, "pair_candidate_id": view["pair"]["candidate_id"],
+        **rear_operating_facts(validated), "round_id": inputs.session_dir.name,
+        "pair_candidate_id": view["pair"]["candidate_id"],
     }, "positions": positions})

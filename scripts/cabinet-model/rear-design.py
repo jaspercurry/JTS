@@ -34,7 +34,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from _cabinet import Cabinet, db, rear_ratio, roughness_db, seat_deviation
-from jasper.active_speaker.branch_chain import camilla_filter_response, rear_branch_sum_headroom_db, rear_stage_response
+from jasper.active_speaker.branch_chain import camilla_filter_response, rear_stage_peak_db, rear_stage_response
 from jasper.active_speaker.crossover_v2.prescription_document import DOCUMENT_KIND, read_prescription_document
 from jasper.active_speaker.rear_calibration import compile_rear_stage, read_rear_calibration
 
@@ -131,7 +131,7 @@ def main() -> None:
     with open(args.out, "w") as fh:
         fh.write(json.dumps(prescription, indent=2) + "\n")
     print(f"wrote {args.out}; front chain 0 dB, both rear branches +{max(shift, 0.0):.2f} dB (ADR-0327); "
-          f"headroom charge {rear_branch_sum_headroom_db(document):.2f} dB")
+          f"rear stage's own peak {rear_stage_peak_db(document):.2f} dB (judge --preview answers the program charge)")
 
     designs = {"front woofer only": 0 * grid, "new design": r_new}
     if args.live:

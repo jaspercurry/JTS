@@ -227,7 +227,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow(
         "rear_view.json", ("--run", "<run-id>"), producer="jasper-round wait", programs=(PURPOSE_REAR,),
-        bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/2",
+        bookkeeping=(PURPOSE_REAR,), builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3",
     ),
     # The banker writes this index; inventory reports its presence.
     "position-cycle": CatalogRow(POSITION_CYCLE_FILENAME, ("--run", "<run-id>"), producer="jasper-round wait"),
@@ -260,7 +260,7 @@ CATALOG: dict[str, CatalogRow] = {
         question="What would a prescription document's sections do, predicted from a round without playing?",
         needs="a document and its round: branches/express for driver or blend, room/seat for room, rear/pair for rear",
         avoid="checking a document's gates, or a bass document, which has no preview; judge without --preview does both",
-        answer_fields=("adopted", "banked", "compiled_stage", "preview", "section", "sections")),
+        answer_fields=("adopted", "banked", "compiled_stage", "preview", "program_charge_db", "section", "sections")),
     f"{_PRESCRIBER} judge --preview --vary": CatalogRow(
         argv=("<path=value,value>", "<document.json>", "--round", TAKES_THIS_ROUND, "--set", "<set-id>", "--out-dir", "<dir>"),
         programs=_PREVIEW_PROGRAMS, reads=READS_RECORDING, schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} judge --preview --vary"],

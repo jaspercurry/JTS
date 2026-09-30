@@ -332,10 +332,13 @@ Preview predicts F·H_front + R·(H_bass + H_cancel) at each measured position.
 Read `positions[*]`: `trough_fill_db` is the rise at the muted curve's deepest
 dip in `figures_band_hz`, named by `figures.muted.dip.hz`. If that frequency
 is a band edge instead of the wall trough, read `curve.change_db` at the
-trough. `bands[].change_db` includes the headroom charge against this document
-with its rear muted; `front_chain_db` is the front chain's electrical level,
-the only prediction above the pair's coverage. `stage.headroom_charge_db`
-is the broadband attenuation cost already included in `change_db`.
+trough. `bands[].change_db` is against this document with its rear muted at
+one headroom, as the Cardioid On|Off switch plays it; `front_chain_db` is the
+front chain's electrical level, the only prediction above the pair's coverage.
+The rear views carry no charge. `program_charge_db`, beside `preview`, is the
+document's program charge on its `base` (ADR-0385). A trial plays each
+candidate at its own charge: to read a preview as a trial, subtract the rise
+of `program_charge_db` over the rear-muted copy's.
 
 At the mark, positive `late_energy.early_late_change_db` means a higher
 early-to-late energy ratio. Read `arrival_shift_ms` beside it. A preview's
@@ -410,8 +413,8 @@ branch and set its delay from the pattern ratio above. Start its gain at 0 dB; i
 rear reads louder than the front at the low end of the band, shape it with
 a low shelf rather than a flat cut. A delay-and-invert pair loses forward
 level below c / (4·D); the same Peaking boost on BOTH rear branches in that
-band (up to +6 dB, ADR-0326) pays it back, and the stage's realised peak is
-charged to program headroom. Keep the bass branch in phase. Carry a filter
+band (up to +6 dB, ADR-0326) pays it back, and the program charge pays for
+the boost (ADR-0385). Keep the bass branch in phase. Carry a filter
 that flattens the front woofer itself on all three chains, so the rear/front
 ratio stays the one you fitted.
 

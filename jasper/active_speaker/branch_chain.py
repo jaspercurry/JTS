@@ -515,28 +515,21 @@ def rear_stage_response(
     return summed, front
 
 
-def rear_branch_sum_headroom_db(document: Mapping[str, Any] | None) -> float:
-    """Peak the compiled cardioid stage puts above unity, dB.
+def rear_stage_peak_db(document: Mapping[str, Any] | None) -> float:
+    """Peak the cardioid stage alone puts above unity, dB: its realised peak (ADR-0324).
 
-    Charged pre-split beside the room-PEQ boost: the stage is the one place a
-    cardioid graph can exceed the program it was handed. The charge is the
-    stage's REALISED peak — every chain evaluated as the complex response of its
-    gain, polarity, delay and filters, the two rear branches summed as complex
-    numbers, and the louder of that sum and the front chain taken across
-    :func:`~.branch_chain.camilla_evaluation_grid`. The branches never see one
-    band at full gain (the bass branch low-passes; the cancellation branch
-    high-passes AND inverts), so charging the in-phase sum of their gains cost
-    5.372 dB on jts3's own fitted document against a realised +0.194 dB.
-
-    An UPPER BOUND on what the emitted graph can do, so every term that can put
-    the stage above unity is evaluated, not argued away: shelf and high/low-pass
-    resonance, all-pass phase rotation (bounded at
+    Every chain is evaluated as the complex response of its gain, polarity,
+    delay and filters, the two rear branches summed as complex numbers, and the
+    louder of that sum and the front chain taken across
+    :func:`~.branch_chain.camilla_evaluation_grid`. That includes shelf and
+    high/low-pass resonance, all-pass phase rotation (bounded at
     ``rear_calibration.MAX_ALLPASS_Q`` so the grid resolves it), and the front
-    chain in EVERY rear mode. The one thing not modelled is a ``fir`` rear's
-    taps, which cannot reach the runtime: the candidate boundary refuses
-    ``rear.mode == "fir"`` in v1 (ADR-0322). A STEADY-TONE bound: overshoot
-    between grid points stays backstopped by the per-output soft-clip limiter.
-    See ADR-0324.
+    chain in EVERY rear mode. A ``fir`` rear's taps are not modelled: the
+    candidate boundary refuses ``rear.mode == "fir"`` in v1 (ADR-0322). A
+    steady-tone figure; overshoot between grid points is not in it.
+
+    Not the program charge, which nets the whole emitted graph (ADR-0385,
+    ADR-0396).
     """
     # An acoustic-targets document carries no electrical chains at all; the
     # splice refuses it outright a few steps later (``_rear_calibration_graph``).
