@@ -44,7 +44,8 @@ from .crossover_v2.measure_spec import MeasureSpec, branch_probes, solo_target
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
 from .crossover_v2.refusal_copy import (
-    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_REGISTRY, REASON_RETRIES_SPENT, REASON_USER_STOPPED, TakeVerdict,
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_INTERNAL_ERROR, REASON_LEVEL_UNSOLVED, REASON_REGISTRY, REASON_RETRIES_SPENT,
+    REASON_USER_STOPPED, TakeVerdict,
     channel_map_failed_roles, exception_detail,
 )
 from .crossover_v2.session import TuningSession
@@ -468,6 +469,19 @@ async def _run(
     retry_was_measured = False
     playing = [_first_play(item.spec) for item in work]
     branch_levels: dict[int, list[float]] = {}
+    unlevelled: set[int] = set()
+
+    def solved_level(offset: int, pending: TakeVerdict) -> float | None:
+        """The last level solved for a take that levels itself, never above the last it
+        played; a branch take's needs both its branches' levels (ADR-0403 §3)."""
+        probes, found = branch_probes(work[offset].spec), branch_levels.get(offset, [])
+        if len(found) < len(probes):
+            return None
+        solved = [*playing[offset].level_ladder_dbfs, *((min(found) - BRANCH_SUM_MARGIN_DB,) if probes else ()),
+                  *((pending.next_gain_db,) if pending.next in _LEVEL_RETAKES and pending.next_gain_db is not None
+                    else ())]
+        return min(solved, default=None)
+
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
@@ -502,6 +516,13 @@ async def _run(
                 elif work[offset].pose_level is not None:
                     # A pose that levels itself starts over with its retries, so its redo is free (ADR-0361).
                     ledgers[pose] = SlotAttempts(retries_per_pose=retries)
+            if offset in unlevelled:
+                # A take of a set that found no level plays at none, never at the run's fader (ADR-0361 §3).
+                manifest.mark_not_measured(work[offset].stop["index"], REASON_LEVEL_UNSOLVED)
+                retry = None
+                retry_was_measured = False
+                offset += 1
+                continue
             item = work[offset]
             ledger = ledgers[item.pose_index]
             if retry is not None:
@@ -509,15 +530,16 @@ async def _run(
                     if (retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES
                             and item.spec.program_phase != PHASE_CHECK):
                         manifest.mark_not_measured(item.stop["index"], retry.fault)
-                        solved = [*playing[offset].level_ladder_dbfs, *(
-                            (retry.next_gain_db,) if retry.next in _LEVEL_RETAKES and retry.next_gain_db is not None
-                            else ())]
-                        if item.pose_level is not None and solved:
-                            # A set whose levelling take is left unmeasured plays at the last level
-                            # solved for it, never above the last it played (ADR-0403).
+                        if item.pose_level is not None:
+                            # The rest of a set that levels itself plays only at a level solved for it,
+                            # the last one, or not at all (ADR-0361 §3, ADR-0403).
+                            level = solved_level(offset, retry)
                             for index in range(offset + 1, len(work)):
-                                if work[index].level_set == item.level_set and work[index].pose_level is None:
-                                    playing[index] = replace(work[index].spec, level_ladder_dbfs=(min(solved),))
+                                if work[index].level_set == item.level_set:
+                                    if level is None:
+                                        unlevelled.add(index)
+                                    else:
+                                        playing[index] = replace(work[index].spec, level_ladder_dbfs=(level,))
                         retry = None
                         retry_was_measured = False
                         offset += 1
@@ -531,12 +553,11 @@ async def _run(
                     grant_epoch += 1
                     if gate:
                         gate.abandon_hold()
-                    if item.pose_level is not None:
-                        # A new placement of a pose that levels itself starts at its probe again (ADR-0365).
-                        for index, row in enumerate(work):
-                            if row.pose_index == item.pose_index:
-                                playing[index] = _first_play(row.spec)
-                                branch_levels.pop(index, None)
+                    # A new placement starts each take there that levels itself at its probe again (ADR-0365).
+                    for index, row in enumerate(work):
+                        if row.pose_index == item.pose_index and row.pose_level is not None:
+                            playing[index] = _first_play(row.spec)
+                            branch_levels.pop(index, None)
                 if retry.next in _LEVEL_RETAKES:
                     if retry.next_gain_db is None:
                         manifest.reason = retry.fault or "retry_gain_missing"

@@ -173,6 +173,8 @@ REASON_APPLY_FAILED = "apply_failed"
 REASON_USER_STOPPED = "user_stopped"
 REASON_ARM_HOST_STUCK = "arm_host_stuck"
 REASON_RETRIES_SPENT = "retries_spent"
+#: A take of a set that levels itself, whose set found no level to play at (ADR-0361 §3, ADR-0403).
+REASON_LEVEL_UNSOLVED = "level_unsolved"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -1240,6 +1242,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The retakes for this position are used up. Start another run to measure it again.",
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
+        REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so this measurement did not play.",
         "placement_required": "Confirm the microphone position before taking another measurement.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
