@@ -77,7 +77,6 @@ from .room_analysis import RoomMedian, room_composition
 
 __all__ = [
     "BOOST_NOT_ADMITTED",
-    "LAYOUT_UNAVAILABLE",
     "ROOM_COMPOSED_TOLERANCE_DB",
     "ROOM_MEDIAN_FIELD",
     "ROOM_MEDIAN_UNAVAILABLE",
@@ -122,9 +121,6 @@ ROOM_COMPOSED_TOLERANCE_DB = 0.5
 
 #: No median artifact, or one this door cannot read into limits.
 ROOM_MEDIAN_UNAVAILABLE = "room_median_unavailable"
-#: No readable applied profile, so nothing can say which sides this speaker
-#: declares -- the median's sibling: evidence the door must have to judge at all.
-LAYOUT_UNAVAILABLE = "layout_unavailable"
 #: A boost the spatial evidence does not admit; the evidence carries the
 #: :class:`~jasper.audio_measurement.room_limits.BoostAdmission` finding.
 BOOST_NOT_ADMITTED = "boost_not_admitted"
@@ -145,7 +141,6 @@ ROOM_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     COMPOSED_BOOST_EXCEEDED,
     ROOM_MEDIAN_UNAVAILABLE,
     ROOM_NOT_BANKED,
-    LAYOUT_UNAVAILABLE,
     BOOST_NOT_ADMITTED,
     TAPER_VIOLATED,
     SIDE_MALFORMED,
