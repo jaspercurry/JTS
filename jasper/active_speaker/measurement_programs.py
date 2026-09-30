@@ -105,7 +105,7 @@ _PROGRAM_SECTIONS = (
          CandidateField("blend_correction", list)),
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
         "Driver linearization and crossover", "Measure each driver and refine its response and crossover.",
-        "Measure the baseline", "driver", trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend")),
+        "Measure the baseline", "driver", trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend", "topology")),
     ),
     TuningProgram(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),

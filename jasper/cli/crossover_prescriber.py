@@ -694,7 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
                              help=f"the round the document reads its evidence from: {_ROUND_DIR_HELP}")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
-            command.add_argument("--preview", action="store_true", help="predict driver/blend with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
+            command.add_argument("--preview", action="store_true", help="predict driver, blend or topology with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
             command.add_argument("--out", metavar="FILE", help="write the full preview here and answer with its summary; "

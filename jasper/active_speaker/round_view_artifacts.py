@@ -256,7 +256,7 @@ CATALOG: dict[str, CatalogRow] = {
                                                  programs=_PREVIEW_PROGRAMS,
                                                  schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} judge --preview"],
         question="What would a prescription document's sections do, predicted from a round without playing?",
-        needs="a document and its round: branches/express for driver or blend, room/seat for room, rear/pair for rear",
+        needs="a document and its round: branches/express for driver, blend or topology, room/seat for room, rear/pair for rear",
         avoid="checking a document's gates, or a bass document, which has no preview; judge without --preview does both",
         answer_fields=("adopted", "banked", "compiled_stage", "preview", "program_charge_db", "section", "sections")),
     f"{_PRESCRIBER} judge --preview --vary": CatalogRow(
