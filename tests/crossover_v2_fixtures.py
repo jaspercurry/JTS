@@ -1052,7 +1052,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "gain_plan_db",
     "kind",
     "measure_gain_ceiling_db",
-    "measure_sweep_durations_s",
     "previous_candidate_fingerprint",
     "previous_candidate_displaced_by",
     "round_ordinal_epoch",

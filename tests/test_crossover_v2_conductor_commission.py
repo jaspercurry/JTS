@@ -45,54 +45,10 @@ from tests.crossover_v2_fixtures import (
     _inline_spec,
     _dummy_program,
     _roles,
-    _run_phase,
 )
 
 
 # --- commission tiers + the retake/confirm contract (flow-simplification) ----
-
-
-def test_the_measure_sweep_fit_rides_the_snapshot():
-    """#2923: a duration-fitted MEASURE program's realized length is banked on
-    the snapshot, not held only in the live conductor's memory — the durable
-    half of #2921's fit, so an offline reader can replay it later.
-
-    A woofer limit below the nominal 4.0 s default forces #2921's fit
-    deterministically (the nominal always realizes AT OR ABOVE its own
-    request — see ``phase_closing_duration_s``), independent of which band a
-    fixture's roles happen to declare.
-    """
-    import json
-
-    from jasper.active_speaker.crossover_v2 import priors as _priors_mod
-
-    fakes = FakeSeams()
-    c = _conductor(
-        fakes,
-        driver_sweep_duration_limits_s={"woofer": 3.5, "tweeter": 10.0},
-    )
-    _run_phase(c, 1, 1)  # CHECK solve -> MEASURE composed at the fitted length
-
-    expected = _priors_mod.measure_sweep_durations_s(
-        c.program_for_phase(PHASE_MEASURE)
-    )
-    assert expected is not None
-    # The fit actually bit: realized at or below the limit, not the nominal.
-    assert expected["woofer"] <= 3.5
-
-    snap = c.snapshot()
-    assert snap.measure_sweep_durations_s == pytest.approx(expected)
-    assert snap.to_dict()["measure_sweep_durations_s"] == pytest.approx(expected)
-
-    # Round-trips through the exact JSON encoding ``save_v2_state`` uses, so
-    # no float precision is lost across the real persistence path.
-    roundtripped = json.loads(json.dumps(snap.to_dict()))["measure_sweep_durations_s"]
-    assert roundtripped == pytest.approx(expected)
-
-    # Before MEASURE is composed (no CHECK accept yet), the field is honestly
-    # absent rather than a guessed nominal — mirrors ``gain_plan_db`` beside it.
-    undeclared = _conductor(FakeSeams())
-    assert undeclared.snapshot().measure_sweep_durations_s is None
 
 
 @pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])

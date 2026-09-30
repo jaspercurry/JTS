@@ -469,9 +469,6 @@ class CrossoverV2Session:
             applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
-            measure_sweep_durations_s=_priors.measure_sweep_durations_s(
-                self._measure_program
-            ),
             candidate_fingerprint=None,
             attempt_history=tuple(self._attempt_history),
         )
