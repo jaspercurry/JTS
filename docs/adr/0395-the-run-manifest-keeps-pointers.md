@@ -17,9 +17,10 @@
      the take's loudest sweep.
   2. A reader that reads a take's facts joins its row with its record, `{**row, **record}`, through
      `round_inputs.take_records`, `with_records` or `SetTakes.with_records`. The join reads each
-     record once, and only for the takes that reader reads: kept takes, or every take for the
-     packet's take list and the round's coverage lines. `read_run_manifest` and `resolve_set` return
-     rows; a reader of their takes' facts joins them.
+     record once, and only for the takes that reader reads: kept takes; or every take for the
+     packet's take list, the round's coverage lines, and a set whose take a view names (an unkept one
+     refuses with its verdict). `read_run_manifest` and `resolve_set` return rows; a reader of their
+     takes' facts joins them.
   3. The record banks the three facts only a row held: `pose_index` and `stimulus_ordinal`, from the
      stop, and `level.alignment`, the alignment levels with the shortfall carried from the stop's
      earlier attempt and `capped_by`. The run's retake count is the manifest's `honoured.retakes`.
