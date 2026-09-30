@@ -15,6 +15,7 @@ import numpy as np
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.alignment import _bandlimit
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
+from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
     ExcitationProgram,
@@ -673,7 +674,8 @@ def _solve_role_gain(
             required_capture_dbfs=required_capture_dbfs,
             crest_factor_db=crest_factor_db,
         )
-    gain_db = capture_dbfs - k_db
+    # The chain reads k_db at 0 dB gain; one 1:1 step lands the capture on its target (ADR-0366 §2).
+    gain_db = solve_gain(LevelReading(0.0, k_db), target_db=capture_dbfs, tolerance_db=0.0, max_raise_db=math.inf)
     if gain_db >= flat_target_gain_db:
         gain_db, bound_by = flat_target_gain_db, GAIN_BOUND_FLAT_TARGET
     return RoleGainSolve(

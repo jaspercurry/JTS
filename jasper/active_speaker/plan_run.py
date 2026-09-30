@@ -50,9 +50,7 @@ from .crossover_v2.refusal_copy import (
 from .crossover_v2.session import TuningSession
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
-from .measurement_programs import (
-    BASE_CANDIDATE,
-)
+from .measurement_programs import BASE_CANDIDATE, PoseLevel, pose_level
 from .crossover_v2.programs import predictive_program_for_spec
 from .run_manifest import RunManifest, driver_level_mismatches
 from .round_copy import PLACE_MICROPHONE, take_counts
@@ -161,6 +159,7 @@ class _Work:
     config: int
     size: int
     entry: Any
+    pose_level: PoseLevel | None
 
 
 def _pose(stop: Any) -> dict[str, Any]:
@@ -337,7 +336,8 @@ async def run_plan(
             entry = SimpleNamespace(screen={**resolved_stop.screen,
                                     "title": resolved_stop.prompt.headline, "body": resolved_stop.prompt.detail,
                                     **position_screen_keys(resolved_stop.prompt), **screens.get(index + 1, {})})
-            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry))
+            work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry,
+                              pose_level(resolved_stop.prompt.pose)))
     return await _run(work, session=session, door=door, level=level,
                       manifest=manifest, analyze=analyze, gate=gate,
                       aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
@@ -387,10 +387,14 @@ async def _run(
 
     level_observations: dict[str, TakeVerdict] = {}
 
-    def observe_level(record: Mapping[str, Any]) -> TakeVerdict:
+    def observe_level(item: _Work, record: Mapping[str, Any]) -> TakeVerdict:
         take_id = str(record["take_id"])
         if take_id not in level_observations:
-            level_observations[take_id] = level_drift_verdict(**manifest.level_observation(record))
+            observation = manifest.level_observation(record)
+            if item.pose_level is not None:
+                # A take at a pose that levels itself answers to its target, never its repeats (ADR-0361).
+                observation["level_reference_db_spl"] = None
+            level_observations[take_id] = level_drift_verdict(**observation)
         return level_observations[take_id]
 
     run_task = asyncio.current_task()
@@ -404,7 +408,7 @@ async def _run(
             assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
                                             spl=(record.get("capture_integrity") or {}).get("spl"),
                                             program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
-                                            near_field=bool(item.stop["pose"].get("driver")),
+                                            pose_level=item.pose_level,
                                             level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
             if program is not None and is_level_probe(program):
                 log_event(logger, "active_speaker.level_probe", fields={
@@ -421,7 +425,7 @@ async def _run(
             return TakeVerdict(False, fault=REASON_INTERNAL_ERROR, next="stop", evidence={"error_type": type(exc).__name__})
 
     async def judge(item: _Work, spec: MeasureSpec, record: Mapping[str, Any]) -> tuple[TakeVerdict, Mapping[str, Any]]:
-        level_verdict = observe_level(record)
+        level_verdict = observe_level(item, record)
         # Grading a take banked as its run is cancelled would hold the cancel, and one
         # after its capture's assessment raised would run host effects for a capture
         # the run abandons (ADR-0383).
@@ -471,11 +475,10 @@ async def _run(
                     grant_epoch += 1
                     if gate:
                         gate.abandon_hold()
-                elif work[offset].stop["pose"].get("driver"):
-                    # A driver's pose starts over with its retries, so its redo is free (ADR-0361).
+                elif work[offset].pose_level is not None:
+                    # A pose that levels itself starts over with its retries, so its redo is free (ADR-0361).
                     ledgers[pose] = SlotAttempts(retries_per_pose=retries)
             item = work[offset]
-            at_driver = bool(item.stop["pose"].get("driver"))
             ledger = ledgers[item.pose_index]
             if retry is not None:
                 if not ledger.can_admit(retry.charge):
@@ -495,8 +498,8 @@ async def _run(
                     grant_epoch += 1
                     if gate:
                         gate.abandon_hold()
-                    if at_driver:
-                        # A new placement at a driver's pose starts at its probe again (ADR-0365).
+                    if item.pose_level is not None:
+                        # A new placement of a pose that levels itself starts at its probe again (ADR-0365).
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
@@ -515,7 +518,7 @@ async def _run(
                                retake_sweep_end=before + sweep_offsets[offset + 1] - sweep_offsets[offset],
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
-            if at_driver:
+            if item.pose_level is not None:
                 notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "probe"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
@@ -575,7 +578,7 @@ async def _run(
                 verdict = None
                 records = attempt_records()
                 for ordinal, (record, record_id) in enumerate(records):
-                    level_verdict = observe_level(record)
+                    level_verdict = observe_level(item, record)
                     if record_id:
                         if (failure := failures.pop(str(record["take_id"]), None)) is not None:
                             if not isinstance(failure, _ASSESSMENT_FAILURES):
@@ -614,7 +617,7 @@ async def _run(
                     continue
                 retry = None
                 retry_was_measured = False
-                if at_driver:
+                if item.pose_level is not None:
                     # The rest of this placement plays at the level this take landed (ADR-0361).
                     for index in range(offset + 1, len(work)):
                         if work[index].pose_index == item.pose_index:
@@ -641,7 +644,7 @@ async def _run(
                         continue
                     await manifest.append(record, record_id, TakeVerdict(False, fault=fault, next="stop",
                                           evidence={"incident": manifest.reason}), complete=False,
-                                          level_observation=observe_level(record).evidence)
+                                          level_observation=observe_level(item, record).evidence)
                 break
             finally:
                 failures.clear()
