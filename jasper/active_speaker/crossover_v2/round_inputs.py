@@ -401,13 +401,11 @@ def prescription_sources(inputs: RoundInputs | None, *, set_id: str | None = Non
     if set_id is not None:
         resolve_set(inputs, set_id)
     sources = contract_sources(inputs, set_id=set_id)
-    artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     packet = banked_packet(inputs)
     return {**sources,
             "bass_evidence": (packet if packet.get("round_id") == inputs.session_dir.parent.parent.name
                               else {"code": BASS_PACKET_ROUND_MISMATCH} if packet else {}),
             "draft": (_read_json_mapping(inputs.design_draft_path) or {}) if inputs.design_draft_path else {},
-            "receipt": (_read_json_mapping(artifact_dir / "round_receipt.json") or {}) if artifact_dir else {},
             "applied_profile": load_applied_baseline_profile_state(inputs.applied_profile_path) if inputs.applied_profile_path else None}
 
 

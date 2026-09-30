@@ -8,13 +8,15 @@ import hashlib
 import importlib
 import json
 import math
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 import yaml
 
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, unavailable
+from jasper.audio_measurement.trusted_band import TrustedBand
 from jasper.active_speaker import rear_calibration as rear_cal
 from jasper.active_speaker.crossover_v2 import alignment_prescription as alignment
 from jasper.active_speaker.crossover_v2 import bass_prescription as bass
@@ -66,10 +68,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "9de193e32db6dde0c43b4e57cbc6d3fe9f5f9219b674fe8115ab4a032aa60259"),
-    ("mono", True, "7f08edc914f5e9dbf196114268e839f093576d4477c0a6a765f623d0ee425451"),
-    ("stereo", False, "db667ba67403a96d94f8f48b8aba26b18907ee5452044c1d1dadad55d2ce83c9"),
-    ("stereo", True, "7cc11c2970f15dfd2672c089e1f9a2b05bee2249b0520401d2be0f7515be31ae"),
+    ("mono", False, "3f2aa7d715392a39bd673c1b19a46012f007380211fc4adb73b12bac5316174c"),
+    ("mono", True, "fab17b8c4ef496133eae4df2ce86b96b48666788d956288703e9bff817f5e28c"),
+    ("stereo", False, "f916194c8a8bfd8942f0c32aebbd21e569a307051ccbe2206bdc36d7ef941dd6"),
+    ("stereo", True, "b95f45b6db38794fa72521a262d4e04144ffa53321c401bf73cf25945b082d79"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -157,11 +159,7 @@ def test_room_contract_preserves_the_document_ceiling_provenance(round_bank):
 
 
 def _contracts(bank: Path, session: Path):
-    sources = dict(
-        **contract_sources(session),
-        draft=json.loads((bank / "design-draft.json").read_text()),
-        receipt=json.loads((session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/round_receipt.json").read_text()),
-    )
+    sources = dict(**contract_sources(session), draft=json.loads((bank / "design-draft.json").read_text()))
     return prescription_contracts(programs=contract_programs(sources), **sources)
 
 
@@ -231,6 +229,32 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     }
 
 
+def measure_take(low_hz: float | None, high_hz: float | None, *, driver: str | None = None) -> dict:
+    """A kept MEASURE take whose gated curves bank one trusted band."""
+    band = asdict(TrustedBand(low_hz=low_hz, high_hz=high_hz))
+    return {"selected": True, "phase": "measure", "pose": {"driver": driver},
+            "curves": [{"role": role, "window": "gated", "trusted_band": band} for role in ("woofer", "tweeter")]}
+
+
+_AVAILABLE = {"status": "available", "reason": None, "detail": None}
+
+
+@pytest.mark.parametrize("take,band,status", [
+    (measure_take(1000.0, 2500.0), [1000.0, 2500.0], _AVAILABLE),
+    (measure_take(1000.0, 2500.0, driver="woofer"), [800.0, 3200.0], _AVAILABLE),
+    (measure_take(4000.0, None), None, unavailable(blend.REGION_UNAVAILABLE, {
+        "overlap_band_hz": [800.0, 3200.0], "trusted_band_hz": [4000.0, None]})),
+    ({**measure_take(None, None), "curves": [{"role": "woofer", "window": "gated"}]}, None,
+     {"status": "unavailable", "reason": TAKE_CURVES_NOT_BANKED}),
+], ids=["far-take-clips", "near-field-take-left-out", "nothing-left", "band-not-banked"])
+def test_the_blend_band_is_the_corners_overlap_band_inside_every_far_measure_takes_trusted_band(take, band, status):
+    """ADR-0402: the candidate crosses at 1600 Hz, so its overlap band is 800 to 3200 Hz."""
+    manifest = {"sets": [{"set_id": "base", "capture_basis": {}, "takes": [take]}]}
+    section = prescription_contracts(programs=("speaker",), candidate=_candidate().to_dict(),
+                                     manifest=manifest)["speaker"]["blend"]
+    assert (section["bounds"]["band_hz"], {key: section.get(key) for key in status}) == (band, status)
+
+
 @pytest.mark.parametrize("corner,refusal", [
     (None, None), (999.0, FC_REJECT_BELOW_DECLARED_FLOOR),
     (1000.0, None), (4000.0, None), (4001.0, FC_REJECT_ABOVE_LOWER_DRIVER_BAND),
@@ -245,10 +269,7 @@ def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
     bank, session = round_bank
     profile = bank / "applied-profile.json"
     profile.write_text(json.dumps(applied_profile(preset=_two_way_preset())))
-    reads = dict.fromkeys((
-        bank / "design-draft.json", profile,
-        session / "evidence/v1/artifacts/crossover_v2/cap_TESTONLY/round_receipt.json",
-    ), 0)
+    reads = dict.fromkeys((bank / "design-draft.json", profile), 0)
     path_open = Path.open
 
     def counted_open(path, *args, **kwargs):
@@ -265,7 +286,7 @@ def test_round_context_is_read_once(round_bank, monkeypatch, capsys, surface):
             session, driver_draft_path=bank / "design-draft.json", applied_profile_path=profile,
         )
         assert set(packet["contracts"]) == set(PLAIN_PROGRAMS)
-    assert list(reads.values()) == [1, 1, 1]
+    assert list(reads.values()) == [1, 1]
 
 
 @pytest.mark.parametrize("round_bank,section", [
