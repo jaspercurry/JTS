@@ -17,12 +17,6 @@ GRAPH_PARKED_ALL_MUTED = "parked_all_muted"
 GRAPH_UNKNOWN = "unknown"
 GRAPH_UNSAFE = "unsafe"
 
-# A program peak at or under this is unity, dB: it is left uncharged, and it is
-# the verifier's slack on a charged peak. The emitter spells every gain,
-# frequency and q to 4 decimals, so a graph charged exactly can read a hair
-# above unity after the YAML round-trip; an analytic 0 dB reads about 1e-4.
-PEAK_EPS_DB: float = 1e-3
-
 
 @dataclass(frozen=True)
 class GraphSafety:

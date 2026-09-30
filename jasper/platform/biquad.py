@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""RBJ biquad filters: the shared value types and the one response evaluator.
+"""RBJ biquad filters: the shared value types, the one response evaluator, and
+the one headroom charge a peak costs.
 
 Every DSP emitter, fitter and prediction speaks these types, and
 :func:`biquad_coeffs` is the single model of what CamillaDSP realises from
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Sequence
 
 # The rate every emitted biquad runs at. CamillaDSP's pipeline runs at it
 # (``camilla_config_contract.DEFAULT_SAMPLE_RATE`` aliases this), so a response
@@ -33,14 +34,11 @@ class PeqFilter:
 
 
 def total_positive_boost_db(filters: Iterable[PeqFilter]) -> float:
-    """Worst-case additive boost (dB) across a set of peaking filters.
-
-    The sum of positive gains is an upper bound on the combined response
-    peak (overlapping boosts at one frequency add), so attenuating a signal
-    by this much guarantees the corrected response cannot exceed unity. This
-    is the one canonical definition of "how much can these boosts clip". Any
-    object exposing a numeric ``.gain`` is accepted — the designer's ``PEQ``
-    is structurally compatible with ``PeqFilter`` here.
+    """The sum of positive gains across peaking filters, dB: a room layer's boost
+    spend. Not the headroom it costs, which is the netted peak
+    (:func:`peaking_cascade_peak_db`). Any object exposing a numeric ``.gain``
+    is accepted — the designer's ``PEQ`` is structurally compatible with
+    ``PeqFilter`` here.
     """
     return max(0.0, sum(f.gain for f in filters if f.gain > 0.0))
 
@@ -290,3 +288,50 @@ def biquad_response_complex(
         den = complex(a0 + a1 * c1 + a2 * c2, -(a1 * s1 + a2 * s2))
         out.append(num / den if den != 0 else complex(1.0, 0.0))
     return out
+
+
+# A peak at or under this is unity, dB: it is left uncharged, and it is the
+# verifier's slack on a charged peak. The emitter spells every gain, frequency
+# and q to 4 decimals, so a graph charged exactly can read a hair above unity
+# after the YAML round-trip; an analytic 0 dB reads about 1e-4.
+PEAK_EPS_DB: float = 1e-3
+
+# Added to a netted peak over PEAK_EPS_DB when charging headroom, dB (#1808): the
+# evaluation grid's between-sample residue plus the emitter's 4-decimal YAML
+# rounding. It equals the active graph's -1 dBFS limiter threshold
+# (``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``).
+HEADROOM_MARGIN_DB: float = 1.0
+
+_PEAK_GRID_POINTS_PER_OCTAVE = 48
+
+
+def headroom_charge_db(peak_db: float) -> float:
+    """The attenuation a program peaking at ``peak_db`` needs, dB: 0.0 at or
+    under :data:`PEAK_EPS_DB`, else the peak plus :data:`HEADROOM_MARGIN_DB`
+    (ADR-0385)."""
+    if peak_db <= PEAK_EPS_DB:
+        return 0.0
+    return float(peak_db) + HEADROOM_MARGIN_DB
+
+
+def peaking_cascade_peak_db(filters: Sequence[PeqFilter]) -> float:
+    """The netted peak of a series cascade of Peaking ``filters``, dB re unity.
+
+    Cuts net against boosts. The summed response is read on a 48-point-per-octave
+    grid across the evaluable span plus each filter's own centre, so a lone
+    boost reads its gain exactly. A cascade with no boost never leaves unity: it
+    returns 0.0 and evaluates nothing (ADR-0399).
+    """
+    if not any(f.gain > 0.0 for f in filters):
+        return 0.0
+    steps = round(_PEAK_GRID_POINTS_PER_OCTAVE * math.log2(EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN))
+    grid = sorted({
+        *(EVALUABLE_HZ_MIN * (EVALUABLE_HZ_MAX / EVALUABLE_HZ_MIN) ** (step / steps)
+          for step in range(steps + 1)),
+        *(f.freq for f in filters if 0.0 < f.freq < RESPONSE_NYQUIST_HZ),
+    })
+    trig = freq_trig(grid)
+    return max(map(sum, zip(*(
+        filter_response_db(FilterSpec("peak", "Peaking", f.freq, f.gain, f.q), grid, trig)
+        for f in filters
+    ))))

@@ -23,27 +23,23 @@ import numpy as np
 from jasper.platform.biquad import (
     EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_NYQUIST_HZ, RESPONSE_SAMPLE_RATE_HZ, SHELF_BIQUAD_TYPES,
     FilterSpec,
-    filter_response_complex, freq_trig,
+    filter_response_complex, freq_trig, headroom_charge_db,
 )
 
 from .crossover_section import CrossoverSection
-from .graph_types import PEAK_EPS_DB
 
 # How far down its own crossover a driver is still considered RADIATING, dB (#1809). An
 # ATTENUATION threshold, not Fc: at Fc an LR4 branch is already 6 dB down. 3 dB
 # (half-power) puts an LR4 woofer's edge at 0.801*Fc, tweeter's at 1.248*Fc.
 CROSSOVER_EDGE_ATTENUATION_DB: float = 3.0
 
-# Safety margin added to the realized branch peak when charging headroom, dB (#1808).
-# Covers the cascade's between-sample peak plus the emitter's 4-decimal YAML rounding;
-# worst measured residue 0.1913 dB between filter centres. ``CHAIN_GRID_HZ``'s linear
-# tail closes the #2850 under-read from 14 kHz to 22 kHz to <=0.18 dB residue; from
-# ~22 kHz to Nyquist the residue still EXCEEDS this margin (1.04 dB at the fit engine's
-# own rails, 3.77 dB with unbounded Q, which the runtime contract does not bound), and
-# the -1.0 dB per-driver soft-clip limiters REMAIN the backstop there. A shelf cornered
-# outside the audible band is charged against its own asymptote sample (#2846). 1.0 dB
-# equals ``camilla_yaml.BASELINE_LIMITER_CLIP_LIMIT_DB``.
-HEADROOM_MARGIN_DB: float = 1.0
+# What ``biquad.HEADROOM_MARGIN_DB`` covers on this grid: worst measured residue 0.1913 dB
+# between filter centres. ``CHAIN_GRID_HZ``'s linear tail closes the #2850 under-read
+# from 14 kHz to 22 kHz to <=0.18 dB residue; from ~22 kHz to Nyquist the residue still
+# EXCEEDS the margin (1.04 dB at the fit engine's own rails, 3.77 dB with unbounded Q,
+# which the runtime contract does not bound), and the -1.0 dB per-driver soft-clip
+# limiters REMAIN the backstop there. A shelf cornered outside the audible band is
+# charged against its own asymptote sample (#2846).
 
 # BACKGROUND resolution, points per octave. NOT what makes a narrow filter's own peak
 # visible -- ``_evaluation_grid`` unions each filter's exact frequency in for that.
@@ -591,16 +587,6 @@ def branch_chain_peak(
     magnitude_db = magnitude_db + crossover_response_db(grid, sections) + float(trim_db)
     index = int(np.argmax(magnitude_db))
     return float(magnitude_db[index]), float(grid[index])
-
-
-def headroom_charge_db(peak_db: float) -> float:
-    """Program-domain attenuation a branch peaking at ``peak_db`` needs. ``0.0`` for any chain
-    that never exceeds unity (#1808); otherwise the peak plus
-    :data:`HEADROOM_MARGIN_DB`.
-    """
-    if peak_db <= PEAK_EPS_DB:
-        return 0.0
-    return float(peak_db) + HEADROOM_MARGIN_DB
 
 
 def branch_headroom_db(

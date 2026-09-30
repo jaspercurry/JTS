@@ -90,7 +90,7 @@ GOLDEN_CASES: dict[str, tuple[SoundProfile, dict]] = {
             "profile_id": "harman-id",
         },
     ),
-    # Room correction with positive boosts → worst-case additive headroom trim.
+    # Room correction with positive boosts → netted-peak headroom trim.
     "room_boost_headroom": (
         _profile(enabled=False, curve_id="bk", simple_eq=SimpleEq()),
         {

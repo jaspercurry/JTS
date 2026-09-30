@@ -71,7 +71,6 @@ from jasper.active_speaker.branch_target import (
 )
 from jasper.active_speaker.branch_chain import (
     branch_headroom_db,
-    HEADROOM_MARGIN_DB,
     crossover_response_db,
     radiating_band_hz,
 )
@@ -79,7 +78,7 @@ from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.peq import PEQ, predicted_response
 from jasper.audio_measurement.program_analysis import DriverResponse
-from jasper.platform.biquad import SHELF_Q, filter_response_db
+from jasper.platform.biquad import HEADROOM_MARGIN_DB, SHELF_Q, filter_response_db
 from jasper.active_speaker.crossover_section import CrossoverSection
 
 _NATIVE_FREQS_HZ = np.linspace(100.0, 22_000.0, 4096)

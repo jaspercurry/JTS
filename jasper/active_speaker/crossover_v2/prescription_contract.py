@@ -23,10 +23,9 @@ from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_measurement_band_hz,
     resolve_driver_protection_slope_db_per_octave,
 )
-from jasper.active_speaker.branch_chain import HEADROOM_MARGIN_DB, branch_chain_peak_db
+from jasper.active_speaker.branch_chain import branch_chain_peak_db
 from jasper.active_speaker.camilla_yaml import MAX_PROGRAM_HEADROOM_DB, PROGRAM_HEADROOM_BINDING, PROGRAM_HEADROOM_EXHAUSTED
 from jasper.active_speaker.candidate_parts import COMPOSITION_INVALID, program_charge_db
-from jasper.active_speaker.graph_types import PEAK_EPS_DB
 from jasper.active_speaker.linearization_fit import linearization_filters_by_role
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import PROGRAM_DOCUMENT_ORDER, programs_for_topology
@@ -37,6 +36,7 @@ from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.platform.biquad import HEADROOM_MARGIN_DB, PEAK_EPS_DB
 from jasper.platform.json_fields import as_mapping, finite_float
 from jasper.audio_routes.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
 from jasper.platform.speaker_layout import WAY_COUNT_BY_MAIN_MODE

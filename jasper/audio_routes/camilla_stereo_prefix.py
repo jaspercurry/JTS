@@ -6,7 +6,7 @@
 
 The program domain (the 1–2-channel music bus) carries room correction
 (Layer B) and preference EQ (Layer C): per-channel room PEQs, the shared
-preference curve, the worst-case-boost headroom trim, and an optional
+preference curve, the room headroom trim, and an optional
 preamp. This module owns the single assembly of that pipeline —
 ``build_stereo_prefix`` — so every emitter that needs it builds from one
 implementation instead of a copy:
@@ -41,7 +41,8 @@ from jasper.platform.biquad import (
     SHELF_Q_EMIT_DECIMALS,
     FilterSpec,
     PeqFilter,
-    total_positive_boost_db,
+    headroom_charge_db,
+    peaking_cascade_peak_db,
 )
 from jasper.audio_routes.camilla_emit import (
     emit_delay_filter,
@@ -152,12 +153,13 @@ def build_stereo_prefix(
         lines.extend(emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain))
         room_names.append(name)
 
-    if room_peqs_right is not None:
+    room_list_right = None if room_peqs_right is None else list(room_peqs_right)
+    if room_list_right is not None:
         room_names_right = []
         if right_delay_ms > 0.0:
             lines.extend(emit_delay_filter("room_delay_r", delay_ms=right_delay_ms))
             room_names_right.append("room_delay_r")
-        for i, peq in enumerate(room_peqs_right, start=1):
+        for i, peq in enumerate(room_list_right, start=1):
             name = f"room_peq_r{i}"
             lines.extend(
                 emit_peaking_biquad(name, freq=peq.freq, q=peq.q, gain=peq.gain)
@@ -166,21 +168,17 @@ def build_stereo_prefix(
 
     tail_names: list[str] = []
 
-    # Audio-safety: room-correction BOOSTS (the assertive strategy runs
-    # cuts_only=False, up to +3 dB total) raise specific bands with no
-    # compensating attenuation, so a hot note in a boosted band can clip
-    # above full scale. The master `volume_limit` caps the output FADER, not
-    # a per-band filter boost upstream of it. Pull the whole signal down by
-    # the worst-case additive room boost so the corrected response cannot
-    # exceed unity. Cuts-only correction (the default safe/balanced path) has
-    # zero boost, so this emits nothing and the solo config stays
-    # byte-identical. The trim is SHARED across both room chains; for an
-    # asymmetric leader-bake (different per-seat boosts per channel) we trim
-    # by the louder channel so neither can clip.
-    room_headroom_db = max(
-        total_positive_boost_db(room_list),
-        total_positive_boost_db(list(room_peqs_right or [])),
-    )
+    # Audio-safety: a room-correction boost raises its band with no
+    # compensating attenuation, and `volume_limit` caps the fader, not a filter
+    # upstream of it. So the whole signal is pulled down by the room chain's
+    # netted peak plus the margin, and cuts net against boosts (ADR-0399). A
+    # chain that never leaves unity (cuts only) emits nothing, so the solo
+    # config stays byte-identical. The trim is SHARED by both room chains, so
+    # it pays for the louder one.
+    room_headroom_db = headroom_charge_db(max(
+        peaking_cascade_peak_db(room_list),
+        peaking_cascade_peak_db(room_list_right or []),
+    ))
     if room_headroom_db > 0.0:
         lines.extend(emit_gain_filter("room_headroom", -room_headroom_db))
         tail_names.append("room_headroom")
@@ -191,7 +189,7 @@ def build_stereo_prefix(
         # visible in the emitted YAML and the "wrote sound config" summary.
         logger.debug(
             "room-correction boost headroom: -%.2f dB preamp "
-            "(worst-case additive room boost)",
+            "(netted room peak plus margin)",
             room_headroom_db,
         )
 

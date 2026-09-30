@@ -23,7 +23,6 @@ from jasper.active_speaker.branch_chain import (
     _GRID_HF_TAIL_FROM_HZ,
     _GRID_HF_TAIL_STEP_HZ,
     CROSSOVER_EDGE_ATTENUATION_DB,
-    HEADROOM_MARGIN_DB,
     _evaluation_grid,
     branch_chain_peak,
     branch_chain_peak_db,
@@ -33,18 +32,19 @@ from jasper.active_speaker.branch_chain import (
     confirmed_protection_sections,
     crossover_response_complex,
     crossover_response_db,
-    headroom_charge_db,
     radiating_band_hz,
     rear_stage_chain_response,
     rear_stage_peak_db,
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
-# The one ε the charge and the runtime re-proof share, imported rather than
-# restated so the migration corpus asserts the condition the contract applies.
-from jasper.active_speaker.graph_types import PEAK_EPS_DB
 from jasper.active_speaker.rear_calibration import MAX_ALLPASS_Q
-from jasper.platform.biquad import EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, RESPONSE_SAMPLE_RATE_HZ
+# PEAK_EPS_DB: the one ε the charge and the runtime re-proof share, imported rather
+# than restated so the migration corpus asserts the condition the contract applies.
+from jasper.platform.biquad import (
+    EVALUABLE_HZ_MAX, EVALUABLE_HZ_MIN, HEADROOM_MARGIN_DB, PEAK_EPS_DB, RESPONSE_SAMPLE_RATE_HZ,
+    headroom_charge_db,
+)
 from tests.test_rear_output_foundation import _rear_document
 
 # --------------------------------------------------------------------------- #
@@ -595,8 +595,8 @@ _SUBSONIC_CASCADE = (
 #: 1.04 dB at the fit engine's own rails near 23.5 kHz, 3.77 dB with unbounded
 #: Q -- the runtime contract bounds none), and the -1.0 dB per-driver
 #: soft-clip limiters are the backstop instead. Stated as ~22 kHz in
-#: `branch_chain.HEADROOM_MARGIN_DB`'s own comment, which is the owner of the
-#: number; this is the test-side name for it.
+#: `branch_chain`'s note on what `HEADROOM_MARGIN_DB` covers on its grid, which
+#: is the owner of the number; this is the test-side name for it.
 _HEADROOM_UNDER_READ_FLOOR_HZ = 22_000.0
 
 
