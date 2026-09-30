@@ -9,9 +9,11 @@ import logging
 from typing import Any, Mapping
 
 from .driver_safety import driver_floor_issues
+from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.platform.json_fields import as_mapping
 from jasper.platform.log_event import log_event
-from .measurement_view import round_capture
+from .measurement_programs import PURPOSE_SPEAKER, preset
+from .measurement_view import round_capture, run_door
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
 from .crossover_v2.coordinator import series_position_from_state
 from .crossover_v2.position_gate import RETAKE_ENDPOINT
@@ -131,6 +133,14 @@ def _applied_chip(status: Mapping[str, Any]) -> dict[str, str]:
     return {"state": "applied", "label": "Speaker profile applied"}
 
 
+def _timing_door(action_id: str) -> dict[str, Any]:
+    """Where a timing action leads (#5925): a speaker round measures timing; a reset
+    or an apply is the assistant's step, from the speaker page's tuning prompt."""
+    if action_id in ("measure_timing", "remeasure_timing"):
+        return run_door(preset(PURPOSE_SPEAKER))
+    return {"href": SPEAKER_SETUP_PAGE_PATH}
+
+
 def _setup_ready(status: Mapping[str, Any]) -> bool:
     setup = as_mapping(status.get("setup"))
     safety = as_mapping(status.get("driver_safety_profile"))
@@ -155,6 +165,8 @@ def _envelope(
 ) -> dict[str, Any]:
     # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632).
     timing_action = dict(as_mapping(as_mapping(status.get("timing")).get("next_action"))) or None
+    if timing_action:
+        timing_action.update(_timing_door(str(timing_action.get("id"))))
     if timing_action and timing_action.get("id") == "reset_timing":
         alternate_actions = [*([next_action] if next_action and next_action != timing_action else []), *(alternate_actions or [])]
         next_action = timing_action

@@ -9,7 +9,7 @@ from typing import Any, Mapping
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import Preset, available_presets, offered_here, plan_poses, preset, run_preset
 from .round_copy import round_lines, packet_lines, round_verdict
-from .wizard_client import CAPTURE_CANCEL_PATH
+from .wizard_client import CAPTURE_CANCEL_PATH, SESSION_PATH
 
 
 def round_status(capture: Mapping[str, Any]) -> list[str]:
@@ -36,6 +36,11 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
         retake_action(), {"id": "reset_round", "label": "Reset the round", "endpoint": CAPTURE_CANCEL_PATH, "body": {}},
     ] if live and facts.get("mover") == "human" else []
     return {**result, "capture": None, "pending": {**held, "actions": actions} if live else None, "busy": live}
+
+
+def run_door(plan: Preset) -> dict[str, Any]:
+    """What a page action posts to run ``plan`` at its layout."""
+    return {"endpoint": SESSION_PATH, "body": {"request": {"program": plan.preset, "layout": plan.layout}}}
 
 
 def _choice_id(row: Preset, layout: str) -> str:
@@ -70,9 +75,9 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                                   "poses": walked.mic_move_count, "captures": walked.capture_count}
         if choice["id"] == default_id:
             # Posted as the request: the door's preflight states a ladder's rungs (#5737).
-            asked = {"program": plan.preset, "layout": plan.layout}
+            door = run_door(plan)
             try:
-                request, _ = resolve_plan(RunRequest.from_mapping(asked), targets=lambda: targets)
+                request, _ = resolve_plan(RunRequest.from_mapping(door["body"]["request"]), targets=lambda: targets)
                 context = resolve_conductor_context(status, require_banked_level=False)
             except LateralWalkRefused as exc:
                 choice.update(code=exc.reason, lines=[refusal_copy_for(exc.reason)[0]])
@@ -84,8 +89,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
             else:
                 captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
                 facts = preview_schedule(request, captures, context)
-                choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement",
-                              "endpoint": "/sound/speaker/crossover/v2/session", "body": {"request": asked}})
+                choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement", **door})
         choices.append(choice)
     if refused:
         copy, _ = refusal_copy_for(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED)

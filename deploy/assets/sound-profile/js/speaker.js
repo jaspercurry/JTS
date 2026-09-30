@@ -232,22 +232,29 @@ function startingCard() {
     ['apply', 'tune'].includes(view.stage) && baseSummary(),
     view.stage !== 'details' && issueLines(),
     advancedSettings(),
-    ['apply', 'tune'].includes(view.stage) && button('Save to speaker', () => run(async () => {
-      const response = await postJSON('./setup/apply', {});
-      if (response.result?.status !== 'applied') {
-        if (response.setup) adopt(response.setup);
-        const issue = response.result?.issues?.[0];
-        throw new Error(issue ? `${issue.message} (${issue.code})` :
-          'The configuration could not be applied. Check the details and try again.');
-      }
-      return response;
-    }, 'Base setup is active.'), true));
+    ['apply', 'tune'].includes(view.stage) && button('Save to speaker', async () => {
+      // setup/apply rebuilds the declared base without its measured layers (#5925).
+      if (view.stage === 'tune' && !await jtsConfirm('This removes all corrections that came from your measurements. The speaker then uses the starting values on this page.',
+        { title: 'Save to speaker?', confirmLabel: 'Save to speaker', danger: true })) return;
+      return run(async () => {
+        const response = await postJSON('./setup/apply', {});
+        if (response.result?.status !== 'applied') {
+          if (response.setup) adopt(response.setup);
+          const issue = response.result?.issues?.[0];
+          throw new Error(issue ? `${issue.message} (${issue.code})` :
+            'The configuration could not be applied. Check the details and try again.');
+        }
+        return response;
+      }, 'Base setup is active.');
+    }, true));
 }
 
 function tuningCard() {
   return section('4. Tuning', view.stage === 'tune',
     h('div', {}, h('h3', {}, 'Tune with an AI assistant'),
       h('p', {}, 'Connect to this Pi from an AI coding assistant such as Claude or Codex. Copy a program’s prompt into that session. The assistant will guide you and provide a link to take measurements.')),
+    // The measurement page measures an active crossover: a passive speaker has no speaker program.
+    view.programs.some(program => program.id === 'speaker') && h('a.btn.btn--ghost', { href: 'crossover/' }, 'Take measurements'),
     view.programs.map(program =>
       h('div.speaker-program', {}, h('h3', {}, program.title), h('p', {}, program.description),
         program.applied && h('p.form-hint', {}, 'Correction applied'),
