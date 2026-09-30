@@ -16,8 +16,6 @@ from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
 from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_reasons import REFUSE_NO_NEAR_FIELD_TAKES, EvidenceUnavailable
-from jasper.audio_measurement.measurement_geometry import load_declared_geometry
-from jasper.audio_measurement.trusted_band import banked_band
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 
 from ._common import (
@@ -42,14 +40,10 @@ def round_nearfield(inputs: RoundInputs) -> tuple[dict[str, Any], dict[str, Any]
     draft = (read_json_mapping(inputs.design_draft_path) if inputs.design_draft_path else None) or {}
     takes = [take for row in view_sets(manifest) for take in row["takes"]
              if take["selected"] and (take.get("pose") or {}).get("driver")]
-    # The CamillaDSP config each take played, and the band it banked, as its record states them.
     graphs = {take["take_id"]: graph for take in takes
               if (graph := ((take.get("provenance") or {}).get("graph") or {}).get("config")) is not None}
-    bands = {take["take_id"]: banked_band(band) for take in takes if (band := take.get("trusted_band"))}
-    room = (stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, load_declared_geometry, inputs.declared_geometry_path)
-            if inputs.declared_geometry_path else None)
     document = nearfield_view(takes, radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),
-                              room=room, played_graphs=graphs, banked_bands=bands)
+                              played_graphs=graphs)
     if not document["takes"]:
         raise EvidenceUnavailable(REFUSE_NO_NEAR_FIELD_TAKES, {"driver_take_ids": [take["take_id"] for take in takes]})
     return manifest, document

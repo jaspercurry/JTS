@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pytest
 
-from jasper.active_speaker.crossover_v2 import nearfield_view as nv, round_inputs
+from jasper.active_speaker.crossover_v2 import nearfield_view as nv
+from jasper.active_speaker.crossover_v2.capture_provenance import take_trusted_bands
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
@@ -20,6 +23,23 @@ from tests.run_manifest_fixture import write_manifest
 # A banked curve's grid runs to 20 kHz; a near-field sweep stops at 2 kHz.
 FREQS = np.geomspace(20.0, 20_000.0, 600)
 STEP = piston_step_db(0.015, 0.030, 0.057)
+
+
+def _band(take, diameters=MappingProxyType({}), room=None):
+    """``take`` as the bank leaves it: its curve carries the band its window
+    trusts, from the take's pose, the declared cones and room (ADR-0366 §3)."""
+    pose = take["pose"]
+    bands = take_trusted_bands(kind=pose["kind"], distance_m=pose["distance_m"], driver=pose["driver"], roles=(),
+                               diameters_mm_by_target=diameters, room=room)
+    for curve in take["curves"]:
+        curve["trusted_band"] = bands[curve["window"]]
+    return take
+
+
+def _view(takes, diameters, **kwargs):
+    """The view of ``takes``, each banked with its band from ``diameters``."""
+    return nv.nearfield_view([_band(take, diameters) for take in takes], radiating_diameter_mm_by_target=diameters,
+                             **kwargs)
 
 
 def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db=0.0, seed=0, band_hz=(20.0, 2000.0),
@@ -35,10 +55,10 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist(), **gate}
                                for sweep, gate in zip(sweeps[1:], gates[1:])]}
     evidence = {"evidence": {"level_db_spl": 80.0}}
-    return {"take_id": take_id, "selected": selected, "measurement_purpose": "reference",
-            "pose": {"kind": kind, "driver": driver, "distance_m": distance_mm / 1000},
-            "verdict": evidence, "curves": [{**curve, "role": driver}],
-            "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs}}
+    return _band({"take_id": take_id, "selected": selected, "measurement_purpose": "reference",
+                  "pose": {"kind": kind, "driver": driver, "distance_m": distance_mm / 1000},
+                  "verdict": evidence, "curves": [{**curve, "role": driver}],
+                  "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs}})
 
 
 def _graph(pad_db):
@@ -65,7 +85,7 @@ def test_a_near_field_round_reads_band_by_band_and_self_tests_its_distances(diam
         _take("r15", "woofer:rear", 15, 84.0, seed=3), _take("r30", "woofer:rear", 30, 84.0 + STEP + rear_extra_db, seed=4),
     ]
 
-    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target=diameters)
+    view = _view(takes, diameters)
 
     assert [row["take_id"] for row in view["takes"]] == ["w15", "w30", "w15again", "r15", "r30"]
     lowest = view["takes"][0]["bands"][0]
@@ -92,8 +112,7 @@ def test_a_drivers_distance_step_stops_at_its_own_trusted_band():
     far = _take("r30", "woofer:rear", 30, 90.0 + STEP, seed=1)
     for sweep in (far["curves"][0], *far["curves"][0]["repeat_curves"]):
         sweep["magnitude_db"] = [db + 6.0 * (360.0 < hz < 400.0) for hz, db in zip(FREQS, sweep["magnitude_db"])]
-    steps = [nv.nearfield_view([_take("r15", "woofer:rear", 15, 90.0), far],
-                               radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": mm})
+    steps = [_view([_take("r15", "woofer:rear", 15, 90.0), far], {"woofer": 114.0, "woofer:rear": mm})
              ["drivers"][0]["steps"][0]["step_db"] for mm in (305.0, 114.0)]
     assert steps[0] == pytest.approx(STEP, abs=0.05) and steps[1] > STEP + 0.3
 
@@ -105,35 +124,47 @@ def test_a_driver_in_front_and_behind_reads_apart_and_each_take_states_its_gate(
     shortest window (ADR-0383 §2)."""
     takes = [_take("front", "woofer", 500, 86.0, kind="bearing", gate_ms=(6.0, 5.0, 6.0)),
              _take("behind", "woofer", 500, 70.0, seed=1, kind="behind", gate_ms=(6.0, None, 6.0)),
-             _take("behind_far", "woofer", 1000, 64.0, seed=2, kind="behind")]
+             _take("behind_far", "woofer", 1000, 64.0, seed=2, kind="behind", gate_ms=(8.0,) * 3)]
 
-    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target={"woofer": 114.0})
+    view = _view(takes, {"woofer": 114.0})
 
     ungated = {"window": "ungated", **dict.fromkeys(("window_ms", "validity_floor_hz", "trusted_floor_hz", "floor_source"))}
     assert [row["gate"] for row in view["takes"]] == [
-        {"window": "gated", "window_ms": 5.0, "validity_floor_hz": 200.0, "trusted_floor_hz": 500.0,
-         "floor_source": "measured_reflection"}, ungated, ungated]
+        {"window": "gated", "window_ms": ms, "validity_floor_hz": 1000.0 / ms, "trusted_floor_hz": 2500.0 / ms,
+         "floor_source": "measured_reflection"} if ms else ungated for ms in (5.0, None, 8.0)]
     driver, = view["drivers"]
     assert [(placement["distance_mm"], placement["kind"], placement["take_ids"]) for placement in driver["placements"]] == [
         (500.0, "bearing", ["front"]), (500.0, "behind", ["behind"]), (1000.0, "behind", ["behind_far"])]
     assert [(step["near_mm"], step["far_mm"]) for step in driver["steps"]] == [(500.0, 1000.0)]
 
 
-def test_placements_past_the_near_field_read_gated_in_the_rounds_room(tmp_path, monkeypatch, capsys):
-    """One-driver takes past 100 mm read gated, each placement from the round's
-    declared room at its own distance, a pose at the mark at 1 m. Both gate
-    floors sit above the whole step band, so the step says so rather than
-    grading, and no band row below a floor is trusted (ADR-0366)."""
+def test_the_pose_names_the_window_a_one_driver_take_is_read_through():
+    """A take within 100 mm of its driver reads its ungated curve and one past
+    it its gated curve, so a far take whose gate found no window, which banked
+    only its ungated curve, gives no placement (ADR-0366 §3)."""
+    takes = [_take("near", "woofer", 15, 90.0), _take("far", "woofer", 1000, 80.0, seed=1),
+             _take("far_gated", "woofer", 1000, 80.0, seed=2, kind="bearing", gate_ms=(5.0,) * 3)]
+
+    view = _view(takes, {"woofer": 114.0})
+
+    assert [(row["take_id"], row["gate"]["window"]) for row in view["takes"]] == [
+        ("near", "ungated"), ("far_gated", "gated")]
+
+
+def test_placements_past_the_near_field_read_the_gated_band_their_takes_banked(tmp_path, capsys):
+    """One-driver takes past 100 mm read gated, each placement stating the band
+    its take banked from the declared room at its own distance, a pose at the
+    mark at 1 m. Both gate floors sit above the whole step band, so the step
+    says so rather than grading, and no band row below a floor is trusted
+    (ADR-0366)."""
     room = DeclaredGeometry(speaker_height_m=1.0, mic_height_m=1.0, distance_m=1.0)
-    room.save(tmp_path / "geometry.json")
-    monkeypatch.setattr(round_inputs, "DECLARED_GEOMETRY_DEFAULT_PATH", tmp_path / "geometry.json")
     bundle = tmp_path / "sessions" / "nearfield"
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
-    mark = _take("mark", "woofer", 1000, 80.0, seed=1)
+    mark = _take("mark", "woofer", 1000, 80.0, seed=1, gate_ms=(5.0,) * 3)
     mark["pose"]["distance_m"] = None
-    write_manifest(bundle, program="nearfield/each",
-                   groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": [_take("w500", "woofer", 500, 86.0), mark]}])
+    takes = [_band(take, room=room) for take in (_take("w500", "woofer", 500, 86.0, gate_ms=(5.0,) * 3), mark)]
+    write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
 
     assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
     answer = json.loads(capsys.readouterr().out)
@@ -147,27 +178,32 @@ def test_placements_past_the_near_field_read_gated_in_the_rounds_room(tmp_path, 
     assert [row["trusted"] for row in rows] == [False] * 6 + [True]
 
 
-def test_a_placement_states_the_band_its_take_banked(tmp_path, monkeypatch, capsys):
-    """A take states the band it banked, as the declarations stood when it was
-    measured; a take banked without one states it from the round's
-    declarations (ADR-0366 §3)."""
-    monkeypatch.setattr(round_inputs, "DECLARED_GEOMETRY_DEFAULT_PATH", tmp_path / "undeclared.json")
+def test_a_placement_states_the_band_its_take_banked_and_a_curve_without_one_refuses(tmp_path, capsys):
+    """A placement states the band its take banked on the curve read, as the
+    declarations stood when it was measured; a curve banked without one
+    refuses by that field, naming its take and window (#2902)."""
     bundle = tmp_path / "sessions" / "nearfield"
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
     banked = {"low_hz": 123.0, "low_source": "gate_floor", "high_hz": 4000.0, "high_source": "far_field_ceiling",
               "undeclared": []}
-    take, unbanked = _take("w500", "woofer", 500, 86.0), _take("w1000", "woofer", 1000, 80.0, seed=1)
-    take["trusted_band"] = banked
+    take, unbanked = (_take(take_id, "woofer", mm, level, seed=seed, gate_ms=(5.0,) * 3)
+                      for take_id, mm, level, seed in (("w500", 500, 86.0, 0), ("w1000", 1000, 80.0, 1)))
+    take["curves"][0]["trusted_band"] = banked
+    del unbanked["curves"][0]["trusted_band"]
+    out = ["--out", str(tmp_path / "nearfield.json")]
+
+    write_manifest(bundle, program="drivers/each", groups=[{"set_id": "drivers", "capture_basis": {}, "takes": [take]}])
+    assert round_views.main(["nearfield", str(bundle), *out]) == round_views.EXIT_OK
+    driver, = json.loads(capsys.readouterr().out)["drivers"]
+    assert driver["placements"][0]["trusted_band"] == banked
+
     write_manifest(bundle, program="drivers/each",
                    groups=[{"set_id": "drivers", "capture_basis": {}, "takes": [take, unbanked]}])
-
-    assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
-
-    driver, = json.loads(capsys.readouterr().out)["drivers"]
-    stated, stated_here = (placement["trusted_band"] for placement in driver["placements"])
-    assert stated == banked
-    assert (stated_here["low_source"], stated_here["undeclared"]) == ("gate_floor", ["room_undeclared", "driver_size_undeclared"])
+    assert round_views.main(["nearfield", str(bundle), *out]) == round_views.EXIT_REFUSED
+    refusal = json.loads(capsys.readouterr().out)
+    assert (refusal["reason"], {key: json.loads(refusal["detail"])[key] for key in ("field", "take_id", "window")}) == (
+        TAKE_CURVES_NOT_BANKED, {"field": "trusted_band", "take_id": "w1000", "window": "gated"})
 
 
 def test_a_driver_reads_raw_with_its_fader_and_played_graph_divided_out():
@@ -201,7 +237,7 @@ def test_a_take_is_read_only_where_its_sweep_reached():
     takes = [_take("t15", "tweeter", 15, 80.0, band_hz=(700.0, 2000.0)),
              _take("t30", "tweeter", 30, 78.0, seed=1, band_hz=(700.0, 2000.0))]
 
-    view = nv.nearfield_view(takes, radiating_diameter_mm_by_target={"tweeter": 25.0})
+    view = _view(takes, {"tweeter": 25.0})
 
     assert [[band["band_hz"] for band in row["bands"]] for row in view["takes"]] == [[[800.0, 2000.0]]] * 2
     assert view["drivers"][0]["steps"] == []
@@ -213,12 +249,11 @@ def test_a_take_is_read_only_where_its_sweep_reached():
     ("woofer:rear", 15, -26.0, "bearing", False),
 ], ids=["6_db_apart", "2_db_apart", "another_role", "another_placement", "a_far_pose"])
 def test_drivers_of_one_size_at_one_placement_are_flagged_when_they_play_apart(
-        tmp_path, monkeypatch, capsys, driver, distance_mm, stimulus_dbfs, kind, flagged):
+        tmp_path, capsys, driver, distance_mm, stimulus_dbfs, kind, flagged):
     """Two drivers of one role at one near-field position are compared per unit of
     drive: the median over each driver's kept takes of level less the stimulus
     gain and fader its set played. More than 3 dB apart is flagged; a take not
     kept, another role, another position or a far pose never compares (#5714)."""
-    monkeypatch.setattr(round_inputs, "DECLARED_GEOMETRY_DEFAULT_PATH", tmp_path / "undeclared.json")
     bundle = tmp_path / "sessions" / "nearfield"
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))

@@ -20,7 +20,8 @@ from ..measurement_analysis import analyzed_measurements
 from ..run_manifest import kept_measurements
 from ..measurement_programs import PURPOSE_ROOM, validated_pose
 from .journey import PHASE_LATERAL
-from .position_cycle import OWN_WINDOW, parse_curve_magnitude, take_curve
+from .pose_curve import WINDOW_UNGATED
+from .position_cycle import parse_curve_magnitude, take_curve
 from .record_index import Measurement, record_path
 from .measurement_context import capture_basis
 from .round_captures import doc_pose_key
@@ -36,7 +37,6 @@ class SeatTake:
     pose_key: str
     freqs_hz: np.ndarray
     magnitude_db: np.ndarray
-    gating_applied: bool | None
     band_hz: tuple[float, float]
     late_energy: Mapping[str, float] | None = None
 
@@ -56,7 +56,7 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
         return None
     if record.get("incident") or record.get("measurement_status") == "incomplete":
         return None
-    summed = take_curve(record, "summed", OWN_WINDOW)
+    summed = take_curve(record, "summed", WINDOW_UNGATED)
     parsed = parse_curve_magnitude(summed) if summed is not None else None
     if parsed is None:
         return None
@@ -67,10 +67,8 @@ def _take(row: Measurement, record: Mapping[str, Any]) -> SeatTake | None:
     lo, hi = max(band[0], float(freqs[0]), floor or 0.0), min(band[1], float(freqs[-1]))
     if not np.isfinite([lo, hi]).all() or lo >= hi:
         return None
-    gating = record.get("gating_applied")
     return SeatTake(
-        str(record.get("take_id") or row.path), doc_pose_key(record), freqs, magnitude,
-        gating if isinstance(gating, bool) else None, (lo, hi),
+        str(record.get("take_id") or row.path), doc_pose_key(record), freqs, magnitude, (lo, hi),
         late_energy=summed.get("late_energy") if summed else None,
     )
 

@@ -19,8 +19,8 @@ from ..journey import (
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
+from ..pose_curve import WINDOW_GATED
 from ..position_cycle import (
-    OWN_WINDOW,
     parse_curve_magnitude,
     take_curves,
 )
@@ -54,8 +54,8 @@ class RoundPoseCurve:
 
 
 def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
-    """Every pose curve of a MEASURE or lateral speaker take this bundle's
-    round kept, magnitude only.
+    """Every gated pose curve of a MEASURE or lateral speaker take this
+    bundle's round kept, magnitude only.
 
     ``bundle_dir`` is the commissioning bundle, not the round's own artifact
     directory. Reused, not re-walked:
@@ -75,7 +75,7 @@ def load_round_pose_curves(bundle_dir: Path) -> tuple[RoundPoseCurve, ...]:
     out: list[RoundPoseCurve] = []
     for row, record in kept_measurements(bundle_dir, phases=(PHASE_MEASURE, PHASE_LATERAL), purposes=(PURPOSE_SPEAKER,)):
         pose_id = Path(row.path).stem
-        for curve in take_curves(record, OWN_WINDOW) or ():
+        for curve in take_curves(record, WINDOW_GATED) or ():
             role = curve.get("role")
             if not isinstance(role, str):
                 continue

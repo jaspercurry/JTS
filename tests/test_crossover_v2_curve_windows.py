@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -23,11 +24,15 @@ from jasper.active_speaker.crossover_v2.rear_views import PAIR_ROLES, _pair_segm
 from jasper.active_speaker.crossover_v2.record_index import Measurement
 from jasper.active_speaker.crossover_v2.room_views import room_ceiling
 from jasper.active_speaker.crossover_v2.round_captures import record_captures
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, SetTakes, round_inputs
+from jasper.active_speaker.crossover_v2.round_views import set_directivity
 from jasper.active_speaker.measurement_document import frequency_run_from_documents
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.active_speaker.round_packet import _packet_takes
 from jasper.active_speaker.round_verdicts import common_measured_band
+from jasper.active_speaker.speaker_fit import design_clouds
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.cli.round_views.bass_alignment import _take_fits
 from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_position_cycle import _bank, _record
 
@@ -85,23 +90,59 @@ def _ladder_windows(order: tuple[str, ...], root: Path) -> str:
     return _only(row["window"] for table in ladder["tables"] for row in table["roles"])
 
 
+def _cloud_windows(order: tuple[str, ...], root: Path) -> str:
+    """The window a speaker fit's design cloud reads from two bearings' takes."""
+    takes = [{**_banked(order, index=index), "phase": "measure", "captured_at": f"2026-09-29T12:00:0{index}Z",
+              "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0}} for index, deg in ((1, 0), (2, 20))]
+    cloud = design_clouds({"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]})
+    return _only(_by_level(response.magnitude_db[0]) for response in cloud["woofer"].boost_responses)
+
+
+def _directivity(takes: list[dict], role: str) -> str | None:
+    """The window directivity reads of ``role`` from takes at 0° and 20°: its
+    band starts at its curves' trusted floor. ``None`` when it reads no curve."""
+    posed = [{**take, "take_id": f"{role}-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0}}
+             for take, deg in zip(takes, (0, 20))]
+    try:
+        document = set_directivity(SetTakes.from_row({"set_id": role, "capture_basis": {"role": role}, "takes": posed}))
+    except RoundSetRefused:
+        return None
+    return _by_floor(document["parameters"]["band_hz"][0])
+
+
+def _bass_take_window(order: tuple[str, ...], root: Path) -> str:
+    """The window ``bass-alignment --take`` reads of a bass take that banked
+    both windows: the take banked no band, so its refusal names the curve."""
+    take = {**_banked(order), "measurement_purpose": "bass"}
+    _bank(root, [take])
+    write_manifest(root, program="bass", groups=[{"set_id": "bass", "capture_basis": {"role": "summed"},
+                                                  "takes": [take]}])
+    with pytest.raises(EvidenceUnavailable) as refused:
+        _take_fits(root, argparse.Namespace(set="bass", take=take["take_id"], band_hz=[25.0, 300.0]))
+    return refused.value.detail["window"]
+
+
 _ROW = Measurement("p", "sess-1", "", PHASE_LATERAL, 0, 0, "", None, "", "", "bearing")
 
-#: Each changed reader, as the window it read from one take: the rear pair reads
-#: ungated, the room ceiling gated, every other reader the take's own window.
-#: The seat selection, the rear pair and the packet are read through their
-#: private step: their public paths need a recorded capture per take, a rear
-#: pair round and a whole banked packet.
+#: Each changed reader, as the window it read from one take: room and rear
+#: readers read ungated, speaker readers gated, and the take views, the page and
+#: the packet the take's own window. The seat selection, the rear pair and the
+#: packet are read through their private step: their public paths need a
+#: recorded capture per take, a rear pair round and a whole banked packet.
 READERS = {
     "take_curve": (lambda order, root: take_curve(_banked(order), "summed", OWN_WINDOW)["window"], "gated"),
     "room_selection": (lambda order, root: _by_level(room_selection._take(_ROW, _banked(order)).magnitude_db[0]),
-                       "gated"),
+                       "ungated"),
     "rear_pair": (lambda order, root: _by_level(20 * np.log10(abs(_pair_segments(_banked(order))[1]["summed"][0]))),
                   "ungated"),
     "frequency_series": (lambda order, root: _only(_by_level(series.magnitude_db[0]) for series in
                                                   frequency_run_from_documents(run_id="r", documents=[_banked(order)])
                                                   .series), "gated"),
     "round_verdicts": (lambda order, root: _by_floor(common_measured_band([_banked(order)], "woofer")[0]), "gated"),
+    "design_cloud": (_cloud_windows, "gated"),
+    "directivity": (lambda order, root: _directivity([_banked(order, index=1), _banked(order, index=2)], "woofer"),
+                    "gated"),
+    "bass_alignment_take": (_bass_take_window, "ungated"),
     "round_packet": (lambda order, root: "gated" if _packet_takes({
         "set_id": "s", "capture_basis": {"role": "woofer"}, "takes": [_banked(order)]})[0]["gate_window_ms"]
         else "ungated", "gated"),
@@ -128,26 +169,40 @@ def test_each_reader_names_the_window_it_reads(tmp_path, reader, order):
     assert read(order, tmp_path) == window
 
 
-#: A reader's windows by role, read from one take.
+def _delay_pair(take: dict, root: Path) -> dict:
+    pair = select_pose_curve_pair(_bundle(root, take), phases=(PHASE_LATERAL,), position_deg=0,
+                                  roles=("woofer", "tweeter"))
+    return {} if pair is None else {"woofer": pair.lower["window"], "tweeter": pair.upper["window"]}
+
+
+OWN = {"woofer": "gated", "tweeter": "ungated"}
+#: A reader's windows by role, read from one take, and what it should read.
 MIXED_READERS = {
-    "take_curve": lambda take, root: {role: take_curve(take, role, OWN_WINDOW, required=True)["window"]
-                                      for role in ("woofer", "tweeter")},
-    "delay_pair": lambda take, root: dict(zip(("woofer", "tweeter"), (curve["window"] for curve in select_pose_curve_pair(
-        _bundle(root, take), phases=(PHASE_LATERAL,), position_deg=0, roles=("woofer", "tweeter"))[:2]))),
-    "frequency_series": lambda take, root: {series.details["role"]: _by_level(series.magnitude_db[0]) for series in
-                                            frequency_run_from_documents(run_id="r", documents=[take]).series
-                                            if series.details["role"] in ("woofer", "tweeter")},
-    "round_verdicts": lambda take, root: {role: _by_floor(common_measured_band([take], role)[0])
-                                          for role in ("woofer", "tweeter")},
+    "take_curve": (lambda take, root: {role: take_curve(take, role, OWN_WINDOW, required=True)["window"]
+                                       for role in ("woofer", "tweeter")}, OWN),
+    "frequency_series": (lambda take, root: {series.details["role"]: _by_level(series.magnitude_db[0]) for series in
+                                             frequency_run_from_documents(run_id="r", documents=[take]).series
+                                             if series.details["role"] in ("woofer", "tweeter")}, OWN),
+    "delay_pair": (_delay_pair, {}),
+    "round_verdicts": (lambda take, root: {role: _by_floor(band[0]) for role in ("woofer", "tweeter")
+                                           if (band := common_measured_band([take], role))}, {"woofer": "gated"}),
+    "pose_bank": (lambda take, root: {curve.role: _by_level(curve.magnitude_db[0]) for curve in
+                                      load_round_pose_curves(_bundle(root, take)) if curve.role in ("woofer", "tweeter")},
+                  {"woofer": "gated"}),
+    "directivity": (lambda take, root: {role: window for role in ("woofer", "tweeter")
+                                        if (window := _directivity([take, take], role))}, {"woofer": "gated"}),
 }
 
 
 @pytest.mark.parametrize("reader", MIXED_READERS)
-def test_each_role_is_read_through_its_own_window(tmp_path, reader):
+def test_each_role_is_read_through_the_window_its_reader_names(tmp_path, reader):
     """A take whose gate windowed the woofer but found no window for the
-    tweeter banks woofer [gated, ungated] and tweeter [ungated]: each reader
-    reads each role through that role's own window, so none drops the tweeter."""
+    tweeter banks woofer [gated, ungated] and tweeter [ungated]. A reader of
+    the take's own window reads each role through that role's own; a speaker
+    reader names the gated window, so it reads no tweeter, and a pair of both
+    drivers finds none."""
     take = _banked(("gated", "ungated"), gate_missed=("tweeter",))
+    read, expected = MIXED_READERS[reader]
 
     assert (take_window(take, "woofer"), take_window(take, "tweeter")) == ("gated", "ungated")
-    assert MIXED_READERS[reader](take, tmp_path) == {"woofer": "gated", "tweeter": "ungated"}
+    assert read(take, tmp_path) == expected

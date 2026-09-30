@@ -8,7 +8,7 @@ from jasper.active_speaker.program_failure import classify_program_failure
 
 from jasper.web import correction_crossover_v2_volume as v2volume
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from functools import partial
 import asyncio
 import logging
@@ -23,7 +23,7 @@ from jasper.active_speaker.round_packet import RoundPacket
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.capture_provenance import (
-    analysis_blocks, enrich_capture_record, take_distance_m, take_trusted_band,
+    analysis_blocks, enrich_capture_record, take_distance_m, take_trusted_bands,
 )
 from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import timing_prior
@@ -78,18 +78,17 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         index = record.get("capture_index", record["index"])
         return capture_indexes[index - 1] if capture_indexes else index
 
-    def declared_room(record: Any) -> tuple[float | None, dict[str, Any] | None]:
+    def declared_room(record: Any) -> tuple[float | None, dict[str, dict[str, Any]] | None]:
         """The take's first bounce in the declared room, which bounds its gate
-        (#3665 item 10), and the band it banks (ADR-0366 §3), from one read."""
+        (#3665 item 10), and the band each window banks (ADR-0366 §3), from one read."""
         kind, distance_m = record.get("pose_kind"), record.get("mark_distance_m")
         try:
             room = load_declared_geometry()
-            band = asdict(take_trusted_band(
-                purpose=record.get("measurement_purpose"), kind=kind, distance_m=distance_m,
-                driver=record.get("pose_driver") or "", roles=roles, diameters_mm_by_target=diameters, room=room))
-            return None if room is None else room.first_bounce_s(take_distance_m(kind, distance_m)), band
+            bands = take_trusted_bands(kind=kind, distance_m=distance_m, driver=record.get("pose_driver") or "",
+                                       roles=roles, diameters_mm_by_target=diameters, room=room)
+            return None if room is None else room.first_bounce_s(take_distance_m(kind, distance_m)), bands
         except (OSError, ValueError) as exc:
-            # The take gates to the default bound and banks no band; its reader states one.
+            # The take gates to the default bound and its curves bank no band; their readers refuse by name.
             log_event(logger, "correction.take_band_not_banked", level=logging.WARNING,
                       take_id=record["take_id"], error_type=type(exc).__name__)
             return None, None
@@ -97,7 +96,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     def enrich(capture: Any, record: Any) -> dict[str, Any]:
         captured = provenance.take() if provenance is not None else None
         record = manifest.capture_record(record)
-        first_bounce_s, band = declared_room(record)
+        first_bounce_s, bands = declared_room(record)
         program = getattr(capture, "program", None) or record.get("program")
         fields: dict[str, Any] = {}
         result: Any = KeyError("program")
@@ -107,7 +106,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                 played = ExcitationProgram.from_dict(program)
                 result = analyze_capture(record, played, capture, first_bounce_s)
                 fields = {**evidence.get("capture_provenance", {}).get(phase, {}),
-                          **analysis_blocks(result, played)}
+                          **analysis_blocks(result, played, bands)}
             except Exception as exc:  # noqa: BLE001 - bank raw evidence before the executor propagates failure
                 result = exc
         if isinstance(result, Exception):
@@ -115,7 +114,6 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         else:
             fields = {**fields, IMPULSES_KEY: _kept_impulses(records, record["take_id"], result, capture)}
         answers[record["take_id"]] = capture, result
-        fields["trusted_band"] = band
         return enrich_capture_record({
             **record, **fields, "mark_distance_m": record.get("mark_distance_m"),
             **({"provenance": captured.to_dict()} if captured is not None else {}),

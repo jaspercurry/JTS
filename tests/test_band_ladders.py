@@ -99,7 +99,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
     if builder in ("rear_upper", "rear_level"):
         grid = np.geomspace(20, 5000, 600)
         zero = np.zeros_like(grid)
-        take = SeatTake("take", "pose", grid, zero, False, (20, 5000))
+        take = SeatTake("take", "pose", grid, zero, (20, 5000))
         payload = rear_views._position_rows(
             {"pose": [take]}, {"pose": (grid, zero)}, {}, {"pose": zero},
             band_hz=(90, 250), coverage_hz=(20, 5000), handover_hz=None,

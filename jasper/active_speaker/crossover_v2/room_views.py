@@ -117,14 +117,6 @@ def room_ceiling(bundle_dir: Path) -> Ceiling:
     )
 
 
-def _window(takes: Sequence[SeatTake]) -> str:
-    """What the takes say about their own window, never assumed."""
-    applied = {take.gating_applied for take in takes}
-    if applied == {False}:
-        return ROOM_MEDIAN_WINDOW
-    return "gated" if applied == {True} else "mixed"
-
-
 def _stacked(
     takes: Sequence[SeatTake], lo_hz: float, hi_hz: float,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -176,7 +168,7 @@ def room_median(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, Any]:
         ],
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
-        "window": _window(takes),
+        "window": ROOM_MEDIAN_WINDOW,
         "coverage_hz": coverage_hz,
     }
 
@@ -275,7 +267,7 @@ def room_persistence(takes: Sequence[SeatTake], ceiling: Ceiling) -> dict[str, A
         "spatial_support": spatial_support(len(takes)),
         "ceiling_hz": ceiling.ceiling_hz,
         "ceiling_source": ceiling.source,
-        "window": _window(takes),
+        "window": ROOM_MEDIAN_WINDOW,
         "coverage_hz": coverage_hz,
         "thresholds": {
             "depth_db": FEATURE_DEPTH_DB,

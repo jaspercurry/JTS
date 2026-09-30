@@ -15,11 +15,12 @@ import numpy as np
 from jasper.active_speaker.bass_fit import bass_alignment
 from jasper.active_speaker.crossover_v2.contracts import DRIVER_ROLE_WOOFER
 from jasper.active_speaker.crossover_v2.nearfield_view import nearest_raw
-from jasper.active_speaker.crossover_v2.position_cycle import OWN_WINDOW, measured_curve_band, take_curve
+from jasper.active_speaker.crossover_v2.pose_curve import WINDOW_UNGATED
+from jasper.active_speaker.crossover_v2.position_cycle import curve_band, measured_curve_band, take_curve
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, take_artifact_name
 from jasper.audio_measurement.band_ladders import BASS_ALIGNMENT_BAND_HZ
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable
-from jasper.audio_measurement.trusted_band import TrustedBand, banked_band
+from jasper.audio_measurement.trusted_band import banked_band
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
 from jasper.platform.speaker_layout import measurement_target_parts
 
@@ -61,12 +62,13 @@ def _spoken(curve: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _take_fits(round_dir: Path, args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """One take's banked curve for its set's role, fitted as played."""
+    """One take's banked ungated curve for its set's role, fitted as played
+    through the room, inside the band banked on that curve."""
     read, take_id, role, take = resolve_set_take(round_dir, args.set, args.take, None)
-    freqs, level = stage(EXIT_UNREADABLE, (ValueError,), _spoken, take_curve(take, role, OWN_WINDOW, required=True))
-    band = take.get("trusted_band")
+    curve = take_curve(take, role, WINDOW_UNGATED, required=True)
+    freqs, level = stage(EXIT_UNREADABLE, (ValueError,), _spoken, curve)
     return read, [{"role": role, "take_ids": [take_id],
-                   **bass_alignment(freqs, level, args.band_hz, banked_band(band) if band else TrustedBand())}]
+                   **bass_alignment(freqs, level, args.band_hz, curve_band(take, curve))}]
 
 
 def _refusal_reason(fits: list[dict[str, Any]]) -> str:

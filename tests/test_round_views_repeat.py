@@ -102,7 +102,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
     class Records(FakeRecords):
         async def bank(self, record):
             # What the capture host banks on the take (ADR-0383).
-            record.update(program=program.to_dict(), **analysis_blocks(stand_in(record), program))
+            record.update(program=program.to_dict(), **analysis_blocks(stand_in(record), program, None))
             return await super().bank(record)
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(True))
     expected = []
