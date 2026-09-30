@@ -88,7 +88,7 @@ def design_clouds(
                 responses = []
                 lo, hi = 0.0, float("inf")
                 for _group, take in bearings.values():
-                    parsed = response_from_banked_curve(take_curve(take, role, required=True) or {})
+                    parsed = response_from_banked_curve(take_curve(take, role, required=True))
                     if parsed[0].role != role:
                         raise ValueError("design pose has no fit response")
                     responses.append(parsed[0])
@@ -185,7 +185,7 @@ def speaker_fit(
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
     regions = list(base.source_preset.crossover_regions)
     sections = sections_by_role(regions)
-    drivers = [DriverEvidence(role, response_from_banked_curve(take_curve(record, role, required=True) or {})[0], band,
+    drivers = [DriverEvidence(role, response_from_banked_curve(take_curve(record, role, required=True))[0], band,
                               classes.get(role, "unknown")) for role, band in bands.items()]
     branches = fit_branches(
         drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},

@@ -32,7 +32,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         preview_document = json.loads(Path(args.a_preview).read_text()) if args.a_preview else None
     except (OSError, ValueError) as exc:
         return refused_by_name(REFUSE_PREVIEW_UNREADABLE, str(exc), code=EXIT_UNREADABLE)
-    b_subject, b_take, b_role = resolve_set_take(b_round, args.b_set, args.b_take, args.b_role)
+    b_subject, b_take, b_role, _ = resolve_set_take(b_round, args.b_set, args.b_take, args.b_role)
     b = read_take(b_round, take_id=b_take, role=b_role)
     source: str | None = None
     if preview_document is not None:
@@ -50,7 +50,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
                 return refused_by_name(REFUSE_COMPARE_NO_COMPARAND,
                                        {"set_id": b_subject["set_id"], "take_id": b_take, "role": b_role})
             source, a_side = found.source, (found.round_dir, found.set_id, found.take_id, found.role)
-        a_subject, a_take, a_role = resolve_set_take(*a_side)
+        a_subject, a_take, a_role, _ = resolve_set_take(*a_side)
         a = read_take(a_side[0], take_id=a_take, role=a_role)
         report = compare_report(a, b, window_ms=args.window_ms, smoothing_fraction=args.smoothing,
                                 points_per_octave=args.points_per_octave, remove_level=args.remove_level)

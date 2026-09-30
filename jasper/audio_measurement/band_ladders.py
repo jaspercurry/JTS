@@ -26,6 +26,8 @@ THIRD_OCTAVE_BASS_BANDS_HZ = tuple(
 # A near-field take: the low bass a gated take cannot resolve, up to its sweep's ~2 kHz top.
 NEAR_FIELD_BANDS_HZ = ((20.0, 35.0), (35.0, 50.0), (50.0, 100.0), (100.0, 200.0),
                        (200.0, 400.0), (400.0, 800.0), (800.0, 2000.0))
+# The sealed-box alignment fit's default band; its bins must straddle the fitted corner (ADR-0398).
+BASS_ALIGNMENT_BAND_HZ = (25.0, 300.0)
 OCTAVE_BAND_CENTERS_HZ = (31.5, 63.0, 125.0, 250.0, 500.0, 1000.0,
                           2000.0, 4000.0, 8000.0, 16000.0)
 OCTAVE_BANDS_HZ = tuple(

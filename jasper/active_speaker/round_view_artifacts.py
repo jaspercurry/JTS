@@ -38,6 +38,7 @@ _PRESCRIBER = "jasper-crossover-prescriber"
 _ROUND = "jasper-round"
 _CABINET = ".venv/bin/python scripts/cabinet-model"
 _PREVIEW_PROGRAMS = tuple(row.purpose for row in PROGRAM_ROWS if row.preview)
+_BASS_ALIGNMENT_SCHEMA = "jts_bass_alignment/1"
 
 
 class CatalogRow(NamedTuple):
@@ -208,6 +209,17 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         needs="bass rounds with their bass views: each candidate's takes beside its baseline's at every level",
         avoid="rounds with no candidate takes beside their baseline's",
         answer_fields=("level_count", "levels", "run_ids")),
+    "bass-alignment": CatalogRow("bass_alignment.json", programs=(PURPOSE_REFERENCE,), schema=_BASS_ALIGNMENT_SCHEMA,
+        question="What sealed-box corner and Q does each driver's near-field curve fit: the Linkwitz transform's source?",
+        needs="each woofer's takes alone near its cone (nearfield/each); --band-hz states the band the fit reads",
+        avoid="a vented or passive-radiator box, whose low end is not a 2nd-order high-pass",
+        answer_fields=("fits",)),
+    "bass-alignment --take": CatalogRow("bass_alignment.json", ("<take-id>", TAKES_THIS_ROUND, "--set", "<set-id>"),
+                                        programs=(PURPOSE_BASS,), schema=_BASS_ALIGNMENT_SCHEMA, per_take=True,
+        question="What corner and Q does one bass take's curve fit, as played through its graph and the room?",
+        needs="one bass take by its id (bass/axis); a base take plays no bass boost",
+        avoid="the box alone; bass-alignment on a near-field round reads each driver without the room",
+        answer_fields=("fits",)),
     "nearfield": CatalogRow("nearfield_view.json", programs=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1",
         question="What does each driver radiate close up, band by band and per distance, and does its step match a piston?",
         needs="each driver's takes alone: near field at 15 and 30 mm (nearfield/each) or at the mark (drivers/each)",

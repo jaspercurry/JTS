@@ -5,12 +5,16 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import asdict
+from typing import Any, NamedTuple
 
 import numpy as np
+from scipy.optimize import least_squares
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.band_ladders import BASS_FIT_REFERENCE_BAND_HZ
+from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, unavailable
+from jasper.audio_measurement.trusted_band import TrustedBand, within_trusted
 
 from .bass_comparison import CHANGE_FIELDS, COMPARISON_FIELDS, bass_capture_context, common_bass_bins
 from .crossover_v2.measurement_context import compare_capture_basis
@@ -98,3 +102,57 @@ def fit_bass_shape(
     return {"freqs_hz": grid, "groups": groups, "curves": curves, "sources": sources,
             "base": responses[0], "candidate": responses[1], "delta": delta,
             "reference_band_hz": reference_band_hz}
+
+
+class SealedFit(NamedTuple):
+    corner_hz: float
+    q: float
+    residual_db: float
+    level_db: float
+    model_db: np.ndarray
+    #: Per parameter (level, corner, Q): -1 on its lower bound, 1 on its upper, 0 inside (``least_squares``).
+    active_mask: np.ndarray
+
+
+def sealed_fit(freqs: np.ndarray, y_db: np.ndarray, lo: float, hi: float) -> SealedFit:
+    """2nd-order high-pass fit of a level curve over lo..hi Hz: its corner, Q, rms
+    miss, passband level, the fitted curve at the bins it read, and which
+    parameters stopped on a bound."""
+    sel = (freqs >= lo) & (freqs <= hi)
+
+    def model(p):
+        s = 1j * freqs[sel] / p[1]
+        return p[0] + 20 * np.log10(np.abs(s * s / (s * s + s / p[2] + 1)))
+
+    fit = least_squares(lambda p: model(p) - y_db[sel], x0=(np.median(y_db[sel]), 70.0, 0.7),
+                        bounds=((-300, 20, 0.3), (300, 200, 3.0)))
+    return SealedFit(float(fit.x[1]), float(fit.x[2]), float(np.sqrt(np.mean(fit.fun ** 2))), float(fit.x[0]),
+                     y_db[sel] + fit.fun, fit.active_mask)
+
+
+def bass_alignment(freqs_hz: np.ndarray, level_db: np.ndarray, band_hz: Sequence[float],
+                   trusted: TrustedBand) -> dict[str, Any]:
+    """The sealed-box alignment one curve fits over ``band_hz`` clipped to its
+    trusted band (ADR-0366): the Linkwitz transform's ``source_hz`` and
+    ``source_q`` (ADR-0359), the fit's rms miss and the bins it read. A band
+    left with fewer bins than the fit's three parameters, a corner or Q stopped
+    on the fit's bound, or bins that do not straddle the corner cannot place
+    it: its coverage gap, naming the trusted band that clipped the band."""
+    freqs, level = np.asarray(freqs_hz, dtype=float), np.asarray(level_db, dtype=float)
+    within = within_trusted(band_hz, trusted)
+    read = (np.isfinite(level) & (freqs >= within[0]) & (freqs <= within[1]) if within
+            else np.zeros(freqs.shape, dtype=bool))
+    gap = {"band_hz": list(band_hz), "trusted_band": asdict(trusted),
+           "curve_hz": [float(freqs.min()), float(freqs.max())] if freqs.size else None}
+    if np.count_nonzero(read) < 3:
+        return unavailable(REASON_COVERAGE_SHORT, gap)
+    freqs, level = freqs[read], level[read]
+    fit = sealed_fit(freqs, level, freqs.min(), freqs.max())
+    at_bound = [name for name, active in zip(("source_hz", "source_q"), fit.active_mask[1:]) if active]
+    if at_bound or not freqs.min() < fit.corner_hz < freqs.max():
+        return unavailable(REASON_COVERAGE_SHORT, {**gap, "source_hz": round(fit.corner_hz, 1),
+                                                   "source_q": round(fit.q, 2), "at_bound": at_bound})
+    return {"status": "available", "band_hz": [round(float(freqs.min()), 2), round(float(freqs.max()), 2)],
+            "source_hz": round(fit.corner_hz, 1), "source_q": round(fit.q, 2), "residual_db": round(fit.residual_db, 2),
+            "level_db": round(fit.level_db, 2), "freqs_hz": freqs.round(3).tolist(),
+            "measured_db": level.round(3).tolist(), "model_db": fit.model_db.round(3).tolist()}

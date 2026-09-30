@@ -249,6 +249,9 @@ The boost is the `linkwitz_transform` from the woofers' measured alignment
 (`source_hz`, `source_q`) to the target (`target_hz`, `target_q`). It plays in
 full at every volume
 (`0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md`).
+`jasper-round-views bass-alignment` fits the measured alignment: each woofer's
+box alone from a near-field round, or with `--take` a bass round's base take
+as played, the room included.
 Overshoot above the corner in the per-band `realized_boost_db`
 (`bass_table.tables[].levels[]`), beyond repeat spread, means too much boost
 for the box.
