@@ -16,6 +16,7 @@ from jasper.active_speaker.angle_capture import WALK_REFUSAL_REASONS
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import evidence_packet, intervention, prescription_document, refusal_copy, take_reading
 from jasper.active_speaker.crossover_v2.evidence_packet import offline_reads
+from jasper.active_speaker.crossover_v2.room_views import incumbent_room
 from jasper.audio_measurement import evidence_reasons
 from jasper.cli.round_views._common import refused_by_name
 
@@ -166,13 +167,16 @@ def test_every_analysis_reason_is_one_evidence_code_with_a_next_action(module_na
         assert spec.code == code and spec.message and spec.next_action
 
 
+_BASE_SET = {"set_id": "a", "base": True, "capture_basis": {}}
+
 #: Codes a gap forwards through a variable: no raise site names them, so the scan below cannot see them.
 _FORWARDED_CODES = {
     evidence_packet.NO_CANDIDATE_TAKES, evidence_packet.REPEAT_FLOOR_UNMEASURED,
     evidence_packet.REPEAT_FLOOR_UNREADABLE, evidence_packet.REPEAT_FLOOR_UNUSABLE,
     offline_reads.FIELD_MALFORMED, offline_reads.SOURCE_UNREADABLE,
     prescription_document.REASON_EVIDENCE_UNREADABLE, intervention.NonFiniteTrimError.refusal_reason,
-    "room_incumbent_set_ambiguous", "room_incumbent_set_unavailable",
+    # A run with no base set, and one with two.
+    *(incumbent_room(None, {"sets": sets})[1] for sets in ([], [_BASE_SET, {**_BASE_SET, "set_id": "b"}])),
 }
 _GAP_ENTRY_POINTS = (evidence_reasons.EvidenceUnavailable, evidence_reasons.unavailable, refused_by_name)
 
