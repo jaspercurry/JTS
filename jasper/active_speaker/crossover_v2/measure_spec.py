@@ -119,12 +119,11 @@ class MeasureSpec:
     cleared_layers: tuple[str, ...] = ()
     #: Whether this take finds its level, playing its level probe when no level
     #: is asked: a driver's take, or the first take of a driverless summed set
-    #: closer than the mark (``angle_capture.level_sets``; ADR-0365, ADR-0403).
+    #: closer than the mark. Only ``capture_schedule.prepare_plan_captures``
+    #: sets it (ADR-0365, ADR-0403).
     level_probe: bool = False
 
     def __post_init__(self) -> None:
-        if self.level_probe and not (solo_target(self) or (self.graph_scope == "candidate" and self.stimulus is None)):
-            raise ValueError("a level probe plays one driver alone, or a driverless summed sweep on the candidate graph")
         if self.stimulus is not None:
             solo = bool(solo_target(self))
             validated_stimulus(self.stimulus, one_driver=solo)

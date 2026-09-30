@@ -60,6 +60,8 @@ _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
 Analyze = Callable[[Mapping[str, Any]], ProgramAnalysis]
 #: What a take's assessment may raise and still answer with a stop; any other ends the run.
 _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
+#: The verdicts that retake at the level they name.
+_LEVEL_RETAKES = frozenset({"retake_louder", "retake_quieter"})
 #: A graded take's host effects (a rearm, an acceptance), held while its capture
 #: plays so that no later rung is composed from them (ADR-0383).
 _held_effects: ContextVar[list[Callable[[], None]] | None] = ContextVar("held_effects", default=None)
@@ -491,6 +493,15 @@ async def _run(
                     if (retry_was_measured and retry.fault in CAPTURE_QUALITY_REFUSAL_CODES
                             and item.spec.program_phase != PHASE_CHECK):
                         manifest.mark_not_measured(item.stop["index"], retry.fault)
+                        solved = [*playing[offset].level_ladder_dbfs, *(
+                            (retry.next_gain_db,) if retry.next in _LEVEL_RETAKES and retry.next_gain_db is not None
+                            else ())]
+                        if item.pose_level is not None and solved:
+                            # A set whose levelling take is left unmeasured plays at the last level
+                            # solved for it, never above the last it played (ADR-0403).
+                            for index in range(offset + 1, len(work)):
+                                if work[index].level_set == item.level_set and work[index].pose_level is None:
+                                    playing[index] = replace(work[index].spec, level_ladder_dbfs=(min(solved),))
                         retry = None
                         retry_was_measured = False
                         offset += 1
@@ -509,7 +520,7 @@ async def _run(
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
                                 playing[index] = row.spec
-                if retry.next in {"retake_louder", "retake_quieter"}:
+                if retry.next in _LEVEL_RETAKES:
                     if retry.next_gain_db is None:
                         manifest.reason = retry.fault or "retry_gain_missing"
                         break

@@ -24,33 +24,40 @@ the `rear_behind` layout, can read near or over the 85 dB stop. The owner decide
 
 ## Decision
 
-1. **One solver.** Every level comes from `level.solve_gain`, read from a probe's located sweeps
-   in their band over the room floor read just before them. Nothing is solved from a reading
-   under floor + 10 dB (ADR-0365). CHECK keeps its checks, and the last step of its per-driver
-   solve calls the same solver.
+1. **One solver.** Every level comes from `level.solve_gain`. A probe is read from its located
+   sweeps in their band over the room floor read just before them, and nothing is solved from a
+   probe reading under floor + 10 dB (ADR-0365). After the probe, a take that misses 80 ± 2 dB is
+   solved again from its own reading, with no floor check. Room noise can only raise that reading,
+   so that solve errs quieter. CHECK keeps its checks, and the last step of its per-driver solve
+   calls the same solver.
 2. **One rule.** `pose_level(pose)` names the poses whose takes level themselves: one driver
    alone, at any kind and distance (ADR-0361), and a driverless spot closer than the mark, other
    than a seat. Both aim at 80 ± 2 dB at the microphone, never above the take's ceiling. A stop
    levels itself where that rule meets what it plays (`AngleStop.level`): a driver's pose, or a
    driverless summed stop with no bass stimulus. `angle_capture.level_sets` groups the takes that
-   share one level, and it marks the takes that play a probe (`MeasureSpec.level_probe`). The
-   composer and the executor both read that mark, so they cannot disagree.
+   share one level, and `capture_schedule.prepare_plan_captures` marks the takes that play a probe
+   (`MeasureSpec.level_probe`). A plan cannot state that mark. The composer and the executor both
+   read it, so they cannot disagree.
 3. **A close driverless set.** Consecutive driverless summed stops at one kind and one distance
-   closer than the mark are one set. Its first take plays one probe of its own summed sweep: 30 dB
-   under the seat-equivalent level, rising at most 6 dB a burst to the take's ceiling, ended by
-   the ramp bound (76 dB under an 85 dB stop). That take is levelled to 80 ± 2 dB. Every other take
-   of the set (its candidates, repeats and lateral poses) plays at the level that take landed and
-   answers to its repeats, so an A/B pair and a lateral falloff keep one drive level. A close set
-   only turns down: no take plays above its ceiling.
+   closer than the mark are one set. Its first take plays one probe of its own summed sweep. The
+   probe starts at the lower of 30 dB under the seat-equivalent level and the take's ceiling, and
+   rises at most 6 dB a burst to that ceiling. The ramp bound (76 dB under an 85 dB stop) ends it.
+   When a low driver cap sets the summed ceiling, the probe is one burst at that ceiling. That take
+   is levelled to 80 ± 2 dB. Every other take of the set (its candidates, repeats and lateral
+   poses) plays at the level that take landed and answers to its repeats, so an A/B pair and a
+   lateral falloff keep one drive level. If that take is left unmeasured, the rest of the set plays
+   at the last level solved for it, never above the last level it played. A close set only turns
+   down: no take plays above its ceiling.
 4. **No saved volume.** A run finds its fader with a probe of its first spot's own stimulus before
    its first take, and holds it.
    - The probe's first burst plays at −60 dBFS at the output (fader plus digital gain), and its
      bursts rise at most 6 dB each (ADR-0365). Every program keeps its level relative to that
      fader, so a program with no level asked never plays over the run's level.
    - Targets: 80 ± 2 dB at the first spot, and 74 ± 2 dB at a first seat spot. The other seat
-     spots hold that fader. A seat spot may read up to 6 dB over another at one gain (the
-     across-pose drift bound), and 74 + 2 + 6 = 82 dB keeps every seat spot 3 dB under the 85 dB
-     stop.
+     spots hold that fader. The 85 dB stop is the only hard limit on what they read. The 6 dB
+     across-pose drift limit grades a take after it plays, and its retake plays at the same level,
+     so it limits nothing that plays. The first seat spot reads at most 76 dB, 9 dB under the
+     stop, which leaves room for a later seat spot that reads louder than the first.
    - A run whose first spot is a driver's pose opens at a fixed probe fader (0 dB, or the loudest
      driver cap if lower), and each placement keeps its own probe. It solves no fader.
    - A driver's take is no longer held under the seat-equivalent level. Its ceiling is its driver

@@ -33,7 +33,8 @@ from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIR
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
-    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, REASON_INTERNAL_ERROR, TakeVerdict,
+    REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_LEVEL_OFF_TARGET, REASON_RETRIES_SPENT,
+    REASON_INTERNAL_ERROR, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -1043,6 +1044,18 @@ def test_a_close_driverless_set_shares_one_level():
     assert result.status == "complete"
     assert fakes.play.rungs == [None] + [-53.0] * 4
     assert selected == [False] + [True] * 4
+
+
+def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():
+    """A close set's first take that reads loud at every level is left unmeasured
+    once its retakes are spent. The rest of its set plays at the last level solved
+    for it, never at the take's ceiling (ADR-0403)."""
+    request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
+
+    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 6 + (80.0,))
+
+    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0, -83.0, -90.0, -97.0]
+    assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
 @pytest.mark.parametrize("web", [True, False], ids=["web", "ladder"])
