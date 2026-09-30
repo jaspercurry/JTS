@@ -53,6 +53,8 @@ from tests.test_crossover_v2_tuning_scope import (
 )
 from tests.test_active_speaker_measured_crossover_candidate import _room_correction
 
+BASS, NEAR_FIELD = preset("bass/axis").stimulus, preset("nearfield/each").stimulus
+
 
 def _boost(boost_db, **changes):
     """BASS_EXTENSION with its transform's DC lift set to ``boost_db``."""
@@ -196,7 +198,8 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
                          ids=["two_way", "cardioid", "stereo_pair"])
 def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offered, unoffered):
     plan = AngleCaptureRequest(tuple(
-        AngleStop(0, "near_field", kind="close", distance_m=0.015, purpose="reference", driver=driver)
+        AngleStop(0, REGIME_PER_DRIVER, kind="close", distance_m=0.015, purpose="reference", driver=driver,
+                  stimulus=NEAR_FIELD)
         for driver in ("woofer", "woofer:rear")))
     report = preflight(plan, ready_facts(plan, declared_target_ids=("tweeter", "woofer", "woofer:rear"),
                                          near_field_drivers=offered))
@@ -231,17 +234,17 @@ def test_preflight_refuses_a_program_id_banking_cannot_resolve(program_id, banks
         [] if banks else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
 
 
-@pytest.mark.parametrize("regime,kind,distance_m,tweeter_floor_hz,offered", [
-    ("near_field", "close", 0.015, 800.0, True), ("near_field", "close", 0.015, 1000.0, False),
-    ("per_driver", "bearing", None, 1000.0, True)])
+@pytest.mark.parametrize("stimulus,kind,distance_m,tweeter_floor_hz,offered", [
+    (NEAR_FIELD, "close", 0.015, 800.0, True), (NEAR_FIELD, "close", 0.015, 1000.0, False),
+    (None, "bearing", None, 1000.0, True)])
 def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
-        monkeypatch, regime, kind, distance_m, tweeter_floor_hz, offered):
+        monkeypatch, stimulus, kind, distance_m, tweeter_floor_hz, offered):
     """The near-field sweep stops at 2 kHz and the view reads its top band,
     800 Hz - 2 kHz, only whole, so a driver whose band starts above 800 Hz is
     refused at a near-field pose before a session plays takes no band can read;
     in the far field it plays MEASURE's band (#5696)."""
-    plan = AngleCaptureRequest((AngleStop(0, regime, kind=kind, distance_m=distance_m, purpose="reference",
-                                          driver="tweeter"),))
+    plan = AngleCaptureRequest((AngleStop(0, REGIME_PER_DRIVER, kind=kind, distance_m=distance_m, purpose="reference",
+                                          driver="tweeter", stimulus=stimulus),))
     ready = ready_facts(plan)
     context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), safety_profile={}, role_targets={},
                               driver_bands={"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(tweeter_floor_hz, 20000)},
@@ -814,16 +817,20 @@ def test_summed_pilot_floor_uses_banked_ambient(monkeypatch, level_db, has_ambie
 
 
 @pytest.mark.parametrize("level_db,disclosed", [(-18, False), (-38, True)])
-@pytest.mark.parametrize("purposes", [("bass",), ("room",), ("bass", "room")])
-def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, purposes):
-    plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, purpose=purpose) for purpose in purposes),
-                               level=LevelPolicy(level_db=level_db))
+@pytest.mark.parametrize("stops,pilots", [
+    ((("bass", BASS),), False), ((("room", None),), True), ((("bass", BASS), ("room", None)), True),
+    # The bass sweep plays no pilots, whatever purpose a stop names.
+    ((("bass", None),), True), ((("room", BASS),), False),
+], ids=["bass", "room", "bass-room", "bass-without-its-stimulus", "room-with-the-bass-stimulus"])
+def test_pilot_floor_only_checks_programs_with_pilots(level_db, disclosed, stops, pilots):
+    plan = AngleCaptureRequest(tuple(AngleStop(0, REGIME_SUMMED, purpose=purpose, stimulus=stimulus)
+                                     for purpose, stimulus in stops), level=LevelPolicy(level_db=level_db))
     facts = ready_facts(plan, summed_pilot_band_hz=(200, 800))
     facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
         "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60},
                                        {"band_hz": [200, 800], "level_dbfs": -60}]}}))
     report = preflight(plan, facts)
-    assert (report.blocking, len(report.issues)) == (False, int(disclosed and "room" in purposes))
+    assert (report.blocking, len(report.issues)) == (False, int(disclosed and pilots))
     for issue in report.issues:
         assert (issue.code, issue.blocking) == ("run_level_pilots_under_ambient", False)
         assert issue.evidence == {

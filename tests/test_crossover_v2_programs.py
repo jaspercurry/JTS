@@ -717,15 +717,57 @@ def test_a_drivers_take_names_at_most_one_target(scope, ids, refused):
     assert solo_target(make()) == ids[0]
 
 
-def _near_field_rear(cap_dbfs: float, regime: str = "near_field") -> tuple[SessionExcitation, MeasureSpec]:
+NEAR_FIELD = preset("nearfield/each").stimulus
+
+
+def _near_field_rear(cap_dbfs: float, stimulus=NEAR_FIELD) -> tuple[SessionExcitation, MeasureSpec]:
     band = FrequencyBand(20.0, 4000.0)
     return (SessionExcitation((RoleBand("woofer", 0, band),), {"woofer:rear": cap_dbfs}, -20.0, None,
                               {"woofer:rear": 8.0}, target_bands={"woofer:rear": band}),
-            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), regime=regime))
+            MeasureSpec(kind="baseline", branch_target_ids=("woofer:rear",), stimulus=stimulus))
 
 
 def _sweeps(program):
     return [segment for segment in program.segments if segment.kind == KIND_SWEEP]
+
+
+@pytest.mark.parametrize("stimulus", [NEAR_FIELD, {"band_hz": [30.0, 1000.0], "sweep_s": 4.0, "gap_s": 0.4}])
+def test_a_near_field_take_plays_its_declared_stimulus(stimulus):
+    """The plan's near-field row is what each driver's take plays: pilots and
+    three bit-identical sweeps over the declared band inside the driver's own,
+    each about the declared length, with the declared gap between sweeps and
+    half of it around the pilots (ADR-0360 §4)."""
+    band, targets = FrequencyBand(20.0, 4000.0), ("woofer", "woofer:rear")
+    excitation = SessionExcitation((RoleBand("woofer", 0, band),), dict.fromkeys(targets, 0.0), -20.0, None,
+                                   dict.fromkeys(targets, 12.0), target_bands=dict.fromkeys(targets, band))
+    request = request_for_preset(replace(preset("nearfield/each"), stimulus=stimulus), targets=targets)
+    edges = (max(band.lower_hz, stimulus["band_hz"][0]), min(band.upper_hz, stimulus["band_hz"][1]))
+    for capture in prepare_plan_captures(request):
+        program = program_for_spec(capture.spec, excitation, None, 100.0, safety_profile={}, role_targets={})
+        rate, sounds, sweeps = program.sample_rate_hz, program.stimulus_segments(), _sweeps(program)
+        between = program.segments[program.segments.index(sounds[0]):program.segments.index(sounds[-1])]
+        assert {(s.role, s.f1_hz, s.f2_hz) for s in sounds} == {(capture.spec.branch_target_ids[0], *edges)}
+        assert len(sweeps) == 3 and len({(s.n_samples, s.gain_db) for s in sweeps}) == 1
+        assert sweeps[0].n_samples / rate == pytest.approx(stimulus["sweep_s"], abs=0.25)
+        assert {s.n_samples for s in between if s.kind == "silence"} == {
+            round(stimulus["gap_s"] * rate), round(stimulus["gap_s"] / 2 * rate)}
+
+
+@pytest.mark.parametrize("scope,ids,accepted", [
+    ("drivers", ("woofer:rear",), True), ("candidate", (), True), ("drivers", (), False),
+    ("candidate_branches", ("woofer", "tweeter"), False), ("timing", (), False)])
+def test_a_declared_stimulus_plays_on_one_driver_or_the_candidate_graph(scope, ids, accepted):
+    """A take that plays two drivers has no composer for a declared stimulus,
+    so its spec refuses one rather than play without it."""
+    def make():
+        return MeasureSpec(kind="baseline", graph_scope=scope, branch_target_ids=ids, stimulus=NEAR_FIELD,
+                           candidate_id="" if scope == "drivers" else "trial")
+
+    if accepted:
+        assert make().stimulus == NEAR_FIELD
+    else:
+        with pytest.raises(ValueError):
+            make()
 
 
 @pytest.mark.parametrize("asked_db,played_db", [(-14.0, -14.0), (6.0, 0.0)])
@@ -737,16 +779,16 @@ def test_a_near_field_take_plays_the_peak_it_asks_never_above_the_seat_level(ask
     assert played == pytest.approx(seat + played_db)
 
 
-@pytest.mark.parametrize("cap_dbfs,scope_gains_db,regime,band_hz", [
-    (0.0, None, "near_field", (20.0, 2000.0)), (-40.0, None, "near_field", (20.0, 2000.0)),
-    (0.0, {"woofer:rear": 0.09}, "near_field", (20.0, 2000.0)), (0.0, None, "reference_axis", (150.0, 4000.0))])
-def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, regime, band_hz):
+@pytest.mark.parametrize("cap_dbfs,scope_gains_db,stimulus,band_hz", [
+    (0.0, None, NEAR_FIELD, (20.0, 2000.0)), (-40.0, None, NEAR_FIELD, (20.0, 2000.0)),
+    (0.0, {"woofer:rear": 0.09}, NEAR_FIELD, (20.0, 2000.0)), (0.0, None, None, (150.0, 4000.0))])
+def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, stimulus, band_hz):
     """With no level asked, a driver pose plays its level probe: its take's band,
     bursts rising at most MAX_STEP_DB from well under the seat level to its take's
     own ceiling, no two of one length (ADR-0365). A near-field take sweeps to
     2 kHz; a far-field one sweeps MEASURE's band (#5696), both inside the
     driver's own."""
-    excitation, spec = _near_field_rear(cap_dbfs, regime)
+    excitation, spec = _near_field_rear(cap_dbfs, stimulus)
     spec = replace(spec, scope_gains_db=scope_gains_db)
     probe = program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
     take = compose_target_program(excitation, spec, 100.0)

@@ -39,7 +39,6 @@ __all__ = [
     "MEASURE_KIND_BASELINE",
     "MEASURE_KIND_CANDIDATE",
     "MEASURE_KIND_VERIFY",
-    "MEASURE_REGIMES",
     "NoCrossoverSectionsError",
     "POLARITIES",
     "POLARITY_INVERT",
@@ -50,8 +49,6 @@ __all__ = [
     "POSITION_AXIS_HORIZONTAL",
     "POSITION_AXIS_VERTICAL",
     "REFERENCE_MARK_DESIGN_AXIS",
-    "REGIME_NEAR_FIELD",
-    "REGIME_REFERENCE_AXIS",
     "ROUND_RECEIPT_KIND",
     "ResponseCurve",
     "VERIFY_TOLERANCE_DB",
@@ -362,10 +359,6 @@ BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 #: a take selection filters by the measurement kind: two questions, two keys.
 #: Spelled here because `record_store` writes it and `record_index` reads it.
 MEASURE_KIND_KEY = "measure_kind"
-
-REGIME_NEAR_FIELD = "near_field"
-REGIME_REFERENCE_AXIS = "reference_axis"
-MEASURE_REGIMES = (REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS)
 
 #: Capture polarity describes the take; candidate polarity names the action.
 POLARITY_KEEP = "keep"

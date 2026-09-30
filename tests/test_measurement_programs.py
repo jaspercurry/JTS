@@ -382,8 +382,9 @@ def test_a_near_field_run_resolves_as_reference_evidence(program_id, layout, pos
         return
     row = mp.run_preset(program_id, layout, poses)
     assert (row.layout, tuple((pose.driver, pose.distance_m) for pose in row.poses)) == resolved
-    assert (row.purpose, row.regime, mp.run_purpose(row.preset)) == (
-        mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.PURPOSE_REFERENCE)
+    assert (row.purpose, row.regime, row.stimulus, mp.run_purpose(row.preset)) == (
+        mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, {"band_hz": [20.0, 2000.0], "sweep_s": 8.0, "gap_s": 0.5},
+        mp.PURPOSE_REFERENCE)
 
 
 def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
@@ -517,7 +518,6 @@ def test_a_take_reads_ungated_only_at_a_seat_or_within_one_drivers_near_field(ki
     (mp.PURPOSE_REAR, mp.REGIME_SUMMED, True),
     (mp.PURPOSE_REAR, mp.REGIME_BRANCHES, True),
     (mp.PURPOSE_REAR, mp.REGIME_PER_DRIVER, False),
-    (mp.PURPOSE_REAR, mp.REGIME_NEAR_FIELD, False),
     (mp.PURPOSE_ROOM, mp.REGIME_BRANCHES, False),
     (mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, True),
 ])
@@ -540,14 +540,13 @@ def _stop_with(purpose, regime, kind, distance_m, driver):
 
 @pytest.mark.parametrize("door,refusal", [(_program_with, ValueError), (_stop_with, CrossoverV2FlowError)])
 @pytest.mark.parametrize("purpose,regime,kind,distance_m,driver,accepted", [
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "woofer:rear", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.15, "woofer", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_BEHIND, 0.5, "woofer:rear", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_CLOSE, 0.015, "woofer:rear", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_CLOSE, 0.15, "woofer", True),
+    (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEHIND, 0.5, "woofer:rear", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "tweeter", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_BRANCHES, mp.POSE_KIND_BEARING, None, "woofer", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.3, "", True),
-    (mp.PURPOSE_REFERENCE, mp.REGIME_NEAR_FIELD, mp.POSE_KIND_CLOSE, 0.015, "", False),
     (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "", False),
     (mp.PURPOSE_SPEAKER, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "woofer", False),
     (mp.PURPOSE_BASS, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
@@ -592,7 +591,7 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
                else ac.AngleCaptureRequest(stops=stops, program="speaker/mark"))
     captures = prepare_plan_captures(request)
     assert [(capture.spec.program_phase, capture.spec.branch_target_ids) for capture in captures] == expected
-    assert {capture.spec.regime for capture in captures if capture.stop.driver} == {"reference_axis"}
+    assert all(capture.spec.stimulus is None for capture in captures)
 
 
 @pytest.mark.parametrize("purpose,base,regime,cleared", [
@@ -752,10 +751,15 @@ def test_a_bass_run_keeps_its_stimulus_and_ladder_on_any_layout(layout):
     ([], "bass"), ({"bass": []}, "bass"), ({"bass": {"band_hz": [20, 1100]}}, "bass"),
     ({"bass": {"ceiling_hz": 1100}}, "missing"), ({"bass": {"ceiling_hz": True}}, "bass"),
     ({"bass": {"ceiling_hz": 0}}, "bass"), ({"bass": {"ceiling_hz": float("inf")}}, "bass"),
+    *(({"near_field": row}, "bass") for row in (
+        {"band_hz": [20.0, 2000.0], "sweep_s": 8.0}, {"band_hz": [2000.0, 20.0], "sweep_s": 8.0, "gap_s": 0.5},
+        {"band_hz": [20.0], "sweep_s": 8.0, "gap_s": 0.5}, {"band_hz": 20.0, "sweep_s": 8.0, "gap_s": 0.5},
+        {"band_hz": [20.0, 2000.0], "sweep_s": 8.0, "gap_s": 0},
+        {"band_hz": [20.0, 2000.0], "sweep_s": 8.0, "gap_s": 0.5, "ceiling_hz": 1100.0})),
 ])
 def test_invalid_registry_stimulus_is_a_value_error(tmp_path, stimuli, reference):
     config = _bundled_config()
-    config["stimuli"] = stimuli
+    config["stimuli"] = {**config["stimuli"], **stimuli} if isinstance(stimuli, dict) else stimuli
     next(row for row in config["presets"] if row["preset"] == "bass/axis")["stimulus"] = reference
     with pytest.raises(ValueError):
         mp.load_presets(_write_config(tmp_path, config))

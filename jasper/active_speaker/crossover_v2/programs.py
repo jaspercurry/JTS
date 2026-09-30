@@ -21,8 +21,6 @@ from jasper.audio_measurement.program import (
     DEFAULT_PILOT_LEVELS_DB,
     MEASURE_SWEEP_BAND_HZ,
     NEAR_FIELD_SILENCE_S,
-    NEAR_FIELD_SWEEP_BAND_HZ,
-    NEAR_FIELD_SWEEP_S,
     ExcitationProgram,
     RoleBand,
     build_check_program,
@@ -34,7 +32,6 @@ from jasper.audio_measurement.ramp import MAX_STEP_DB
 
 from jasper.audio_measurement.branch_program import build_branch_program
 
-from .contracts import REGIME_NEAR_FIELD
 from .measure_spec import branch_channels_for, solo_target
 from .journey import (
     PHASE_CHECK,
@@ -154,12 +151,14 @@ def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, floa
 
 
 def _solo_sweeps(spec: Any, role: str) -> dict[str, Any]:
-    """A near-field take's sweeps, short silences between them (see #5684); any
-    other one-driver take plays MEASURE's band and spacing (#5696)."""
-    if spec.regime != REGIME_NEAR_FIELD:
+    """A one-driver take plays its declared stimulus's band, sweep length and
+    silences (the near-field row: ADR-0360 §4, #5684); with none, MEASURE's
+    band and spacing (#5696)."""
+    if spec.stimulus is None:
         return {"sweep_band_hz": MEASURE_SWEEP_BAND_HZ}
-    return {"sweep_band_hz": NEAR_FIELD_SWEEP_BAND_HZ, "sweep_durations": {role: NEAR_FIELD_SWEEP_S},
-            "gap_s": NEAR_FIELD_SILENCE_S, "guard_s": NEAR_FIELD_SILENCE_S / 2, "pilot_gap_s": NEAR_FIELD_SILENCE_S / 2}
+    gap_s = spec.stimulus["gap_s"]
+    return {"sweep_band_hz": tuple(spec.stimulus["band_hz"]), "sweep_durations": {role: spec.stimulus["sweep_s"]},
+            "gap_s": gap_s, "guard_s": gap_s / 2, "pilot_gap_s": gap_s / 2}
 
 
 def compose_target_program(excitation: SessionExcitation, spec: Any,

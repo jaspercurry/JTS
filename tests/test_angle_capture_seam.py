@@ -607,18 +607,6 @@ def test_a_mover_mismatch_refuses_in_both_directions() -> None:
         )
 
 
-def test_the_pose_record_states_the_seams_own_regime_word() -> None:
-    """One vocabulary for "what was played", across the fixture's own copy.
-
-    ``crossover_v2_banked_round.lateral_pose_record`` writes the regime onto
-    every banked pose it builds, from a literal copy of this module's own
-    word: this is the pin that keeps the two spellings one fact.
-    """
-    from tests.crossover_v2_banked_round import LATERAL_POSE_REGIME
-
-    assert LATERAL_POSE_REGIME == ac.REGIME_PER_DRIVER
-
-
 def test_composing_a_walk_returns_poses_and_no_journey_vocabulary() -> None:
     """Section 3's ruling, re-asserted over the NEW entry point.
 
@@ -1433,7 +1421,7 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
         level=ac.LevelPolicy(level_db=-25, resolved=ResolvedLevel(75.8, -12.7, "8108494")),
     )
     doc = request.to_dict()
-    assert doc["artifact_schema_version"] == 5
+    assert doc["artifact_schema_version"] == 6
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
     assert doc["level"] == {"mode": "hold_reference", "level_db": -25, "anchor_db_spl": 75.8,

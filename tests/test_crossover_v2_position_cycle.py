@@ -36,7 +36,6 @@ from jasper.active_speaker.crossover_v2.spatial import (
     PositionGeometry,
 )
 from tests.crossover_v2_banked_round import (
-    LATERAL_POSE_REGIME,
     LateralPose,
     TakeClaim,
     lateral_pose_record,
@@ -126,14 +125,11 @@ def test_the_index_projects_the_speakers_own_take_records(tmp_path):
     ]
     assert document["takes"] == [
         {"index": 1, "attempt": 1, "take_id": "lateral_01_a01", "candidate_id": "",
-         "position_deg": 0, "vertical_deg": 0, "role": "onax",
-         "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-1-1"},
+         "position_deg": 0, "vertical_deg": 0, "role": "onax", "wav_sha256": "sha-1-1"},
         {"index": 2, "attempt": 1, "take_id": "lateral_02_a01", "candidate_id": "",
-         "position_deg": 7, "vertical_deg": 0, "role": "offax",
-         "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-2-1"},
+         "position_deg": 7, "vertical_deg": 0, "role": "offax", "wav_sha256": "sha-2-1"},
         {"index": 3, "attempt": 1, "take_id": "lateral_03_a01", "candidate_id": "",
-         "position_deg": -7, "vertical_deg": 0, "role": "offax",
-         "regime": LATERAL_POSE_REGIME, "wav_sha256": "sha-3-1"},
+         "position_deg": -7, "vertical_deg": 0, "role": "offax", "wav_sha256": "sha-3-1"},
     ]
 
 

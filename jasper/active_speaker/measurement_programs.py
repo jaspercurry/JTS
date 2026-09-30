@@ -40,8 +40,7 @@ PURPOSE_REAR = "rear"
 REGIME_PER_DRIVER = "per_driver"
 REGIME_SUMMED = "summed"
 REGIME_BRANCHES = "branches"
-REGIME_NEAR_FIELD = "near_field"
-REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES, REGIME_NEAR_FIELD)
+REGIMES = (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES)
 
 
 @dataclass(frozen=True)
@@ -505,11 +504,16 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
         raise ValueError("measurement plan stimuli must be an object")
     for name, spec in stimuli.items():
         _text(name, "stimulus name")
-        if not isinstance(spec, dict) or set(spec) != {"ceiling_hz"}:
-            raise ValueError(f"stimulus {name!r} must contain only ceiling_hz")
-        ceiling = spec["ceiling_hz"]
-        if isinstance(ceiling, bool) or not isinstance(ceiling, (int, float)) or not 0 < ceiling < math.inf:
-            raise ValueError(f"stimulus {name!r} ceiling_hz must be positive and finite")
+        # A summed take reads a ceiling (bass_stimulus); a one-driver take a band, sweep and gap.
+        if not isinstance(spec, dict) or set(spec) not in ({"ceiling_hz"}, {"band_hz", "sweep_s", "gap_s"}):
+            raise ValueError(f"stimulus {name!r} must contain only ceiling_hz, or band_hz, sweep_s and gap_s")
+        band = spec.get("band_hz", [])
+        if "band_hz" in spec and not (isinstance(band, list) and len(band) == 2):
+            raise ValueError(f"stimulus {name!r} band_hz must be two edges")
+        values = [*band, *(value for key, value in spec.items() if key != "band_hz")]
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < math.inf for v in values) or (
+                band and band[0] >= band[1]):
+            raise ValueError(f"stimulus {name!r} values must be positive and finite, band_hz ascending")
 
     layouts_raw = raw.get("layouts")
     if not isinstance(layouts_raw, dict) or not layouts_raw:

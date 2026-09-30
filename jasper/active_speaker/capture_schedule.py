@@ -12,11 +12,10 @@ from typing import Sequence
 from jasper.audio_measurement.program import RoleBand
 from .angle_capture import AngleCaptureRequest, AngleStop, ResolvedStop, resolve_request, stop_specs, design_axis_spec
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
-from .crossover_v2.contracts import REGIME_NEAR_FIELD as MEASURE_REGIME_NEAR_FIELD
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
 from .crossover_v2.measure_spec import MeasureSpec
 from .measurement_programs import (
-    BASE_CANDIDATE, REGIME_NEAR_FIELD, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
+    BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
     UnknownPresetError, candidate_identity, preset,
 )
 
@@ -61,11 +60,9 @@ def prepare_plan_captures(
         stop = request.stops[offset // request.repeats]
         if spec is None:
             spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
-                           vertical_deg=stop.elevation_deg,
-                           pose_prompts=(resolved[offset // request.repeats].prompt.text,))
-            if stop.driver:
-                spec = replace(spec, branch_target_ids=(stop.driver,), regime=(
-                    MEASURE_REGIME_NEAR_FIELD if stop.regime == REGIME_NEAR_FIELD else spec.regime))
+                           vertical_deg=stop.elevation_deg, stimulus=stop.stimulus,
+                           pose_prompts=(resolved[offset // request.repeats].prompt.text,),
+                           branch_target_ids=(stop.driver,) if stop.driver else ())
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))

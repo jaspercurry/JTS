@@ -582,8 +582,8 @@ class TuningSession:
         The index reads six of these — run, kind, position, candidate,
         timestamp, path — and the store supplies the last two, since only it
         knows where it put the record and when. The rest are what a reader needs
-        to tell two captures of the same position apart: which regime, which
-        polarity, which ladder rung, which graph, at what proven level.
+        to tell two captures of the same position apart: which polarity, which
+        ladder rung, which graph, at what proven level.
 
         ``polarity`` and ``inverted_role`` travel together for the reason
         :class:`~.measure_spec.MeasureSpec` checks them together: a reverse-null
@@ -621,7 +621,6 @@ class TuningSession:
             "targets": list(spec.branch_target_ids),
             # The parent's layers this take's graph played emptied (ADR-0370).
             "cleared_layers": list(spec.cleared_layers),
-            "regime": spec.regime,
             "polarity": spec.polarity,
             "inverted_role": spec.inverted_role,
             # Derived from what INSTALLED, not from what the spec ASKED: a spec

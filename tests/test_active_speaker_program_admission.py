@@ -42,6 +42,7 @@ from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
 from jasper.active_speaker.measurement_level import scope_gains_db
+from jasper.active_speaker.measurement_programs import preset
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
@@ -1187,7 +1188,8 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.
     context = conductor_context.resolve_conductor_context({
         "active": True, "targets": {"drivers": active_driver_targets(topology)},
     }, topology=topology)
-    spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), regime="near_field", program_phase=PHASE_LATERAL)
+    spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), stimulus=preset("nearfield/each").stimulus,
+                       program_phase=PHASE_LATERAL)
     excitation = excitation_from_context(context, context.session_volume_db)
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
@@ -1207,9 +1209,10 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     from jasper.active_speaker.crossover_v2.capture_plan import (
         CAPTURE_ENTRY_MARGIN_MS, CloudPositionPrompt, _program_duration_ms, build_inline_session_spec,
     )
-    from jasper.audio_measurement.program import NEAR_FIELD_SILENCE_S, NEAR_FIELD_SWEEP_BAND_HZ
+    from jasper.audio_measurement.program import NEAR_FIELD_SILENCE_S
 
     topology, safety, context, spec, excitation, program = _cardioid_solo_take(monkeypatch, target)
+    lo, hi = spec.stimulus["band_hz"]
 
     assert set(context.driver_bands) == set(context.driver_sweep_duration_limits_s) == set(context.role_targets)
     stimuli = program.stimulus_segments()
@@ -1220,8 +1223,7 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     assert len(sweeps) == 3
     assert len({(s.f1_hz, s.f2_hz, s.n_samples, s.gain_db) for s in sweeps}) == 1
     target_band = context.driver_bands[target]
-    assert (sweeps[0].f1_hz, sweeps[0].f2_hz) == (
-        max(target_band.lower_hz, NEAR_FIELD_SWEEP_BAND_HZ[0]), min(target_band.upper_hz, NEAR_FIELD_SWEEP_BAND_HZ[1]))
+    assert (sweeps[0].f1_hz, sweeps[0].f2_hz) == (max(target_band.lower_hz, lo), min(target_band.upper_hz, hi))
     assert sweeps[0].n_samples / program.sample_rate_hz <= context.driver_sweep_duration_limits_s[target]
     after_first_sound = program.segments[program.segments.index(stimuli[0]):]
     assert max(s.n_samples for s in after_first_sound if s.kind == "silence") <= round(
