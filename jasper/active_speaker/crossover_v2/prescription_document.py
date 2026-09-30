@@ -347,6 +347,11 @@ def saved_base() -> tuple[BankedCandidate, Mapping[str, Any]]:
     return BankedCandidate(saved, "", "", baseline_profile_state_path()), state
 
 
+def saved_document(sections: Mapping[str, Any], rationale: str) -> dict[str, Any]:
+    """A prescription document that composes ``sections`` on the applied baseline (``base: saved``)."""
+    return {"kind": DOCUMENT_KIND, "schema": 1, "base": "saved", "sections": dict(sections), "rationale": rationale}
+
+
 def reset_prescription_document(
     *, keep_timing: bool, trims_db: Mapping[str, float] | None, program: str | None = None,
 ) -> dict[str, Any]:
@@ -356,8 +361,7 @@ def reset_prescription_document(
     }
     if "driver" in sections:
         sections["driver"] = {"filters": [], **({"pinned_trim_db": dict(trims_db)} if trims_db else {})}
-    return {"kind": "jts_prescription", "schema": 1, "base": "saved",
-            "sections": sections, "rationale": "Reset the applied tuning layers."}
+    return saved_document(sections, "Reset the applied tuning layers.")
 
 
 def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
@@ -366,12 +370,8 @@ def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossove
     The candidate is composed and returned, never banked and never applied.
     """
     base, base_profile = saved_base()
-    return judge_prescription_document(
-        {"kind": DOCUMENT_KIND, "schema": 1, "base": "saved",
-         "sections": {name: section if isinstance(section, dict) else {}},
-         "rationale": rationale},
-        base=base, base_profile=base_profile,
-    )
+    return judge_prescription_document(saved_document({name: section if isinstance(section, dict) else {}}, rationale),
+                                       base=base, base_profile=base_profile)
 
 
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,

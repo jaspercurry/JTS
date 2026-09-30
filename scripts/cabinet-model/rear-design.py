@@ -33,18 +33,18 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from _cabinet import Cabinet, db, rear_ratio, roughness_db, seat_deviation
-from jasper.active_speaker import rear_fit
 from jasper.active_speaker.branch_chain import camilla_filter_response, rear_stage_peak_db, rear_stage_response
-from jasper.active_speaker.crossover_v2.prescription_document import DOCUMENT_KIND, read_prescription_document
+from jasper.active_speaker.crossover_v2.prescription_document import read_prescription_document, saved_document
 from jasper.active_speaker.rear_calibration import compile_rear_stage, read_rear_calibration
 from jasper.active_speaker.rear_fit import (
+    BASS_ORDER, BASS_SEED_HZ, DELAY_SLOPE_BAND_HZ, HIGHPASS_ORDER, LOWPASS_ORDER, PARAM_LOWER, PARAM_UPPER,
     branch_ratio as branch_model, build_document, combo, group_delay_ms, target_delay_ms,
 )
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
-LOWER, UPPER, SAMPLE_RATE = np.array(rear_fit.PARAM_LOWER[:7]), np.array(rear_fit.PARAM_UPPER[:7]), DEFAULT_SAMPLE_RATE
-ORDERS = (rear_fit.BASS_ORDER, rear_fit.HIGHPASS_ORDER, rear_fit.LOWPASS_ORDER)
-SEED_HZ = (rear_fit.BASS_SEED_HZ, float(np.mean(rear_fit.DELAY_SLOPE_BAND_HZ)))
+LOWER, UPPER, SAMPLE_RATE = np.array(PARAM_LOWER[:7]), np.array(PARAM_UPPER[:7]), DEFAULT_SAMPLE_RATE
+ORDERS = (BASS_ORDER, HIGHPASS_ORDER, LOWPASS_ORDER)
+SEED_HZ = (BASS_SEED_HZ, float(np.mean(DELAY_SLOPE_BAND_HZ)))
 
 SEATS = ((2.0, 0), (2.0, 20), (2.0, 30), (1.5, 0), (2.5, 0))  # (listener m, bearing deg)
 TABLE_HZ = (30, 40, 50, 63, 80, 100, 125, 160, 200, 315, 500, 800)
@@ -124,9 +124,9 @@ def main() -> None:
     flat = camilla_filter_response([boost], grid) * 10 ** (-shift / 20) if shift > 0 else 1.0
     if not np.allclose(r_new / flat, branch_model(best, grid, False), rtol=1e-3, atol=1e-5):
         raise SystemExit("the written document does not realize the fitted ratio")
-    prescription = read_prescription_document({
-        "kind": DOCUMENT_KIND, "schema": 1, "base": "saved", "sections": {"rear_calibration": document},
-        "rationale": "Cabinet-model design of the rear stage for the smoothest seat response with the back wall."})
+    prescription = read_prescription_document(saved_document(
+        {"rear_calibration": document},
+        "Cabinet-model design of the rear stage for the smoothest seat response with the back wall."))
     with open(args.out, "w") as fh:
         fh.write(json.dumps(prescription, indent=2) + "\n")
     print(f"wrote {args.out}; front chain 0 dB, both rear branches +{max(shift, 0.0):.2f} dB (ADR-0327); "

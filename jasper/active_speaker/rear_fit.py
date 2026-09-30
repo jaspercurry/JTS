@@ -6,7 +6,8 @@
 
 The target is an ADR-0318 ``acoustic_targets`` document's rear/front ratio.
 The front and rear woofers measured alone at one position turn it into the
-ELECTRICAL ratio the filters must realize, ``T * H_front / H_rear``. Every
+ELECTRICAL ratio the filters must realize, ``T * H_front / H_rear``, read from
+the measured ratio itself so the delay both woofers share cancels. Every
 phase is ``positive_delay_has_negative_phase`` -- a delay of T seconds reads
 -360*f*T degrees -- so CAD/BEM data solved as exp(-iwt) must have its angle
 negated.
@@ -14,12 +15,16 @@ negated.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from scipy.optimize import least_squares
 
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.evidence_reasons import (
+    REFUSE_PAIR_UNDERSAMPLED, REFUSE_TARGET_BAND_SHORT, EvidenceUnavailable,
+)
+from jasper.audio_measurement.excess_phase import complex_smooth
 from jasper.audio_measurement.rear_evidence import magnitude_db
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
@@ -62,9 +67,13 @@ SEED_STARTS = 3
 ALLPASS_STARTS = 5
 ALLPASS_SEED_Q = 1.0
 # A row this far under its own 1/3-octave level sits at a magnitude null,
-# where a well-sampled response's phase still turns fast (#5404 comment
-# 5746999024, item 6).
+# where a well-sampled response's phase still turns fast and the ratio spikes
+# (#5404 comment 5746999024, item 6).
 NULL_DEPTH_DB = 6.0
+# The measured ratio's complex mean spans this much octave around each point
+# it is read at: wider than the fit grid's step (about 1/37 octave), so room
+# detail finer than the fit can follow does not alias into it.
+RATIO_SMOOTHING_OCT = 1.0 / 24.0
 
 #: What every fitted document assumes, stated in it.
 ASSUMPTIONS = (
@@ -77,10 +86,15 @@ Table = tuple[np.ndarray, np.ndarray]
 
 def acoustic_target(raw: Any) -> Table:
     """``(frequency_hz, rear/front ratio)`` from an ``acoustic_targets`` document
-    (ADR-0318). A ``[0, 0]`` rear is silent there and carries no phase."""
+    (ADR-0318) whose valid band covers :data:`FIT_BAND_HZ`. A ``[0, 0]`` rear
+    is silent there and carries no phase."""
     document = read_rear_calibration(raw)
     if document["case"] != "acoustic_targets":
         raise RearCalibrationError("the target must be an acoustic_targets document")
+    low, high = document["valid_band_hz"]
+    if low > FIT_BAND_HZ[0] or high < FIT_BAND_HZ[1]:
+        raise EvidenceUnavailable(REFUSE_TARGET_BAND_SHORT,
+                                  {"valid_band_hz": [low, high], "fit_band_hz": [*FIT_BAND_HZ]})
     targets = document["targets"]
     front, rear = (np.array([complex(*pair) for pair in targets[side]]) for side in ("front", "rear"))
     if np.any((front == 0) & (rear != 0)):
@@ -103,14 +117,31 @@ def interpolate(table: Table, grid: np.ndarray) -> np.ndarray:
     )
 
 
-def check_measured_pair(front: Table, rear: Table) -> None:
-    """Refuse a measured pair too coarse to carry an honest relative phase.
+class MeasuredRatio(NamedTuple):
+    """One measured pair's front/rear ratio, and the rows where neither
+    response sits at a magnitude null."""
 
-    One capture, so one frequency grid. Past a quarter turn of front/rear phase
-    per row the rotation between rows is ambiguous and no interpolation recovers
-    it: a 1/3-octave pair a millisecond apart interpolates to 24 dB of error. A
+    freqs_hz: np.ndarray
+    ratio: np.ndarray
+    kept: np.ndarray
+
+    def on(self, grid: np.ndarray) -> np.ndarray:
+        """The kept rows' complex mean around each grid point; a point with no
+        kept row near it holds its neighbours' value."""
+        values = complex_smooth(self.freqs_hz, self.ratio, RATIO_SMOOTHING_OCT, at=grid, keep=self.kept)
+        held = np.isfinite(values)
+        return values if held.all() else interpolate((grid[held], values[held]), grid)
+
+
+def measured_ratio(front: Table, rear: Table) -> MeasuredRatio:
+    """One capture's front and rear on one grid, as the ratio a fit reads, or a
+    refusal when the grid is too coarse to carry an honest relative phase.
+
+    Past a quarter turn of front/rear phase per row the rotation between rows
+    is ambiguous, and no reading between them can say which way it turned. A
     step touching a row at a magnitude null (:data:`NULL_DEPTH_DB`) of either
-    response is not that sign, so it is not read.
+    response is not that sign, so it is not read, and the null leaves the
+    ratio: at a rear null the ratio spikes by the null's depth.
     """
     freqs = front[0]
     if freqs.shape != rear[0].shape or not np.allclose(freqs, rear[0]):
@@ -119,23 +150,20 @@ def check_measured_pair(front: Table, rear: Table) -> None:
     for values in (front[1], rear[1]):
         level = magnitude_db(values)
         null |= level < smooth_fractional_octave(freqs, level, fraction=3) - NULL_DEPTH_DB
+    ratio = front[1] / rear[1]
     band = (freqs >= FIT_BAND_HZ[0]) & (freqs <= FIT_BAND_HZ[1])
-    relative = np.diff(np.angle(front[1][band] / rear[1][band]))
-    step = np.abs((relative + np.pi) % (2.0 * np.pi) - np.pi)
+    step = np.abs((np.diff(np.angle(ratio[band])) + np.pi) % (2.0 * np.pi) - np.pi)
     step[null[band][:-1] | null[band][1:]] = 0.0
     if step.size and step.max() > np.pi / 2:
-        worst = freqs[band][1:][step.argmax()]
-        raise ValueError(
-            f"measured front/rear phase steps {np.degrees(step.max()):.0f} degrees per row "
-            f"at {worst:g} Hz; 90 is the most this can unwrap"
-        )
+        raise EvidenceUnavailable(REFUSE_PAIR_UNDERSAMPLED, {
+            "hz": round(float(freqs[band][1:][step.argmax()]), 1), "step_deg": round(float(np.degrees(step.max())), 1)})
+    return MeasuredRatio(freqs, ratio, ~null)
 
 
-def electrical_target(target: Table, measured: tuple[Table, Table], grid: np.ndarray) -> np.ndarray:
+def electrical_target(target: Table, measured: MeasuredRatio, grid: np.ndarray) -> np.ndarray:
     """The rear/front ratio the FILTERS must realize, on ``grid``: the target
     times the measured front over the measured rear."""
-    check_measured_pair(*measured)
-    return interpolate(target, grid) * interpolate(measured[0], grid) / interpolate(measured[1], grid)
+    return interpolate(target, grid) * measured.on(grid)
 
 
 def _weights(grid: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -371,7 +399,7 @@ def build_document(
     }
 
 
-def fit_report(document: dict[str, Any], target: Table, measured: tuple[Table, Table]) -> dict[str, Any]:
+def fit_report(document: dict[str, Any], target: Table, measured: MeasuredRatio) -> dict[str, Any]:
     """How near a VALIDATED document comes to the electrical target, and the
     rear's worst level against the front over :data:`SUPPRESSION_SWEEP_HZ`.
 

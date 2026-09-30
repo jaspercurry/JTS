@@ -175,17 +175,27 @@ def minimum_phase(logmag_half: np.ndarray, n_fft: int = PHASE_NFFT) -> np.ndarra
     return np.fft.fft(cepstrum * fold).imag[: n_fft // 2 + 1]
 
 
-def _complex_smooth(freqs: np.ndarray, spectrum: np.ndarray, frac: float) -> np.ndarray:
-    """Running mean of a complex spectrum over a fractional-octave span.
+def complex_smooth(
+    freqs: np.ndarray, spectrum: np.ndarray, frac: float, *,
+    at: np.ndarray | None = None, keep: np.ndarray | None = None,
+) -> np.ndarray:
+    """Running mean of a complex spectrum over a fractional-octave span, at
+    each frequency of ``at`` (default: each bin), of the bins ``keep`` names
+    (default: all). A span holds at least its next bin; one left with no kept
+    bin is NaN.
 
-    Only meaningful once bulk delay is removed — a rotating phasor averages
-    towards zero — which :func:`excess_group_delay` guarantees before calling.
+    Only meaningful once bulk delay is removed: a rotating phasor averages
+    towards zero.
     """
+    centres = freqs if at is None else np.asarray(at, dtype=np.float64)
+    kept = np.ones(freqs.shape, dtype=bool) if keep is None else np.asarray(keep, dtype=bool)
     lo, hi = 2 ** (-frac / 2), 2 ** (frac / 2)
-    csum = np.concatenate([[0.0 + 0j], np.cumsum(spectrum)])
-    a = np.searchsorted(freqs, freqs * lo)
-    b = np.maximum(np.searchsorted(freqs, freqs * hi), a + 1)
-    return (csum[b] - csum[a]) / (b - a)
+    csum = np.concatenate([[0.0 + 0j], np.cumsum(np.where(kept, spectrum, 0.0))])
+    count = np.concatenate([[0], np.cumsum(kept)])
+    a = np.searchsorted(freqs, centres * lo)
+    b = np.minimum(np.maximum(np.searchsorted(freqs, centres * hi), a + 1), freqs.size)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (csum[b] - csum[a]) / (count[b] - count[a])
 
 
 def _window_slopes(
@@ -272,7 +282,7 @@ def excess_group_delay(
 
     first = max(1, int(np.searchsorted(freqs, edge_band_hz[0] * 2 ** -EDGE_BLEND_OCT / 2)))
     smoothed = rotated.copy()
-    smoothed[first:] = _complex_smooth(
+    smoothed[first:] = complex_smooth(
         freqs[first:], rotated[first:], COMPLEX_SMOOTH_OCT
     )
 

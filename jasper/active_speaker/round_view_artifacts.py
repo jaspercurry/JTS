@@ -229,8 +229,8 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
                            programs=(PURPOSE_REAR,), schema="jts_rear_fit/1", per_take=True,
         question="Which rear branches realize an acoustic rear/front target on one pair take's two woofers?",
         needs="one rear/pair take (each woofer alone at one pose) and an acoustic_targets rear calibration document",
-        avoid="grading a rear document; judge --preview predicts one on the pair round",
-        answer_fields=("document", "suppression")),
+        avoid="a ready tune: it writes a muted seed, and its answer names the judge --preview call that unmutes it",
+        answer_fields=("document", "preview", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
                        builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/3"),

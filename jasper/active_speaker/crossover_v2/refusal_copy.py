@@ -391,6 +391,14 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("measure_rear_pair", "Measure a rear pair round"): {
         evidence_reasons.REFUSE_NO_BRANCH_DIAGNOSTIC: "The rear pair round banked no branch diagnostic segments.",
         evidence_reasons.REFUSE_NO_REAR_TAKES: "The round has no usable rear summed takes.",
+        evidence_reasons.REFUSE_NOT_A_REAR_PAIR: "The take is not a rear pair take, so it holds no woofer that "
+                                                 "played alone and raw.",
+        evidence_reasons.REFUSE_PAIR_UNDERSAMPLED: "The two woofers' relative phase turns more than a quarter turn "
+                                                   "between two readings, so the fit cannot follow it.",
+    },
+    ("name_target", "Name a target that covers the fit band"): {
+        evidence_reasons.REFUSE_TARGET_BAND_SHORT: "The target document's valid band does not cover the band the "
+                                                   "rear fit reads.",
     },
     ("measure_nearfield", "Measure a near-field round"): {
         evidence_reasons.REFUSE_NO_NEAR_FIELD_TAKES: "The round has no kept near-field driver takes.",

@@ -22,8 +22,10 @@ import pytest
 
 from jasper.active_speaker import rear_fit
 from jasper.active_speaker.branch_chain import rear_stage_response
-from jasper.active_speaker.crossover_v2.pose_curve import LateralPoseCurve, lateral_evidence_grid_hz, pose_curve_record
+from jasper.active_speaker.crossover_v2.pose_curve import lateral_evidence_grid_hz
 from jasper.active_speaker.crossover_v2.rear_views import PAIR_ROLES
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.rear_calibration import (
     MAX_ALLPASS_Q,
     MAX_COMBO_ORDER,
@@ -32,11 +34,15 @@ from jasper.active_speaker.rear_calibration import (
     read_rear_calibration,
 )
 from jasper.active_speaker.round_view_artifacts import CATALOG
-from jasper.audio_measurement.evidence_reasons import REASON_SEGMENT_MISSING
+from jasper.audio_measurement.evidence_reasons import (
+    REFUSE_NOT_A_REAR_PAIR,
+    REFUSE_PAIR_UNDERSAMPLED,
+    REFUSE_TARGET_BAND_SHORT,
+    EvidenceUnavailable,
+)
 from jasper.cli import crossover_prescriber, round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 from tests import test_round_views_rear
-from tests.crossover_v2_banked_round import SEAT_GRID_HZ
 from tests.test_rear_preview import cardioid_box
 from tests.test_round_views_rear import _PAIR_GAP_MS, _PAIR_LEVEL_GAP_DB, _PAIR_SET_ID, _PARENT, pair_round
 
@@ -52,6 +58,12 @@ MISMATCH_DB = 6.0
 # The report's own figure of merit: complex RMS error over the priority band,
 # linear, on a ~unity target. Its best fit against the CAD model scored 0.164.
 SCORED = (GRID_HZ >= 100.0) & (GRID_HZ <= 400.0)
+# A pair take's own grid: pair_takes reads each woofer at this FFT size.
+PAIR_TAKE_HZ = np.fft.rfftfreq(32768, 1.0 / SAMPLE_RATE_HZ)
+# A real branch take's recording: the deconvolution pre-guard ahead of each
+# segment's arrival, inside an impulse this long.
+PRE_GUARD_S = 0.25
+IMPULSE_SAMPLES = 16800
 
 
 def _validated(params, allpass=False):
@@ -70,6 +82,11 @@ def _rms(got, want):
 
 def _fitted(target, allpass=False):
     return _validated(rear_fit.fit(GRID_HZ, target, allpass=allpass), allpass=allpass)
+
+
+def _wall(freqs, excess_m, strength=0.9):
+    """One strong wall image that far behind the direct sound: a comb of deep nulls."""
+    return 1.0 + strength * np.exp(-2j * np.pi * freqs * excess_m / 343.0)
 
 
 @pytest.fixture(autouse=True)
@@ -112,7 +129,7 @@ def test_measured_responses_undo_a_sensitivity_mismatch(truth):
     mismatch = 10.0 ** (MISMATCH_DB / 20.0)
     flat = (TABLE_HZ, np.ones(TABLE_HZ.size, dtype=complex))
     hot = (TABLE_HZ, np.full(TABLE_HZ.size, mismatch, dtype=complex))
-    target = rear_fit.electrical_target(table, (flat, hot), GRID_HZ)
+    target = rear_fit.electrical_target(table, rear_fit.measured_ratio(flat, hot), GRID_HZ)
     # The electrical target is the acoustic one less the rear's extra output.
     offset_db = 20.0 * np.log10(np.abs(target[SCORED] / ratio[SCORED]))
     assert float(np.median(offset_db)) == pytest.approx(-MISMATCH_DB, abs=0.5)
@@ -121,6 +138,19 @@ def test_measured_responses_undo_a_sensitivity_mismatch(truth):
     electrical = _ratio(_fitted(target), GRID_HZ)
     assert _rms(electrical * mismatch, ratio) < 0.05
     assert _rms(electrical, ratio) > 0.2
+
+
+def test_a_delay_both_woofers_share_leaves_the_electrical_target_unchanged(truth):
+    """A branch take's banked curves carry its 0.25 s deconvolution pre-guard in
+    both woofers' phase: it cancels in the ratio, where front and rear read
+    apart alias it, several turns per 1/12-octave row."""
+    _, table = truth
+    freqs = lateral_evidence_grid_hz()
+    front, rear = np.ones(freqs.size, dtype=complex), 0.8 * np.exp(-2j * np.pi * freqs * _PAIR_GAP_MS / 1000.0)
+    shared = np.exp(-2j * np.pi * freqs * PRE_GUARD_S)
+    clean, delayed = (rear_fit.electrical_target(table, rear_fit.measured_ratio((freqs, front * d), (freqs, rear * d)),
+                                                 GRID_HZ) for d in (1.0, shared))
+    assert delayed == pytest.approx(clean)
 
 
 def test_a_target_wanting_a_boost_stays_in_bounds(cheap):
@@ -147,7 +177,7 @@ def test_a_target_wanting_a_boost_stays_in_bounds(cheap):
 def test_a_measured_pair_is_only_usable_while_its_phase_can_be_unwrapped(points, recovers):
     """A rear 3 ms behind the front, both from one capture: the electrical
     target is a flat 0.5, and only a grid fine enough to carry that rotation
-    between rows can say so. Interpolating the complex value read 8.05 there.
+    between rows can say so. A coarser one refuses by name, with the row.
     """
     delay_s = 3.0e-3
     freqs = (
@@ -159,28 +189,32 @@ def test_a_measured_pair_is_only_usable_while_its_phase_can_be_unwrapped(points,
     rear = (freqs, 2.0 * np.exp(-2j * np.pi * freqs * delay_s))
     flat = (freqs, np.ones(freqs.size, dtype=complex))
     if not recovers:
-        with pytest.raises(ValueError):
-            rear_fit.electrical_target(flat, (front, rear), GRID_HZ)
+        with pytest.raises(EvidenceUnavailable) as refused:
+            rear_fit.measured_ratio(front, rear)
+        assert (refused.value.reason, set(refused.value.detail)) == (REFUSE_PAIR_UNDERSAMPLED, {"hz", "step_deg"})
         return
-    got = np.abs(rear_fit.electrical_target(flat, (front, rear), GRID_HZ))
+    got = np.abs(rear_fit.electrical_target(flat, rear_fit.measured_ratio(front, rear), GRID_HZ))
     assert got == pytest.approx(np.full(GRID_HZ.size, 0.5), abs=0.01)
 
 
-def _wall(freqs, excess_m):
-    """One strong wall image that far behind the direct sound: a comb of deep nulls."""
-    return 1.0 + 0.9 * np.exp(-2j * np.pi * freqs * excess_m / 343.0)
-
-
-def test_a_well_sampled_pair_with_room_nulls_reads_as_its_own_ratio():
+def test_a_well_sampled_pair_with_room_nulls_is_read_not_refused():
     """At a deep null a well-sampled phase still turns past a quarter turn per
     row, which is no sign of a coarse grid (#5404 comment 5746999024, item 6)."""
     freqs = lateral_evidence_grid_hz()
     front = _wall(freqs, 1.9)
     rear = 2.0 * np.exp(-2j * np.pi * freqs * 3.0e-3) * _wall(freqs, 1.6)
-    rows = (freqs >= rear_fit.FIT_BAND_HZ[0]) & (freqs <= rear_fit.FIT_BAND_HZ[1])
-    got = rear_fit.electrical_target((freqs, np.ones(freqs.size, dtype=complex)),
-                                     ((freqs, front), (freqs, rear)), freqs[rows])
-    assert got == pytest.approx(front[rows] / rear[rows])
+    assert np.all(np.isfinite(rear_fit.measured_ratio((freqs, front), (freqs, rear)).on(GRID_HZ)))
+
+
+def test_a_rear_null_does_not_reach_the_target():
+    """At a narrow rear null the ratio spikes by the null's depth, 30 dB here.
+    The rows past :data:`~rear_fit.NULL_DEPTH_DB` leave the ratio, so the
+    target rises by less than that around a ratio of one."""
+    null_hz = 300.0
+    front = np.ones(PAIR_TAKE_HZ.size, dtype=complex)
+    rear = 1.0 - 0.97 * np.exp(-0.5 * ((PAIR_TAKE_HZ - null_hz) / 2.0) ** 2) + 0j
+    measured = rear_fit.measured_ratio((PAIR_TAKE_HZ, front), (PAIR_TAKE_HZ, rear))
+    assert abs(measured.on(np.array([null_hz]))[0]) < 10.0 ** (rear_fit.NULL_DEPTH_DB / 20.0)
 
 
 def _target(freqs, ratio):
@@ -203,39 +237,52 @@ def _truth_target(path: Path) -> Path:
     return path
 
 
-def _walled_pair_curves(band_hz):
-    """The pair fixture's woofers, each with its own wall image: the nulls a measured pair has."""
-    front = _wall(SEAT_GRID_HZ, 1.9)
-    rear = (-10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0) * np.exp(-2j * np.pi * SEAT_GRID_HZ * _PAIR_GAP_MS / 1000.0)
-            * _wall(SEAT_GRID_HZ, 1.6))
-    return [pose_curve_record(LateralPoseCurve(role=role, freqs_hz=SEAT_GRID_HZ, complex_tf=transfer,
-                                               band_hz=(band_hz[0], band_hz[1])))
-            for role, transfer in zip(PAIR_ROLES, (front, rear, front + rear))]
+def _arrivals(*arrivals):
+    """One impulse of :data:`IMPULSE_SAMPLES` holding each ``(seconds, gain)``
+    arrival, from linear phase so a fractional-sample arrival is exact."""
+    freqs = np.fft.rfftfreq(IMPULSE_SAMPLES, 1.0 / SAMPLE_RATE_HZ)
+    return np.fft.irfft(sum(gain * np.exp(-2j * np.pi * freqs * at) for at, gain in arrivals), n=IMPULSE_SAMPLES)
+
+
+def _walled_diagnostic(gap_ms=_PAIR_GAP_MS):
+    """The pair fixture's two woofers as a real branch take banks them: the
+    pre-guard ahead of each, and a wall image behind each, whose nulls the
+    fit must not chase."""
+    gain, rear_s = 10.0 ** (_PAIR_LEVEL_GAP_DB / 20.0), PRE_GUARD_S + gap_ms / 1000.0
+    front = _arrivals((PRE_GUARD_S, 1.0), (PRE_GUARD_S + 1.9 / 343.0, 0.9))
+    rear = _arrivals((rear_s, -gain), (rear_s + 1.6 / 343.0, -0.9 * gain))
+    return {"sample_rate_hz": SAMPLE_RATE_HZ, "responses": [
+        {"role": role, "clock_shift_samples": 0.0, "band_hz": [20.0, 20000.0],
+         "pre_guard_samples": round(PRE_GUARD_S * SAMPLE_RATE_HZ), "impulse": impulse.tolist()}
+        for role, impulse in zip(PAIR_ROLES, (front, rear, front + rear))]}
+
+
+def _rear_fit(root, target, take=f"{_PARENT}-0-1"):
+    return round_views.main(["rear-fit", str(root), "--set", _PAIR_SET_ID, "--take", take, "--target", str(target)])
 
 
 @pytest.fixture(params=["ideal", "walled"])
 def fitted(request, tmp_path, monkeypatch, capsys, cheap):
     """``(round, exit code, answer)`` of rear-fit on a banked rear/pair round's
     first on-axis take, against the truth target; ``walled`` gives the pair the
-    nulls a real room puts in it."""
+    pre-guard and the wall nulls of a real take."""
     if request.param == "walled":
-        monkeypatch.setattr(test_round_views_rear, "_pair_curves", _walled_pair_curves)
+        monkeypatch.setattr(test_round_views_rear, "_branch_diagnostic", _walled_diagnostic)
     root = pair_round(tmp_path)
-    code = round_views.main(["rear-fit", str(root), "--set", _PAIR_SET_ID, "--take", f"{_PARENT}-0-1",
-                             "--target", str(_truth_target(tmp_path / "target.json"))])
+    code = _rear_fit(root, _truth_target(tmp_path / "target.json"))
     return root, code, json.loads(capsys.readouterr().out)
 
 
-def test_the_fitted_document_is_one_judge_previews(fitted, tmp_path, capsys):
-    """As written, and with its rear unmuted: the fitted branches compile at the
-    declared cabinet and preview on the pair round they were fitted on."""
+def test_the_fitted_document_is_one_judge_previews(fitted, capsys):
+    """As written, and through the call its answer names, which unmutes the
+    seed: the fitted branches compile at the declared cabinet and preview on
+    the pair round they were fitted on."""
     root, code, answer = fitted
     assert code == EXIT_OK
     assert crossover_prescriber.main(["judge", "--preview", answer["document"], "--round", str(root)]) == EXIT_OK
     assert json.loads(capsys.readouterr().out)["section"] == "rear_calibration"
-    assert crossover_prescriber.main([
-        "judge", "--preview", answer["document"], "--round", str(root),
-        "--vary", "rear_calibration.rear_muted=false", "--out-dir", str(tmp_path / "unmuted")]) == EXIT_OK
+    assert answer["preview"][0] == crossover_prescriber.PROG
+    assert crossover_prescriber.main(answer["preview"][1:]) == EXIT_OK
     variant, = json.loads(capsys.readouterr().out)["variants"]
     assert variant["out"] and variant["positions"]
 
@@ -251,15 +298,33 @@ def test_the_answer_names_its_document_beside_the_round_and_a_row_per_target_poi
     assert [residual["hz"] for residual in artifact["residuals"]] == pytest.approx(list(TABLE_HZ), rel=1e-4)
 
 
-def test_a_take_without_both_woofers_alone_refuses_by_name(tmp_path, capsys):
-    root = pair_round(tmp_path, missing=(0,))
-    assert round_views.main(["rear-fit", str(root), "--set", _PAIR_SET_ID, "--take", f"{_PARENT}-0-1",
-                             "--target", str(_truth_target(tmp_path / "target.json"))]) == EXIT_REFUSED
-    assert json.loads(capsys.readouterr().out)["reason"] == REASON_SEGMENT_MISSING
+def _speaker_take(root):
+    """The round's first take, banked as a speaker program's: its rear played through a candidate's rear stage."""
+    session = round_inputs(root).session_dir
+    row, record = next((row, record) for row, record in measurement_documents(session)
+                       if record["take_id"] == f"{_PARENT}-0-1")
+    (session / record_path(row)).write_text(json.dumps({**record, "measurement_purpose": "speaker"}))
+    return root
+
+
+@pytest.mark.parametrize("build", [
+    pytest.param(lambda tmp_path: pair_round(tmp_path, diagnostic=False), id="a_rear_take_with_no_pair"),
+    pytest.param(lambda tmp_path: _speaker_take(pair_round(tmp_path)), id="a_speaker_take"),
+])
+def test_a_take_that_is_not_a_rear_pair_refuses_by_name(build, tmp_path, capsys):
+    assert _rear_fit(build(tmp_path), _truth_target(tmp_path / "target.json")) == EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == REFUSE_NOT_A_REAR_PAIR
+
+
+def test_a_target_short_of_the_fit_band_refuses_by_name(tmp_path, capsys):
+    target = tmp_path / "target.json"
+    target.write_text(json.dumps(_target(np.array([100.0, 500.0]), np.array([1.0, 1.0]))))
+    assert _rear_fit(tmp_path, target) == EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["reason"] == REFUSE_TARGET_BAND_SHORT
 
 
 def _moving_rear_over_a_still_front():
-    document = _target(np.array([100.0, 200.0]), np.array([1.0, 1.0]))
+    document = _target(np.array(rear_fit.FIT_BAND_HZ), np.array([1.0, 1.0]))
     document["targets"]["front"][0] = [0.0, 0.0]
     return document
 
@@ -272,5 +337,5 @@ def _moving_rear_over_a_still_front():
 def test_a_target_that_states_no_rear_front_ratio_is_unreadable(target, tmp_path, capsys):
     path = tmp_path / "target.json"
     path.write_text(target)
-    assert round_views.main(["rear-fit", str(tmp_path), "--target", str(path)]) == EXIT_UNREADABLE
+    assert _rear_fit(tmp_path, path) == EXIT_UNREADABLE
     assert json.loads(capsys.readouterr().out)["reason"] == round_views.REASON_UNREADABLE
