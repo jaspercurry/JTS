@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     presets = ", ".join(available_presets())
     run.add_argument("--program", help=f"a preset ({presets}); a program name runs its first preset")
     source = run.add_mutually_exclusive_group()
-    source.add_argument("--plan", help="v5 plan document; used without plan-building flags")
+    source.add_argument("--plan", help="a staged plan document; used without plan-building flags")
     source.add_argument("--request", help="the run as a JSON object keyed by the plan-building flags' names "
                         "(program, layout, poses, driver, candidates, repeats, mover, level_db); used without them")
     run.set_defaults(func=_cmd_run)

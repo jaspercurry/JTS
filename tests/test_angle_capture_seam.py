@@ -293,7 +293,7 @@ def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
     A countdown without the gate fires into an arm still in motion. The
     converse is not a pair: a gate with no countdown is a person holding the
     tape, released by their own tap -- which is exactly the shape
-    ``V2PlanShape.positions_gated`` exists to say apart from this one.
+    a hand-released session says apart from this one.
     """
     for stop in ac.resolve_request(_both_at([0, -22], mover=ac.MOVER_ARM)):
         assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
@@ -579,8 +579,9 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     assert [stop.regime for stop in request.stops] == [program.regime for pose in program.poses for _ in range(pose.repeats)]
     # Table order, with each pose's repeats ADJACENT: the microphone moves once
     # per distinct pose, so a repeat that drifted apart would be a second trip.
+    # Each stop is one take of its pose.
     assert [s.pose for s in request.stops] == [
-        pose for pose in program.poses for _ in range(pose.repeats)
+        replace(pose, repeats=1) for pose in program.poses for _ in range(pose.repeats)
     ]
     assert (request.program, request.layout) == (program.preset, program.layout)
 
@@ -1295,6 +1296,19 @@ def test_previous_request_version_requires_restage(version):
     with pytest.raises(ac.LateralWalkRefused) as refused:
         ac.AngleCaptureRequest.from_mapping(doc)
     assert refused.value.reason == ac.WALK_SCHEMA_VERSION_UNSUPPORTED
+
+
+def test_a_stop_is_one_take_of_its_pose():
+    """A layout's take count repeats the stop, so a staged stop's pose states
+    none, and a staged stop whose pose states one refuses: the request's
+    ``repeats`` is the one per-stop repeat (#5737 F1)."""
+    doc = ac.request_for_preset(mp.run_preset("speaker", "baseline_express")).to_dict()
+    assert [stop["pose"] for stop in doc["stops"]].count({"azimuth_deg": 0, "elevation_deg": 0}) == 4
+    assert not any("repeats" in stop["pose"] for stop in doc["stops"])
+    doc["stops"][0]["pose"]["repeats"] = 3
+    with pytest.raises(ac.LateralWalkRefused) as refused:
+        ac.AngleCaptureRequest.from_mapping(doc)
+    assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID
 
 
 def test_a_stale_banked_stop_keeps_its_registered_refusal_code():

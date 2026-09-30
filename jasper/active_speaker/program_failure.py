@@ -4,14 +4,13 @@
 """Classify measurement failures for HTTP hosts and banked runs."""
 
 from ._common import MeasurementGraphRefused
-from .crossover_v2.capture_plan import PlanShapeError
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.program_transaction import (
     STIMULUS_ADMISSION_REFUSED, STIMULUS_LEVEL_NOT_READY, StimulusCaptureStopped,
 )
 from .crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_VOLUME_DRIFT, REASON_MEASUREMENT_GRAPH_UNAVAILABLE,
-    REASON_PROGRAM_PLAN_SHAPE_INVALID, REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
+    REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID,
     REASON_PROGRAM_UNPLAYABLE, REASON_PROTECTION_NOT_SEPARABLE,
     REASON_PROTECTION_SWEEP_TOO_LOW, REASON_SPL_CEILING_EXCEEDED,
 )
@@ -42,8 +41,6 @@ def classify_program_failure(exc: BaseException) -> tuple[str, tuple[str, ...]] 
             REASON_PROTECTION_SWEEP_TOO_LOW if exc.protection_floor
             else REASON_PROTECTION_NOT_SEPARABLE
         ), (exc.slug,)
-    if isinstance(exc, PlanShapeError):
-        return REASON_PROGRAM_PLAN_SHAPE_INVALID, ()
     if isinstance(exc, SessionVolumePlanError):
         return STIMULUS_LEVEL_NOT_READY, ()
     if not isinstance(

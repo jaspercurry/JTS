@@ -22,18 +22,13 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2.capture_plan import (
     CAPTURE_ENTRY_MARGIN_MS,
     CLOUD_POSITION_PROMPTS,
-    MAX_CLOUD_MEASURE_POSITIONS,
-    MIN_CLOUD_MEASURE_POSITIONS,
     MIN_CLOUD_OFFSET_CM,
-    MIN_CLOUD_VERIFY_POSITIONS,
     WIDE_OFFSET_MIN_CM,
     _program_duration_ms,
     _pose,
     format_position_distance,
-    resolve_plan_shape,
 )
 from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_ONAX, POSITION_ROLES
-from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE, BASE_STIMULUS_PEAK_DBFS,
     build_check_program, build_measure_program,
@@ -49,14 +44,6 @@ from tests.crossover_v2_fixtures import (
 
 
 # --- commission tiers + the retake/confirm contract (flow-simplification) ----
-
-
-@pytest.mark.parametrize("positions", [MIN_CLOUD_VERIFY_POSITIONS - 1, 0])
-def test_a_verify_group_too_short_for_two_wide_offsets_is_refused(positions):
-    """The hole NEW-9 named: nothing stopped a caller asking for a post-apply
-    group that never reaches a ~30 cm-class offset."""
-    with pytest.raises(CrossoverV2FlowError):
-        resolve_plan_shape(cloud_verify_positions=positions)
 
 
 def test_cloud_prompts_state_numeric_absolute_poses():
@@ -102,11 +89,8 @@ def test_wide_is_derived_from_the_offset_not_hand_set():
     COMPUTED from the row's distance.
 
     Before the distances became data, a row could say "a forearm's length" and
-    carry ``wide=True`` independently — two facts that could disagree, on the
-    one flag ``MIN_CLOUD_VERIFY_POSITIONS`` and ``express_cloud_measure_
-    positions()`` are both derived from. Now narrowing the copy narrows the
-    flag, which moves the floors, which fails
-    ``test_cloud_prompts_front_load_the_wide_offsets`` loudly.
+    carry ``wide=True`` independently — two facts that could disagree. Now
+    narrowing the copy narrows the flag.
     """
     for prompt in CLOUD_POSITION_PROMPTS:
         assert prompt.wide == (prompt.offset_cm >= WIDE_OFFSET_MIN_CM)
@@ -306,8 +290,3 @@ def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
     assert spec.acknowledgement.id == SUMMED_PLACEMENT_POLICY_ID
 
 
-@pytest.mark.parametrize("positions", [MIN_CLOUD_MEASURE_POSITIONS - 1,
-                                       MAX_CLOUD_MEASURE_POSITIONS + 1])
-def test_cloud_position_count_outside_the_declared_range_is_refused(positions):
-    with pytest.raises(CrossoverV2FlowError):
-        resolve_plan_shape(cloud_measure_positions=positions)

@@ -5,10 +5,9 @@
 """Capture a stated set of ANGLES, in a stated stimulus regime, by a stated mover.
 
 Composes ``{per-driver | summed} x {angles} x {arm | human-guided}`` over shipped parts.
-The one new primitive is :func:`pose_at_angle`, the INVERSE of
-:func:`position_angle_deg`: degrees round-trip exactly through the cm-primary
-representation the evidence sidecar, the ``wide`` rule and the attribution stage already
-read.
+The one new primitive is :func:`pose_at_angle`: it words a pose's bearing as the
+centimetre move the evidence sidecar, the ``wide`` rule and the attribution stage already
+read, and that move reads back as the same whole degree.
 
 These poses are FORWARD-MODEL INPUT, never a pose-ratio statistic: the lateral-walk
 statistic was retired as invalidated, and the P2 complex-summation
@@ -204,7 +203,9 @@ class AngleStop:
     (``""`` for the program's baseline layer). ``branch_pair`` is which two
     targets a ``branches`` stop excites
     (:data:`~.measurement_programs.BRANCH_PAIRS`). A pose that names its
-    driver plays that one target alone (ADR-0366).
+    driver plays that one target alone (ADR-0366). A stop is one take of its
+    pose, so its pose states no take count; the request's ``repeats`` repeats
+    every stop.
     """
 
     pose: Pose
@@ -230,6 +231,8 @@ class AngleStop:
             validated_branch_pair(self.branch_pair, self.regime)
             if self.pose.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
+            if self.pose.repeats != 1:
+                raise ValueError("a stop is one take of its pose; the request's repeats repeat it")
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
 
@@ -571,7 +574,7 @@ class AngleCaptureRequest:
     def externally_positioned(self) -> bool:
         """Whether an external driver moves the microphone between stops. The ADVANCE axis only;
         whether a session HOLDS each begin is a separate fact
-        (:attr:`V2PlanShape.positions_gated`).
+        (whether a person releases each begin by hand).
         """
         return self.mover == MOVER_ARM
 
@@ -753,7 +756,8 @@ def request_for_preset(
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
-                pose, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
+                replace(pose, repeats=1),
+                REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
                 candidate_id=candidate, purpose=preset.purpose, purposes=preset.purposes,
                 stimulus=preset.stimulus, branch_pair=preset.branch_pair,
             )
@@ -797,8 +801,8 @@ class ResolvedStop:
 
 def _screen_policy(request: AngleCaptureRequest, prompt: CloudPositionPrompt) -> dict[str, str]:
     """One stop's advance policy and, for an arm, its target position. A hand-guided stop
-    declares no target: whether begins are HELD is the SESSION's fact. Angle is re-read
-    off the POSE via :func:`position_angle_deg`, not copied from the request.
+    declares no target: whether begins are HELD is the SESSION's fact. The angle is the
+    prompt's pose's, read through :func:`position_angle_deg`, which refuses a vertical row.
     """
     if not request.externally_positioned:
         return {"auto_advance": AUTO_ADVANCE_TAP}

@@ -282,8 +282,9 @@ def gate_exemption(kind: str | None, *, driver: str = "", distance_m: float | No
 
 @dataclass(frozen=True)
 class Pose:
-    """One place to measure: the one pose record the registry, the stops, the
-    prompts and the banked takes carry, and its one validator (ADR-0366 §1).
+    """One place to measure: the one pose record the registry, the stops and
+    the prompts carry, and a banked take's pose is written from, with its one
+    validator (ADR-0366 §1).
 
     ``kind`` names what the angles and ``distance_m`` are stated from; exactly
     a seat states ``seat_offset_m``, three finite metres ``(right, forward,

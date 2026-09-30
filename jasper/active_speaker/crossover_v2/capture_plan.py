@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from itertools import groupby
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
@@ -45,7 +45,6 @@ from ..measurement_programs import (
 )
 from ..round_copy import millimetres
 from .contracts import (
-    DEFAULT_CLOUD_MEASURE_POSITIONS,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
     CrossoverV2FlowError,
@@ -139,23 +138,6 @@ CAPTURE_PLAN_TARGET = 3
 # sweeps at guided positions, ≥10 cm spread for HF null decorrelation and
 # ≥~30 cm spread to support the LF edge.
 
-# Configurable floor. ``CLOUD_POSITION_PROMPTS``' wide-offset guarantee is
-# specified against exactly this number.
-MIN_CLOUD_MEASURE_POSITIONS = 6
-MAX_CLOUD_MEASURE_POSITIONS = 11
-# Total MIC POSITIONS in the post-apply cloud, VERIFY's anchor included, so the
-# plan emits ``M − 1`` prompted positions after VERIFY and the group combines
-# ``M − 1`` curves (VERIFY's own summed capture answers the tracking verdict,
-# not "is the speaker flat"). Pinned equal to
-# ``1 + len(CLOUD_VERIFY_POSE_PROMPTS)`` by an import-time guard beside that
-# table.
-DEFAULT_CLOUD_VERIFY_POSITIONS = 6
-# Configurable floor for the POST-apply group: below it the group carries no
-# ~30 cm-class spread and voids fundamental 1's LF-edge guarantee. DERIVED from
-# :data:`CLOUD_VERIFY_POSE_PROMPTS` by ``_min_positions_for_two_wide_offsets``,
-# never a literal, so reordering the prompts moves the floor with them.
-MIN_CLOUD_VERIFY_POSITIONS = 6
-
 
 # The offset class that carries fundamental 1's LF edge: at or past this
 # distance a move is "wide". :attr:`CloudPositionPrompt.wide` is computed from
@@ -188,8 +170,8 @@ class CloudPositionPrompt:
     is computed from it, so the ~30 cm-class guarantee cannot be voided by
     editing copy alone. ``role`` names the question the position answers
     (:data:`POSITION_ROLES`). ``pose`` is where the move puts the microphone
-    (ADR-0366 §1); the bearings :func:`position_angle_deg` and
-    :func:`position_elevation_deg` state are its own.
+    (ADR-0366 §1), stated by every builder, never defaulted; the bearings
+    :func:`position_angle_deg` and :func:`position_elevation_deg` state are its own.
     """
 
     headline: str
@@ -209,7 +191,7 @@ class CloudPositionPrompt:
     #: distances at once (the second geometry-retake rung goes 75 cm sideways
     #: AND 30 cm up). ``0`` means the row asks for no raise.
     vertical_offset_cm: float = 0.0
-    pose: Pose = Pose(0, 0)
+    pose: Pose = field(kw_only=True)
 
     @property
     def wide(self) -> bool:
@@ -387,12 +369,14 @@ LATERAL_MARK_PROMPT = CloudPositionPrompt(
     detail="Nothing to move yet.",
     offset_cm=0.0,
     role=POSITION_ROLE_ONAX,
+    pose=Pose(0, 0),
 )
 LATERAL_MARK_RETURN_PROMPT = CloudPositionPrompt(
     headline="Last one: put the microphone back on the mark.",
     detail="Same spot, same height, pointed at the speaker.",
     offset_cm=0.0,
     role=POSITION_ROLE_ONAX,
+    pose=Pose(0, 0),
 )
 
 # The four SIDE poses both angle walks are made of, derived from the cloud table
@@ -436,22 +420,12 @@ VERIFY_MARK_PROMPT = CloudPositionPrompt(
     detail="Same spot, same height, pointed at the speaker.",
     offset_cm=0.0,
     role=POSITION_ROLE_ONAX,
+    pose=Pose(0, 0),
 )
 
 CLOUD_VERIFY_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
     (VERIFY_MARK_PROMPT,) + _SIDE_POSE_PROMPTS
 )
-
-# The shipped post-apply group is the anchor plus this table, so a table edit
-# that did not move ``DEFAULT_CLOUD_VERIFY_POSITIONS`` with it would silently
-# walk a prefix.
-if DEFAULT_CLOUD_VERIFY_POSITIONS != 1 + len(CLOUD_VERIFY_POSE_PROMPTS):
-    raise ValueError(
-        "the post-apply group is VERIFY's anchor plus every pose in "
-        f"CLOUD_VERIFY_POSE_PROMPTS, so DEFAULT_CLOUD_VERIFY_POSITIONS must be "
-        f"{1 + len(CLOUD_VERIFY_POSE_PROMPTS)}, not "
-        f"{DEFAULT_CLOUD_VERIFY_POSITIONS}"
-    )
 
 
 def position_angle_deg(prompt: CloudPositionPrompt) -> int:
@@ -605,108 +579,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
         return "Hold the microphone at the head centre of the listening position, at ear height."
     height = "" if up else ", at ear height"
     return f"Move the microphone {' and '.join(moves)} the head centre{height}."
-
-
-def _min_positions_for_two_wide_offsets(
-    prompts: Sequence[CloudPositionPrompt] | None = None,
-) -> int:
-    """Smallest group size whose walked offsets include two WIDE moves.
-
-    A group of size ``g`` walks offsets ``[:g - 1]``, so the answer is one past
-    the index of the second wide prompt. ``prompts`` defaults to the PRE-apply
-    :data:`CLOUD_POSITION_PROMPTS`; the post-apply group passes its own table.
-    """
-    table = CLOUD_POSITION_PROMPTS if prompts is None else tuple(prompts)
-    wide = [i for i, prompt in enumerate(table) if prompt.wide]
-    if len(wide) < 2:
-        raise CrossoverV2FlowError(
-            "a cloud walk's table must supply at least two wide offsets — "
-            "fundamental 1's LF edge needs ~30 cm-class spread"
-        )
-    return wide[1] + 2
-
-
-# Here rather than beside :data:`CLOUD_VERIFY_POSE_PROMPTS` only because the
-# derivation it checks is defined immediately above.
-if MIN_CLOUD_VERIFY_POSITIONS != _min_positions_for_two_wide_offsets(
-    CLOUD_VERIFY_POSE_PROMPTS
-):
-    raise ValueError(
-        "MIN_CLOUD_VERIFY_POSITIONS must be the smallest post-apply group "
-        "whose walked poses include two wide offsets, which "
-        f"CLOUD_VERIFY_POSE_PROMPTS makes "
-        f"{_min_positions_for_two_wide_offsets(CLOUD_VERIFY_POSE_PROMPTS)}, "
-        f"not {MIN_CLOUD_VERIFY_POSITIONS}"
-    )
-
-
-@dataclass(frozen=True)
-class V2PlanShape:
-    cloud_measure_positions: int
-    cloud_verify_positions: int
-    hand_released_positions: bool = False
-    externally_positioned: bool = False
-
-    @property
-    def positions_gated(self) -> bool:
-        return self.externally_positioned or self.hand_released_positions
-
-
-class PlanShapeError(CrossoverV2FlowError):
-    """#2059: an out-of-range position count.
-
-    A distinct subclass, not a new top-level exception, so every existing
-    ``except CrossoverV2FlowError`` still catches it. Lets
-    ``classify_program_failure`` tell a malformed *request* (this) apart from
-    a genuine capture-chain fault, which reads
-    as a loose fit under ``program_unplayable``'s "re-check the driver
-    details" copy.
-    """
-
-
-def resolve_plan_shape(
-    *,
-    cloud_measure_positions: int | None = None,
-    cloud_verify_positions: int | None = None,
-) -> V2PlanShape:
-    n, m = _validated_cloud_counts(
-        cloud_measure_positions=(
-            DEFAULT_CLOUD_MEASURE_POSITIONS
-            if cloud_measure_positions is None
-            else cloud_measure_positions
-        ),
-        cloud_verify_positions=(
-            DEFAULT_CLOUD_VERIFY_POSITIONS
-            if cloud_verify_positions is None
-            else cloud_verify_positions
-        ),
-    )
-    return V2PlanShape(cloud_measure_positions=n, cloud_verify_positions=m)
-
-
-def _validated_cloud_counts(
-    *,
-    cloud_measure_positions: int,
-    cloud_verify_positions: int,
-) -> tuple[int, int]:
-    n = int(cloud_measure_positions)
-    m = int(cloud_verify_positions)
-    if not MIN_CLOUD_MEASURE_POSITIONS <= n <= MAX_CLOUD_MEASURE_POSITIONS:
-        raise PlanShapeError(
-            f"cloud_measure_positions must be "
-            f"{MIN_CLOUD_MEASURE_POSITIONS}..{MAX_CLOUD_MEASURE_POSITIONS}, got {n}"
-        )
-    if m < MIN_CLOUD_VERIFY_POSITIONS:
-        raise PlanShapeError(
-            f"cloud_verify_positions must be at least "
-            f"{MIN_CLOUD_VERIFY_POSITIONS}, got {m}"
-        )
-    if n - 1 > len(CLOUD_POSITION_PROMPTS):
-        raise PlanShapeError(
-            f"the pre-apply cloud group needs {n - 1} position prompts but "
-            f"CLOUD_POSITION_PROMPTS supplies {len(CLOUD_POSITION_PROMPTS)}"
-        )
-    return n, m
 
 
 # Capture-plan index → phase, the fallback for a session constructed with no

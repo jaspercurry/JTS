@@ -36,6 +36,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -151,6 +152,7 @@ def test_an_unsigned_lateral_pose_is_refused_as_loudly_as_a_vertical_one():
         headline="Same measurement, wider spot.",
         offset_cm=75.0,
         role=POSITION_ROLE_OFFAX,
+        pose=Pose(0, 0),
     )
     assert unsigned.lateral_sign == 0
     with pytest.raises(CrossoverV2FlowError, match="declares no side"):
