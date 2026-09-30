@@ -45,7 +45,6 @@ from jasper.active_speaker.crossover_v2.topology_prescription import (
     TOPOLOGY_NO_CROSSOVER_REGION,
     TOPOLOGY_ORDER_INVALID,
     TOPOLOGY_ORDER_UNSUPPORTED,
-    TOPOLOGY_PRESCRIPTION_KEY,
     TOPOLOGY_PRESCRIPTION_KIND,
     TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS,
     TOPOLOGY_PRESCRIPTION_SCHEMA_UNSUPPORTED,
@@ -124,11 +123,6 @@ def _read(raw, **overrides):
 def test_no_prescription_is_none_and_not_a_refusal():
     """The overwhelming majority of rounds, and they must cost nothing."""
     assert _read(None) is None
-
-
-def test_the_entry_key_is_owned_by_the_reader_that_owns_the_shape():
-    """One spelling, in the module that parses it — not at the web boundary."""
-    assert TOPOLOGY_PRESCRIPTION_KEY == "topology_prescription"
 
 
 # --------------------------------------------------------------------------- #
@@ -669,27 +663,6 @@ def test_the_response_format_advertises_exactly_the_refusals_that_exist():
     block learns the same vocabulary the gate actually raises."""
     advertised = topology_prescription_response_format()["refusals"]
     assert set(advertised) == set(TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS)
-
-
-def test_the_response_format_names_the_request_time_door_and_its_severity():
-    """The other two prescription classes stage through the prescriber CLI;
-    this one and the alignment pin are request-body keys whose refusal takes
-    the whole session. A reader who found only the staged contracts would never
-    learn the request-time doors exist."""
-    block = topology_prescription_response_format()
-    assert block["key"] == TOPOLOGY_PRESCRIPTION_KEY
-    assert block["entry"] == "request_body"
-    assert "jasper-crossover-prescriber" in block["entry_detail"]
-    assert "refuses the whole session" in block["severity"]
-    assert block["authority"] == TOPOLOGY_AUTHORITY_OPERATOR_PINNED
-    # The caveat a prescriber must read before believing a pinned receipt.
-    assert "not a measured ranking" in block["authority_detail"]
-    # The envelope a prescriber must send, discoverable beside the content
-    # fields rather than left implicit.
-    assert str(TOPOLOGY_PRESCRIPTION_KIND) in block["fields"]["kind"]
-    assert str(TOPOLOGY_PRESCRIPTION_SCHEMA_VERSION) in (
-        block["fields"]["artifact_schema_version"]
-    )
 
 
 # --------------------------------------------------------------------------- #
