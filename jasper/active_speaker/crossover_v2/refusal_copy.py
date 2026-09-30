@@ -299,7 +299,7 @@ class ReasonSpec:
     # a generic destination rather than a load-bearing control) and the
     # ``next_action`` of a refusal body or preflight issue (``refusal_copy_for``,
     # ``PreflightIssue.from_code``). Shape is the mapping the envelope emits:
-    # ``{"id", "label", "href"}``.
+    # ``{"id", "label", "href"}``; a command's action has no ``href``.
     next_action: Mapping[str, Any] | None = None
     # True only for measured-and-rejected recording quality, never a level or safety fault.
     capture_quality: bool = False
@@ -425,8 +425,10 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("bank_round", "Bank this round again from its session"): {
         evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
         evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
+        "capture_bundle_unavailable": "The run's session bundle is missing, or more than one matches, so its round was not banked.",
         "session_unfinished": "The session has not finished, so it cannot be banked yet.",
         "view_runner_unavailable": "The bank ran with no view runner, so it filed no round views.",
+        "write_failed": "The round could not be written to the bank.",
     },
     ("select_round", "Select the round these takes belong to"): {
         evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
@@ -504,8 +506,16 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "bass_evidence_unavailable": "The round banked no bass reading or bass level for this prescription.",
     },
     ("register_mic_calibration", "Register microphone calibration"): {
+        "mic_calibration_file_unreadable": "The calibration file cannot be read, or holds no calibration curve.",
+        "mic_calibration_lookup_invalid": "The model and serial name no calibration that the vendor can look up.",
+        "mic_calibration_none_registered": "No household microphone is registered.",
+        "mic_calibration_store_unwritable": "The speaker's calibration folder cannot be written; writing it needs sudo.",
         "mic_calibration_unavailable": "No calibration is available for the measurement microphone: none is "
                                        "remembered, or its file cannot be read.",
+        "mic_calibration_unresolvable": "The registered microphone names a calibration that is no longer on the speaker.",
+        "mic_calibration_vendor_link_off_host": "The vendor sent the lookup to another host, so it was not followed.",
+        "mic_calibration_vendor_not_found": "The vendor holds no calibration for that serial.",
+        "mic_calibration_vendor_unreachable": "The vendor could not be reached, so nothing was fetched.",
     },
     ("speaker_setup", "Finish the protected speaker setup"): {
         "driver_passband_unavailable": "The speaker declares no band for its drivers, so a per-driver prescription "
@@ -587,6 +597,40 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "inputs_required": "This view needs inputs that the bank does not supply, so the bank did not run it.",
         "verb_not_registered": "No artifact row registers this view, so the bank did not run it.",
     },
+    ("finish_measurement", "Review the active measurement"): {
+        "capture_slot_busy": "Another measurement holds the capture slot. Finish or cancel it, then join again.",
+        "run_answer_invalid": "The speaker's answer to the run request names no run.",
+    },
+}
+
+#: The command-line tools' own codes, whose next action is a command or a value: it has no page to link.
+_COMMAND_COPY: dict[tuple[str, str], dict[str, str]] = {
+    ("run_as_root", "Run it on the speaker as root"): {
+        "dry_run_requires_local_host": "Dry-run reads this machine's facts. Run it on the speaker.",
+        "local_state_unreadable": "The speaker's local state cannot be read by this user.",
+        "not_root": "Settings change only as root.",
+    },
+    ("name_value", "Name a value the tool accepts"): {
+        "threshold_out_of_range": "The wake threshold is not a number from 0 to 1.",
+        "unusable_value": "The value holds a character that a settings file cannot store.",
+        "walk_refused": "The settle time is under the floor a landed arm needs, or the poll interval is not above zero.",
+    },
+    ("check_settings_file", "Check the settings file"): {
+        "save_failed": "The setting could not be written to its file.",
+        "settings_unreadable": "A settings file could not be read.",
+    },
+    ("restart_voice", "Restart the voice service"): {
+        "restart_refused": "The setting is saved, and the restart of the voice service was refused.",
+    },
+    ("run_program", "Name the program to run"): {
+        "trial_program_unknown": "No measurement program measures the sections that this candidate changes.",
+    },
+    ("check_speaker", "Check that the speaker answers, then read its state"): {
+        "answer_lost": "The speaker's answer was lost, so the outcome is unknown.",
+    },
+    ("stop_audition", "Stop the audition with jasper-audition stop"): {
+        "audition_not_restored": "The audition ended, and the speaker is not back on its full graph.",
+    },
 }
 
 #: The evidence store's failure codes. ``plan_run.failure_reason`` keeps the registered code of an exception that
@@ -614,8 +658,6 @@ _STORE_COPY: dict[str, str] = {
 # The §5.10 table, as data. The envelope and the session both read it, so
 # copy and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
-    "dry_run_requires_local_host": ReasonSpec("dry_run_requires_local_host", TEMPLATE_HARD_STOP, 0, "",
-        "Dry-run reads this machine's facts. Run it on the speaker."),
     **{code: ReasonSpec(code, TEMPLATE_FIX_AND_RETRY, 0, "", message)
        for code, message in (
            ("level_unreachable", "The target level is unreachable at this gain. Check the amplifier and microphone."),
@@ -681,6 +723,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
                         next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
+    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message, next_action={"id": action, "label": label})
+       for (action, label), rows in _COMMAND_COPY.items() for code, message in rows.items()},
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
                         next_action={"id": "measure_again", "label": "Measure this round again",
                                      "href": "/sound/speaker/crossover/"})
@@ -690,6 +734,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
        for code, action, label in (
            ("compose_refused", "review_candidate", "Review the candidate graph and driver declaration."),
            ("composition_invalid", "review_candidate", "Review the candidate graph and driver declaration."),
+           ("reset_compose_failed", "review_candidate", "Review the candidate graph and driver declaration."),
            ("program_headroom_exhausted", "reduce_boosts", "Reduce the room, driver or rear boosts, or lower the Extra headroom setting."),
            ("crossover_below_declared_protection_floor", "raise_crossover", "Raise the crossover to the declared driver protection floor."),
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
@@ -1197,12 +1242,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The measurement stopped because the microphone heard the speaker "
         "louder than the commissioning stop. Lower the level and "
         "measure again.",
-    ),
-    "capture_slot_busy": ReasonSpec(
-        "capture_slot_busy", TEMPLATE_HARD_STOP, 0, "",
-        "Another measurement holds the capture slot. Finish or cancel it, then join again.",
-        next_action={"id": "finish_measurement", "label": "Review the active measurement",
-                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(
         REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",
