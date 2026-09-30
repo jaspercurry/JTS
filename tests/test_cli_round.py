@@ -1389,7 +1389,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
         takes = []
         for entry in group["takes"]:
             take = deepcopy(bass_fit_pairs[0][0])
-            take["record_path"] = entry["artifacts"]["record_id"]
+            take["record_path"] = entry["record_id"]
             take["record"] = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts" / take["record_path"]).read_text())
             take.update(freqs_hz=[20, 30, 40, 50, 60, 80, 100, 200], fundamental_qualified=[True] * 8,
                         fundamental_db=[take["record"]["level_db"] - (6 if group["base"] else 1)] * 8)
@@ -1614,7 +1614,7 @@ def test_arm_park_timeout_prints_one_unreadable_answer(preflight_ready, arm_runt
         assert not worker.is_alive()
 
 
-_CATALOG_ROW = {"round_id", "round_dir", "program", "layout", "purposes", "banked_at", "result", "sets", "applied_identity"}
+_CATALOG_ROW = {"round_id", "round_dir", "preset", "layout", "purposes", "banked_at", "result", "sets", "applied_identity"}
 
 
 @pytest.mark.parametrize("argv,code,reason", [

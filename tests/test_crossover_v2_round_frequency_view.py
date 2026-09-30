@@ -24,6 +24,7 @@ from jasper.active_speaker.commissioning_evidence_store import CommissioningEvid
 from jasper.active_speaker.crossover_v2 import gate_sweep
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, analysis_provenance
 from jasper.active_speaker.crossover_v2.journey import PHASE_TIMING
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import reopen_measurement_record
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
@@ -974,8 +975,6 @@ def test_bass_view_selects_accepted_takes_and_keeps_levels_when_harmonics_fail(
         records.append((path, json.loads((bundle / EVIDENCE_ROOT / "artifacts" / path).read_text())))
     accepted = ("baseline", "broken") if selected_broken else ("baseline",)
     selected = manifest_set(records[:2], set_id="bass", selected=accepted)
-    if not selected_broken:
-        selected["takes"][1]["quality"] = {"status": "refused", "fault": "capture_overrun"}
     write_manifest(bundle, program="bass", groups=[selected, manifest_set(records[2:], set_id="other")])
     answer = run_bookkeeping("bass", bundle, set_id="bass")
     assert answer["status"] == "written"
@@ -1119,6 +1118,8 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 record = take['record']
                 if record['run_id'] != f'run-{volume}':
                     continue
+                take_artifact_path(root / 'bundle/session', take['record_path']).write_text(
+                    json.dumps({'measurement_purpose': 'bass', **record}))
                 key = record.get('candidate_id'), record.get('level_db')
                 groups.setdefault(key, []).append(take)
             manifest_groups = []
@@ -1153,18 +1154,13 @@ def test_bass_sequence_join_writes_levels_in_last_packet(bass_run, round_count):
 
 
 @pytest.mark.parametrize("purpose", [None, "bass", "room"])
-def test_bass_table_take_purpose_overrides_run_fallback(bass_run, capsys, purpose):
-    for path in bass_run.write():
-        manifest = json.loads(path.read_text())
-        for row in manifest["sets"]:
-            for take in row["takes"]:
-                take.pop("purpose", None)
-                if purpose is not None:
-                    take["purpose"] = purpose
-        path.write_text(json.dumps(manifest))
-    assert round_views_main(bass_run.argv) == (1 if purpose == "room" else 0)
+def test_bass_table_reads_each_takes_own_purpose(bass_run, capsys, purpose):
+    for take in bass_run.takes:
+        take["record"]["measurement_purpose"] = purpose
+    bass_run.write()
+    assert round_views_main(bass_run.argv) == (0 if purpose == "bass" else 1)
     answer = json.loads(capsys.readouterr().out)
-    if purpose == "room":
+    if purpose != "bass":
         assert answer["code"] == "bass_fit_inputs_missing"
     else:
         table, = json.loads(bass_run.out.read_text())["tables"]
@@ -1187,12 +1183,13 @@ def test_bass_table_joins_only_sets_with_lateral_bass_takes(
             old = root / f"bass_view-{row['set_id']}.json"
             row['set_id'] = '4dc59eaec1e3' if row['capture_basis']['candidate_id'] == 'baseline-fp' else '8b2a90f77f31'
             old.rename(root / f"bass_view-{row['set_id']}.json")
-            for take in row['takes']:
-                take['purpose'] = 'bass'
         verify = copy.deepcopy(manifest['sets'][-1])
         verify['set_id'] = 'd0b471e20e39'
         verify['capture_basis'].update(stimulus_id='verify', stimulus_dbfs=-30)
-        verify['takes'][0].update(take_id='entry', phase=ignored_phase, purpose=ignored_purpose)
+        banked = json.loads(take_artifact_path(root / 'bundle/session', verify['takes'][0]['record_id']).read_text())
+        take_artifact_path(root / 'bundle/session', 'entry.json').write_text(json.dumps(
+            {**banked, 'take_id': 'entry', 'phase': ignored_phase, 'measurement_purpose': ignored_purpose}))
+        verify['takes'][0] = {'take_id': 'entry', 'record_id': 'entry.json', 'selected': True}
         manifest['sets'].insert(0, verify)
         path.write_text(json.dumps(manifest))
     if missing_set:
@@ -1231,7 +1228,7 @@ def test_bass_table_accepts_executor_capture_basis(bass_run, capsys, tmp_path, m
     for index, take in enumerate(bass_run.takes):
         original = take["record"]
         take["record"] = bank_executor_take(tmp_path / f"executor-{index}", monkeypatch,
-            pose=pose, raw_record={key: value for key, value in original.items()
+            pose={"purpose": "bass", **pose}, raw_record={key: value for key, value in original.items()
                 if key not in {"stimulus_dbfs", "stimulus_id", "mark_distance_m", "pose_kind", "seat_offset_m"}})
         if basis == "unknown":
             take["record"]["mark_distance_m"] = None

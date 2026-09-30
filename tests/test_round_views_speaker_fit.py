@@ -220,7 +220,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["artifacts"]["record_id"])
+    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["record_id"])
     for curve in record["curves"]:
         response = response_from_banked_curve(curve)[0]
         level = 10 if curve["role"] == "tweeter" else 0
@@ -740,13 +740,13 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     levels = {"tweeter": {"alignment_level_db": -26, "alignment_snr_shortfall_db": {"before": 12.5, "after": 8.5},
                           "alignment_level_capped_by": "driver_cap", "alignment_snr_residual_shortfall_db": 8.5}}
     take = own_record(group["takes"][0], record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
-                      quality={"evidence": evidence}, timing={"ended_s": 2}, alignment=levels)
+                      verdict={"evidence": evidence}, level={**record["level"], "alignment": levels})
     group["takes"] = [take]
     refused = {**take, "take_id": "refused", "selected": False}
     if fault:
-        refused.update({"quality": {"fault": fault}} if held else {"fault": fault})
+        refused.update({"verdict": {**take["verdict"], "fault": fault}} if held else {"incident": fault})
     group["takes"] += [refused, {**take, "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20},
-                               "analysis": {**analysis, "delay_us": 900}, "timing": {"ended_s": 3}}]
+                               "analysis": {**analysis, "delay_us": 900}}]
     write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
         **group["capture_basis"], "role": "tweeter"}}])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
@@ -853,7 +853,8 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
             group.update(base=base)
             group["capture_basis"].update(role=role, candidate_id="base" if base else "candidate")
             groups.append(group)
-    manifest = write_manifest(root, groups=groups)
+    write_manifest(root, groups=groups)
+    manifest = _joined(inputs)
     applied_path = tmp_path / "applied-profile.json"
     applied_path.write_text(json.dumps({**_fixture_applied_profile(fc_hz=2400),
                                        "kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION}))

@@ -44,7 +44,7 @@ def test_retake_uses_registry_words_without_codes(reason):
     line, = round_lines({"retake_pose": 2, "retake_measurement": 1, "retake_reason": reason})
     assert refusal_copy_for(reason)[0] in line
     assert "_" not in line
-    coverage = coverage_lines({}, {"not_measured": [{"pose": {"deg": 20}, "reason": reason}]})
+    coverage = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": [{"pose": {"deg": 20}, "reason": reason}]})
     assert refusal_copy_for(reason)[0] in coverage[-1]
     assert "_" not in coverage[-1]
 
@@ -72,7 +72,8 @@ def test_pre_round_lines_count_the_supplied_schedule():
 def test_post_round_coverage_keeps_packet_words():
     packet = {"sets": [{"takes": [{"take_id": "a", "role": "woofer", "selected": True, "trusted_floor_hz": 250}]}],
               "next_action": {"label": "Measure timing again"}, "disclosures": ["packet disclosure"]}
-    manifest = {"sets": packet["sets"], "not_measured": [{"pose": {"deg": 20}, "reason": "complete_requested"}]}
+    manifest = {"sets": packet["sets"], "honoured": {"retakes": 0},
+                "not_measured": [{"pose": {"deg": 20}, "reason": "complete_requested"}]}
     lines = coverage_lines(packet, manifest)
     assert re.findall(r"\d+", " ".join(lines[:3])) == ["1", "0", "20", "250"]
     assert lines[-2:] == [*packet["disclosures"], packet["next_action"]["label"]]
@@ -80,7 +81,8 @@ def test_post_round_coverage_keeps_packet_words():
 
 def test_unmeasured_poses_are_distinct_and_counted_once():
     poses = [{"deg": 0, "kind": "bearing"}, {"deg": 0, "kind": "behind"}]
-    manifest = {"not_measured": [{"pose": pose, "reason": "user_stopped"} for pose in poses for _ in range(2)]}
+    manifest = {"honoured": {"retakes": 0},
+                "not_measured": [{"pose": pose, "reason": "user_stopped"} for pose in poses for _ in range(2)]}
     lines = coverage_lines({}, manifest)[1:]
     assert len(lines) == 2
     assert pose_name(poses[0]) != pose_name(poses[1])
@@ -100,9 +102,10 @@ def test_a_near_field_pose_is_named_by_its_driver_and_distance():
 
 @pytest.mark.parametrize("kept,retakes", [(9, 1), (8, 0), (0, 0)])
 def test_ended_counts_use_selected_takes_once(kept, retakes):
-    takes = [{"take_id": str(n), "selected": n >= retakes, "attempt": 2 if n == retakes and retakes else 1}
-             for n in range(kept + retakes)]
-    manifest = {"sets": [{"takes": takes}, {"takes": takes}]}
+    """A kept take counts once across its roles' sets, and the retakes are the
+    run's own count (``honoured.retakes``, ADR-0395)."""
+    takes = [{"take_id": str(n), "record_id": f"{n}.json", "selected": n >= retakes} for n in range(kept + retakes)]
+    manifest = {"sets": [{"takes": takes}, {"takes": takes}], "honoured": {"retakes": retakes}}
     counts = take_counts(manifest)
     assert counts == {"takes": kept, "retakes": retakes, "not_measured": 0}
     lines = round_lines({"status": "complete", **counts})

@@ -308,7 +308,7 @@ def test_banking_hard_links_the_bundle_and_copies_where_a_link_is_refused(tmp_pa
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
-    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"program": "bass/axis", "run_id": session.name}))
+    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"preset": "bass/axis", "run_id": session.name}))
     monkeypatch.setattr(round_view_artifacts, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
@@ -480,7 +480,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
     banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
                         view_runner=views, **_ssot(tmp_path, present=False))
     packet = json.loads((banked.path / "packet.json").read_text())
-    assert packet["program"] == purpose and packet["fits"] == []
+    assert packet["preset"] == purpose and packet["fits"] == []
     assert packet["bass" if purpose == "room" else "room"] == []
     assert "verdicts" not in packet
     pointers = packet["artifacts"][f"{purpose}_views"]
@@ -648,7 +648,7 @@ def test_a_kept_take_whose_record_cannot_be_read_is_listed_with_the_gap(tmp_path
     manifest = write_manifest(session, program="room", groups=[{
         "set_id": "set", "base": True, "capture_basis": {"candidate_id": "base"},
         "takes": [take, {**take, "take_id": "kept"}]}])
-    record_id = manifest["sets"][0]["takes"][0]["artifacts"]["record_id"]
+    record_id = manifest["sets"][0]["takes"][0]["record_id"]
     take_artifact_path(session, record_id).write_text("{")
 
     banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state)
@@ -751,6 +751,7 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
     original, = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())["curves"]
     group, = write_manifest(bundle, program=purpose)["sets"]
     take, = group["takes"]
+    pose = json.loads(gate_sweep.take_artifact_path(bundle, take["record_id"]).read_text())["pose"]
     mark_state(bundle, "applied")
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
     deconvolve = Mock(wraps=gate_sweep.deconvolve_window)
@@ -772,7 +773,7 @@ def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypat
         assert curves[1]["trusted_floor_hz"] == reference.gating["f_trusted_hz"]
         assert curves[1]["floor_source"] == reference.gating["floor_source"]
     assert ungated["position"] == gated["position"]
-    assert [row["pose"] for row in packet["series"]] == [take["pose"], take["pose"]]
+    assert [row["pose"] for row in packet["series"]] == [pose, pose]
     assert (ungated["freqs_hz"], ungated["magnitude_db"]) == tuple(map(list, band_limited_curve(original)))
     hz, db = np.asarray(gated["freqs_hz"]), np.asarray(gated["magnitude_db"])
     keep = (reference.freqs_hz >= gate_sweep.GRID_LO_HZ * 0.7) & (

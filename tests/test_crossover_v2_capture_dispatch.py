@@ -84,7 +84,7 @@ async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, caplo
         ("measurement_output_muted", "stop") if muted else ("locate_failed", "fix_and_retake"))
     if muted:
         assert len(gate.grants) == 1
-        assert all(take["screens"] == [] for take in result.takes)
+        assert all(take["verdict"]["screens"] == [] for group in result.joined()["sets"] for take in group["takes"])
 
 
 @pytest.mark.parametrize("muted", [True, False, None])
@@ -430,6 +430,8 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     (-37.99, 79, 3, 0, "spl_stop", 3), (-45.99, 62, 4, 3, None, 0),
 ])
 async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, peak, raise_db, noise_drop_db, capped_by, after):
+    """The retake's record banks its alignment levels with the shortfall its
+    stop's first attempt measured before it (ADR-0383 §4, ADR-0395)."""
     def measure(program):
         band = snr_policy.band_snr_verdicts(
             decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000],
@@ -442,7 +444,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
 
     conductor = _conductor(FakeSeams(measure=measure), index_phase_map={1: "measure"}, gain_plan_db=GAINS,
                            measure_gain_ceiling_db=GAINS, driver_caps_dbfs={"woofer": cap, "tweeter": -30})
-    manifest = RunManifest("alignment", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
+    manifest = RunManifest("alignment", SimpleNamespace(bank=AsyncMock(side_effect=lambda record: record.get("take_id", "manifest"))))
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
@@ -465,9 +467,11 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
         assert verdict.next == ("retake_louder" if attempt == 1 else "accept")
         assert verdict.ok and verdict.fault is None
         rung = verdict.next_gain_db
-        await manifest.append({**record, "analysis": analysis_json(analysis)}, record["take_id"], verdict,
-                              complete=True, started_s=attempt, ended_s=attempt + 1, level_observation={})
-    rows, _ = round_alignment(manifest.to_dict(), {})
+        manifest.judge = AsyncMock(return_value=(verdict, {}))
+        record_id = await manifest.bank({**record, "analysis": analysis_json(analysis)})
+        (banked, _), = manifest.pending_records
+        await manifest.append(banked, record_id, verdict, complete=True, level_observation={})
+    rows, _ = round_alignment(manifest.joined(), {})
     pair, = rows
     level = pair["levels"]["woofer"]
     assert level["alignment_level_db"] == pytest.approx(-30 + raise_db)

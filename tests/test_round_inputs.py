@@ -21,7 +21,7 @@ from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 def _bank_packet(directory, identity, program, **fields):
     (directory / "bundle" / directory.name).mkdir(parents=True)
     (directory / "packet.json").write_text(json.dumps({
-        "applied": identity, "program": program, "result": "partial", **fields,
+        "applied": identity, "preset": program, "result": "partial", **fields,
     }))
 
 

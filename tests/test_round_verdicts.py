@@ -96,6 +96,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
             "curves": [curve],
             "fault": None,
             "trusted_floor_hz": 500,
+            "captured_at": "2026-09-29T12:00:00Z",
         }
         groups.append(
             {
@@ -104,7 +105,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
                 "takes": [
                     take,
                     {**take, "take_id": "rejected", "selected": False},
-                    *[{**take, "take_id": f"older-{i}", "timing": {"ended_s": -i},
+                    *[{**take, "take_id": f"older-{i}", "captured_at": f"2026-09-29T11:00:0{i}Z",
                        "curves": [{**curve, "magnitude_db": [100, level + i, level + i, level + i, -100]}]}
                       for i in range(1, marks) if level is not None],
                 ],
@@ -127,7 +128,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     identity = {"set_id": "woofer", "take_id": "woofer", "role": "woofer", "pose": pose}
     packet = {
         "round_id": "fixture",
-        "program": "speaker",
+        "preset": "speaker",
         "result": "complete",
         "reason": None,
         "level": None,
@@ -262,7 +263,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
     for fit in fixture["fits"]:
         fit.update(residual_rms_db=2.4, residual_max_db=6.1, reason_summary={})
         fit["boost_evidence"]["band_spread"][0]["f_lo"] = band_lo
-    packet = {"round_id": "d5dbe9ccdbd2", "program": manifest["program"], "result": "complete", "reason": None,
+    packet = {"round_id": "d5dbe9ccdbd2", "preset": manifest["preset"], "result": "complete", "reason": None,
               "level": None, "applied": {"candidate": None, "record": None, "layers": {}},
               "artifacts": {"frequency_view": None}, "limits": {}, "packet_fingerprint": None,
               "sets": [{**group, "takes": [{**take, "fault": None} for take in group["takes"]]}
@@ -312,7 +313,7 @@ def test_no_applied_crossover_is_disclosed(tmp_path, live_round, profile):
         profile = {"recomposition_snapshot": {"preset": _one_way_preset().to_dict()}}
     sources = {"applied_profile": profile, "candidate": {"source_preset": live_round["sources"]["applied_profile"]["recomposition_snapshot"]["preset"]}}
     fits = [{**fit, "residual_rms_db": None, "residual_max_db": None, "reason_summary": {}} for fit in live_round["fits"]]
-    packet = {"round_id": "passive", "program": "speaker", "result": "complete", "reason": None, "level": None,
+    packet = {"round_id": "passive", "preset": "speaker", "result": "complete", "reason": None, "level": None,
               "applied": {"candidate": None, "record": None, "layers": {}}, "artifacts": {"frequency_view": None},
               "limits": {}, "packet_fingerprint": None, "sets": [], "series": [], "fits": fits}
     assert round_verdicts(packet, manifest=live_round["manifest"], sources=sources, clouds={}) == []

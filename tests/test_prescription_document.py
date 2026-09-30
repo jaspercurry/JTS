@@ -203,7 +203,7 @@ def timing_evidence(base, *, saved=None, verdict="measured", axis=0):
         "bass_evidence": {}, "manifest": {"run_id": "capture-run", "sets": [{
             "set_id": "base", "base": True, "capture_basis": {"candidate_id": base.fingerprint, "graph_fingerprint": "graph"},
             "takes": [{"take_id": "t2", "selected": True, "phase": "measure",
-                "pose": {"kind": "bearing", "deg": axis, "elevation_deg": 0}, "artifacts": {"record_id": "read.json"},
+                "pose": {"kind": "bearing", "deg": axis, "elevation_deg": 0}, "record_id": "read.json",
                 "analysis": {"timing_verdict": verdict, "alignment_status": "ok", "delay_us": -37.5, "polarity": "inverted",
                     "trim_db": {"woofer": 0, "tweeter": -9}, "margin_db": .6, "residual_rms_db": .2,
                     "repeat_spread_db": .1, "repeat_spread_us": 2, "repeat_count": 3}}]}]}}, round_id="r1")

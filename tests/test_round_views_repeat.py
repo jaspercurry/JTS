@@ -114,7 +114,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
                                            seams=FakeSeams(records=Records()), gate=AnsweredGate()))
     assert result.status == "complete"
     assert len(expected) == 2
-    for group in result.to_dict()["sets"]:
+    for group in result.joined()["sets"]:
         assert [take["analysis"] for take in group["takes"]] == expected
 
     root = bank_measure_round(tmp_path)

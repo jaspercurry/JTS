@@ -40,6 +40,7 @@ from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, 
 from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RunManifest
+from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
@@ -720,7 +721,7 @@ async def test_a_channel_map_stop_names_its_drivers_on_the_page(monkeypatch, tmp
     spec = refusal_copy.REASON_REGISTRY[code]
     assert page["verdict_text"] == refusal_copy.reason_message(code, spec, failed_roles=named)
     assert (page["verdict_text"] != spec.message) is kept
-    assert page["verdict_text"] in coverage_lines({}, manifest.to_dict())[-1]
+    assert page["verdict_text"] in coverage_lines({}, manifest.joined())[-1]
 
 
 @pytest.mark.parametrize("opened", [False, True])
@@ -1286,12 +1287,9 @@ def test_executor_banks_capture_provenance(tmp_path, monkeypatch, analysis_error
     assert "analysis_error" not in record
     program = ExcitationProgram.from_dict(record["program"])
     analysis = _verify_analysis(program)
-    # Every take banks its curves and analysis; its run-manifest rows copy them (ADR-0383).
+    # Every take banks its curves and analysis (ADR-0383).
     assert (record["curves"], record["analysis"]) == (analysis_curve_records(analysis, program),
                                                       {**analysis_json(analysis), "bass": None, "distortion": None})
-    manifest, = (tmp_path / "sessions").rglob(RUN_MANIFEST_FILENAME)
-    assert [(take["curve"], take["analysis"]) for group in json.loads(manifest.read_text())["sets"]
-            for take in group["takes"]] == [(curve, record["analysis"]) for curve in record["curves"]] != []
     calibration = record["capture_calibration"]
     assert calibration["applied"] is True
     assert isinstance(calibration["calibration_id"], str)
@@ -1326,10 +1324,10 @@ _TAKE_RECORD_KEYS = frozenset({
     "cleared_layers", "curves", "diagnostic", "gating_applied", "graph_fingerprint", "graph_scope", "impulses",
     "incident", "index", "inverted_role", "kind", "layout", "level", "level_db", "level_match_trims_db", "level_matched",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
-    "pose", "pose_driver", "pose_kind", "position_axis", "position_deg", "preset", "program",
+    "pose", "pose_driver", "pose_index", "pose_kind", "position_axis", "position_deg", "preset", "program",
     "prompt", "provenance", "purposes", "regime", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
-    "stimulus_dbfs", "stimulus_id", "stimulus_wav_sha256", "take_id", "targets", "trusted_band", "verdict",
-    "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
+    "stimulus_dbfs", "stimulus_id", "stimulus_ordinal", "stimulus_wav_sha256", "take_id", "targets", "trusted_band",
+    "verdict", "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
 })
 
 
@@ -1346,7 +1344,9 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     """A take of every purpose banks the same keys, naming its run, preset,
     layout, pose, targets and its stop's purpose, a CHECK take its speaker
     program's; a CHECK take banks no curves (ADR-0383, #2902). A preset with a
-    level ladder banks one take per rung, each on its own child run."""
+    level ladder banks one take per rung, each on its own child run. Every row
+    of the run manifest, a ladder's merged one too, points at its take's record
+    and holds nothing else (ADR-0395)."""
     preset = run_preset(name, layout)
     request = request_for_preset(preset, mover=preset.mover or "human", candidates=candidates)
     ladder = preflight_levels(request, ready_facts(request), preset.levels) if preset.levels else None
@@ -1371,6 +1371,13 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
         assert (record["preset"], record["layout"], record["targets"], pose["kind"], pose["driver"],
                 record["measurement_purpose"]) == (preset.preset, preset.layout, targets, kind, driver, preset.purpose)
         assert (record["curves"] == []) is (phase == "check")
+    session, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
+    manifests = [json.loads(path.read_text()) for path in session.rglob(RUN_MANIFEST_FILENAME)]
+    rows = [take for manifest in manifests for group in manifest["sets"] for take in group["takes"]]
+    assert {manifest["schema_version"] for manifest in manifests} == {3}
+    assert rows and all(set(take) == {"take_id", "record_id", "selected"} for take in rows)
+    assert {json.loads(take_artifact_path(session, take["record_id"]).read_text())["take_id"] for take in rows} == {
+        record["take_id"] for record in takes}
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):
@@ -1395,7 +1402,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     analysis = await asyncio.to_thread(analyze, record)
     level = level_drift_verdict(loudest_half_second_db_spl=73, level_reference_db_spl=70, same_pose=True)
     verdict = await asyncio.to_thread(assessor, analysis, phase="verify", program=program, level_verdict=level)
-    await manifest.append(record, "take", verdict, complete=True, started_s=0, ended_s=1, level_observation=level.evidence)
+    await manifest.append(record, "take", verdict, complete=True, level_observation=level.evidence)
     consume.assert_not_called()
     row = manifest.takes[0]
     assert (row["fault"], row["next"], row["charge"]) == ("level_drift_at_session_gain", "retake_same", "none")

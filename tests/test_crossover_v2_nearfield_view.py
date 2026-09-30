@@ -37,7 +37,7 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
     evidence = {"evidence": {"level_db_spl": 80.0}}
     return {"take_id": take_id, "selected": selected, "measurement_purpose": "reference",
             "pose": {"kind": kind, "driver": driver, "distance_m": distance_mm / 1000},
-            "verdict": evidence, "quality": evidence, "curves": [{**curve, "role": driver}],
+            "verdict": evidence, "curves": [{**curve, "role": driver}],
             "level": {"level_db": -30.0, "stimulus_dbfs": stimulus_dbfs}}
 
 
@@ -215,9 +215,9 @@ def test_a_take_is_read_only_where_its_sweep_reached():
 def test_drivers_of_one_size_at_one_placement_are_flagged_when_they_play_apart(
         tmp_path, monkeypatch, capsys, driver, distance_mm, stimulus_dbfs, kind, flagged):
     """Two drivers of one role at one near-field position are compared per unit of
-    drive: the median over each driver's kept takes of level less stimulus gain
-    and fader. More than 3 dB apart is flagged; a take not kept, another role,
-    another position or a far pose never compares (#5714)."""
+    drive: the median over each driver's kept takes of level less the stimulus
+    gain and fader its set played. More than 3 dB apart is flagged; a take not
+    kept, another role, another position or a far pose never compares (#5714)."""
     monkeypatch.setattr(round_inputs, "DECLARED_GEOMETRY_DEFAULT_PATH", tmp_path / "undeclared.json")
     bundle = tmp_path / "sessions" / "nearfield"
     bundle.mkdir(parents=True)
@@ -227,7 +227,8 @@ def test_drivers_of_one_size_at_one_placement_are_flagged_when_they_play_apart(
     takes = [_take("w15", "woofer", 15, 90.0), _take("probe", driver, distance_mm, 60.0, selected=False, stimulus_dbfs=-44.0),
              *(_take(take_id, driver, distance_mm, 84.0, seed=1, stimulus_dbfs=stimulus_dbfs + offset, kind=kind)
                for take_id, offset in (("over", -1.0), ("other", 0.0), ("under", 6.0)))]
-    write_manifest(bundle, program="nearfield/each", groups=[{"set_id": "nearfield", "capture_basis": {}, "takes": takes}])
+    write_manifest(bundle, program="nearfield/each", groups=[
+        {"set_id": take["take_id"], "capture_basis": take["level"], "takes": [take]} for take in takes])
 
     assert round_views.main(["nearfield", str(bundle), "--out", str(tmp_path / "nearfield.json")]) == 0
 

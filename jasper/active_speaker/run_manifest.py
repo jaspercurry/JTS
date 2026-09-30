@@ -339,6 +339,11 @@ class RunManifest:
                    if verdict.next != "accept" or not complete else {})})
         if complete and verdict.ok:
             self._chosen[(self._context["index"], ordinal)] = take_id
+        if not record_id:
+            # A take whose program never played banks no record and stops the run:
+            # its stop, not measured, keeps its fault and evidence (ADR-0395 §7).
+            next(stop for stop in self.planned if stop["index"] == self._context["index"]).update(
+                fault=verdict.fault, evidence=verdict.evidence)
         await self.persist()
 
     async def persist(self) -> None:

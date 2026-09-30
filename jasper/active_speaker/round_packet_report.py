@@ -167,7 +167,8 @@ def packet_index(
         for name, contract in sections.items():
             if isinstance(contract, Mapping) and "schema" in contract:
                 decisions.setdefault(name, {}).setdefault(_decision(contract), []).append(set_id)
-    poses = list(dict.fromkeys(_pose_token(t["pose"]) for group in packet["sets"] for t in group["takes"]))
+    # A take whose program never played has no record, so no pose (ADR-0395 §7).
+    poses = list(dict.fromkeys(_pose_token(t["pose"]) for group in packet["sets"] for t in group["takes"] if t["pose"]))
     lines = [f"# {packet['round_id']} · {packet['preset']}",
              f"Measured: poses {'; '.join(poses)}; level: {json.dumps(packet['level'])}",
              f"Applied: candidate {_short_id(packet['applied']['candidate'])} · record {packet['applied']['record']} · "

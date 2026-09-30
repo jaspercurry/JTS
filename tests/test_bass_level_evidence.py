@@ -404,7 +404,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
     assert all((band["prescribed_boost_db"] is None) is (baseline_only or band["value_db"] is None)
                for row in rows for band in row["realized_boost_db"])
-    packet = {"round_id": "bass", "program": "bass", "result": "complete", "reason": None, "level": None,
+    packet = {"round_id": "bass", "preset": "bass", "result": "complete", "reason": None, "level": None,
               "applied": {"candidate": None, "record": None, "layers": {}},
               "artifacts": {"frequency_view": None, "bass_views": []}, "limits": {},
               "sets": [], "fits": [], "series": [], "packet_fingerprint": None}

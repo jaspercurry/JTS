@@ -20,7 +20,9 @@ from jasper.active_speaker.crossover_v2.record_index import measurement_document
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.crossover_v2.round_inputs import default_out, round_artifact_dir, round_inputs
 from jasper.active_speaker.crossover_v2.window_view import window_view
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, kept_measurements
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.cli._refusal import EXIT_REFUSED
 from jasper.cli._report import render_report
 from jasper.cli.round_views import build_parser, main
 from jasper.cli.round_views._common import RoundSetRefused, resolve_set
@@ -43,8 +45,7 @@ def two_sets(tmp_path):
             take_artifact_path(inputs.session_dir, row.path).write_text(json.dumps(record))
             records.append((row.path, record))
         group = manifest_set(records)
-        group["takes"].append({**group["takes"][0], "take_id": f"refused-{number}",
-                               "quality": {"status": "refused", "fault": "clipped"}, "selected": False})
+        group["takes"].append({**group["takes"][0], "take_id": f"refused-{number}", "selected": False})
         groups.append(group)
     manifest = write_manifest(root, program="room", groups=groups)
     return root, manifest
@@ -356,7 +357,7 @@ def test_inventory_reads_one_manifest_and_uses_optional_set_arguments(two_sets, 
 def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested, expected):
     root, manifest = two_sets
     group = manifest["sets"][0]
-    unkept = {"quality": {"status": "refused"}, "fault": "level_off_target", "next": "retake_louder"}
+    unkept = {"measurement_status": "captured", "verdict": {"ok": False, "fault": "level_off_target", "next": "retake_louder"}}
     group["takes"] = [{**group["takes"][0], "take_id": f"take-{i}", "selected": keep,
                        "pose": {"kind": "bearing", "deg": deg, "elevation_deg": elevation}, **({} if keep else unkept)}
                       for i, ((deg, elevation), keep) in enumerate(zip(poses, selected))]
@@ -368,7 +369,7 @@ def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested
         assert refused.value.detail["take_ids"] == tuple(f"take-{i}" for i, keep in enumerate(selected) if keep)
         if expected == "round_take_not_kept":
             assert {key: refused.value.detail[key] for key in ("status", "fault", "next")} == {
-                "status": "refused", "fault": "level_off_target", "next": "retake_louder"}
+                "status": "captured", "fault": "level_off_target", "next": "retake_louder"}
     else:
         assert resolved.take_id(requested) == expected
 
@@ -381,3 +382,26 @@ def test_set_selection_excludes_timing_takes(two_sets):
     selected = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
 
     assert group["takes"][0]["take_id"] not in selected.selected_ids
+
+
+def test_a_round_banked_before_pointer_rows_refuses_by_that_field(tmp_path, capsys):
+    """A row banked before the rows became pointers names its record under
+    ``artifacts``, and no reader reads that shape (#2902): the round's kept
+    takes and its views refuse ``take_curves_not_banked`` by the row's missing
+    ``record_id`` (ADR-0395)."""
+    root = bank_seat_round(tmp_path)
+    session = round_inputs(root).session_dir
+    directory, _ = round_artifact_dir(session)
+    path = directory / RUN_MANIFEST_FILENAME
+    manifest = json.loads(path.read_text())
+    for group in manifest["sets"]:
+        group["takes"] = [{"take_id": take["take_id"], "selected": take["selected"],
+                           "artifacts": {"record_id": take["record_id"]}} for take in group["takes"]]
+    path.write_text(json.dumps({**manifest, "schema_version": 2}))
+
+    with pytest.raises(RoundSetRefused) as refused:
+        list(kept_measurements(session, phases=("lateral",), purposes=("room",)))
+    assert (refused.value.reason, refused.value.detail["field"]) == (TAKE_CURVES_NOT_BANKED, "record_id")
+    assert main(["room", str(root)]) == EXIT_REFUSED
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["reason"], answer["detail"]["field"]) == (TAKE_CURVES_NOT_BANKED, "record_id")
