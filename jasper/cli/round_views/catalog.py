@@ -69,14 +69,16 @@ def _round_tools(round_dir: Path, wanted: set[str], set_id: str | None) -> tuple
 def _cmd_catalog(args: argparse.Namespace) -> int:
     wanted = _purposes(args.program) if args.program else set(PURPOSES)
     if args.round_dir is None:
+        read: dict[str, Any] = {}
         tools = [_tool(command, row) for command, row in CATALOG.items() if wanted.intersection(row.programs or PURPOSES)]
-        return answer(args.command, schema=ANSWER_SCHEMAS[args.command], subject={}, parameters={"program": args.program},
-                      tools=tools, line=f"catalog: {len(tools)} tool(s) for {args.program or 'every program'}")
-    read, tools = _round_tools(Path(args.round_dir), wanted, args.set)
-    calls = [call for tool in tools for call in tool["calls"]]
+        line = f"catalog: {len(tools)} tool(s) for {args.program or 'every program'}"
+    else:
+        read, tools = _round_tools(Path(args.round_dir), wanted, args.set)
+        calls = [call for tool in tools for call in tool["calls"]]
+        line = (f"catalog: {len(calls)} call(s) of {len(tools)} tool(s) on {args.round_dir}; "
+                f"{sum(call['present'] is False for call in calls)} artifact(s) missing")
     return answer(args.command, schema=ANSWER_SCHEMAS[args.command], subject=read, parameters={"program": args.program},
-                  tools=tools, line=f"catalog: {len(calls)} call(s) of {len(tools)} tool(s) on {args.round_dir}; "
-                                    f"{sum(call['present'] is False for call in calls)} artifact(s) missing")
+                  tools=tools, line=line)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:

@@ -16,6 +16,7 @@ import pytest
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.measurement_programs import PURPOSES, available_presets, preset
+from jasper.active_speaker.round_catalog import catalog_command
 from jasper.active_speaker.round_view_artifacts import CATALOG, PROG, READS, READS_LAPTOP, bookkeeping_views
 from jasper.cli import crossover_prescriber, round as round_cli, round_views
 from tests.crossover_v2_banked_round import bank_seat_round
@@ -102,7 +103,7 @@ def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(
     calls = {tuple(call["argv"]): call for tool in answer["tools"] for call in tool["calls"]}
     index = (root / INDEX_FILENAME).read_text().splitlines()
     assert [shlex.split(line[3:-1]) for line in index[index.index("## Tools"):] if line.startswith("- `")] == [
-        [PROG, "catalog", str(root)], *(list(argv) for argv, call in calls.items() if not call["needs"])]
+        shlex.split(catalog_command(root)), *(list(argv) for argv, call in calls.items() if not call["needs"])]
     assert (calls[PROG, "repeat", str(root), "<other-round>"]["needs"], calls[PROG, "room", str(root)]["present"]) == (
         ["<other-round>"], True)
 
