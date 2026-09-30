@@ -150,8 +150,8 @@ def take_window(record: Mapping[str, Any], role: str) -> str:
         for curve in record.get("curves") or ()) else WINDOW_UNGATED
 
 
-_PROGRAM_WINDOWS = {PURPOSE_SPEAKER: WINDOW_GATED, PURPOSE_ROOM: WINDOW_UNGATED,
-                    PURPOSE_BASS: WINDOW_UNGATED, PURPOSE_REAR: WINDOW_UNGATED}
+_PROGRAM_WINDOWS: Mapping[Any, str] = {PURPOSE_SPEAKER: WINDOW_GATED, PURPOSE_ROOM: WINDOW_UNGATED,
+                                        PURPOSE_BASS: WINDOW_UNGATED, PURPOSE_REAR: WINDOW_UNGATED}
 
 
 def program_window(record: Mapping[str, Any]) -> str:
