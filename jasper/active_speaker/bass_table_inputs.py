@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from jasper.active_speaker.bass_comparison import bass_capture_context, selected_take
 from jasper.active_speaker.bass_table import fit_bass_table, level_key
@@ -21,7 +21,18 @@ from jasper.active_speaker.measurement_programs import PURPOSE_BASS
 
 from jasper.platform.atomic_io import atomic_write_json
 from .round_view_artifacts import ARTIFACT_BY_VIEW
-from .crossover_v2.round_inputs import SetTakes, default_out, read_run_manifest, round_artifact_dir, round_inputs, with_records
+from .crossover_v2.round_inputs import (
+    RoundInputs, SetTakes, default_out, read_run_manifest, round_artifact_dir, round_inputs, with_records,
+)
+
+
+def bass_view_path(inputs: RoundInputs, root: Path, set_id: str, manifest: Mapping[str, Any]) -> Path:
+    """Where set ``set_id``'s bass view is filed: under the set's name, else, in
+    a one-set round, under none, as the bank files it."""
+    path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
+    if len(manifest["sets"]) == 1 and not path.is_file():
+        path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact)
+    return path
 
 
 def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
@@ -56,10 +67,7 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
                 continue
             basis = selected.capture_basis
             level = level_key(basis, set_id=selected.set_id)
-            path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, selected.set_id)
-            if len(manifest["sets"]) == 1 and not path.is_file():
-                path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact)
-            view = json.loads(path.read_text())
+            view = json.loads(bass_view_path(inputs, root, selected.set_id, manifest).read_text())
             for entry in entries:
                 take = dict(selected_take(view, entry["take_id"]))
                 if level_key(bass_capture_context(take), take_id=entry["take_id"]) != level:

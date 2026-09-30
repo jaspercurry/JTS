@@ -416,6 +416,8 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.REASON_COVERAGE_SHORT: "The captured takes do not cover the band this figure is read over.",
     },
     ("name_comparand", "Name the take or forecast to compare with"): {
+        "bass_comparand_view_not_filed": "The take the comparand rule found has no filed bass view: it is not a bass "
+                                         "take, or its round filed none.",
         "compare_no_common_band": "The two sides share no band above the window's trusted floor.",
         "compare_no_comparand": "This round has no base take at this take's place, and no earlier banked take "
                                 "matches its place, drivers and graph scope.",
