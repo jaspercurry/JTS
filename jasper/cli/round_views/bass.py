@@ -60,7 +60,8 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
         key = inputs.session_dir.resolve()
         if key not in manifests:
             manifests[key] = read_run_manifest(inputs)
-        selected = resolve_set(inputs, set_id, manifest=manifests[key])
+        selected = resolve_set(inputs, set_id, manifest=manifests[key]).with_records(
+            inputs.session_dir, every_take=take_id is not None)
         selected_id = selected.take_id(take_id)
         path = default_out(inputs, root, ARTIFACT_BY_VIEW["bass"].artifact, set_id)
         takes.append(selected_take(json.loads(path.read_text()), selected_id))

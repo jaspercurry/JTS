@@ -17,11 +17,11 @@ from jasper.active_speaker.candidate_bank import CandidateBankRefusal, find_bank
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
 from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
-from jasper.active_speaker.measurement_programs import PURPOSE_BASS, run_purpose
+from jasper.active_speaker.measurement_programs import PURPOSE_BASS
 
 from jasper.platform.atomic_io import atomic_write_json
 from .round_view_artifacts import ARTIFACT_BY_VIEW
-from .crossover_v2.round_inputs import SetTakes, default_out, read_run_manifest, round_artifact_dir, round_inputs
+from .crossover_v2.round_inputs import SetTakes, default_out, read_run_manifest, round_artifact_dir, round_inputs, with_records
 
 
 def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
@@ -42,18 +42,16 @@ def fit_bass_rounds(round_dirs: Sequence[Path], *, candidates: Sequence[Path],
     run_ids = []
     for root in round_dirs:
         inputs = round_inputs(root)
-        manifest = read_run_manifest(inputs)
+        manifest = with_records(inputs.session_dir, read_run_manifest(inputs))
         directory, _ = round_artifact_dir(inputs.session_dir)
         if directory is None or directory.name != manifest["run_id"]:
             raise CrossoverV2Refused({"run_id": manifest["run_id"], "round_dir": str(root)},
                                     code="bass_fit_run_mismatch")
         run_ids.append(manifest["run_id"])
-        purpose = run_purpose(manifest.get("program"))
         for row in manifest["sets"]:
             selected = SetTakes.from_row(row)
             entries = [take for take in selected.takes if take["selected"]
-                       and take.get("phase") == PHASE_LATERAL
-                       and take.get("purpose", purpose) == PURPOSE_BASS]
+                       and take.get("phase") == PHASE_LATERAL and take.get("measurement_purpose") == PURPOSE_BASS]
             if not entries:
                 continue
             basis = selected.capture_basis

@@ -48,7 +48,7 @@ def inventory_payload(inputs: RoundInputs, round_dir: Path, requested_set: str |
     sets = [resolve_set(inputs, requested_set, manifest=manifest)] if requested_set else [
         resolve_set(inputs, row["set_id"], manifest=manifest) for row in manifest["sets"]
     ]
-    purposes = run_purposes(manifest["program"])
+    purposes = run_purposes(manifest["preset"])
     program = purposes[0]
     artifact_dir, _ = round_artifact_dir(inputs.session_dir)
     artifacts: list[dict[str, Any]] = []

@@ -13,12 +13,13 @@ from jasper.active_speaker.bass_fit import BASS_GRID_POINTS, fit_bass_shape
 from jasper.active_speaker.bass_level_evidence import bass_level_evidence
 from jasper.active_speaker.bass_table import fit_bass_table
 from jasper.active_speaker.bass_table_report import bass_table_rows
-from jasper.active_speaker.crossover_v2.round_inputs import RoundViewsError
+from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, RoundViewsError
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.round_packet import finish_bass_packet
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.round_packet_report import bass_table_markdown
 from jasper.audio_measurement.analysis import smooth_fractional_octave
+from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, expected_boost_db
@@ -404,7 +405,7 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
     assert rows[0]["realized_boost_db"][3]["value_db"] == pytest.approx(0 if baseline_only else 6)
     assert all((band["prescribed_boost_db"] is None) is (baseline_only or band["value_db"] is None)
                for row in rows for band in row["realized_boost_db"])
-    packet = {"round_id": "bass", "program": "bass", "result": "complete", "reason": None, "level": None,
+    packet = {"round_id": "bass", "preset": "bass", "result": "complete", "reason": None, "level": None,
               "applied": {"candidate": None, "record": None, "layers": {}},
               "artifacts": {"frequency_view": None, "bass_views": []}, "limits": {},
               "sets": [], "fits": [], "series": [], "packet_fingerprint": None}
@@ -424,10 +425,12 @@ def test_packet_index_and_cli_share_the_level_report(bass_run, capsys, tmp_path,
             [round(band[key], 1) if band[key] is not None else None for key in ("prescribed_boost_db", "value_db")]
             for band in row["realized_boost_db"]]
     assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == payload
-    finish_bass_packet(tmp_path, manifest, join_levels=Mock(side_effect=RoundViewsError("missing inputs")))
-    assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == {
-        "status": "unavailable", "reason": "bass_fit_inputs_missing", "error_type": "RoundViewsError",
-    }
+    for failure, reason in ((RoundViewsError("missing inputs"), "bass_fit_inputs_missing"),
+                            (RoundSetRefused(CAPTURE_UNREADABLE_SIDECAR, record="lost.json"), CAPTURE_UNREADABLE_SIDECAR)):
+        finish_bass_packet(tmp_path, manifest, join_levels=Mock(side_effect=failure))
+        assert json.loads((tmp_path / "packet.json").read_text())["bass_table"] == {
+            "status": "unavailable", "reason": reason, "error_type": type(failure).__name__,
+        }
 
 
 def test_a_one_level_round_finishes_from_its_manifest_alone(tmp_path):
@@ -435,6 +438,6 @@ def test_a_one_level_round_finishes_from_its_manifest_alone(tmp_path):
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"runs": [{"level": {"run": {"level_db": -20}}}], "sets": [
         {"set_id": "set", "base": False, "capture_basis": {"candidate_id": "candidate"},
-         "takes": [{"take_id": "take", "selected": True, "artifacts": {"record_id": "unbanked.json"}}]}]}))
+         "takes": [{"take_id": "take", "record_id": "unbanked.json", "selected": True}]}]}))
 
     assert finish_bass_packet(tmp_path, manifest, join_levels=Mock(side_effect=AssertionError)) == tmp_path / "packet.json"

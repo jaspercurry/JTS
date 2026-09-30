@@ -1,6 +1,6 @@
 {
   "manifest": {
-    "program": "speaker/arm",
+    "preset": "speaker/arm",
     "sets": [
       {
         "capture_basis": {"candidate_id": null, "graph_fingerprint": "13e77d7f52f2149a04964a53d6b4e49a716c3c07706663318145563b7b7ddf81", "side": "mono", "role": "summed", "level_db": -16.924},

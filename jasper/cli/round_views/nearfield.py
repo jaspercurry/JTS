@@ -10,7 +10,7 @@ import argparse
 from pathlib import Path
 
 from jasper.active_speaker.crossover_v2.nearfield_view import nearfield_view
-from jasper.active_speaker.crossover_v2.round_inputs import take_records
+from jasper.active_speaker.crossover_v2.round_inputs import with_records
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.run_manifest import LEVEL_MISMATCH_DB, driver_level_mismatches, view_sets
 from jasper.platform.atomic_io import read_json_mapping
@@ -36,11 +36,11 @@ from ._common import (
 def _cmd_nearfield(args: argparse.Namespace) -> int:
     round_dir = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, round_dir)
-    manifest = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, read_run_manifest, inputs)
+    # The run manifest refuses by name, as every round view's does.
+    manifest = with_records(inputs.session_dir, read_run_manifest(inputs))
     draft = (read_json_mapping(inputs.design_draft_path) if inputs.design_draft_path else None) or {}
-    joined = take_records(inputs.session_dir)
-    takes = [joined(take) for row in view_sets(manifest) for take in row["takes"]
-             if take.get("selected") and (take.get("pose") or {}).get("driver")]
+    takes = [take for row in view_sets(manifest) for take in row["takes"]
+             if take["selected"] and (take.get("pose") or {}).get("driver")]
     # The CamillaDSP config each take played, and the band it banked, as its record states them.
     graphs = {take["take_id"]: graph for take in takes
               if (graph := ((take.get("provenance") or {}).get("graph") or {}).get("config")) is not None}

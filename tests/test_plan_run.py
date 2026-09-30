@@ -10,7 +10,7 @@ import json
 from copy import deepcopy
 from itertools import count
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
 
@@ -25,7 +25,7 @@ from jasper.active_speaker.measurement_programs import (
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, with_records
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
@@ -185,7 +185,7 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
     assert result.takes_measured == len(fakes.banked) == len(captures) == len(angles) * len(candidates) * repeats
     assert fakes.graph.scopes == [("candidate", c.spec.candidate_id) for c in captures]
     assert fakes.graph.restores == fakes.volume.releases == 1
-    doc = json.loads(json.dumps(result.to_dict()))
+    doc = json.loads(json.dumps(result.joined()))
     assert len(doc["sets"]) == len(set(candidates))
     for group in doc["sets"]:
         assert [(t["pose"]["deg"], t["repeat"], t["selected"]) for t in group["takes"]] == [
@@ -261,12 +261,14 @@ def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, ok
     assert fakes.play.rungs == ([None, gain] if refusal else [None])
     assert len(fakes.banked) == (2 if refusal else 1)
     assert gate.grants == ([(1, 1), (1, 2)] if next_action == "fix_and_retake" else [(1, 1)])
-    rows = _takes(result.records.snapshots[-1])
+    rows = _takes(result.joined())
     assert len({(t["index"], t["stimulus_ordinal"]) for t in rows}) == 1
     assert [t["attempt"] for t in rows] == ([1, 2] if refusal else [1])
     assert [t["selected"] for t in rows] == ([False, True] if refusal else [True])
-    assert [{key: t[key] for key in ("fault", "next", "charge") if key in t} for t in rows] == ([refusal, {}] if refusal else [{}])
+    kept = {"fault": None, "next": "accept", "charge": "none"}
+    assert [{key: t["verdict"][key] for key in kept} for t in rows] == ([refusal, kept] if refusal else [kept])
     assert result.to_dict()["honoured"]["takes_refused"] == (0 if ok else 1)
+    assert result.to_dict()["honoured"]["retakes"] == (1 if refusal else 0)
     assert result.status == "complete"
 
 
@@ -441,8 +443,6 @@ def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypa
     if failure:
         assert gate.published()["run"]["fault"] == terminal["reason"]
         assert gate.published()["run"]["next_action"] == "stop"
-    for take in _takes(terminal):
-        assert take["timing"] == {"started_s": 60.0, "ended_s": 65.0}
     assert event.call_args.kwargs["status"] == expected
 
 
@@ -518,7 +518,7 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
                          analyze=_analysis, gate=AnsweredGate(), aborts=_ABORTS))
     root = Path(info["bundle_dir"]) / "evidence/v1/artifacts"
     document = json.loads((root / result.path).read_text())
-    records = [json.loads((root / take["artifacts"]["record_id"]).read_text()) for take in _takes(document)]
+    records = [json.loads((root / take["record_id"]).read_text()) for take in _takes(document)]
     assert len({record["take_id"] for record in records}) == 2
     assert document["status"] == "complete"
     assert not (root / "crossover_v2/run/round_receipt.json").exists()
@@ -559,10 +559,10 @@ def test_operator_retries_are_pooled_across_configs(monkeypatch):
     ("drift", "complete", [None, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, None]),
     ("analysis_error", "partial", [REASON_INTERNAL_ERROR]),
 ])
-def test_a_take_banks_the_verdict_and_level_its_manifest_row_holds(case, status, faults):
+def test_a_take_banks_the_verdict_and_level_the_run_judged(case, status, faults):
     """The bank judges each take before it writes the record, so every banked
-    take holds its manifest row's verdict and level, a refused one and one whose
-    analysis failed too (ADR-0383)."""
+    take holds the verdict and level the run decided it by, a refused one and
+    one whose analysis failed too (ADR-0383, ADR-0395)."""
     if case == "drift":
         result, fakes, _, _ = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
     else:
@@ -577,11 +577,10 @@ def test_a_take_banks_the_verdict_and_level_its_manifest_row_holds(case, status,
     assert set(records) == {row["take_id"] for row in result.takes}
     for row in result.takes:
         record = records[row["take_id"]]
-        assert record["level"] == row["level"]
-        assert record["verdict"] == {
+        assert record["level"] == {**row["level"], "alignment": row["alignment"]}
+        assert {key: record["verdict"][key] for key in ("ok", "fault", "next", "charge")} == {
             "ok": row["quality"]["status"] == TAKE_MEASURED, "fault": row.get("fault"), "next": row.get("next", "accept"),
-            "charge": row.get("charge", "none"), "next_gain_db": row["next_gain_db"],
-            "evidence": row["quality"]["evidence"], "capabilities": row["quality"]["capabilities"], "screens": row["screens"]}
+            "charge": row.get("charge", "none")}
 
 
 def test_an_assessor_error_ends_its_captures_assessment_then_the_run(caplog):
@@ -632,14 +631,15 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
         for index, degrees in enumerate([0, 10, 20], 1):
             manifest.begin({"index": index, "repeat": 1, "pose": {"deg": degrees}}, attempt=1, pose_index=index - 1)
             await manifest.append({**record, "take_id": manifest.allocate_take_id(), **(changed if index == 2 else {})}, f"record-{index}",
-                                  TakeVerdict(True), complete=True, started_s=index, ended_s=index + 1, level_observation={})
+                                  TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
     groups = manifest.to_dict()["sets"]
     assert len(groups) == (2 if changed else 1)
-    assert {t["pose"]["deg"] for t in groups[0]["takes"]} == ({0, 20} if changed else {0, 10, 20})
+    poses = {take["take_id"]: take["pose"]["deg"] for take in manifest.takes}
+    assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if changed else {0, 10, 20})
 
 
-def test_manifest_names_emitted_role_levels_and_usable_bands():
+def test_manifest_names_emitted_role_levels():
     manifest = RunManifest("run", _Store(FakeSeams().records))
     manifest.begin({"index": 1, "repeat": 1, "pose": {"deg": 0}}, attempt=1, pose_index=0)
     record = {"take_id": manifest.allocate_take_id(), "stimulus_dbfs": -12, "program": {"segments": [
@@ -647,13 +647,10 @@ def test_manifest_names_emitted_role_levels_and_usable_bands():
         {"kind": "sweep", "role": "woofer", "gain_db": -18},
         {"kind": "sweep", "role": "tweeter", "gain_db": -24},
     ]}, "curves": [{"role": "woofer", "band_hz": [20, 2000], "validity_floor_hz": 100}]}
-    asyncio.run(manifest.append(record, "record", TakeVerdict(True), complete=True, started_s=0, ended_s=1, level_observation={}))
+    asyncio.run(manifest.append(record, "record", TakeVerdict(True), complete=True, level_observation={}))
     groups = manifest.to_dict()["sets"]
-    assert {group["capture_basis"]["role"] for group in groups} == {"woofer", "tweeter"}
-    assert {group["capture_basis"]["role"]: group["takes"][0]["level"]["stimulus_dbfs"]
+    assert {group["capture_basis"]["role"]: group["capture_basis"]["stimulus_dbfs"]
             for group in groups} == {"woofer": -18, "tweeter": -24}
-    assert next(group["takes"][0]["quality"]["usable_band_hz"] for group in groups
-                if group["capture_basis"]["role"] == "woofer") == [100, 2000]
     assert manifest.takes_measured == 1
 
 
@@ -945,7 +942,7 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
     assert [step == "probe" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
     assert [take["level"]["loudest_half_second_db_spl"] for take in sorted(
-        _takes(result.to_dict()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
+        _takes(result.joined()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
 
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
@@ -978,7 +975,7 @@ def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
             for finding in ended["level_mismatches"]] == [("woofer", 0.015, 6.0), ("woofer", 0.03, 6.0)]
     assert [len(facts["level_mismatches"]) for facts in live] == [int(facts["pose"] == 4) for facts in live]
     lines = set(round_lines(ended)) - set(round_lines({**ended, "level_mismatches": []}))
-    assert len(lines) == 2 and lines <= set(coverage_lines({}, result.to_dict()))
+    assert len(lines) == 2 and lines <= set(coverage_lines({}, result.joined()))
     assert len(lines & set(round_lines(live[-1]))) == 1
     assert sum(getattr(record, "jasper_event", "") == "active_speaker.driver_level_mismatch"
                for record in caplog.records) == 2
@@ -1079,8 +1076,8 @@ def test_program_timing_take_and_placement_count(purpose, layout, entry, poses):
 async def test_a_run_banks_its_preset_and_its_layout():
     """The banked record names the preset and, in its own field, the layout it walked (ADR-0366 §6)."""
     result, _ = await _run_gated(ac.request_for_preset(run_preset("tournament", "tournament_full")))
-    assert {key: result.to_dict()[key] for key in ("program", "layout")} == {
-        "program": "tournament/express", "layout": "tournament_full"}
+    assert {key: result.to_dict()[key] for key in ("preset", "layout")} == {
+        "preset": "tournament/express", "layout": "tournament_full"}
 
 
 def _staged(name, layout, restaged):
@@ -1115,7 +1112,7 @@ def test_a_staged_stop_names_its_purpose_first_and_each_purpose_once(restaged):
 async def test_room_uses_its_first_seat_take_as_the_level_reference():
     request = ac.request_for_preset(run_preset("room", "seat_express"))
     captures = plan_run.prepare_plan_captures(request)
-    manifest = RunManifest("run", _Store(FakeSeams().records), program=request.program)
+    manifest = RunManifest("run", _Store(FakeSeams().records), preset=request.program)
     for index, (capture, observed, accepted, action, delta) in enumerate(zip(
         captures, (70, 78), (True, False), ("accept", "retake_same"), (None, 8),
     ), 1):
@@ -1126,8 +1123,7 @@ async def test_room_uses_its_first_seat_take_as_the_level_reference():
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed}}}
         verdict = capture_dispatch.level_drift_verdict(**manifest.level_observation(record))
         assert (verdict.ok, verdict.next, verdict.evidence.get("level_delta_db")) == (accepted, action, delta)
-        await manifest.append(record, str(index), verdict, complete=True, started_s=index, ended_s=index + 1,
-                              level_observation=verdict.evidence)
+        await manifest.append(record, str(index), verdict, complete=True, level_observation=verdict.evidence)
     assert [take["selected"] for take in _takes(manifest.to_dict())] == [True, False]
 
 
@@ -1280,17 +1276,18 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     request = replace(request, stops=(replace(request.stops[0], purpose=purpose, purposes=(purpose,)),))
     result, _ = await _run_gated(request, analyze=lambda *_args: analysis)
     assert result.status == "partial"
-    take = _takes(result.to_dict())[0]
-    assert take["screens"][0]["blocking"] is True
-    assert take["screens"][0]["evidence"]["pilot_snr_ok"] is False
-    assert take["screens"][0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
+    screens = _takes(result.joined())[0]["verdict"]["screens"]
+    assert screens[0]["blocking"] is True
+    assert screens[0]["evidence"]["pilot_snr_ok"] is False
+    assert screens[0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
 
-    manifest = RunManifest("pilot", _Store(FakeSeams().records), program=purpose)
+    manifest = RunManifest("pilot", _Store(FakeSeams().records), preset=purpose)
     manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
     await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
-                          complete=True, started_s=0, ended_s=1, level_observation={})
+                          complete=True, level_observation={})
     root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")
-    take_artifact_path(round_inputs(root).session_dir, "record").write_text(json.dumps({"take_id": "pilot", "curves": []}))
+    take_artifact_path(round_inputs(root).session_dir, "record").write_text(json.dumps(
+        {"take_id": "pilot", "curves": [], "verdict": asdict(verdict)}))
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest.to_dict()))
     packet = write_round_packet(root, str(path), [])
@@ -1494,12 +1491,11 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
                        attempt=1, pose_index=index)
         record = {"take_id": str(index), "level_db": -99, "provenance": {"session_volume_db": gain}, "phase": "measure", "stimulus_id": program,
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
-        await manifest.append(record, str(index), TakeVerdict(accepted), complete=True, started_s=0, ended_s=1,
+        await manifest.append(record, str(index), TakeVerdict(accepted), complete=True,
                               level_observation=plan_run.level_drift_verdict(**manifest.level_observation(record)).evidence)
         row = next(take for take in manifest.takes if take["take_id"] == str(index))
         assert row["level"]["loudest_half_second_db_spl"] == observed
         assert row["level"]["level_delta_db"] == delta
-        assert row["phase"] == "measure"
     assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"
 
 
@@ -1611,7 +1607,7 @@ def _ladder_execute(monkeypatch, box, levels, *, manifest=None, production=None)
 async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatch, box):
     """The ladder's last published facts count from the joined manifest that
     ``wait`` reprints once banked, so the two "Measured" lines agree."""
-    joined = {"status": "complete", "reason": "", "level": {}, "runs": [], "honoured": {},
+    joined = {"status": "complete", "reason": "", "level": {}, "runs": [], "honoured": {"retakes": 0},
               "sets": [{"takes": [{"take_id": "t1", "selected": True}, {"take_id": "t2", "selected": False}]}],
               "not_measured": [{"pose": {"deg": 0}, "reason": "summed_sweep_heard"}] * 3}
     packet = SimpleNamespace(runs={}, to_dict=lambda: joined, finish=AsyncMock(), update_schedule=AsyncMock())
@@ -1681,4 +1677,8 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
     saved = store.snapshots[-1]
     assert saved["reason"] == "program_admission_refused"
     if site == "transaction":
-        assert saved["sets"][0]["takes"][0]["quality"]["evidence"]["admission"] == admission.to_dict()
+        never_played, = (take for group in saved["sets"] for take in group["takes"])
+        assert never_played == {"take_id": never_played["take_id"], "record_id": "", "selected": False}
+        assert with_records(tmp_path, saved, every_take=True)["sets"] == saved["sets"]
+        stop = saved["not_measured"][0]
+        assert (stop["fault"], stop["evidence"]["admission"]) == ("program_admission_refused", admission.to_dict())

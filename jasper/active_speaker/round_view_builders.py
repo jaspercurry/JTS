@@ -138,7 +138,7 @@ def room_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
     manifest = read_run_manifest(inputs)
     selected = resolve_set(inputs, set_id, manifest=manifest)
     selection = select_seat_takes(
-        inputs.session_dir, purposes=(*run_purposes(manifest["program"]), PURPOSE_ROOM),
+        inputs.session_dir, purposes=(*run_purposes(manifest["preset"]), PURPOSE_ROOM),
         take_ids=selected.selected_ids, basis=selected.capture_basis,
     )
     if not selection.takes:

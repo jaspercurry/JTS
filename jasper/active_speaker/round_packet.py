@@ -54,7 +54,7 @@ class RoundPacket:
         for run in runs:
             for group in run["sets"]:
                 merged = sets.setdefault(group["set_id"], {**group, "takes": []})
-                merged["takes"].extend({**take, "run_id": run["run_id"]} for take in group["takes"])
+                merged["takes"].extend(group["takes"])
         first = runs[0] if runs else self.manifest.to_dict()
         measured = any(take["selected"] for group in sets.values() for take in group["takes"])
         issues = [{"code": run["reason"] or next((row["reason"] for row in run["not_measured"]), "take_incomplete"),
@@ -71,7 +71,7 @@ class RoundPacket:
                 "reason": self.manifest.reason or (issues[0]["code"] if issues and not measured else ""),
                 "honoured": {**first["honoured"], **{
                     key: sum(run["honoured"][key] for run in runs)
-                    for key in ("mic_moves", "stops_planned", "takes_measured", "takes_refused")}},
+                    for key in ("mic_moves", "stops_planned", "takes_measured", "takes_refused", "retakes")}},
                 "attempts": sum(run["attempts"] for run in runs),
                 "wall_s": [value for run in runs for value in run["wall_s"]],
                 "not_measured": [{**take, "run_id": run["run_id"]} for run in runs for take in run["not_measured"]]}
@@ -125,7 +125,7 @@ def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Cal
         table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
         table = json.loads(table_path.read_text())
     except (CrossoverV2Refused, OSError, ValueError, KeyError) as exc:
-        table = {**unavailable(getattr(exc, "code", "bass_fit_inputs_missing")), "error_type": type(exc).__name__}
+        table = {**unavailable(_refusal_code(exc, "bass_fit_inputs_missing")), "error_type": type(exc).__name__}
     packet = json.loads(destination.read_text())
     packet["bass_table"] = table
     atomic_write_json(destination, packet)
@@ -179,20 +179,23 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
 
 
 def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """A set's takes as the packet carries them; only a kept take's record is read, for its gate."""
+    """A set's takes as the packet carries them, each read with its record; only a kept
+    take's curve is read, for its gate. A fault is the verdict's, else the capture's incident (ADR-0395)."""
     role = SetTakes.from_row(group).role
-    return [{**{key: take.get(key) for key in ("take_id", "pose", "selected", "alignment")}, "role": role,
-             "screens": take.get("screens", []), "fault": take.get("fault") or (take.get("quality") or {}).get("fault"),
+    return [{**{key: take.get(key) for key in ("take_id", "pose", "selected")}, "role": role,
+             "alignment": (take.get("level") or {}).get("alignment"), "screens": verdict.get("screens", []),
+             "fault": verdict.get("fault") or take.get("incident") or None,
              **({"record": take["record"]} if "record" in take else {}),
-             **gate_fields(take_curve(take, role) if take["selected"] else None)} for take in group["takes"]]
+             **gate_fields(take_curve(take, role) if take["selected"] else None)}
+            for take in group["takes"] for verdict in [take.get("verdict") or {}]]
 
 
 def write_round_packet(target: Path, manifest_path: str | None, views: list[dict[str, Any]]) -> dict[str, Any]:
     inputs = round_inputs(target)
-    # A kept take whose record cannot be read is disclosed, never the reason a round is not banked.
+    # A record that cannot be read is disclosed, never the reason a round is not banked.
     manifest = with_records(inputs.session_dir, json.loads(Path(manifest_path).read_text()),
-                            disclose=True) if manifest_path else {}
-    purpose = run_purpose(manifest.get("program"))
+                            disclose=True, every_take=True) if manifest_path else {}
+    purpose = run_purpose(manifest.get("preset"))
     errors: list[dict[str, Any]] = []
     series: list[dict[str, Any]] = []
     artifacts: dict[str, Any] = {"frequency_png": None, "frequency_view": None,
@@ -264,7 +267,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     axis = commissioning_alignment(alignments) or {}
     packet = {"schema": ROUND_PACKET_SCHEMA, "round_id": target.name, "run_id": manifest.get("run_id"),
               "result": manifest.get("status"), "reason": manifest.get("reason"),
-              "program": manifest.get("program"), "layout": manifest.get("layout"), "level": manifest.get("level"),
+              "preset": manifest.get("preset"), "layout": manifest.get("layout"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),
               **({"runs": manifest["runs"]} if "runs" in manifest else {}),
               "applied": {**(applied_identity(profile) or {}), "layers": applied_layer_names(profile)},

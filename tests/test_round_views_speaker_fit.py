@@ -220,7 +220,7 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["artifacts"]["record_id"])
+    path = take_artifact_path(inputs.session_dir, read_run_manifest(inputs)["sets"][0]["takes"][0]["record_id"])
     for curve in record["curves"]:
         response = response_from_banked_curve(curve)[0]
         level = 10 if curve["role"] == "tweeter" else 0
@@ -341,7 +341,7 @@ def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_rou
     curve = record["curves"][0]
     poses = [(0, 0)] * 4 + [(h, 0) for h in horizontal] + [(0, v) for v in vertical]
     takes = [{"take_id": f"baseline-{i}", "selected": True, "phase": "measure",
-              "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "timing": {"ended_s": i},
+              "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "captured_at": f"2026-09-29T12:00:{i:02d}Z",
               "curves": [{**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()}]}
              for i, (h, v) in enumerate(poses)]
     manifest = {"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]}
@@ -558,6 +558,28 @@ def test_a_design_cloud_that_refuses_is_disclosed_and_its_takes_fit_nothing(spea
         (fit["reason_summary"], fit["filters"]) == ({"unavailable": TAKE_CURVES_NOT_BANKED}, None) for fit in packet["fits"])
 
 
+def test_a_named_take_the_round_did_not_keep_refuses_with_its_verdict(speaker_round, capsys):
+    """#6067: a take the operator names that the run banked but did not keep
+    refuses ``round_take_not_kept`` with its record's status, fault and next
+    action, so the view joins every take of the set it names (ADR-0395)."""
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    row = next(row for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
+    refused = {**record, "take_id": "refused", "measurement_status": "captured",
+               "verdict": {"ok": False, "fault": "level_off_target", "next": "retake_louder"}}
+    path = str(Path(row.path).with_name("refused.json"))
+    take_artifact_path(inputs.session_dir, path).write_text(json.dumps(refused))
+    group = manifest_set([(row.path, record), (path, refused)], set_id="speaker-set", selected={record["take_id"]})
+    group["capture_basis"].update(role="woofer")
+    write_manifest(root, groups=[group])
+
+    assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set", "--take", "refused"]) == (
+        round_views.EXIT_REFUSED)
+    refusal = json.loads(capsys.readouterr().out)
+    assert (refusal["reason"], {key: refusal["detail"][key] for key in ("status", "fault", "next")}) == (
+        "round_take_not_kept", {"status": "captured", "fault": "level_off_target", "next": "retake_louder"})
+
+
 @pytest.mark.parametrize("applied", [False, True])
 def test_mic_tier_uses_the_recorded_calibration(speaker_round, capsys, applied):
     root, record, *_ = speaker_round
@@ -740,13 +762,13 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     levels = {"tweeter": {"alignment_level_db": -26, "alignment_snr_shortfall_db": {"before": 12.5, "after": 8.5},
                           "alignment_level_capped_by": "driver_cap", "alignment_snr_residual_shortfall_db": 8.5}}
     take = own_record(group["takes"][0], record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
-                      quality={"evidence": evidence}, timing={"ended_s": 2}, alignment=levels)
+                      verdict={"evidence": evidence}, level={**record["level"], "alignment": levels})
     group["takes"] = [take]
     refused = {**take, "take_id": "refused", "selected": False}
     if fault:
-        refused.update({"quality": {"fault": fault}} if held else {"fault": fault})
+        refused.update({"verdict": {**take["verdict"], "fault": fault}} if held else {"incident": fault})
     group["takes"] += [refused, {**take, "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20},
-                               "analysis": {**analysis, "delay_us": 900}, "timing": {"ended_s": 3}}]
+                               "analysis": {**analysis, "delay_us": 900}}]
     write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
         **group["capture_basis"], "role": "tweeter"}}])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
@@ -853,7 +875,8 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
             group.update(base=base)
             group["capture_basis"].update(role=role, candidate_id="base" if base else "candidate")
             groups.append(group)
-    manifest = write_manifest(root, groups=groups)
+    write_manifest(root, groups=groups)
+    manifest = _joined(inputs)
     applied_path = tmp_path / "applied-profile.json"
     applied_path.write_text(json.dumps({**_fixture_applied_profile(fc_hz=2400),
                                        "kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION}))
@@ -949,12 +972,13 @@ def test_first_speaker_round_banks_its_timing_read_and_no_candidate(
     group.update(base=not trial)
     group["capture_basis"].update(candidate_id=declared.fingerprint if trial else None)
     group["takes"] = [own_record(group["takes"][0], record, analysis=analysis, attempt=2,
-                                 timing={"started_s": 190, "ended_s": 200},
+                                 captured_at="2026-09-29T12:00:02Z",
                                  pose={"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1})]
     off_axis = {**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 30},
-                "timing": {"ended_s": 400}, "analysis": {**analysis, "delay_us": 999}}
-    unselected = {**group["takes"][0], "take_id": "unselected", "selected": False, "timing": {"ended_s": 300}}
-    older = {**group, "set_id": "older-set", "takes": [{**group["takes"][0], "take_id": "older", "attempt": 1, "timing": {"ended_s": 200},
+                "captured_at": "2026-09-29T12:00:04Z", "analysis": {**analysis, "delay_us": 999}}
+    unselected = {**group["takes"][0], "take_id": "unselected", "selected": False, "captured_at": "2026-09-29T12:00:03Z"}
+    older = {**group, "set_id": "older-set", "takes": [{**group["takes"][0], "take_id": "older", "attempt": 1,
+                                                       "captured_at": "2026-09-29T12:00:02Z",
              "analysis": {**analysis, "delay_us": 75, "alignment_seed_delay_us": 75, "trim_db": {"woofer": 0, "tweeter": -6}}}]}
     group["takes"].extend([off_axis, unselected, {**off_axis, "take_id": "verify", "phase": "verify",
                                                 "pose": group["takes"][0]["pose"]}])

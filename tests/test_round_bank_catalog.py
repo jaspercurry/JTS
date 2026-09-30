@@ -14,7 +14,8 @@ from jasper.active_speaker import baseline_profile, bundles
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import resolve_set, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, resolve_set, round_inputs
+from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR
 from jasper.active_speaker.round_bank import (
     REASON_ROUND_AMBIGUOUS, REASON_ROUND_NOT_FOUND, RoundBankError, bank_round, list_rounds, resolve_round,
     show_round,
@@ -52,7 +53,7 @@ def test_a_row_is_what_the_round_recorded(campaign):
     selected = resolve_set(round_inputs(campaign / "r1"))
 
     assert list_rounds()[0] == {
-        "round_id": "r1", "round_dir": str(campaign / "r1"), "program": "speaker", "layout": None, "purposes": ["speaker"],
+        "round_id": "r1", "round_dir": str(campaign / "r1"), "preset": "speaker", "layout": None, "purposes": ["speaker"],
         "banked_at": parse_utc_iso(_BANKED_AT["r1"]), "result": "complete",
         "sets": {selected.set_id: len(selected.selected_ids)},
         "applied_identity": applied_identity(_applied_anchor()),
@@ -108,15 +109,20 @@ def test_show_names_the_takes_every_view_accepts(campaign):
         (selected.set_id, list(selected.selected_ids))]
 
 
-def test_the_catalog_reads_each_rounds_manifest_rows_only(campaign):
-    """``list`` and ``show`` read a round's run manifest, never a take's record (#5737 C1b)."""
+def test_list_reads_manifest_rows_and_show_reads_each_kept_takes_pose(campaign):
+    """``list`` counts a round's kept takes from its run manifest's rows; ``show``
+    names each kept take's pose, which only its record holds (ADR-0395)."""
     inputs = round_inputs(campaign / "r1")
-    selected = resolve_set(inputs)
+    selected = resolve_set(inputs).with_records(inputs.session_dir)
+    assert [take["pose"] for take in show_round("r1")["sets"][0]["takes"]] == [
+        take["pose"] for take in selected.takes if take["selected"]]
     for take in selected.takes:
-        take_artifact_path(inputs.session_dir, take["artifacts"]["record_id"]).write_text("{")
+        take_artifact_path(inputs.session_dir, take["record_id"]).write_text("{")
 
     assert list_rounds()[0]["sets"] == {selected.set_id: len(selected.selected_ids)}
-    assert [take["take_id"] for take in show_round("r1")["sets"][0]["takes"]] == list(selected.selected_ids)
+    with pytest.raises(RoundSetRefused) as refused:
+        show_round("r1")
+    assert refused.value.reason == CAPTURE_UNREADABLE_SIDECAR
 
 
 def test_a_view_reads_a_round_by_id_as_by_its_path(campaign, tmp_path, monkeypatch, capsys):

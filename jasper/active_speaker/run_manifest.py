@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.platform.json_fields import finite_float
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.platform.speaker_layout import measurement_target_parts
@@ -66,14 +67,39 @@ def kept_measurements(
             yield row, document
 
 
+class RoundSetRefused(ValueError):
+    """A round's reader refuses by ``reason``, with ``detail`` naming what it read."""
+
+    def __init__(self, reason: str, **detail: Any) -> None:
+        self.reason, self.detail = reason, detail
+        super().__init__(reason)
+
+
+def row_record_id(row: Mapping[str, Any]) -> str:
+    """The record a take row points at. A row with none was banked before the
+    rows became pointers, and refuses by that field (#2902, ADR-0395)."""
+    if "record_id" not in row:
+        raise RoundSetRefused(TAKE_CURVES_NOT_BANKED, take_id=row.get("take_id"), field="record_id")
+    return str(row["record_id"])
+
+
+def pointer_rows(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    """``manifest``, once every take row points at its record: one banked before
+    the rows became pointers refuses by that field (#2902, ADR-0395 §5)."""
+    for group in manifest.get("sets", ()):
+        for take in group["takes"]:
+            row_record_id(take)
+    return manifest
+
+
 def _kept_record_ids(bundle_dir: Path) -> frozenset[str]:
     manifests = (bundle_dir / EVIDENCE_ROOT / "artifacts").glob(f"crossover_v2/*/{RUN_MANIFEST_FILENAME}")
     return frozenset(
-        take["artifacts"]["record_id"]
+        row_record_id(take)
         for path in manifests
         for group in (read_json_mapping(path) or {}).get("sets", ())
         for take in group["takes"]
-        if take["selected"] and take["quality"]["status"] == TAKE_MEASURED
+        if take["selected"]
     )
 
 
@@ -99,16 +125,17 @@ def driver_level_mismatches(manifest: Mapping[str, Any]) -> list[dict[str, Any]]
     ``pose_place`` counts once per driver) where the drivers of one role play more
     than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
     ``unit_drive_db_spl`` is the median, over its kept takes, of the level its
-    located sweeps read (ADR-0364) less the stimulus gain and the fader it played
-    at. Only close poses compare: from one far bearing a rear-facing driver also
-    reads its own off-axis loss and the cabinet's shadow. A finding, never a
-    refusal (#5714)."""
+    located sweeps read (ADR-0364) less the stimulus gain and the fader its set
+    played at; the takes are read with their records (ADR-0395). Only close
+    poses compare: from one far bearing a rear-facing driver also reads its own
+    off-axis loss and the cabinet's shadow. A finding, never a refusal (#5714)."""
     heard: dict[tuple[str, str], dict[str, list[float]]] = {}
-    for take in (take for group in view_sets(manifest) for take in group["takes"] if take.get("selected")):
-        pose, level = take.get("pose") or {}, take.get("level") or {}
+    for basis, take in ((group["capture_basis"], take) for group in view_sets(manifest)
+                        for take in group["takes"] if take.get("selected")):
+        pose = take.get("pose") or {}
         spl, gain, fader = (finite_float(value) for value in (
-            ((take.get("quality") or {}).get("evidence") or {}).get("level_db_spl"),
-            level.get("stimulus_dbfs"), level.get("level_db")))
+            ((take.get("verdict") or {}).get("evidence") or {}).get("level_db_spl"),
+            basis.get("stimulus_dbfs"), basis.get("level_db")))
         if (pose.get("driver") and pose.get("kind") == POSE_KIND_CLOSE
                 and spl is not None and gain is not None and fader is not None):
             place = json.dumps({key: value for key, value in pose.items() if key not in {"driver", "place"}},
@@ -163,7 +190,7 @@ class RunManifest:
     records: RecordStore
     calibration: Mapping[str, Any] = field(default_factory=lambda: {"id": None, "curve_fingerprint": None})
     incumbent: Mapping[str, Any] = field(default_factory=lambda: {"speaker": None, "room": None, "bass": None})
-    program: str = ""
+    preset: str = ""
     layout: str = ""
     request_fingerprint: str = ""
     asked: dict[str, Any] = field(default_factory=dict)
@@ -188,6 +215,7 @@ class RunManifest:
     _attempts: int = 0
     _sets: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _chosen: dict[tuple[int, int], str] = field(default_factory=dict, repr=False)
+    _banked: dict[str, Mapping[str, Any]] = field(default_factory=dict, repr=False)
 
     @property
     def takes(self) -> list[dict[str, Any]]:
@@ -204,7 +232,7 @@ class RunManifest:
 
     @property
     def takes_measured(self) -> int:
-        return len({t["artifacts"]["record_id"] for t in self.takes if t["artifacts"]["record_id"]})
+        return len({t["record_id"] for t in self.takes if t["record_id"]})
 
     @property
     def takes_skipped(self) -> int:
@@ -247,15 +275,15 @@ class RunManifest:
     def capture_record(self, record: Mapping[str, Any]) -> dict[str, Any]:
         pose = self._context["pose"]
         planned = {
-            "preset": self.program, "layout": self.layout,
+            "preset": self.preset, "layout": self.layout,
             "pose": {"driver": None, **{key: value for key, value in pose.items() if key != "place"}},
             "pose_kind": pose["kind"], "mark_distance_m": pose.get("distance_m"),
             "seat_offset_m": pose.get("seat_offset_m"), "pose_driver": pose.get("driver"),
             "measurement_purpose": self._context["purpose"], "purposes": list(self._context["purposes"]),
         }
-        context: dict[str, Any] = {key: self._context[key] for key in ("index", "attempt", "repeat", "capture_index")
-                                   if key in self._context}
-        return {**planned, **record, **context}
+        context: dict[str, Any] = {key: self._context[key] for key in (
+            "index", "attempt", "repeat", "capture_index", "pose_index") if key in self._context}
+        return {**planned, **record, **context, "stimulus_ordinal": len(self.pending_records)}
 
     async def bank(self, record: Mapping[str, Any]) -> str:
         from .crossover_v2.capture_provenance import finite_json  # lazy: it loads the analysis stack
@@ -263,9 +291,15 @@ class RunManifest:
         payload = self.capture_record(record)
         assert self.judge is not None
         verdict, observed = await self.judge(payload)
-        payload.update(finite_json({"verdict": asdict(verdict), "level": _take_level(_played_basis(payload), observed)}))
+        previous = max((take for take in self.takes if take["index"] == payload.get("index")
+                        and take["stimulus_ordinal"] == payload["stimulus_ordinal"] and take.get("alignment")),
+                       key=lambda take: take["attempt"], default={}).get("alignment", {})
+        payload.update(finite_json({"verdict": asdict(verdict), "level": {
+            **_take_level(_played_basis(payload), observed),
+            "alignment": capture_alignment_levels(verdict.evidence, previous)}}))
         record_id = await self.records.bank(payload)
         self.pending_records.append((payload, record_id))
+        self._banked[record_id] = payload
         return record_id
 
     def level_observation(self, record: Mapping[str, Any]) -> dict[str, Any]:
@@ -293,19 +327,18 @@ class RunManifest:
 
     async def append(
         self, record: Mapping[str, Any], record_id: str, verdict: TakeVerdict, *,
-        complete: bool, started_s: float, ended_s: float, level_observation: Mapping[str, Any], ordinal: int = 0,
+        complete: bool, level_observation: Mapping[str, Any], ordinal: int = 0,
     ) -> None:
+        """One take's row in each role's set. The live row holds the stop and what
+        the run decided of the take; the record holds the take (ADR-0395)."""
         record = {"candidate_id": self._context.get("candidate_id"), **record}
-        curves = {curve["role"]: curve for curve in record.get("curves", [])}
         sweeps = [segment for segment in (record.get("program") or {}).get("segments", [])
                   if segment.get("kind") in {KIND_SWEEP, KIND_SUMMED_SWEEP}]
-        roles = (set(curves) | {str(segment.get("role") or "summed") for segment in sweeps}) or {record.get("role", "summed")}
+        roles = ({curve["role"] for curve in record.get("curves", [])}
+                 | {str(segment.get("role") or "summed") for segment in sweeps}) or {record.get("role", "summed")}
         take_id = str(record["take_id"])
         status = TAKE_MEASURED if complete and verdict.ok else TAKE_INCOMPLETE if not complete else "refused"
-        previous = max((take for take in self.takes if take["index"] == self._context["index"]
-                        and take["stimulus_ordinal"] == ordinal and take.get("alignment")),
-                       key=lambda take: take["attempt"], default={}).get("alignment", {})
-        alignment = capture_alignment_levels(verdict.evidence, previous)
+        alignment = (record.get("level") or {}).get("alignment") or {}
         for role in sorted(roles):
             basis = _played_basis(record, role)
             # Pose is an observation axis, never a set boundary (brief §2.4).
@@ -314,29 +347,18 @@ class RunManifest:
             set_id = json_fingerprint(basis)
             group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
                 "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})
-            curve = curves.get(role, {})
-            band = curve.get("band_hz")
-            if band:
-                lower = max(band[0], curve.get("validity_floor_hz") or band[0])
-                band = [lower, band[1]] if lower < band[1] else None
-            row = {**self._context, "take_id": take_id, "stimulus_ordinal": ordinal,
-                   "phase": record["phase"] if "phase" in record else self._context.get("phase"),
-                   "side": basis["side"], "role": role,
-                   "level": _take_level(basis, level_observation),
-                   "analysis": record.get("analysis"), "curve": curve or None, "alignment": alignment,
-                   "screens": verdict.screens,
-                   "quality": {"status": status,
-                               "evidence": verdict.evidence, "capabilities": verdict.capabilities,
-                               "usable_band_hz": band},
-                   **({"fault": verdict.fault, "next": verdict.next, "charge": verdict.charge}
-                      if verdict.next != "accept" or not complete else {}),
-                   "next_gain_db": verdict.next_gain_db,
-                   "artifacts": {"record_id": record_id, "wav_sha256": record.get("wav_sha256"),
-                                 "wav_path": record.get("wav_path")},
-                   "timing": {"started_s": started_s, "ended_s": ended_s}}
-            group["takes"].append(row)
+            group["takes"].append({
+                **self._context, "take_id": take_id, "record_id": record_id, "stimulus_ordinal": ordinal,
+                "level": _take_level(basis, level_observation), "alignment": alignment, "quality": {"status": status},
+                **({"fault": verdict.fault, "next": verdict.next, "charge": verdict.charge}
+                   if verdict.next != "accept" or not complete else {})})
         if complete and verdict.ok:
             self._chosen[(self._context["index"], ordinal)] = take_id
+        if not record_id:
+            # A take whose program never played banks no record and stops the run:
+            # its stop, not measured, keeps its fault and evidence (ADR-0395 §7).
+            next(stop for stop in self.planned if stop["index"] == self._context["index"]).update(
+                fault=verdict.fault, evidence=verdict.evidence)
         await self.persist()
 
     async def persist(self) -> None:
@@ -345,16 +367,25 @@ class RunManifest:
     def to_dict(self) -> dict[str, Any]:
         chosen = set(self._chosen.values())
         return {
-            "kind": RUN_MANIFEST_KIND, "schema_version": 2, "run_id": self.run_id,
-            "program": self.program, "layout": self.layout, "request_fingerprint": self.request_fingerprint,
+            "kind": RUN_MANIFEST_KIND, "schema_version": 3, "run_id": self.run_id,
+            "preset": self.preset, "layout": self.layout, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
             "level": self.level,
             "honoured": {"spl_monitor": self.spl_monitor, "mic_moves": self.mic_moves,
                          "stops_planned": self.stops_planned, "takes_measured": self.takes_measured,
-                         "takes_refused": len({t["take_id"] for t in self.takes if t["quality"]["status"] != TAKE_MEASURED})},
-            "sets": [{**group, "takes": [take | {"selected": take["take_id"] in chosen}
-                                         for take in group["takes"]]} for group in self._sets.values()],
+                         "takes_refused": len({t["take_id"] for t in self.takes if t["quality"]["status"] != TAKE_MEASURED}),
+                         "retakes": len({t["take_id"] for t in self.takes if t.get("attempt", 1) > 1 and not t.get("replay")})},
+            "sets": [{**group, "takes": [{"take_id": take["take_id"], "record_id": take["record_id"],
+                                          "selected": take["take_id"] in chosen} for take in group["takes"]]}
+                     for group in self._sets.values()],
             "status": self.status, "finalized": self.finalized,
             "reason": self.reason, "detail": self.detail, "stopped_at": self.stopped_at,
             "not_measured": self.not_measured, "attempts": self.attempts, "wall_s": self.wall_s,
         }
+
+    def joined(self) -> dict[str, Any]:
+        """:meth:`to_dict` with each take read with the record it banked, as a
+        round's readers join a kept take (ADR-0395)."""
+        document = self.to_dict()
+        return {**document, "sets": [{**group, "takes": [{**take, **self._banked.get(take["record_id"], {})}
+                                                         for take in group["takes"]]} for group in document["sets"]]}

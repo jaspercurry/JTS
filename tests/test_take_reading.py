@@ -151,9 +151,11 @@ def test_a_read_says_which_window_it_used_and_bands_only_what_it_read():
 
 def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:
     """One banked round of bare-delta takes under its own session. A set is its
-    takes, ``(take_id, bearing[, run_id, ended_s[, selected]])``, or :func:`_set`'s
-    takes and capture-basis fields; a set named ``base…`` is base, and a driver
-    ``role`` set's takes keep that role's impulse beside their recording."""
+    takes, ``(take_id, bearing[, run_id, second[, selected]])``, each record
+    banking its run and the second of the minute it was captured, or
+    :func:`_set`'s takes and capture-basis fields; a set named ``base…`` is
+    base, and a driver ``role`` set's takes keep that role's impulse beside
+    their recording."""
     specs = {set_id: spec if isinstance(spec, tuple) else (spec, {}) for set_id, spec in sets.items()}
     rows = {set_id: [take + (None, 0, True)[len(take) - 2:] for take in takes] for set_id, (takes, _) in specs.items()}
     takes = [take for set_takes in rows.values() for take in set_takes]
@@ -173,11 +175,15 @@ def _banked(store: Path, name: str, banked_at: str, sets: dict) -> Path:
             doc["impulses"] = write_take_impulses(session, take_id, SimpleNamespace(
                 summed_response=None, driver_responses=(_response(basis["role"], 300),)), recording=doc["wav_path"])
             (session / record).write_text(json.dumps(doc))
+        for take_id, _, run_id, second, _ in set_takes:
+            record, doc = docs[take_id]
+            doc.update(run_id=run_id, captured_at=f"2026-09-01T00:00:{second:02d}Z")
+            (session / record).write_text(json.dumps(doc))
         group = manifest_set([docs[take[0]] for take in set_takes], set_id=set_id)
         group["base"] = set_id.startswith("base")
         group["capture_basis"].update(basis)
-        for row, (*_, run_id, ended_s, selected) in zip(group["takes"], set_takes):
-            row.update(run_id=run_id, timing={"ended_s": ended_s}, selected=selected)
+        for row, (*_, selected) in zip(group["takes"], set_takes):
+            row.update(selected=selected)
         groups.append(group)
     write_manifest(root, groups=groups)
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": banked_at}))
@@ -271,36 +277,47 @@ def test_compare_with_one_take_reads_its_comparand_by_the_one_rule(
                                     "mismatched_fields", "unknown_fields"}
 
 
-def test_the_comparand_rule_reads_run_manifest_rows_only(tmp_path):
-    """ADR-0391's rule reads each round's rows (pose, run, take order), so no
-    earlier round's take record is read to find a comparand (#5737 C1b)."""
+def test_a_kept_record_the_rule_cannot_read_is_no_comparand(tmp_path):
+    """The rule reads each kept take with its record (ADR-0395), and one it
+    cannot read, in B's own round too, is no candidate, never the reason the
+    rule fails (ADR-0101)."""
     store = tmp_path / "campaigns"
     earlier = _banked(store, "e", "2026-09-20T12:00:00Z", {"base": [("e0", 0)]})
-    this = _banked(store, "r", "2026-09-21T12:00:00Z", {"cand": [("c0", 0)]})
-    for record in (earlier / "bundle" / "e").glob("summed/*.json"):
-        record.write_text("{")
+    this = _banked(store, "r", "2026-09-21T12:00:00Z", {"base": [("r0", 0)], "cand": [("c0", 0)]})
+    for record in (this / "bundle" / "r").glob("summed/*.json"):
+        if json.loads(record.read_text())["position_id"] == "r0":
+            record.write_text("{")
 
     found = comparand(this, "cand", "c0", "summed")
 
-    assert found is not None and (found.source, found.round_dir, found.set_id, found.take_id) == (
-        COMPARAND_EARLIER_ROUND, earlier, "base", "e0")
+    assert found is not None and (found.source, found.round_dir, found.take_id) == (COMPARAND_EARLIER_ROUND, earlier, "e0")
 
 
-@pytest.mark.parametrize("malformed", [
-    lambda manifest: manifest["sets"][0].pop("capture_basis"),
-    lambda manifest: manifest["sets"][0].pop("takes"),
-    lambda manifest: manifest["sets"][0]["takes"][0].pop("selected"),
-], ids=["set-without-basis", "set-without-takes", "take-without-selected"])
-def test_an_earlier_round_with_a_malformed_row_is_passed_over(tmp_path, malformed):
-    """A default is a convenience, never a refusal (ADR-0101)."""
+def _rewritten(change):
+    """A damage that edits a round's run manifest with ``change``."""
+    def damage(root):
+        path, = root.rglob(RUN_MANIFEST_FILENAME)
+        manifest = json.loads(path.read_text())
+        change(manifest)
+        path.write_text(json.dumps(manifest))
+    return damage
+
+
+@pytest.mark.parametrize("damage", [
+    _rewritten(lambda manifest: manifest["sets"][0].pop("capture_basis")),
+    _rewritten(lambda manifest: manifest["sets"][0].pop("takes")),
+    _rewritten(lambda manifest: manifest["sets"][0]["takes"][0].pop("selected")),
+    lambda root: [record.write_text("{") for record in root.rglob("summed/*.json")],
+], ids=["set-without-basis", "set-without-takes", "take-without-selected", "kept-record-unreadable"])
+def test_an_earlier_round_that_cannot_be_read_is_passed_over(tmp_path, damage):
+    """A default is a convenience, never a refusal (ADR-0101): an earlier round
+    with a malformed row, or whose kept record the rule cannot read (it reads
+    each kept take with its record, ADR-0395), holds no comparand."""
     store = tmp_path / "campaigns"
     older = _banked(store, "o", "2026-09-19T12:00:00Z", {"base": [("o0", 0)]})
     broken = _banked(store, "e", "2026-09-20T12:00:00Z", {"base": [("e0", 0)]})
     this = _banked(store, "r", "2026-09-21T12:00:00Z", {"cand": [("c0", 0)]})
-    path, = broken.rglob(RUN_MANIFEST_FILENAME)
-    manifest = json.loads(path.read_text())
-    malformed(manifest)
-    path.write_text(json.dumps(manifest))
+    damage(broken)
 
     found = comparand(this, "cand", "c0", "summed")
 
