@@ -252,9 +252,9 @@ function startingCard() {
 function tuningCard() {
   return section('4. Tuning', view.stage === 'tune',
     h('div', {}, h('h3', {}, 'Tune with an AI assistant'),
-      h('p', {}, 'Connect to this Pi from an AI coding assistant such as Claude or Codex. Copy a program’s prompt into that session. The assistant will guide you and provide a link to take measurements.'),
-      // The measurement page measures an active crossover: a passive speaker has no speaker program.
-      view.programs.some(program => program.id === 'speaker') && h('a.btn.btn--ghost', { href: 'crossover/' }, 'Take measurements')),
+      h('p', {}, 'Connect to this Pi from an AI coding assistant such as Claude or Codex. Copy a program’s prompt into that session. The assistant will guide you and provide a link to take measurements.')),
+    // The measurement page measures an active crossover: a passive speaker has no speaker program.
+    view.programs.some(program => program.id === 'speaker') && h('a.btn.btn--ghost', { href: 'crossover/' }, 'Take measurements'),
     view.programs.map(program =>
       h('div.speaker-program', {}, h('h3', {}, program.title), h('p', {}, program.description),
         program.applied && h('p.form-hint', {}, 'Correction applied'),
