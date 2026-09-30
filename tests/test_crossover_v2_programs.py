@@ -905,11 +905,12 @@ DRIVER_POSES = """[
 def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
     """Every take of every shipped preset and layout, and a driver's pose at each
     kind and distance, at any level asked up to full scale, plays at or under
-    that level: one driver alone, a branch take's probes too, at or under the
-    seat-equivalent level under that driver's cap (ADR-0361 §1), each MEASURE driver at or under its own
-    CHECK plan, moved with the level asked, under its cap, and every other take
-    at or under the seat-equivalent level under the tightest cap. A driver's
-    take or CHECK whose graph's level is unknown stays its blind cut lower."""
+    that level: one driver alone (a branch take's probes too) at or under the
+    seat-equivalent level under that driver's cap (ADR-0361 §1), each MEASURE
+    driver at or under its own CHECK plan, moved with the level asked, under its
+    cap, and every other take at or under the seat-equivalent level under the
+    tightest cap. A driver's take or CHECK whose graph's level is unknown stays
+    its blind cut lower."""
     topology, safety, targets = _profile_and_targets(rear=True, woofer_floor=30, woofer_upper=4000,
                                                      max_sweep_duration_s=8)
     bands = {target: resolve_driver_excitation_ceilings(safety, fingerprint, program_admission=True)[0]
