@@ -604,23 +604,25 @@ def _archive_serves(monkeypatch, *documents: dict) -> None:
                         lambda _bundle: [(None, document) for document in documents])
 
 
-def test_an_archive_run_carries_its_bundles_identity(tmp_path, monkeypatch):
-    (tmp_path / "info.json").write_text(json.dumps({"fingerprints": {"mic": {"calibration_id": "mic-a"}}}))
-    _archive_serves(monkeypatch, {
-        "take_id": "axis",
-        "position_deg": 0,
-        "phase": "measure",
-        "curves": [{
-            "role": "woofer",
-            "freqs_hz": [100.0, 1000.0],
-            "magnitude_db": [-30.0, -20.0],
-        }],
-    })
+def _applied(calibration_id: str, *, applied: bool = True) -> dict:
+    return {"applied": applied, "calibration_id": calibration_id, "curve_fingerprint": "curve" if applied else None}
+
+
+@pytest.mark.parametrize("calibrations, expected", [
+    ([_applied("mic-a")], "mic-a"),
+    ([_applied("mic-b"), _applied("mic-a"), _applied("mic-a")], "mic-a, mic-b"),
+    ([None, _applied("mic-a")], "mic-a"),
+    ([_applied("mic-a", applied=False)], None),
+    ([None], None),
+])
+def test_an_archive_run_names_the_mic_calibration_its_takes_applied(tmp_path, monkeypatch, calibrations, expected):
+    (tmp_path / "info.json").write_text(json.dumps({"fingerprints": {"mic": {"calibration_id": "opened-with"}}}))
+    _archive_serves(monkeypatch, *({"take_id": f"take_{index}", **({"capture_calibration": calibration} if calibration else {})}
+                                   for index, calibration in enumerate(calibrations)))
 
     run = measurement_archive.load_measurement(ArchivedMeasurement("saved", tmp_path, 1.0, "applied"))
 
-    assert [series.id for series in run.series] == ["axis:woofer"]
-    assert run.metadata["mic_calibration_id"] == "mic-a"
+    assert run.metadata["mic_calibration_id"] == expected
 
 
 @pytest.mark.parametrize("curves", [[], [{"role": "summed", "freqs_hz": [100.0, 1000.0], "magnitude_db": [-20.0, -21.0]}]])
