@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""Manifest fixtures for retained rounds and legacy sidecar captures."""
+"""Manifest fixtures for retained rounds."""
 
 import json
 import os
@@ -32,9 +32,6 @@ def write_bundle_manifest(
         directory.mkdir(parents=True, exist_ok=True)
     if groups is None:
         records = [(row.path, record) for row, record in measurement_documents(session_dir)]
-        if not records:
-            records = [(str(path.relative_to(session_dir)), json.loads(path.read_text()))
-                       for path in sorted(session_dir.glob("summed/*.json"))]
         groups = [manifest_set(records, selected=selected, refused=refused)]
     manifest = {"kind": "jts_run_manifest", "schema_version": 3, "preset": program,
                 "run_id": "fixture", "finalized": True, "status": "complete", "honoured": {"retakes": 0},
@@ -49,8 +46,8 @@ def _banked(session_dir: Path, index: int, group: dict) -> dict:
     (one with no ``artifacts``) is banked as its own record, which the scan of
     banked takes never finds. A row :func:`manifest_set` built from a banked
     record lends that record the facts the executor banks on it, where the
-    record lacks them, and a legacy sidecar named from the bundle is named from
-    the artifacts root."""
+    record lacks them, and a record named from the bundle is named from the
+    artifacts root."""
     root = take_artifact_path(session_dir, "")
     takes = []
     for number, take in enumerate(group["takes"]):

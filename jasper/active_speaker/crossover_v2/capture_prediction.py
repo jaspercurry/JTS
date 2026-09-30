@@ -61,7 +61,7 @@ def read_diagnostic(round_dir: Path, capture_id: str, window_ms: float,
     if len(branch_roles) != 2 or any(not isinstance(role, str) or not role or role == "summed" for role in branch_roles) or len(set(branch_roles)) != 2:
         raise ForwardModelError("select two distinct recorded branch identities", detail={"field": "branch_roles"})
     captures = select_capture_roles(round_dir, capture_id=capture_id, roles=(*branch_roles, "summed"),
-                                    omitted=omitted, clocked=True)
+                                    omitted=omitted)
     summed = captures["summed"]
     rate = summed.sample_rate
     pre = max(float(c.preprocessing["pre_guard_samples"]) for c in captures.values())

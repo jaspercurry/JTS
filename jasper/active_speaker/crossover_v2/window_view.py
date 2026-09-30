@@ -54,8 +54,8 @@ def window_view(round_dir: Path, *, capture_id: str, rungs_ms: Sequence[float], 
                 "time_reference_sample": capture.peak_idx,
             },
             "limitations": (
-                "Raw program-bound impulse; no microphone correction. See preprocessing for clock correction. "
-                "Timing retains the deconvolution sample axis; branch preprocessing binds it to the recording schedule. One reference for all windows. "
+                "The impulse the take kept; no microphone correction. Timing is on the take's recording clock: "
+                "preprocessing gives its pre-guard and drift shift. One reference for all windows. "
                 "Usable bands describe window resolution, not freedom from reflections."
             ),
         },

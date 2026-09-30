@@ -171,7 +171,7 @@ def frequency_run_from_capture_prediction(
         measurement_family="speaker_prediction",
         started_at=started_at,
         state=state,
-        series=(*share_run_reference(responses, None), *differences),
+        series=(*share_run_reference(responses), *differences),
         metadata={
             "source": "capture prediction artifact",
             "summary": dict(summary),

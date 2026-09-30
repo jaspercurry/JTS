@@ -82,8 +82,7 @@ def _mic_calibration_id(records: Iterable[Mapping[str, Any]]) -> str | None:
 
 
 def load_measurement(
-    run: ArchivedMeasurement, *, run_reference_db: float | None = None,
-    documents: Iterable[tuple[Measurement, Mapping[str, Any]]] | None = None,
+    run: ArchivedMeasurement, *, documents: Iterable[tuple[Measurement, Mapping[str, Any]]] | None = None,
 ) -> FrequencyRun:
     """Load one archive entry from its banked take records, or from ``documents``
     when the caller already read them (:func:`measurement_documents`)."""
@@ -95,7 +94,6 @@ def load_measurement(
         documents=[banked_document(record) for record in records],
         started_at=run.started_at,
         state=run.state,
-        run_reference_db=run_reference_db,
     )
     metadata = {**direct.metadata, **_bundle_identity(run.bundle_dir),
                 "mic_calibration_id": _mic_calibration_id(records)}

@@ -4,11 +4,11 @@
 
 """The gate sweep's discriminator, on synthetic rounds with known answers.
 
-Every fixture here is built, not banked: a program sweep, a known impulse
-response per pose, and the convolution of the two written as a capture. That
-makes the answer knowable in advance — a common-mode late arrival CANNOT
-produce across-pose divergence, a pose-varying one must, and an injected
-notch's window bias is exactly what the null model has to subtract.
+Every fixture here is built, not banked: a known impulse response per pose,
+kept as that take's impulse. That makes the answer knowable in advance — a
+common-mode late arrival CANNOT produce across-pose divergence, a
+pose-varying one must, and an injected notch's window bias is exactly what
+the null model has to subtract.
 
 No hardware, no banked captures, no network.
 """
@@ -39,6 +39,7 @@ from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from tests.crossover_v2_fixtures import (
     CAPTURE_AZIMUTHS_DEG as AZIMUTHS_DEG,
     CAPTURE_RATE as RATE,
+    CAPTURE_RECORDS,
     bank_capture_round,
 )
 
@@ -149,15 +150,15 @@ def in_memory_round(
 ) -> tuple[Path, tuple[PoseCapture, ...]]:
     """One round on disk, and the same captures stripped to what is computed on.
 
-    The stripped copies carry no WAV, no program and no phase — a number that
-    moved with those would be a number the engine had no business reading.
+    The stripped copies carry no WAV, no program hash and no phase — a number
+    that moved with those would be a number the engine had no business reading.
     """
     root = bank_capture_round(
         tmp_path_factory.mktemp("in_memory"),
         [_pose_ir(i, late_copy_ms=8.0 + 0.9 * i) for i in range(3)],
     )
     stripped = tuple(
-        replace(capture, phase=None, wav=None, program=None, program_sha256="")
+        replace(capture, phase=None, wav=None, program_sha256="")
         for capture in discover_captures(root)
     )
     return root, stripped
@@ -171,7 +172,6 @@ def height_varying_feature() -> dict:
             capture_id=f"mixed_{index:02d}",
             phase=None,
             wav=None,
-            program=None,
             program_sha256="",
             azimuth_deg=azimuth_deg,
             vertical_deg=vertical_deg,
@@ -573,7 +573,6 @@ def test_a_feature_whose_centre_walks_between_the_rungs_reads_moved() -> None:
                 capture_id=f"walk_{index:02d}",
                 phase=None,
                 wav=None,
-                program=None,
                 program_sha256="",
                 azimuth_deg=AZIMUTHS_DEG[index],
                 vertical_deg=0.0,
@@ -704,7 +703,7 @@ def test_every_published_sigma_declares_the_kind_of_spread_it_is(
 def test_gate_sweep_never_pools_candidate_graphs_at_one_pose(tmp_path):
     import json
     root = bank_capture_round(tmp_path, [_pose_ir(i, late_copy_ms=8) for i in range(len(AZIMUTHS_DEG))])
-    paths = sorted(root.glob("**/summed/summed_*.json"))
+    paths = sorted((root / "bundle" / "b0" / CAPTURE_RECORDS).glob("*.json"))
     for index, path in enumerate(paths):
         doc = json.loads(path.read_text())
         doc.update(candidate_id="a" if index < 2 else "b", graph_fingerprint="same-entry-graph")

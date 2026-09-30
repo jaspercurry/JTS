@@ -2,15 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared metadata, audio binding and role loading for banked captures.
+"""Shared metadata and role loading for banked captures.
 
-Programs bind by content hash, never phase label. Pose identity uses declared
-coordinates, never a seat index. Analysis remains outside this reader.
+A take reads from its record and the impulses it kept; no recording or
+program is opened (ADR-0397). Pose identity uses declared coordinates, never
+a seat index. Analysis remains outside this reader.
 """
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -19,14 +19,13 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from jasper.audio_measurement.deconv import regularized_deconvolution_full
 from jasper.audio_measurement.evidence_identity import json_fingerprint
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.audio_measurement.sweep import read_wav_mono
-from jasper.platform.json_fields import finite_float, sha256_file
+from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
+from jasper.platform.json_fields import finite_float
 
 from ..measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from .contracts import BANKED_TAKE_GLOB
 from .position_cycle import take_curve
 from .record_index import measurement_documents, played_graph_fingerprint
 from .round_inputs import (
@@ -37,14 +36,10 @@ from .take_impulses import IMPULSES_KEY, TakeImpulse, TakeImpulsesUnreadable, im
 # --- refusals: every one names the input that was missing --------------------
 
 REFUSE_NO_CAPTURES = "round_no_captures"
-REFUSE_NO_PROGRAMS = "round_no_programs"
-REFUSE_PROGRAM_UNMATCHED = "round_program_hash_unmatched"
 REFUSE_RADIATED_BAND_MISSING = "round_radiated_band_missing"
 REFUSE_CAPTURE_UNREADABLE = "round_capture_unreadable"
-#: A branch role was asked of a take whose record kept no branch diagnostic;
-#: only a take played in the ``branches`` regime keeps one (#5632).
-REFUSE_BRANCH_DIAGNOSTIC_MISSING = "round_branch_diagnostic_missing"
-#: A role was asked of a take that kept impulses, none of them for that role.
+#: A role was asked of a take whose kept impulses, and branch diagnostic if it
+#: has one (#5632), hold none for that role: a MEASURE take keeps no summed one.
 REFUSE_ROLE_NOT_RECORDED = "round_role_not_recorded"
 
 
@@ -55,7 +50,6 @@ class PoseCapture:
     capture_id: str
     phase: str | None
     wav: Path | None
-    program: Path | None
     program_sha256: str
     azimuth_deg: float | None
     vertical_deg: float | None
@@ -78,12 +72,6 @@ class PoseCapture:
     curve: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
-    def clocked(self) -> bool:
-        """On the take's recording clock: a kept impulse or one its branch
-        diagnostic retained. An impulse rebuilt from the whole program is not."""
-        return "pre_guard_samples" in self.preprocessing
-
-    @property
     def pose_key(self) -> str:
         """The FULL declared pose. Never a seat index (#3503)."""
         return _pose_key(
@@ -93,10 +81,10 @@ class PoseCapture:
 
 
 def doc_pose_key(doc: Mapping[str, Any]) -> str:
-    """The pose a sidecar DOC declares, keyed as :attr:`PoseCapture.pose_key`.
+    """The pose a take record declares, keyed as :attr:`PoseCapture.pose_key`.
 
-    Readable before the capture is decoded, so a reader that filters poses on
-    the doc can still name the ones it passed over (#3503).
+    Readable before the capture is read, so a reader that filters poses on
+    the record can still name the ones it passed over (#3503).
     """
     return _pose_key(
         finite_float(doc.get("position_deg")),
@@ -170,7 +158,7 @@ def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     """The band this capture's DUT actually radiates, from its own curves.
 
     Public because :mod:`.feature_classifier` asks the same question of the
-    sidecars it loads itself. Absent yields ``None`` rather than a default
+    records it loads itself. Absent yields ``None`` rather than a default
     span: the un-intersected band priced a tweeter from 357 Hz where it has no
     output and over-reported by 3x (#1969).
     """
@@ -186,28 +174,15 @@ def radiated_band_of(doc: Mapping[str, Any]) -> tuple[float, float] | None:
     return (min(los), max(his))
 
 
-def _capture_document(path: Path) -> Mapping[str, Any]:
-    try:
-        doc = json.loads(path.read_text())
-        if not isinstance(doc, Mapping):
-            raise ValueError("capture metadata is not an object")
-        return doc
-    except (OSError, ValueError) as exc:
-        raise EvidenceUnavailable(
-            REFUSE_CAPTURE_UNREADABLE, {"sidecar": path.name, "detail": str(exc)},
-        ) from exc
-
-
-#: A record, the WAV it names, its document (empty when unreadable) and the
-#: fault that keeps it out of every view, if any.
+#: A record, the WAV it names, its document and the fault that keeps it out of
+#: every view, if any.
 _Record = tuple[Path, Path, Mapping[str, Any], EvidenceUnavailable | None]
 
 
 class _Omission(NamedTuple):
-    """A selected capture left out: what is published, its record, and why."""
+    """A selected capture left out: what is published, and why."""
 
     entry: dict[str, str]
-    doc: Mapping[str, Any]
     fault: EvidenceUnavailable
 
 
@@ -243,14 +218,6 @@ def _capture_documents(round_dir: Path) -> tuple[Path, list[_Record]]:
         records.append((path, wav, doc, None if problem is None else EvidenceUnavailable(
             REFUSE_CAPTURE_UNREADABLE, {"sidecar": path.name, "wav": str(wav), "detail": problem},
         )))
-    for path in sorted(root.glob("summed/summed_*.json")):
-        wav = path.with_suffix(".wav").resolve()
-        if wav in claims:
-            continue
-        try:
-            records.append((path, wav, _capture_document(path), None))
-        except EvidenceUnavailable as exc:
-            records.append((path, wav, {}, exc))
     return root, records
 
 
@@ -266,11 +233,11 @@ def discover_captures(
     role: str = "summed",
     omitted: list[dict[str, str]] | None = None,
 ) -> tuple[PoseCapture, ...]:
-    """Read a round or bundle through canonical records, then legacy sidecars.
+    """Read a round or bundle through its take records.
 
     ``select`` runs first, on the record alone, so a capture no reader asked
-    for is never checked or decoded; an empty filtered result is valid. Each
-    selected record binds its exact summed WAV and program. One that fails is
+    for is never checked or read; an empty filtered result is valid. Each
+    selected record reads the impulse it kept for ``role``. One that fails is
     never analyzed: it is appended to ``omitted`` as ``capture_id``,
     ``sidecar`` and ``reason``, and the rest answer. Raises
     :class:`EvidenceUnavailable` for missing or conflicting round input, and
@@ -289,91 +256,39 @@ def _refused(fault: EvidenceUnavailable, skipped: list[_Omission]) -> EvidenceUn
 
 def _discover_captures(
     round_dir: Path, *, select: Callable[[Mapping[str, Any]], bool] | None, roles: tuple[str, ...],
-    clocked: bool = False,
 ) -> tuple[tuple[PoseCapture, ...], list[_Omission]]:
     round_dir, documents = _capture_documents(Path(round_dir))
     if not documents:
         raise EvidenceUnavailable(
             REFUSE_NO_CAPTURES,
-            {"round_dir": str(round_dir), "looked_for": "**/summed/summed_*.json"},
+            {"round_dir": str(round_dir), "looked_for": f"{EVIDENCE_ROOT}/artifacts/{BANKED_TAKE_GLOB}"},
         )
-    programs: dict[str, Path] = {}
-    for candidate in sorted(round_dir.glob("**/*program*.wav")):
-        programs.setdefault(sha256_file(candidate), candidate)
-
     captures: list[PoseCapture] = []
     skipped: list[_Omission] = []
-    program_audio: dict[str, tuple[np.ndarray, int]] = {}
     for sidecar, wav, doc, fault in documents:
-        # A record with nothing readable in it cannot be deselected.
-        if doc and select is not None and not select(doc):
+        if select is not None and not select(doc):
             continue
         if fault is None:
             try:
-                captures += _bind_record(sidecar, wav, doc, roles, round_dir, programs, program_audio, clocked=clocked)
+                captures += record_captures(doc, roles, round_dir, record_path=sidecar, wav=wav,
+                                            program_sha256=str(_declared_program_sha(doc) or ""),
+                                            capture_sha256=str(doc["wav_sha256"]))
                 continue
             except EvidenceUnavailable as exc:
                 fault = exc
         skipped.append(_Omission({"capture_id": document_capture_id(doc) or sidecar.stem,
-                                  "sidecar": sidecar.name, "reason": fault.reason}, doc, fault))
+                                  "sidecar": sidecar.name, "reason": fault.reason}, fault))
     if skipped and not captures:
         raise _refused(skipped[0].fault, skipped)
     return tuple(sorted(captures, key=lambda cap: cap.capture_id)), skipped
 
 
-def _bind_record(
-    sidecar: Path, wav: Path, doc: Mapping[str, Any], roles: tuple[str, ...], root: Path,
-    programs: Mapping[str, Path], program_audio: dict[str, tuple[np.ndarray, int]],
-    *, clocked: bool,
-) -> list[PoseCapture]:
-    """One record's capture per role, or the refusal that keeps it out."""
-    if not wav.is_file():
-        raise EvidenceUnavailable(
-            REFUSE_CAPTURE_UNREADABLE,
-            {"sidecar": sidecar.name, "wav": str(wav), "detail": "capture WAV is missing"},
-        )
-    capture_sha = sha256_file(wav)
-    if doc.get("wav_sha256") and capture_sha != doc["wav_sha256"]:
-        raise EvidenceUnavailable(
-            REFUSE_CAPTURE_UNREADABLE,
-            {"sidecar": sidecar.name, "declared_capture_sha256": doc["wav_sha256"]},
-        )
-    sha = _declared_program_sha(doc)
-    program = programs.get(sha) if sha is not None else None
-    # A take that kept its impulses needs no program: nothing is deconvolved again.
-    if program is None and not isinstance(doc.get(IMPULSES_KEY), Mapping):
-        if not programs:
-            raise EvidenceUnavailable(
-                REFUSE_NO_PROGRAMS, {"round_dir": str(root), "looked_for": "**/*program*.wav"},
-            )
-        raise EvidenceUnavailable(
-            REFUSE_PROGRAM_UNMATCHED,
-            {
-                "sidecar": sidecar.name,
-                "declared_stimulus_sha256": sha,
-                "programs_present": sorted(
-                    {path.name for path in programs.values()}
-                ),
-                "note": (
-                    "capture-to-program binding is by content hash; the "
-                    "sidecar's declared stimulus phase is not consulted"
-                ),
-            },
-        )
-    return record_captures(doc, roles, root, record_path=sidecar, wav=wav, program=program,
-                           program_sha256=str(sha or ""), capture_sha256=capture_sha,
-                           program_audio=program_audio, clocked=clocked)
-
-
 def record_captures(
     doc: Mapping[str, Any], roles: tuple[str, ...], root: Path, *,
-    record_path: Path, wav: Path, program: Path | None = None, program_sha256: str = "",
-    capture_sha256: str = "", program_audio: dict[str, tuple[np.ndarray, int]] | None = None,
-    clocked: bool = True,
+    record_path: Path, wav: Path, program_sha256: str = "", capture_sha256: str = "",
 ) -> list[PoseCapture]:
-    """One record's capture per role, from its banked fields. A role the take
-    kept an impulse for is read from it; ``wav`` is opened only to rebuild a
-    role it kept none for, which ``clocked`` refuses."""
+    """One record's capture per role, from its banked fields; ``wav`` only names
+    the recording, which is never opened."""
     band = radiated_band_of(doc)
     if band is None:
         raise EvidenceUnavailable(
@@ -391,15 +306,13 @@ def record_captures(
     except TakeImpulsesUnreadable as exc:
         raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"capture": str(wav), "detail": str(exc)}) from exc
     curves = {role: take_curve(doc, role) or {} for role in roles}
-    responses = [_capture_response(doc, role, wav, program, {} if program_audio is None else program_audio,
-                                   kept=kept, curve=curves[role], clocked=clocked) for role in roles]
+    responses = [_capture_response(doc, role, wav, kept=kept, curve=curves[role]) for role in roles]
     pose_kind, seat_offset_m = _doc_pose_category(doc)
     return [
         PoseCapture(
             capture_id=document_capture_id(doc) or record_path.stem,
             phase=doc.get("phase") if isinstance(doc.get("phase"), str) else None,
             wav=wav,
-            program=program,
             program_sha256=program_sha256,
             azimuth_deg=finite_float(doc.get("position_deg")),
             vertical_deg=finite_float(doc.get("vertical_deg")),
@@ -429,75 +342,44 @@ def _role_band(curve: Mapping[str, Any]) -> tuple[float, float] | None:
 
 
 def _capture_response(
-    doc: Mapping[str, Any], role: str, wav: Path, program: Path | None,
-    program_audio: dict[str, tuple[np.ndarray, int]], *, kept: tuple[TakeImpulse, ...] | None,
-    curve: Mapping[str, Any], clocked: bool,
+    doc: Mapping[str, Any], role: str, wav: Path, *, kept: tuple[TakeImpulse, ...] | None,
+    curve: Mapping[str, Any],
 ) -> tuple[np.ndarray, int, tuple[float, float] | None, dict[str, Any]]:
-    """One role's impulse: the one the take kept, else rebuilt from the recording.
-
-    A per-driver take keeps no summed impulse; its summed read is the recording
-    deconvolved against the whole program, off the take's recording clock.
-    ``clocked`` refuses that read before it is made.
-    """
+    """One role's impulse: the one the take kept, else the one its branch
+    diagnostic retained, both on the take's recording clock. A take that kept
+    neither refuses by that field; nothing is rebuilt from its recording."""
     try:
-        if kept is not None:
-            stored = impulse_for(kept, role)
-            if stored is not None:
-                return stored.samples, stored.sample_rate_hz, _role_band(curve), {
-                    "role": role, "impulse_source": "kept", "segment_id": stored.segment_id,
-                    "pre_guard_samples": stored.origin_index,
-                    "clock_shift_samples": stored.clock_shift_samples,
-                    "microphone_correction": False,
-                }
-            if role != "summed":
-                raise EvidenceUnavailable(REFUSE_ROLE_NOT_RECORDED, {
-                    "role": role, "capture": str(wav),
-                    "roles": sorted({one.role for one in kept}),
-                })
-        band = None
-        diagnostic = doc.get("branch_diagnostic")
-        retained = None
-        preprocessing: dict[str, Any] = {}
-        if isinstance(diagnostic, Mapping):
-            retained = next((r for r in diagnostic["responses"] if r["role"] == role), None)
-            if retained is None:
-                raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {"role": role, "capture": str(wav)})
-            preprocessing = {
-                "role": role, "timing_reference": diagnostic["timing_reference"],
-                "clock_epsilon_ppm": diagnostic["clock_epsilon_ppm"],
-                "clock_shift_samples": retained["clock_shift_samples"],
-                "segment_id": retained["segment_id"],
-                "pre_guard_samples": retained["pre_guard_samples"],
-                "scheduled_start_sample": retained["scheduled_start_sample"],
-                "global_offset_samples": diagnostic["global_offset_samples"],
-                "microphone_correction": False, "impulse_source": "branch_diagnostic",
+        stored = None if kept is None else impulse_for(kept, role)
+        if stored is not None:
+            return stored.samples, stored.sample_rate_hz, _role_band(curve), {
+                "role": role, "impulse_source": "kept", "segment_id": stored.segment_id,
+                "pre_guard_samples": stored.origin_index,
+                "clock_shift_samples": stored.clock_shift_samples,
+                "microphone_correction": False,
             }
-            rate = diagnostic["sample_rate_hz"]
-            ir = np.asarray(retained["impulse"], dtype=np.float64)
-            band = tuple(retained["band_hz"])
-        else:
-            if role != "summed" or clocked:
-                raise EvidenceUnavailable(REFUSE_BRANCH_DIAGNOSTIC_MISSING, {"role": role, "capture": str(wav)})
-            signal, rate = read_wav_mono(wav)
+        found = doc.get("branch_diagnostic")
+        diagnostic: Mapping[str, Any] = found if isinstance(found, Mapping) else {}
+        responses = diagnostic["responses"] if diagnostic else None
+        if kept is None and responses is None:
+            raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {"capture": str(wav), "field": IMPULSES_KEY, "role": role})
+        retained = next((r for r in responses or () if r["role"] == role), None)
         if retained is None:
-            if program is None:
-                raise EvidenceUnavailable(REFUSE_PROGRAM_UNMATCHED, {"capture": str(wav)})
-            program_key = str(program)
-            if program_key not in program_audio:
-                program_audio[program_key] = read_wav_mono(program)
-            program_signal, program_rate = program_audio[program_key]
-            if rate != program_rate:
-                raise EvidenceUnavailable(
-                    REFUSE_CAPTURE_UNREADABLE,
-                    {
-                        "capture": str(wav),
-                        "detail": f"{rate} Hz capture against {program_rate} Hz program",
-                    },
-                )
-            ir = regularized_deconvolution_full(signal, program_signal, rate).astype(
-                np.float64
-            )
-        return ir, int(rate), band, preprocessing
+            raise EvidenceUnavailable(REFUSE_ROLE_NOT_RECORDED, {
+                "role": role, "capture": str(wav),
+                "roles": sorted({one.role for one in kept or ()} | {r["role"] for r in responses or ()}),
+            })
+        preprocessing = {
+            "role": role, "timing_reference": diagnostic["timing_reference"],
+            "clock_epsilon_ppm": diagnostic["clock_epsilon_ppm"],
+            "clock_shift_samples": retained["clock_shift_samples"],
+            "segment_id": retained["segment_id"],
+            "pre_guard_samples": retained["pre_guard_samples"],
+            "scheduled_start_sample": retained["scheduled_start_sample"],
+            "global_offset_samples": diagnostic["global_offset_samples"],
+            "microphone_correction": False, "impulse_source": "branch_diagnostic",
+        }
+        ir = np.asarray(retained["impulse"], dtype=np.float64)
+        return ir, int(diagnostic["sample_rate_hz"]), tuple(retained["band_hz"]), preprocessing
     except (KeyError, TypeError, ValueError) as exc:
         raise EvidenceUnavailable(REFUSE_CAPTURE_UNREADABLE, {
             "capture": str(wav), "role": role, "detail": str(exc),
@@ -511,109 +393,60 @@ REFUSE_CLOSE_REFERENCE_NO_CAPTURE = "close_reference_no_capture"
 
 
 def select_capture(
-    round_dir: Path, *, capture_id: str | None = None, role: str = "summed",
+    round_dir: Path, *, capture_id: str, role: str = "summed",
     omitted: list[dict[str, str]] | None = None,
 ) -> PoseCapture:
     """The one capture a single-capture reader takes out of ``round_dir``.
 
-    ``capture_id`` selects by the capture's own id or its WAV stem. With none,
-    the on-axis capture wins: azimuth 0, elevation 0, first by capture id; if
-    that take failed, only its repeat at the same pose under the same played
-    graph stands in. Raises :class:`EvidenceUnavailable` rather than
-    guessing. The choice is made on each sidecar DOC, so the poses the reader
-    discards are never checked or deconvolved; a chosen one that fails lands
-    in ``omitted`` as :func:`discover_captures` says.
+    ``capture_id`` selects by the capture's own id or its WAV stem. Raises
+    :class:`EvidenceUnavailable` rather than guessing. The choice is made on
+    each record, so the takes the reader discards are never checked or read;
+    a chosen one that fails lands in ``omitted`` as :func:`discover_captures`
+    says.
     """
     return select_capture_roles(round_dir, capture_id=capture_id, roles=(role,), omitted=omitted)[role]
 
 
 def select_capture_roles(
-    round_dir: Path, *, capture_id: str | None, roles: tuple[str, ...],
-    omitted: list[dict[str, str]] | None = None, clocked: bool = False,
+    round_dir: Path, *, capture_id: str, roles: tuple[str, ...],
+    omitted: list[dict[str, str]] | None = None,
 ) -> dict[str, PoseCapture]:
-    """Read selected roles from one record and one set of verified audio bytes.
-
-    ``clocked`` refuses a role the take would rebuild rather than kept, so
-    every role read shares the take's recording clock.
-    """
+    """Read selected roles from one record, every role on the take's recording clock."""
     root = Path(round_dir)
     if not root.is_dir():
         raise EvidenceUnavailable(REFUSE_CLOSE_REFERENCE_UNREADABLE_ROUND, {"round_dir": str(root)})
     seen: list[str] = []
-    if capture_id is not None:
-        def wanted(doc: Mapping[str, Any]) -> bool:
-            declared = document_capture_id(doc)
-            seen.append(str(declared) if declared else "")
-            # A sidecar that declares no id takes its capture id from its own
-            # file name, which this predicate cannot see; the WAV-stem match
-            # below decides.
-            return (
-                not declared or str(declared) == capture_id
-                or Path(str(doc.get("wav_path") or "")).stem == capture_id
-            )
 
-        found, skipped = _discover_captures(root, select=wanted, roles=roles, clocked=clocked)
-        chosen = tuple(
-            capture
-            for capture in found
-            if capture_id
-            in (capture.capture_id, capture.wav.stem if capture.wav else None)
+    def wanted(doc: Mapping[str, Any]) -> bool:
+        declared = document_capture_id(doc)
+        seen.append(str(declared) if declared else "")
+        # A record that declares no id takes its capture id from its own file
+        # name, which this predicate cannot see; the WAV-stem match below decides.
+        return (
+            not declared or str(declared) == capture_id
+            or Path(str(doc.get("wav_path") or "")).stem == capture_id
         )
-        if len(chosen) != len(roles):
-            raise EvidenceUnavailable(
-                REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
-                {
-                    "round_dir": str(root),
-                    "capture_id": capture_id,
-                    "captures": seen,
-                    "matches": len(chosen) // len(roles),
-                },
-            )
-    else:
-        def on_axis_doc(doc: Mapping[str, Any]) -> bool:
-            seen.append(doc_pose_key(doc))
-            # A pose declared as anything but a number compares False here, the
-            # same answer the decoded ``None`` gave.
-            return doc.get("position_deg") == 0 and doc.get("vertical_deg") == 0
 
-        found, skipped = _discover_captures(root, select=on_axis_doc, roles=roles, clocked=clocked)
-        if not found:
-            raise EvidenceUnavailable(
-                REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
-                {
-                    "round_dir": str(root),
-                    "note": "no capture declares azimuth 0 / elevation 0",
-                    "poses": seen,
-                },
-            )
-        chosen = _on_axis_take(found, skipped, len(roles))
+    found, skipped = _discover_captures(root, select=wanted, roles=roles)
+    chosen = tuple(
+        capture
+        for capture in found
+        if capture_id
+        in (capture.capture_id, capture.wav.stem if capture.wav else None)
+    )
+    if len(chosen) != len(roles):
+        raise EvidenceUnavailable(
+            REFUSE_CLOSE_REFERENCE_NO_CAPTURE,
+            {
+                "round_dir": str(root),
+                "capture_id": capture_id,
+                "captures": seen,
+                "matches": len(chosen) // len(roles),
+            },
+        )
     if omitted is not None:
         omitted += [omission.entry for omission in skipped]
     return dict(zip(roles, chosen, strict=True))
-
-
-def _on_axis_take(
-    found: tuple[PoseCapture, ...], skipped: list[_Omission], n_roles: int,
-) -> tuple[PoseCapture, ...]:
-    """The first on-axis take by capture id, or its repeat when it was left out.
-
-    Only a repeat at the same pose under the same played graph stands in: a
-    behind pose shares the front's 0/0 bearing, so any other fallback reads a
-    different take than the one asked for. A record nothing can read has no
-    known pose, so nothing is provably its repeat.
-    """
-    takes = [found[index:index + n_roles] for index in range(0, len(found), n_roles)]
-    unreadable = [omission for omission in skipped if not omission.doc]
-    if unreadable:
-        raise _refused(unreadable[0].fault, skipped)
-    missed = min(skipped, key=lambda omission: omission.entry["capture_id"], default=None)
-    if missed is None or takes[0][0].capture_id < missed.entry["capture_id"]:
-        return takes[0]
-    same = (doc_pose_key(missed.doc), played_graph_fingerprint(missed.doc))
-    for take in takes:
-        if (take[0].pose_key, take[0].graph_fingerprint) == same:
-            return take
-    raise _refused(missed.fault, skipped)
 
 
 def capture_row(capture: PoseCapture) -> dict[str, Any]:
@@ -623,7 +456,6 @@ def capture_row(capture: PoseCapture) -> dict[str, Any]:
         "phase": capture.phase,
         "pose_key": capture.pose_key,
         "wav": capture.wav.name if capture.wav else None,
-        "program": capture.program.name if capture.program else None,
         "position_deg": capture.azimuth_deg,
         "vertical_deg": capture.vertical_deg,
         "mark_distance_m": capture.mark_distance_m,

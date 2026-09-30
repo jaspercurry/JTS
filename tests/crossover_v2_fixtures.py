@@ -39,7 +39,10 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from jasper.active_speaker.bundles import BUNDLE_SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import journey
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
+from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
@@ -52,7 +55,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
-from jasper.audio_measurement.sweep import synchronized_swept_sine, write_sweep_wav
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     MEASURE_PAIR_SINGLE_DRIVER,
@@ -648,9 +651,8 @@ def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
 CAPTURE_RATE = 48_000
 
 CAPTURE_AZIMUTHS_DEG = (-22.0, -7.0, 0.0, 7.0, 22.0)
-
-_PHASE, _DECOY_PHASE = "cloud_verify", "verify"
-_DECLARED_STIMULUS_PHASE = "verify"
+#: Where :func:`bank_capture_round` banks its take records, under the bundle.
+CAPTURE_RECORDS = "evidence/v1/artifacts/crossover_v2/wired-test/positions"
 
 
 def bank_capture_round(
@@ -662,40 +664,28 @@ def bank_capture_round(
     vertical_deg: float = 0.0,
     distance_m: float | None = 1.0,
     radiated_band_hz: tuple[float, float] | None = (150.0, 20000.0),
-    declared_sha: str | None = None,
+    kept_role: str | None = "summed",
 ) -> Path:
-    """Retained captures made from known convolutions."""
+    """One take per impulse response, banked as a record that names its
+    recording and keeps its impulse as ``kept_role``'s (ADR-0354), origin at
+    sample 0: ``None`` keeps none, and a driver role keeps no summed one, as a
+    MEASURE take does. No recording is written, so a reader that opens one fails."""
     bundle = root / "bundle" / "b0"
-    programs = bundle / "crossover_v2" / "wired-test"
-    summed = bundle / "summed"
-    programs.mkdir(parents=True)
-    summed.mkdir(parents=True)
-
-    played, _ = synchronized_swept_sine(duration_approx_s=1.0, sample_rate=CAPTURE_RATE)
-    decoy, _ = synchronized_swept_sine(
-        f1=30.0, duration_approx_s=1.0, sample_rate=CAPTURE_RATE
-    )
-    played_path = programs / f"{_PHASE}_program.wav"
-    write_sweep_wav(played_path, played, CAPTURE_RATE)
-    write_sweep_wav(programs / f"{_DECOY_PHASE}_program.wav", decoy, CAPTURE_RATE)
-    played_sha = hashlib.sha256(played_path.read_bytes()).hexdigest()
-
+    records = bundle / CAPTURE_RECORDS
+    records.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": "b0", "bundle_schema_version": BUNDLE_SCHEMA_VERSION}))
     for index, ir in enumerate(irs):
-        capture = np.convolve(
-            played.astype(np.float64), np.asarray(ir, dtype=np.float64)
-        )
-        capture = 0.5 * capture / float(np.max(np.abs(capture)))
-        capture_id = (
-            f"{_PHASE}_{index:02d}" if capture_ids is None else capture_ids[index]
-        )
-        stem = f"summed_{capture_id}"
-        write_sweep_wav(
-            summed / f"{stem}.wav", capture.astype(np.float32), CAPTURE_RATE
-        )
+        capture_id = f"cloud_verify_{index:02d}" if capture_ids is None else capture_ids[index]
+        wav_path = f"summed/summed_{capture_id}.wav"
+        role = kept_role or "summed"
+        kept = SimpleNamespace(role=role, repeat_index=None, repeat_responses=(), impulse=RecordedImpulse(
+            np.asarray(ir, dtype=np.float32), CAPTURE_RATE, origin_index=0, segment_id="sweep_verify"))
         doc: dict[str, Any] = {
-            "position_id": capture_id,
-            "phase": _PHASE,
-            "wav_path": f"summed/{stem}.wav",
+            "kind": POSITION_EVIDENCE_KIND,
+            "take_id": capture_id,
+            "phase": "cloud_verify",
+            "wav_path": wav_path,
+            "wav_sha256": hashlib.sha256(wav_path.encode()).hexdigest(),
             "position_deg": (
                 CAPTURE_AZIMUTHS_DEG[index % len(CAPTURE_AZIMUTHS_DEG)]
                 if positions_deg is None
@@ -703,19 +693,22 @@ def bank_capture_round(
             ),
             "vertical_deg": vertical_deg,
             "mark_distance_m": distance_m,
-            "provenance": {
-                "stimulus": {
-                    "phase": _DECLARED_STIMULUS_PHASE,
-                    "wav_sha256": declared_sha or played_sha,
-                }
-            },
+            "provenance": {"stimulus": {"phase": "verify", "wav_sha256": "c" * 64}},
         }
         if radiated_band_hz is not None:
-            doc["curves"] = [{"role": "summed", "band_hz": list(radiated_band_hz)}]
-        (summed / f"{stem}.json").write_text(json.dumps(doc))
-    (bundle / "info.json").write_text(json.dumps({"session_id": "b0"}))
+            doc["curves"] = [{"role": role, "band_hz": list(radiated_band_hz)}]
+        if kept_role is not None:
+            doc[IMPULSES_KEY] = write_take_impulses(bundle, capture_id, SimpleNamespace(
+                driver_responses=() if role == "summed" else (kept,), summed_response=kept if role == "summed" else None,
+            ), recording=wav_path)
+        (records / f"{capture_id}.json").write_text(json.dumps(doc))
     write_manifest(root)
     return root
+
+
+def capture_record(root: Path, capture_id: str) -> Path:
+    """The record :func:`bank_capture_round` banked for ``capture_id``."""
+    return root / "bundle" / "b0" / CAPTURE_RECORDS / f"{capture_id}.json"
 
 
 def fake_measurement_mic():

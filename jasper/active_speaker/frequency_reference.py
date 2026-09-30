@@ -15,7 +15,6 @@ import numpy as np
 
 from .flat_spec import REFERENCE_BAND_HZ, evaluate_flat_spec
 from .frequency_view import FrequencySeries, FrequencyViewError
-from jasper.platform.json_fields import finite_float
 
 
 def band_limited_curve(curve: Mapping[str, Any]) -> tuple[Any, Any]:
@@ -95,20 +94,15 @@ def _anchor_rank(series: FrequencySeries) -> tuple[int, float]:
     return (0 if role == "summed" and distance in {0.0, math.inf} else 1, distance)
 
 
-def share_run_reference(
-    series: Sequence[FrequencySeries],
-    run_reference_db: float | None,
-) -> tuple[FrequencySeries, ...]:
+def share_run_reference(series: Sequence[FrequencySeries]) -> tuple[FrequencySeries, ...]:
     """Give directly comparable curves one deterministic level reference."""
 
     if not series:
         return ()
-    reference_db = finite_float(run_reference_db)
-    if reference_db is None:
-        reference_db = next(
-            (item.reference_db for item in series if item.reference_db is not None),
-            None,
-        )
+    reference_db = next(
+        (item.reference_db for item in series if item.reference_db is not None),
+        None,
+    )
     if reference_db is None:
         lo_hz, hi_hz = REFERENCE_BAND_HZ
         candidates = sorted(

@@ -10,7 +10,7 @@ caller may name another.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +23,7 @@ from jasper.audio_measurement.deconv import DEFAULT_POST_ARRIVAL_MS
 from jasper.audio_measurement.excess_phase import GD_SPAN_OCT
 from jasper.audio_measurement.gating import FLOOR_MEASURED, PHASE_GATE_LEAD_MS, gate_impulse_response
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S, polarity_label
-from jasper.audio_measurement.recorded_impulse import kept_end
+from jasper.audio_measurement.program_analysis import polarity_label
 from jasper.audio_measurement.impulse_reading import (
     ETC_SPAN_FRACTION, NOISE_BEFORE_ONSET_MS, ONSET_BELOW_PEAK_DB, energy_time_db, impulse_shape,
     log_grid_hz, magnitude_db, step_response, timing_by_frequency, trusted_band_hz,
@@ -56,11 +55,8 @@ class TakeRead:
     role: str
 
     @property
-    def arrival_ms(self) -> float | None:
-        """The direct peak on the take's own recording clock; ``None`` for a
-        take whose impulse was rebuilt without that clock."""
-        if not self.capture.clocked:
-            return None
+    def arrival_ms(self) -> float:
+        """The direct peak on the take's own recording clock."""
         pre = float(self.capture.preprocessing["pre_guard_samples"])
         shift = float(self.capture.preprocessing.get("clock_shift_samples") or 0.0)
         return 1000.0 * (self.capture.peak_idx - pre - shift) / self.capture.sample_rate
@@ -68,8 +64,8 @@ class TakeRead:
     def parameters(self) -> dict[str, Any]:
         return {
             "role": self.role,
-            "impulse_source": self.capture.preprocessing.get("impulse_source", "rebuilt"),
-            "time_reference": "the take's recording schedule" if self.capture.clocked else "the direct peak",
+            "impulse_source": self.capture.preprocessing["impulse_source"],
+            "time_reference": "the take's recording schedule",
             "calibration_applied": False,
         }
 
@@ -86,15 +82,8 @@ class TakeRead:
 
 
 def read_take(round_dir: Path, *, take_id: str, role: str) -> TakeRead:
-    """One role of one take. An impulse rebuilt from the whole program is read
-    over about the span a kept one holds, the deconvolution pre-guard before
-    its peak and the verify tail after it, so the two read alike."""
-    capture = select_capture(Path(round_dir), capture_id=take_id, role=role)
-    if not capture.clocked:
-        rate, peak = capture.sample_rate, capture.peak_idx
-        start = max(0, peak - round(DECONV_PRE_GUARD_S * rate))
-        capture = replace(capture, ir=capture.ir[start:kept_end(peak, capture.ir.size, rate)], peak_idx=peak - start)
-    return TakeRead(capture, role)
+    """One role of one take, from the impulse it kept (ADR-0354)."""
+    return TakeRead(select_capture(Path(round_dir), capture_id=take_id, role=role), role)
 
 
 def _numbers(values: np.ndarray, digits: int) -> list[float | None]:
@@ -294,7 +283,6 @@ def compare_report(
                   for side in (a, b))
     summary, curves = _difference_report(grid, a_db, b_db, band, remove_level=remove_level)
     same_recording = a.capture.capture_id == b.capture.capture_id
-    a_arrival, b_arrival = a.arrival_ms, b.arrival_ms
     return {
         "parameters": {
             "roles": [a.role, b.role], "window_ms": window,
@@ -307,8 +295,7 @@ def compare_report(
         "a": capture_row(a.capture), "b": capture_row(b.capture),
         "summary": {
             **summary, "same_recording": same_recording,
-            "relative_arrival_ms": (_number(b_arrival - a_arrival, 3)
-                                    if same_recording and a_arrival is not None and b_arrival is not None else None),
+            "relative_arrival_ms": _number(b.arrival_ms - a.arrival_ms, 3) if same_recording else None,
             "basis": compare_capture_basis(capture_basis(b.capture.record_document),
                                            capture_basis(a.capture.record_document)),
         },

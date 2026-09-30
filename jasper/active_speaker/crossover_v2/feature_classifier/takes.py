@@ -65,5 +65,5 @@ def _capture(root: Path, row: Measurement, document: Mapping[str, Any]) -> PoseC
     if role is None:
         raise EvidenceUnavailable(TAKE_CURVES_NOT_BANKED, {**take, "field": IMPULSES_KEY, "roles": roles})
     capture, = record_captures(document, (role,), root, record_path=root / record_path(row),
-                               wav=root / str(document.get("wav_path") or ""), clocked=True)
+                               wav=root / str(document.get("wav_path") or ""))
     return capture

@@ -70,7 +70,6 @@ def frequency_run_from_documents(
     documents: Sequence[Mapping[str, Any]],
     started_at: Any = None,
     state: str | None = None,
-    run_reference_db: float | None = None,
 ) -> FrequencyRun:
     """Adapt saved measurement or analysis JSON without knowing its producer."""
 
@@ -160,7 +159,7 @@ def frequency_run_from_documents(
                 series.append(item)
                 seen_ids.add(series_id)
 
-    normalized = share_run_reference(series, run_reference_db)
+    normalized = share_run_reference(series)
     if normalized:
         normalized = (replace(normalized[0], visible_by_default=True), *normalized[1:])
     return FrequencyRun(

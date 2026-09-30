@@ -316,10 +316,10 @@ def _on_fixture_round(argv: Callable[[_FixtureRound], list[str]]) -> Callable[[p
     return lambda request, root: argv(_fixture_round(root))
 
 
-def _sweep_argv(request: pytest.FixtureRequest, root: Path, poses: int = 3) -> list[str]:
+def _sweep_argv(request: pytest.FixtureRequest, root: Path, poses: int = 3, **takes: Any) -> list[str]:
     impulse = np.zeros(1800)
     impulse[100] = 1.0
-    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * poses)), "--scope", "round"]
+    return ["sweep", str(bank_capture_round(root / "capture", [impulse] * poses, **takes)), "--scope", "round"]
 
 
 def _kept_take_argv(view: str) -> Callable[[pytest.FixtureRequest, Path], list[str]]:
@@ -446,7 +446,7 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
         lambda p, a: p["window_ms"] == a["parameters"]["window_ms"]),
     "frequency": _ViewRun(
         _on_fixture_round(lambda r: ["frequency", str(r.measured)]),
-        frozenset({"ref_band_hz", "normalize", "analyze_wavs", "reference_db"}),
+        frozenset({"ref_band_hz", "normalize"}),
         recorded=lambda p, a: all(curve["plot"]["ref_band_hz"] == p["ref_band_hz"]
                                   for run in a["runs"] for curve in run["series"])),
     "distortion": _ViewRun(
@@ -698,17 +698,6 @@ def _unbanked_frequency_argv(request: pytest.FixtureRequest, root: Path) -> list
     return ["frequency", str(root / "bundle")]
 
 
-def _analyzed_frequency_argv(request: pytest.FixtureRequest, root: Path, fault: str) -> list[str]:
-    """A kept room take, whose recording the gated overlay reopens."""
-    bundle, _, _, bank_take = request.getfixturevalue("summed_capture_bundle")
-    path = asyncio.run(bank_take("take", measurement_purpose="room"))
-    write_manifest(bundle, program="room")
-    if fault == "record":
-        record = bundle / EVIDENCE_ROOT / "artifacts" / path
-        record.write_text(f"{record.read_text()} ")
-    return ["frequency", str(bundle), "--analyze-wavs", *(["--reference-db=nan"] if fault == "reference" else [])]
-
-
 def _disagreeing_grids_distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     """A MEASURE take whose woofer repeat reads on a shifted grid, which no pooling by index may hide."""
     monkeypatch, read = request.getfixturevalue("monkeypatch"), harmonic_evidence.read_segment_distortion
@@ -774,6 +763,9 @@ _CANNOT_GRADE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]
     "room": (_unanalysed_room_argv, "take_curves_not_banked"),
     "room (no shared bin)": (_disjoint_seats_argv, "coverage_short"),
     "sweep": (lambda request, root: _sweep_argv(request, root, poses=1), "gate_sweep_single_pose"),
+    # A MEASURE take keeps its drivers' impulses and no summed one (#5928 TB7b).
+    "sweep (MEASURE takes)": (lambda request, root: _sweep_argv(request, root, kept_role="woofer"),
+                              "round_role_not_recorded"),
 }
 
 
@@ -789,15 +781,11 @@ def test_a_view_that_cannot_grade_what_it_read_refuses_by_its_reason(
     assert (record["reason"], record.get("next_action")) == (reason, refusal_copy_for(reason)[1])
 
 
-#: Input a view cannot read, and the code its refusal carries: a record the
-#: evidence store cannot read, a reference level no analysis can use, and a set
-#: that names a take with no record.
+#: Input a view cannot read, and the code its refusal carries: a set that names
+#: a take with no record, and a banked reading that is not an object.
 _UNREADABLE: dict[str, tuple[Callable[[pytest.FixtureRequest, Path], list[str]], str | None]] = {
     "bass (a take with no record)": (_ghost_bass_argv, None),
     "distortion (a reading that is not an object)": (_malformed_distortion_argv, "field_not_object"),
-    "frequency (record)": (lambda request, root: _analyzed_frequency_argv(request, root, "record"),
-                           "commissioning_evidence_integrity_mismatch"),
-    "frequency (reference)": (lambda request, root: _analyzed_frequency_argv(request, root, "reference"), None),
 }
 
 
