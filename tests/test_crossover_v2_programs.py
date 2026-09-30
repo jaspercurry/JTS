@@ -35,7 +35,10 @@ it shows through.  A pin at one corner only would pass over half the policy.
 
 from __future__ import annotations
 
+import math
+import random
 from dataclasses import replace
+from itertools import product
 from types import SimpleNamespace
 
 import pytest
@@ -46,7 +49,9 @@ from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_preset
-from jasper.active_speaker.measurement_programs import preset, run_preset
+from jasper.active_speaker.measurement_programs import (
+    REGIME_BRANCHES, available_presets, near_field_drivers, preset, run_preset,
+)
 from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -838,3 +843,53 @@ def test_a_one_driver_take_routes_its_target_alone(rear, target):
             payload, gs.view_from_yaml_dict(payload), 2,
             mute_name="as_out2_rear_pending_mute", mute_gain_db=-120.0,
         ) is (target != "woofer:rear")
+
+
+#: The seat-equivalent peak, dBFS: the level a far-field take plays at (ADR-0361 §1).
+SEAT_EQUIVALENT_DBFS = -12.0
+#: A driver's pose at each kind and distance (ADR-0366 §1).
+DRIVER_POSES = """[
+    {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.015, "driver": "woofer"},
+    {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3, "driver": "tweeter"},
+    {"azimuth_deg": 20, "elevation_deg": 0, "distance_m": 2.0, "driver": "woofer:rear"},
+    {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.2, "driver": "woofer:rear"},
+    {"azimuth_deg": 0, "elevation_deg": 0, "kind": "seat", "seat_offset_m": [0, 0, 0], "driver": "woofer"}]"""
+
+
+@pytest.mark.parametrize("fader_db", [-45.0, -20.0, 0.0])
+def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
+    """Every take of every shipped preset and layout, and a driver's pose at each
+    kind and distance, at any level asked up to full scale, plays at or under
+    that level: one driver alone at or under the seat-equivalent level under
+    that driver's cap (ADR-0361 §1), MEASURE at or under its CHECK plan, or the
+    level asked, under each driver's cap, and every other take at or under the
+    seat-equivalent level under the tightest cap."""
+    topology, safety, targets = _profile_and_targets(rear=True, woofer_floor=30, woofer_upper=4000,
+                                                     max_sweep_duration_s=8)
+    bands = {target: resolve_driver_excitation_ceilings(safety, fingerprint, program_admission=True)[0]
+             for target, fingerprint in targets.items()}
+    caps = {"woofer": 0.0, "woofer:rear": -3.0, "tweeter": -65.0}
+    roles = tuple(RoleBand(role, channel, bands[role]) for channel, role in enumerate(("woofer", "tweeter")))
+    excitation = SessionExcitation(roles, caps, fader_db, FC_HZ, dict.fromkeys(targets, 8.0), target_bands=bands)
+    rng = random.Random(5737)
+    asked_levels = (None, -150.0, -40.0, -12.0, 0.0, *(rng.uniform(-100.0, 0.0) for _ in range(6)))
+    runs = [(name, layout, None) for name in available_presets() for layout in preset(name).layouts]
+    runs += [("drivers/each", None, DRIVER_POSES),
+             ("speaker/mark", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}]')]
+    for name, layout, poses in runs:
+        plan = run_preset(name, layout, poses)
+        request = request_for_preset(plan, mover=plan.mover or "human", targets=near_field_drivers(topology),
+                                     candidates=("trial",) if plan.regime == REGIME_BRANCHES else ())
+        for capture in prepare_plan_captures(request, roles_bands=roles):
+            target = solo_target(capture.spec)
+            measure = (capture.spec.graph_scope == "drivers" and capture.spec.program_phase != journey.PHASE_CHECK
+                       and not target)
+            # A blind take keeps its fixed cut; one whose graph is known plays at the ceiling itself.
+            for spec, asked in product((capture.spec, replace(capture.spec, scope_gains_db={})), asked_levels):
+                program = program_for_spec(spec, excitation, GAIN_PLAN_DB, asked,
+                                           safety_profile=safety, role_targets=targets)
+                for segment in program.stimulus_segments():
+                    cap_db = caps[target or segment.role] if target or measure else min(caps.values())
+                    level_db = (max(GAIN_PLAN_DB.values()) if asked is None else asked) if measure else SEAT_EQUIVALENT_DBFS
+                    ceiling = min(cap_db - fader_db, level_db, math.inf if asked is None else asked)
+                    assert segment.gain_db <= ceiling + 1e-9, (name, layout, spec.program_phase, asked, segment.segment_id)
