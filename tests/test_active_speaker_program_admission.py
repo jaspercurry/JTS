@@ -30,7 +30,7 @@ from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import (
     SessionExcitation, compose_summed_probe, excitation_from_context, program_for_spec,
 )
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, branch_probes
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
@@ -1256,6 +1256,31 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
         excitation=excitation, acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
     assert plan.entries[0].duration_ms >= max(map(_program_duration_ms, (program, probe))) + CAPTURE_ENTRY_MARGIN_MS
+
+
+@pytest.mark.parametrize("target", ["woofer", "woofer:rear"])
+def test_a_branch_probe_sweeps_its_drivers_whole_band_and_is_admitted(tmp_path, monkeypatch, target):
+    """The production composer on a cardioid cabinet: a front and rear branch
+    take's probe of one branch sweeps that driver's whole band, from its floor,
+    and is admitted against that driver's own caps (ADR-0403 §3)."""
+    from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
+    from jasper.web.correction_run_host import compose_plan_program
+
+    topology, safety, context, _spec, excitation, _take = _cardioid_solo_take(monkeypatch, target)
+    take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial",
+                       program_phase=PHASE_LATERAL, branch_target_ids=("woofer", "woofer:rear"), level_probe=True)
+    probe_spec, = (spec for spec in branch_probes(take) if spec.branch_target_ids == (target,))
+    probe = compose_plan_program(SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
+                                 probe_spec, None, context=context)
+    band = context.driver_bands[target]
+
+    assert is_level_probe(probe)
+    assert {(segment.f1_hz, segment.f2_hz) for segment in probe.stimulus_segments()} == {(band.lower_hz, band.upper_hz)}
+    wav = tmp_path / "branch_probe.wav"
+    write_program_wav(wav, probe)
+    assert readmit_program_from_wav(
+        probe, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
+        session_volume_db=context.session_volume_db).allowed
 
 
 def test_a_rear_take_is_refused_when_only_the_rear_ceiling_is_lowered(tmp_path, monkeypatch):
