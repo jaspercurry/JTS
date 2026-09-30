@@ -198,19 +198,20 @@ def _named_codes(node: ast.expr, namespace: dict[str, object]) -> set[str]:
 
 def _codes_raised_by_name() -> dict[str, str]:
     """Each code that a raise site or a gap names outright, and the first place it does."""
+    entry_names = {entry.__name__ for entry in _GAP_ENTRY_POINTS}
     root = pathlib.Path(jasper.__file__).parent
     raised: dict[str, str] = {}
     for path in sorted(root.rglob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        if not any(needle in text for needle in ("unavailable(", "EvidenceUnavailable(", "refused_by_name(")):
+        calls = [call for call in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                 if isinstance(call, ast.Call) and call.args
+                 and getattr(call.func, "id", getattr(call.func, "attr", None)) in entry_names]
+        if not calls:
             continue
-        calls = [call for call in ast.walk(ast.parse(text)) if isinstance(call, ast.Call) and call.args]
-        parts = list(path.relative_to(root.parent).with_suffix("").parts)
+        parts = path.relative_to(root.parent).with_suffix("").parts
         module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
         namespace = vars(import_module(module))
         for call in calls:
-            entry = _resolved(call.func, namespace)
-            if any(entry is known for known in _GAP_ENTRY_POINTS):
+            if any(_resolved(call.func, namespace) is entry for entry in _GAP_ENTRY_POINTS):
                 for code in _named_codes(call.args[0], namespace):
                     raised.setdefault(code, f"{module}:{call.lineno}")
     return raised
