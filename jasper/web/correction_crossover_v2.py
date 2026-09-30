@@ -175,7 +175,7 @@ def prepare_v2_session(
     )
 
     if "tier" in raw or "stage" in raw or isinstance(raw.get("plan"), Mapping) is isinstance(raw.get("request"), Mapping):
-        raise CrossoverV2Refused("A run request or an inline v5 plan is required", code="program_plan_shape_invalid")
+        raise CrossoverV2Refused("A run request or an inline plan is required", code="program_plan_shape_invalid")
     try:
         source = (RunRequest.from_mapping(raw["request"]) if isinstance(raw.get("request"), Mapping)
                   else AngleCaptureRequest.from_mapping(raw["plan"]))

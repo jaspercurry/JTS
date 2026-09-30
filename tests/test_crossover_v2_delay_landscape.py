@@ -444,9 +444,10 @@ def _walk(**template):
     from jasper.active_speaker.angle_capture import (
         AngleCaptureRequest, AngleStop, walk_template,
     )
+    from jasper.active_speaker.measurement_programs import Pose
 
     return AngleCaptureRequest(
-        stops=(AngleStop(angle_deg=0, regime="per_driver", purpose="speaker"),),
+        stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),),
         template=walk_template(kind="candidate", **template),
     )
 

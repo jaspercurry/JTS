@@ -33,9 +33,7 @@ from jasper.cli.round_views import main as round_views_main
 from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_CYCLE_FILENAME,
-    read_position_cycle,
     take_artifact_path,
-    takes_by_position,
 )
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.audio_measurement.evidence_reasons import (
@@ -136,8 +134,9 @@ def test_the_banked_round_carries_its_own_pose_index(tmp_path):
         **_ssot(tmp_path, present=False),
     )
 
-    document = read_position_cycle(banked.path / POSITION_CYCLE_FILENAME)
-    assert takes_by_position(document) == {(7, 0): ("lateral_03_a01",)}
+    document = json.loads((banked.path / POSITION_CYCLE_FILENAME).read_text())
+    assert [(take["position_deg"], take["vertical_deg"], take["take_id"]) for take in document["takes"]] == [
+        (7, 0, "lateral_03_a01")]
     assert POSITION_CYCLE_FILENAME not in banked.provenance["missing"]
 
 

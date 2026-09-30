@@ -16,7 +16,7 @@ from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHA
 from .crossover_v2.measure_spec import MeasureSpec
 from .measurement_programs import (
     BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
-    UnknownPresetError, candidate_identity, preset,
+    Pose, UnknownPresetError, candidate_identity, preset,
 )
 
 
@@ -41,13 +41,13 @@ def prepare_plan_captures(
                         roles_bands=roles_bands)
     captures: list[PlanCapture] = []
     # CHECK plays every driver; a stop naming its driver plays that one alone and needs none (ADR-0366).
-    if any(stop.regime == REGIME_PER_DRIVER and not stop.driver for stop in request.stops):
+    if any(stop.regime == REGIME_PER_DRIVER and not stop.pose.driver for stop in request.stops):
         captures.append(PlanCapture(
-            AngleStop(0, REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
+            AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
     if takes_timing(request):
-        base_request = replace(request, stops=(AngleStop(0, REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
+        base_request = replace(request, stops=(AngleStop(Pose(0, 0), REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request,
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
@@ -59,12 +59,12 @@ def prepare_plan_captures(
     for offset, spec in enumerate(placed):
         stop = request.stops[offset // request.repeats]
         if spec is None:
-            spec = replace(design_axis_spec(request), positions=(stop.angle_deg,),
-                           vertical_deg=stop.elevation_deg, stimulus=stop.stimulus,
+            spec = replace(design_axis_spec(request), positions=(stop.pose.azimuth_deg,),
+                           vertical_deg=stop.pose.elevation_deg, stimulus=stop.stimulus,
                            pose_prompts=(resolved[offset // request.repeats].prompt.text,),
-                           branch_target_ids=(stop.driver,) if stop.driver else ())
+                           branch_target_ids=(stop.pose.driver,) if stop.pose.driver else ())
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
-            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.driver else PHASE_LATERAL
+            PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
     return tuple(captures)
 
@@ -78,14 +78,14 @@ def takes_timing(request: AngleCaptureRequest) -> bool:
     except UnknownPresetError:
         return False
     return timing and any(
-        candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.driver for stop in request.stops)
+        candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.pose.driver for stop in request.stops)
 
 
 def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:
     """Price the same capture schedule shown by the page, including preparation."""
     captures = len(prepare_plan_captures(request, roles_bands=roles_bands))
     return {
-        "mic_moves": sum(1 for _place, _stops in groupby(s.place for s in request.stops)),
+        "mic_moves": sum(1 for _place, _stops in groupby(s.pose.place for s in request.stops)),
         "captures": captures,
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(captures) / 60

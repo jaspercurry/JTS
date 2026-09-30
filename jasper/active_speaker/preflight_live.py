@@ -117,7 +117,7 @@ def read_preflight_facts(
             programs.append(program.stimulus_id)
         return tuple(programs)
 
-    near_field = {stop.driver for stop in plan.stops if stop.driver and stop.stimulus is not None}
+    near_field = {stop.pose.driver for stop in plan.stops if stop.pose.driver and stop.stimulus is not None}
     output_volume = read_output_volume()
     if output_volume.get("muted"):
         log_event(logging.getLogger(__name__), "active_speaker.measurement_output_muted", fields=output_volume)
@@ -136,7 +136,7 @@ def read_preflight_facts(
         near_field_drivers=(tuple(driver for driver in near_field_drivers(context.topology)
                                   if driver not in near_field
                                   or context.driver_bands[driver].lower_hz <= NEAR_FIELD_BANDS_HZ[-1][0])
-                            if context is not None and any(stop.driver for stop in plan.stops) else None),
+                            if context is not None and any(stop.pose.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
         driver_caps=published_driver_caps(context.safety_profile, context.role_targets) if context is not None else {},
     )

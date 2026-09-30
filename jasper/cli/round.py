@@ -111,12 +111,12 @@ def _shared(values: Iterable[Any]) -> Any:
 def _plan_envelope(plan: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """A run's subject and parameters, from its resolved plan; a staged run has no round yet (ADR-0389).
     A preset spreads its repeats over duplicate stops, so takes per pose and configuration are counted."""
-    takes = Counter((stop.place, stop.candidate_id, stop.regime) for stop in plan.stops)
+    takes = Counter((stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops)
     return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
             {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
              "levels": list(plan.levels) if plan.levels else None,
              "repeats": _shared(count * plan.repeats for count in takes.values()),
-             "driver": _shared(stop.driver for stop in plan.stops if stop.driver)})
+             "driver": _shared(stop.pose.driver for stop in plan.stops if stop.pose.driver)})
 
 
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     presets = ", ".join(available_presets())
     run.add_argument("--program", help=f"a preset ({presets}); a program name runs its first preset")
     source = run.add_mutually_exclusive_group()
-    source.add_argument("--plan", help="v5 plan document; used without plan-building flags")
+    source.add_argument("--plan", help="a staged plan document; used without plan-building flags")
     source.add_argument("--request", help="the run as a JSON object keyed by the plan-building flags' names "
                         "(program, layout, poses, driver, candidates, repeats, mover, level_db); used without them")
     run.set_defaults(func=_cmd_run)

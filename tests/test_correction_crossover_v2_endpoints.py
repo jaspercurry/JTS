@@ -850,10 +850,11 @@ def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
     from jasper.active_speaker import preflight_live
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
+    from jasper.active_speaker.measurement_programs import Pose
     from tests.test_preflight import ready_facts
 
     name = "unbanked"
-    request = AngleCaptureRequest((AngleStop(0, REGIME_SUMMED, candidate_id=name, purpose="speaker"),), candidates=(name,))
+    request = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, candidate_id=name, purpose="speaker"),), candidates=(name,))
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
         safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=object(),
@@ -3426,9 +3427,9 @@ def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_
     admission stays the independent tripwire behind it."""
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
-    from jasper.active_speaker.measurement_programs import BRANCH_PAIR_FRONT_REAR, REGIME_BRANCHES
+    from jasper.active_speaker.measurement_programs import BRANCH_PAIR_FRONT_REAR, REGIME_BRANCHES, Pose
 
-    plan = AngleCaptureRequest((AngleStop(0, REGIME_BRANCHES, branch_pair=BRANCH_PAIR_FRONT_REAR, purpose="speaker"),))
+    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_BRANCHES, branch_pair=BRANCH_PAIR_FRONT_REAR, purpose="speaker"),))
     assert "woofer:rear" not in _inline_context().role_targets
     with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
         _inline_prepared(monkeypatch, tmp_path, {"plan": plan.to_dict()})

@@ -171,7 +171,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
     admission: dict[str, Any] = {"basis": "pending_measurement" if defer_rung else "anchor"}
     # Only a near-field take plays a declared stimulus on one driver.
-    if any(stop.driver and stop.stimulus is not None for stop in plan.stops):
+    if any(stop.pose.driver and stop.stimulus is not None for stop in plan.stops):
         admission["predicted_spl_basis"] = NEAR_FIELD_SPL_BASIS
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:
@@ -209,7 +209,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
     # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:
         pairs = {branch_target_ids_for(capture.branch_pair, facts.roles_bands)
-                 for capture in plan.stops if capture.regime == REGIME_BRANCHES and not capture.driver}
+                 for capture in plan.stops if capture.regime == REGIME_BRANCHES and not capture.pose.driver}
         if any(capture.purpose == PURPOSE_REAR for capture in plan.stops):
             pairs.add(branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, facts.roles_bands))
         missing = tuple(sorted({target for pair in pairs for target in pair} - set(facts.declared_target_ids)))
@@ -223,7 +223,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
             return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     # A stereo pair plays no driver alone until #5697 (ADR-0360).
-    unoffered = tuple(sorted({stop.driver for stop in plan.stops if stop.driver} - set(facts.near_field_drivers or ())))
+    unoffered = tuple(sorted({stop.pose.driver for stop in plan.stops if stop.pose.driver}
+                             - set(facts.near_field_drivers or ())))
     if valid_shape and facts.near_field_drivers is not None and unoffered:
         code = REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
@@ -358,14 +359,14 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, defer_rung: b
                 add(exc.reason, exc.detail)
 
     schedule = tuple(
-        ScheduledCapture(index + 1, pose.place,
-                         candidate_identity(pose.candidate_id), repeat,
-                         ("candidate_branches" if pose.regime == REGIME_BRANCHES and not pose.driver else
-                          scopes.get(pose.candidate_id) if pose.candidate_id else
-                          "candidate" if pose.plays_summed else "drivers"), pose.regime)
-        for index, (pose, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
+        ScheduledCapture(index + 1, stop.pose.place,
+                         candidate_identity(stop.candidate_id), repeat,
+                         ("candidate_branches" if stop.regime == REGIME_BRANCHES and not stop.pose.driver else
+                          scopes.get(stop.candidate_id) if stop.candidate_id else
+                          "candidate" if stop.plays_summed else "drivers"), stop.regime)
+        for index, (stop, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
     ) if valid_shape else ()
-    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.driver or facts.roles_bands
+    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
                                     for stop in plan.stops)
     price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
     return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission, facts.driver_caps)

@@ -164,9 +164,10 @@ class _Work:
 
 
 def _pose(stop: Any) -> dict[str, Any]:
-    return {"kind": stop.kind, "deg": stop.angle_deg, "elevation_deg": stop.elevation_deg,
-            "distance_m": stop.distance_m, "place": stop.place, "seat_offset_m": stop.seat_offset_m,
-            **({"driver": stop.driver} if stop.driver else {})}
+    pose = stop.pose
+    return {"kind": pose.kind, "deg": pose.azimuth_deg, "elevation_deg": pose.elevation_deg,
+            "distance_m": pose.distance_m, "place": pose.place, "seat_offset_m": pose.seat_offset_m,
+            **({"driver": pose.driver} if pose.driver else {})}
 
 
 def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
@@ -264,7 +265,7 @@ async def run_plan(
     manifest.preset, manifest.layout = request.program, request.layout
     manifest.spl_monitor = spl_monitor
     manifest.asked = {
-        "poses": list({stop.place: _pose(stop) for stop in request.stops}.values()),
+        "poses": list({stop.pose.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)),
         "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
         "retries_per_pose": request.retries_per_pose,
@@ -299,10 +300,10 @@ async def run_plan(
         stops = [capture.resolved(request) for capture in captures]
         manifest.planned = [_planned_row(index, capture.repeat, capture.stop)
                             for index, capture in enumerate(captures, 1)]
-        places = [capture.stop.place for capture in captures]
+        places = [capture.stop.pose.place for capture in captures]
     else:
         stops = [resolved[offset // request.repeats] for offset in range(len(specs))]
-        places = [request.stops[offset // request.repeats].place for offset in range(len(specs))]
+        places = [request.stops[offset // request.repeats].pose.place for offset in range(len(specs))]
     anchor = request.level.resolved
     level = request.level.volume_db
     if level is None and session is not None:

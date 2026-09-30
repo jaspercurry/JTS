@@ -22,9 +22,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     SCHEMA_VERSION,
     PositionCycleError,
     position_cycle_document,
-    read_position_cycle,
     select_pose_curve_pair,
-    takes_by_position,
     write_position_cycle,
 )
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
@@ -450,142 +448,14 @@ def test_a_non_numeric_ordinal_refuses_as_this_modules_error(tmp_path):
         position_cycle_document(tmp_path, derived_at=STAMP)
 
 
-def test_the_writer_puts_the_index_where_the_reader_looks(tmp_path):
-    """The one writer of the file, round-tripped through the one reader."""
+def test_the_writer_puts_the_index_in_the_round(tmp_path):
+    """The one writer of the file writes the document it returns."""
     _bank(tmp_path / "round", [_record(1, 0), _record(2, 7)])
 
     path, document = write_position_cycle(tmp_path / "round")
 
     assert path == tmp_path / "round" / POSITION_CYCLE_FILENAME
-    assert read_position_cycle(path) == document
-
-
-# --------------------------------------------------------------------------- #
-# the reader
-# --------------------------------------------------------------------------- #
-
-
-def _written(tmp_path: Path, document) -> Path:
-    path = tmp_path / "written.json"
-    path.write_text(json.dumps(document, indent=2) + "\n")
-    return path
-
-
-@pytest.fixture
-def document(tmp_path) -> dict:
-    _bank(tmp_path / "round", [_record(1, 0), _record(2, 7)])
-    return position_cycle_document(tmp_path / "round", derived_at=STAMP)
-
-
-def test_a_written_index_reads_back_identical(tmp_path, document):
-    assert read_position_cycle(_written(tmp_path, document)) == document
-
-
-def test_an_unknown_key_is_an_error_not_a_silent_drop(tmp_path, document):
-    """A key this reader does not know is either a newer schema or a hand edit,
-    and reading a NEWER document as an older one silently is the failure this
-    document's whole job — being believed later — cannot survive."""
-    with pytest.raises(PositionCycleError, match="unknown keys"):
-        read_position_cycle(_written(tmp_path, dict(document, per_position=3)))
-
-
-def test_a_missing_key_is_an_error(tmp_path, document):
-    document.pop("sources")
-    with pytest.raises(PositionCycleError, match="missing keys"):
-        read_position_cycle(_written(tmp_path, document))
-
-
-def test_another_documents_kind_is_refused(tmp_path, document):
-    with pytest.raises(PositionCycleError, match="kind is"):
-        read_position_cycle(
-            _written(tmp_path, dict(document, kind=POSITION_EVIDENCE_KIND))
-        )
-
-
-def test_a_future_schema_version_is_refused(tmp_path, document):
-    with pytest.raises(PositionCycleError, match="schema_version"):
-        read_position_cycle(
-            _written(tmp_path, dict(document, schema_version=SCHEMA_VERSION + 1))
-        )
-
-
-def test_an_empty_take_list_is_refused(tmp_path, document):
-    with pytest.raises(PositionCycleError, match="non-empty list"):
-        read_position_cycle(_written(tmp_path, dict(document, takes=[])))
-
-
-def test_a_take_carrying_an_extra_field_is_refused(tmp_path, document):
-    document["takes"][0]["offset_cm"] = 0.0
-    with pytest.raises(PositionCycleError, match="must carry exactly"):
-        read_position_cycle(_written(tmp_path, document))
-
-
-@pytest.mark.parametrize("field", ["vertical_deg", "candidate_id"])
-def test_a_take_missing_its_elevation_or_candidate_is_refused(tmp_path, document, field):
-    document["takes"] = [
-        {k: v for k, v in take.items() if k != field}
-        for take in document["takes"]
-    ]
-
-    with pytest.raises(PositionCycleError):
-        read_position_cycle(_written(tmp_path, document))
-
-
-def test_an_unreadable_file_is_this_modules_error_not_an_oserror(tmp_path):
-    with pytest.raises(PositionCycleError):
-        read_position_cycle(tmp_path / "absent.json")
-
-
-def test_a_json_array_is_refused(tmp_path):
-    path = tmp_path / "written.json"
-    path.write_text("[]")
-    with pytest.raises(PositionCycleError, match="not a JSON object"):
-        read_position_cycle(path)
-
-
-# --------------------------------------------------------------------------- #
-# the split
-# --------------------------------------------------------------------------- #
-
-
-def test_the_takes_that_share_one_pose_are_grouped_in_walk_order(tmp_path):
-    _bank(tmp_path, [_record(1, 0), _record(2, 0), _record(3, 0),
-                     _record(4, 7), _record(5, 7), _record(6, 7)])
-
-    assert takes_by_position(
-        position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {
-        (0, 0): ("lateral_01_a01", "lateral_02_a01", "lateral_03_a01"),
-        (7, 0): ("lateral_04_a01", "lateral_05_a01", "lateral_06_a01"),
-    }
-
-
-def test_an_uncycled_walk_groups_to_one_take_per_pose(tmp_path):
-    _bank(tmp_path, [_record(1, 0), _record(2, 7)])
-
-    assert takes_by_position(
-        position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {(0, 0): ("lateral_01_a01",), (7, 0): ("lateral_02_a01",)}
-
-
-def test_a_pose_revisited_later_in_the_walk_keeps_both_visits(tmp_path):
-    """``0,7,0`` is a legal walk — the arm returns to the axis — and its two
-    on-axis takes are two takes at that pose, not one."""
-    _bank(tmp_path, [_record(1, 0), _record(2, 7), _record(3, 0)])
-
-    assert takes_by_position(
-        position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {(0, 0): ("lateral_01_a01", "lateral_03_a01"), (7, 0): ("lateral_02_a01",)}
-
-
-def test_a_raised_pose_is_its_own_group_at_the_same_bearing(tmp_path):
-    """0/0 and 0/+10 are two poses, not one bearing measured twice."""
-    _bank(tmp_path, [_record(1, 0), _record(2, 0, vertical_deg=10)])
-
-    assert takes_by_position(
-        position_cycle_document(tmp_path, derived_at=STAMP)
-    ) == {(0, 0): ("lateral_01_a01",), (0, 10): ("lateral_02_a01",)}
-
+    assert json.loads(path.read_text()) == document
 
 
 # --------------------------------------------------------------------------- #

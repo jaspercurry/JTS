@@ -9,7 +9,7 @@ from typing import Any
 
 from jasper.audio_measurement.program import KIND_SUMMED_SWEEP, KIND_SWEEP, PROGRAM_PHASE_MEASURE
 
-from ...measurement_programs import POSE_KIND_BEARING, validated_pose
+from ...measurement_programs import POSE_KIND_BEARING, Pose
 from ..contracts import POSITION_AXES
 from ..pose_curve import lateral_pose_curve, pose_curve_record
 
@@ -95,7 +95,7 @@ class PositionGeometry:
                 f"a pose axis must be one of {POSITION_AXES}, got {self.axis!r}"
             )
         object.__setattr__(
-            self, "seat_offset_m", validated_pose(self.kind, self.seat_offset_m)[0],
+            self, "seat_offset_m", Pose(0, 0, kind=self.kind, seat_offset_m=self.seat_offset_m).seat_offset_m,
         )
         # `bool` is an `int` and is never an elevation.
         if isinstance(self.vertical_deg, bool) or not isinstance(

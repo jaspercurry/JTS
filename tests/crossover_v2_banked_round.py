@@ -73,6 +73,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
 )
 from jasper.active_speaker import angle_capture, measurement_programs
+from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.capture_plan import position_geometry
 from jasper.active_speaker.crossover_v2.contracts import (
@@ -905,8 +906,10 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         info = open_bundle(mono_output_topology(), calibration_id="", sessions_dir=root / "sessions")
         store = CommissioningEvidenceStore.open(Path(info["bundle_dir"]), expected_session_id=info["session_id"])
         manifest = RunManifest("executor", BankedRecordStore(store, "executor"))
+        stated = dict(pose or {})
+        purpose = stated.pop("purpose", "speaker")
         stop = planned.stop if planned else angle_capture.AngleStop(
-            0, angle_capture.REGIME_SUMMED, candidate_id="speaker-candidate", **{"purpose": "speaker", **(pose or {})})
+            Pose(0, 0, **stated), angle_capture.REGIME_SUMMED, candidate_id="speaker-candidate", purpose=purpose)
         request = request or angle_capture.AngleCaptureRequest(stops=(stop,), candidates=(stop.candidate_id,))
         spec = planned.spec if planned else MeasureSpec(kind="candidate", graph_scope="candidate",
                                                         candidate_id=stop.candidate_id, program_phase=program.phase)

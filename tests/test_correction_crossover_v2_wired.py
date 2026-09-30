@@ -37,7 +37,7 @@ from jasper.active_speaker import arm_walk
 from tests.test_arm_walk import FakeMover, _walk as arm_run
 from jasper.active_speaker.plan_run import RunSignals
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, request_for_preset
-from jasper.active_speaker.measurement_programs import run_preset
+from jasper.active_speaker.measurement_programs import Pose, run_preset
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RunManifest
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -593,7 +593,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
     request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
-        candidate_id=stop.candidate_id, positions=(stop.angle_deg,), program_phase=phase))
+        candidate_id=stop.candidate_id, positions=(stop.pose.azimuth_deg,), program_phase=phase))
         for stop in request.stops) if phase else None
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
@@ -756,7 +756,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     checks = iter([False, False, False, check_passes])
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
-    request = AngleCaptureRequest(stops=(AngleStop(0, "per_driver", purpose="speaker"),), repeats=repeats,
+    request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),), repeats=repeats,
                                   level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")), program="speaker/mark")
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
@@ -1381,7 +1381,7 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     request = request_for_preset(preset, mover=preset.mover or "human", candidates=candidates)
     ladder = preflight_levels(request, ready_facts(request), preset.levels) if preset.levels else None
     planned = next(capture for capture in plan_run.prepare_plan_captures(request, roles_bands=_roles())
-                   if (capture.spec.program_phase, capture.stop.kind) == (phase, kind))
+                   if (capture.spec.program_phase, capture.stop.pose.kind) == (phase, kind))
     program = (build_check_program(_roles()) if phase == "check" else
                build_measure_program({"woofer": -20.0, "tweeter": -24.0}, _roles())
                if planned.spec.graph_scope == "drivers" else None)
@@ -1391,7 +1391,7 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     takes = banked if ladder else (banked,)
     assert [record["run_id"] for record in takes] == (
         [f"executor-level-{rung}" for rung in range(1, len(ladder.admissible) + 1)] if ladder else ["executor"])
-    driver = planned.stop.driver or None
+    driver = planned.stop.pose.driver or None
     for record in takes:
         pose = record["pose"]
         assert (set(record), record["phase"]) == (_TAKE_RECORD_KEYS, phase)

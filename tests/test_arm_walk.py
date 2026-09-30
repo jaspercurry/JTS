@@ -292,7 +292,7 @@ def test_an_arm_walk_past_the_envelope_is_refused_where_it_is_stated():
 def test_the_same_angle_is_fine_for_a_person():
     """The bound is the ARM's reach, not the geometry's -- a person still walks."""
     request = ac.per_driver_at([60, -60], mover=ac.MOVER_HUMAN)
-    assert [stop.angle_deg for stop in request.stops] == [60, -60]
+    assert [stop.pose.azimuth_deg for stop in request.stops] == [60, -60]
 
 
 def test_the_geometry_ceiling_still_refuses_both_movers():

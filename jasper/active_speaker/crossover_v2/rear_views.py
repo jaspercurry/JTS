@@ -565,11 +565,9 @@ def _pair_set(manifest: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The set a pair round banked its SUM under, or ``None`` for a summed round.
 
     A round banks one manifest set per captured role, so a manifest carrying
-    all of :data:`PAIR_ROLES` is the pair batch. The take's own ``regime`` is
-    NOT the signal: the flow stamps ``branches`` only beside a branch
-    diagnostic, so the very round that banked none reads as an ordinary axis
-    take. The sum's set is the document's pointer, named rather than left to
-    whichever row a candidate-keyed dict happened to iterate last.
+    all of :data:`PAIR_ROLES` is the pair batch. The sum's set is the
+    document's pointer, named rather than left to whichever row a
+    candidate-keyed dict happened to iterate last.
     """
     by_role = {row["capture_basis"].get("role"): row for row in view_sets(manifest)}
     return by_role.get(PAIR_ROLES[-1]) if set(PAIR_ROLES) <= set(by_role) else None

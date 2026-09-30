@@ -53,14 +53,6 @@ _BANKED_POSITIONS_GLOB = (
 _TAKE_FIELDS = ("index", "attempt", "take_id", "position_deg", "role",
                 "wav_sha256", "vertical_deg", "candidate_id")
 
-#: The keys :func:`read_position_cycle` accepts. Strict in both directions: a
-#: key this module does not know is either a newer schema or a hand edit, and
-#: both are worth an error over a silent drop.
-_DOCUMENT_FIELDS = frozenset({
-    "kind", "schema_version", "derived_at", "sources", "takes",
-})
-
-
 class PositionCycleError(ValueError):
     """The index cannot be derived, or cannot be read."""
 
@@ -450,67 +442,3 @@ def write_position_cycle(
     atomic_write_text(path, json.dumps(document, indent=2) + "\n")
     return path, document
 
-
-def read_position_cycle(path: str | Path) -> dict[str, Any]:
-    """The index at ``path``, or :class:`PositionCycleError`.
-
-    Strict in both directions — an unknown key and a missing one are both
-    errors — for :mod:`.alignment_prescription`'s reason: a reader that ignored
-    a key it did not know would read a NEWER document as an older one and say
-    nothing.
-    """
-    try:
-        raw = json.loads(Path(path).read_text())
-    except (OSError, ValueError) as exc:
-        raise PositionCycleError(f"{path}: {exc}") from exc
-    if not isinstance(raw, Mapping):
-        raise PositionCycleError(f"{path}: not a JSON object")
-    unknown = sorted(set(raw) - _DOCUMENT_FIELDS)
-    if unknown:
-        raise PositionCycleError(f"{path}: unknown keys {unknown}")
-    missing = sorted(_DOCUMENT_FIELDS - set(raw))
-    if missing:
-        raise PositionCycleError(f"{path}: missing keys {missing}")
-    if raw["kind"] != POSITION_CYCLE_KIND:
-        raise PositionCycleError(
-            f"{path}: kind is {raw['kind']!r}, not {POSITION_CYCLE_KIND!r}"
-        )
-    if raw["schema_version"] != SCHEMA_VERSION:
-        raise PositionCycleError(
-            f"{path}: schema_version {raw['schema_version']!r} is not "
-            f"{SCHEMA_VERSION}"
-        )
-    takes = raw["takes"]
-    if not isinstance(takes, list) or not takes:
-        raise PositionCycleError(f"{path}: takes must be a non-empty list")
-    for offset, take in enumerate(takes, start=1):
-        if not isinstance(take, Mapping) or set(take) != set(_TAKE_FIELDS):
-            raise PositionCycleError(
-                f"{path}: take {offset} must carry exactly {sorted(_TAKE_FIELDS)}"
-            )
-    return dict(raw)
-
-
-def takes_by_position(
-    document: Mapping[str, Any],
-) -> dict[tuple[int, int], tuple[str, ...]]:
-    """``{(position_deg, vertical_deg): (take_id, …)}`` — one pose's takes.
-
-    The key is the POSE PAIR, not the bearing alone: a walk that raises the
-    microphone measures a different pose at the same bearing, and folding the
-    two together would put curves from two poses in one comparison.
-
-    The split a comparison reads: every take measured at one pose, in walk
-    order, so per-take curves at that pose can be put beside each other. What
-    DISTINGUISHES those takes — a different applied graph, or nothing at all —
-    is the take's own banked ``graph_fingerprint`` — WHICH CANDIDATE WAS
-    APPLIED, stamped onto every take record at bank time. NOT the capture's
-    ``provenance.graph.fingerprint``: a per-driver take plays through the
-    transient routing graph, whose running hash is identical before and after
-    an apply.
-    """
-    grouped: dict[tuple[int, int], list[str]] = {}
-    for take in document["takes"]:
-        pose = (int(take["position_deg"]), int(take["vertical_deg"]))
-        grouped.setdefault(pose, []).append(str(take["take_id"]))
-    return {pose: tuple(ids) for pose, ids in sorted(grouped.items())}

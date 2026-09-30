@@ -26,6 +26,7 @@ import pytest
 from tests.test_plan_run import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker import candidate_bank
 from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
@@ -67,7 +68,7 @@ def _events(caplog) -> list[str]:
 
 def _inverted_walk(**template):
     return ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER, purpose="speaker"),),
+        stops=(ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
         template=ac.walk_template(
             kind=MEASURE_KIND_CANDIDATE, polarity=POLARITY_INVERTED, **template,
         ),
@@ -102,7 +103,7 @@ def test_a_complete_graph_trial_refuses_walk_overlays(overlay, candidate_id):
     template overlay is refused where the walk is stated, not at the open."""
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(0, ac.REGIME_SUMMED, 0, candidate_id, purpose="speaker"),),
+            stops=(ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id, purpose="speaker"),),
             template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **overlay),
         )
     assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE

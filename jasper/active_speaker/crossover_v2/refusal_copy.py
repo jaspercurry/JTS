@@ -120,7 +120,6 @@ REASON_MEASUREMENT_CANDIDATE_INVALID = "measurement_candidate_invalid"
 REASON_MEASUREMENT_SCOPE_INVALID = "measurement_scope_invalid"
 REASON_MEASUREMENT_FILTERS_INVALID = "measurement_filters_invalid"
 REASON_MEASUREMENT_BRANCH_CHANNELS = "measurement_branch_channels"
-REASON_WALK_REGIME_UNSUPPORTED = "walk_regime_unsupported"
 #: The walk's mover and the session's ADVANCE POLICY disagree (a countdown
 #: with no hand moving, or a tap-wait from an arm with none to give). NOT a
 #: comparison against the session's GATE.
@@ -1080,13 +1079,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'output assignments in speaker setup.',
         next_action={"id": 'speaker_setup', "label": 'Review speaker outputs',
                      "href": '/sound/speaker/'},
-    ),
-    REASON_WALK_REGIME_UNSUPPORTED: ReasonSpec(
-        REASON_WALK_REGIME_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
-        'This session cannot run that type of measurement. Choose a measurement type the session '
-        'supports.',
-        next_action={"id": 'select_walk_regime', "label": 'Choose a measurement type',
-                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_RIG_CLEAR_NOT_ATTESTED: ReasonSpec(
         REASON_WALK_RIG_CLEAR_NOT_ATTESTED, TEMPLATE_HARD_STOP, 0, "",

@@ -217,8 +217,6 @@ def validated_pose_driver(driver: str, *, regime: str, purpose: str | None) -> s
     """The one driver a pose plays alone, a measurement target id, at any kind
     and distance (ADR-0366). Only a reference pose names one, until a tuning
     reader admits a one-driver take, and one on any regime but summed must."""
-    if not isinstance(driver, str):
-        raise ValueError(f"a pose driver is a measurement target id, got {driver!r}")
     if driver and purpose != PURPOSE_REFERENCE:
         raise ValueError(f"only a {PURPOSE_REFERENCE} pose names its driver")
     if not driver and purpose == PURPOSE_REFERENCE and regime != REGIME_SUMMED:
@@ -282,57 +280,18 @@ def gate_exemption(kind: str | None, *, driver: str = "", distance_m: float | No
     return NEAR_FIELD_EXEMPT if at_driver_near_field(driver, distance_m) else None
 
 
-def validated_pose(
-    kind: str,
-    seat_offset_m: Sequence[float] | None,
-    distance_m: float | None = None,
-) -> tuple[tuple[float, float, float] | None, float | None]:
-    """The one rule every carrier of a pose category checks: ``kind`` is one
-    of :data:`POSE_KINDS`; exactly a seat states three finite metres
-    ``(right, forward, up)`` from the head; a distance, when stated, is a
-    positive length. Returns the offset and distance normalized to floats;
-    raises ``ValueError``."""
-    if kind not in POSE_KINDS:
-        raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {kind!r}")
-    if (seat_offset_m is not None) != (kind == POSE_KIND_SEAT):
-        raise ValueError(
-            "a seat pose states its (right, forward, up) offset from the head; "
-            "no other kind does"
-        )
-    offset = None
-    if seat_offset_m is not None:
-        try:
-            offset = tuple(float(v) for v in seat_offset_m)
-        except (TypeError, ValueError):
-            offset = ()
-        if len(offset) != 3 or not all(math.isfinite(v) for v in offset):
-            raise ValueError(f"a seat offset is three finite metres, got {seat_offset_m!r}")
-    distance = None
-    if distance_m is not None:
-        distance = float(distance_m) if isinstance(distance_m, (int, float)) else math.nan
-        if not math.isfinite(distance) or distance <= 0:
-            raise ValueError(f"a pose distance is a positive length in metres, got {distance_m!r}")
-    return offset, distance  # type: ignore[return-value]
-
-
-def pose_place(
-    kind: str,
-    azimuth_deg: int,
-    elevation_deg: int,
-    distance_m: float | None,
-    seat_offset_m: tuple[float, float, float] | None,
-    driver: str = "",
-) -> tuple[object, ...]:
-    """What distinguishes one microphone position from another; a pose at a
-    driver is also that driver's, so the front and rear woofer at one distance
-    are two placements."""
-    place = (kind, azimuth_deg, elevation_deg, distance_m, seat_offset_m)
-    return (*place, driver) if driver else place
-
-
 @dataclass(frozen=True)
-class ProgramPose:
-    """One place to measure, its take count, and optional prompt text."""
+class Pose:
+    """One place to measure: the one pose record the registry, the stops and
+    the prompts carry, and a banked take's pose is written from, with its one
+    validator (ADR-0366 §1).
+
+    ``kind`` names what the angles and ``distance_m`` are stated from; exactly
+    a seat states ``seat_offset_m``, three finite metres ``(right, forward,
+    up)`` from the head. ``repeats`` is how many takes a layout asks here;
+    ``headline`` and ``detail`` are a layout's own words for the placement,
+    which a prompt shows instead of its generated ones. Raises ``ValueError``.
+    """
     azimuth_deg: int
     elevation_deg: int
     repeats: int = 1
@@ -351,18 +310,33 @@ class ProgramPose:
         object.__setattr__(self, "elevation_deg", validated_angle(self.elevation_deg))
         if isinstance(self.repeats, bool) or not isinstance(self.repeats, int) or self.repeats <= 0:
             raise ValueError(f"pose repeats must be a positive integer, got {self.repeats!r}")
-        if not isinstance(self.headline, str) or not isinstance(self.detail, str):
-            raise ValueError("pose headline and detail must be text")
-        offset, distance = validated_pose(self.kind, self.seat_offset_m, self.distance_m)
-        object.__setattr__(self, "seat_offset_m", offset)
-        object.__setattr__(self, "distance_m", distance)
+        if not all(isinstance(text, str) for text in (self.headline, self.detail, self.driver)):
+            raise ValueError("a pose's headline, detail and driver are text")
+        if self.kind not in POSE_KINDS:
+            raise ValueError(f"a pose kind must be one of {POSE_KINDS}, got {self.kind!r}")
+        if (self.seat_offset_m is not None) != (self.kind == POSE_KIND_SEAT):
+            raise ValueError("a seat pose states its (right, forward, up) offset from the head; no other kind does")
+        if self.seat_offset_m is not None:
+            try:
+                offset = tuple(float(v) for v in self.seat_offset_m)
+            except (TypeError, ValueError):
+                offset = ()
+            if len(offset) != 3 or not all(math.isfinite(v) for v in offset):
+                raise ValueError(f"a seat offset is three finite metres, got {self.seat_offset_m!r}")
+            object.__setattr__(self, "seat_offset_m", offset)
+        if self.distance_m is not None:
+            distance = float(self.distance_m) if isinstance(self.distance_m, (int, float)) else math.nan
+            if not math.isfinite(distance) or distance <= 0:
+                raise ValueError(f"a pose distance is a positive length in metres, got {self.distance_m!r}")
+            object.__setattr__(self, "distance_m", distance)
 
     @property
     def place(self) -> tuple[object, ...]:
-        return pose_place(
-            self.kind, self.azimuth_deg, self.elevation_deg,
-            self.distance_m, self.seat_offset_m, self.driver,
-        )
+        """What distinguishes one microphone position from another; a pose at a
+        driver is also that driver's, so the front and rear woofer at one distance
+        are two placements."""
+        place = (self.kind, self.azimuth_deg, self.elevation_deg, self.distance_m, self.seat_offset_m)
+        return (*place, self.driver) if self.driver else place
 
 
 @dataclass(frozen=True)
@@ -370,7 +344,7 @@ class Preset:
     """One registry row: its id (``speaker/mark``), what plays, and its poses at a layout it
     offers (ADR-0366 §6)."""
     preset: str
-    poses: tuple[ProgramPose, ...]
+    poses: tuple[Pose, ...]
     #: What its takes serve, its program's first (ADR-0336, ADR-0383).
     purposes: tuple[str, ...]
     regime: str = REGIME_PER_DRIVER
@@ -415,7 +389,7 @@ class Preset:
 @dataclass(frozen=True)
 class Layout:
     """A named pose set that presets offer, with the mover it pins (ADR-0366 §6)."""
-    poses: tuple[ProgramPose, ...]
+    poses: tuple[Pose, ...]
     mover: str | None
     description: str
     use_when: str
@@ -475,12 +449,12 @@ def _text(value: Any, label: str) -> str:
     return value
 
 
-def _pose(value: Any, layout: str, index: int) -> ProgramPose:
+def _pose(value: Any, layout: str, index: int) -> Pose:
     label = f"layout {layout!r} pose {index}"
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     try:
-        return ProgramPose(**value)
+        return Pose(**value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label}: {exc}") from None
 
@@ -637,7 +611,7 @@ def run_preset(name: str, layout: str | None = None, poses: str | Sequence[Any] 
         for index, value in enumerate(poses)))
 
 
-def plan_poses(preset: Preset, targets: Sequence[str] = (), driver: str = "") -> tuple[ProgramPose, ...]:
+def plan_poses(preset: Preset, targets: Sequence[str] = (), driver: str = "") -> tuple[Pose, ...]:
     """The poses a run walks on this speaker. A named layout's pose that names a bare
     driver role (``woofer``) plays each declared output of that role (``targets``), one
     output's poses after the other's, so a cardioid's rear woofer follows its front one

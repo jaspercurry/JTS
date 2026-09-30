@@ -42,7 +42,7 @@ from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
 from jasper.active_speaker.measurement_level import scope_gains_db
-from jasper.active_speaker.measurement_programs import preset
+from jasper.active_speaker.measurement_programs import Pose, preset
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
@@ -1243,7 +1243,8 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
         session_volume_db=context.session_volume_db).allowed
 
     plan = build_inline_session_spec(
-        [(spec, CloudPositionPrompt("close"), "")], roles_bands=context.roles_bands, fc_hz=context.fc_hz,
+        [(spec, CloudPositionPrompt("close", pose=Pose(0, 0)), "")], roles_bands=context.roles_bands,
+        fc_hz=context.fc_hz,
         excitation=excitation, acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
     assert plan.entries[0].duration_ms >= max(map(_program_duration_ms, (program, probe))) + CAPTURE_ENTRY_MARGIN_MS
