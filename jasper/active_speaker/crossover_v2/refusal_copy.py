@@ -437,7 +437,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("name_round", "Name a banked round or a live session bundle"): {
         evidence_reasons.REASON_UNREADABLE: "The round view could not read its input round.",
         "close_reference_unreadable_round": "The round directory named for the take is not a directory.",
-        "evidence_unreadable": "The round's evidence could not be read.",
     },
     ("name_frequencies", "Name the frequencies to classify"): {
         evidence_reasons.NO_FEATURES_DETECTED: "No feature in the pooled response rises above the scatter between recordings.",
@@ -470,6 +469,7 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
     ("review_evidence", "Review the evidence the view read"): {
         evidence_reasons.REASON_REFUSED: "The round view declined the evidence it read.",
+        "evidence_unreadable": "The evidence this tool reads could not be read.",
         "field_malformed": "The artifact was read, and its field holds a value of the wrong type.",
         "field_null": "The artifact was read, and the field this block reads is empty.",
         "source_absent": "The artifact this block reads was never supplied or banked.",
@@ -499,26 +499,26 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     ("measure_bass", "Measure a bass round"): {
         "bass_evidence_unavailable": "The round banked no bass reading or bass level for this prescription.",
     },
-    ("identify_mic", "Select a known measurement microphone"): {
-        "mic_calibration_unavailable": "The speaker has no remembered calibrated microphone, or its calibration file is gone.",
+    ("register_mic_calibration", "Register microphone calibration"): {
+        "mic_calibration_unavailable": "No calibration is available for the measurement microphone: none is "
+                                       "remembered, or its file cannot be read.",
     },
     ("speaker_setup", "Finish the protected speaker setup"): {
         "driver_passband_unavailable": "The speaker declares no band for its drivers, so a per-driver prescription "
                                        "has nothing to check against.",
         "prescription_fc_unknown": "The crossover corner is unknown, so an alignment cannot be checked at it.",
-        "topology_malformed": "The declared drivers give no crossover range, so a topology has no corner to check.",
     },
     ("speaker_setup", "Review speaker outputs"): {
         "aplay_failed": "The aplay tool failed, so the speaker cannot list its playback devices.",
         "aplay_missing": "The aplay tool is missing, so the speaker cannot list its playback devices.",
         "aplay_timeout": "The aplay tool timed out, so the speaker cannot list its playback devices.",
     },
-    ("omit_section", "Leave this section out of a one-way speaker's document"): {
+    ("read_contract", "Read the section's contract"): {
         "alignment_no_crossover_region": "A one-way speaker has no crossover, so there is nothing to align.",
-        "topology_no_crossover_region": "A one-way speaker has no crossover corner to change.",
-    },
-    ("write_cuts", "Write the blend as cuts, or propose the boost per driver"): {
         "boost_route_unavailable": "The blend stage carries no boost.",
+        "topology_malformed": "The topology cannot be checked: its document is malformed, or the declared drivers "
+                              "give no crossover range.",
+        "topology_no_crossover_region": "A one-way speaker has no crossover corner to change.",
     },
     ("read_catalog", "Read the tool catalog for the view and its inputs"): {
         "inputs_required": "This view needs inputs that the bank does not supply, so the bank did not run it.",
