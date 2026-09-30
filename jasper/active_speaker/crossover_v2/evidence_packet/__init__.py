@@ -488,20 +488,18 @@ def build_crossover_evidence_packet(
             candidates_available=candidates["status"] == "available",
             capture_snr_reason=str(capture_snr.get("detail") or ""),
         ),
-        "contracts": _contract_digests(inputs, round_dir, as_mapping(draft_raw), applied_profile),
+        "contracts": _contract_digests(inputs, as_mapping(draft_raw), applied_profile),
         DERIVED_VIEWS: _derived_views_block(inputs),
     }
     packet["packet_fingerprint"] = _fingerprint(packet)
     return packet
 
 
-def _contract_digests(inputs: RoundInputs, round_dir: Path, draft: Mapping[str, Any],
+def _contract_digests(inputs: RoundInputs, draft: Mapping[str, Any],
                       applied_profile: dict[str, Any] | None) -> dict[str, Any]:
     """Each contract section's digest. A section the round's banked candidate refuses is a gap
     with that refusal's code, so the packet still builds from banked inputs (ADR-0371)."""
-    receipt = read_json(round_dir / "round_receipt.json")[0]
-    sources = {**contract_sources(inputs), "draft": draft, "receipt": as_mapping(receipt),
-               "applied_profile": applied_profile or {}}
+    sources = {**contract_sources(inputs), "draft": draft, "applied_profile": applied_profile or {}}
     programs = contract_programs(sources)
     digests: dict[str, Any] = {}
     for name in (section for section in SECTIONS if section in programs):
@@ -528,7 +526,7 @@ def contract_currency(inputs: RoundInputs) -> dict[str, Any] | None:
         return None
     try:
         draft = read_json(banked.design_draft_path)[0] if banked.design_draft_path else None
-        now = _contract_digests(banked, round_dir, as_mapping(draft), applied_profile_source(banked.applied_profile_path)[0])
+        now = _contract_digests(banked, as_mapping(draft), applied_profile_source(banked.applied_profile_path)[0])
     except ROUND_INPUT_ERRORS as exc:
         return {"contract_current": None, "stored": stored, "now": None, "error": unavailable(SOURCE_UNREADABLE, str(exc))}
     return {"contract_current": stored == now, "stored": stored, "now": now}

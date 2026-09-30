@@ -100,13 +100,6 @@ def _receipt() -> dict[str, Any]:
         "adoption": {"outcome": "keep", "reason": "round_cap_reached", "row": "row7"},
         "verification": {"spec": "failed", "realization": "matched"},
         "round_axes": {"safety": {"status": "ok", "evidence": {"probe_verdict": "clean"}}},
-        "round_measurements": {
-            "blend": {
-                "band_hz": [BAND[0], BAND[1]], "reason": "nothing_to_cut",
-                "damping": 0.7, "incumbent": [], "commanded": [],
-                "realized": {"residual_db": 0.51, "n_bins": 1688},
-            }
-        },
         "evidence_identities": {"candidate_fingerprint": "abc", "tier": ""},
         "proposal_fingerprint": "55fedc24",
         "proposal_fingerprint_kind": "intervention_proposal",
@@ -149,7 +142,7 @@ def packet(tmp_path: Path) -> dict[str, Any]:
 
 
 def _gate(packet: dict[str, Any], document: Any, band_hz: tuple[float, float] | None = BAND) -> Any:
-    """The gate, its band the contract's (the fixture receipt's blend band)."""
+    """The gate, its band the contract's."""
     return read_blend_prescription(
         document,
         packet_fingerprint=packet.get("packet_fingerprint"),
@@ -1371,7 +1364,7 @@ def test_a_supplied_gate_written_field_is_ignored_not_trusted(packet):
     ``prescription_class`` and ``band_hz`` are accepted on the way in so a
     receipt reads back through the same parser — so a prescriber can supply
     them. Neither may be believed: the class is re-derived from the gains, and
-    the band comes from the packet.
+    the band comes from the blend contract.
     """
     document = _document(
         [_cut(gain=-1.5)],

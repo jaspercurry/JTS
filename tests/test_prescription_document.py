@@ -16,6 +16,8 @@ from math import prod
 import pytest
 from tests.test_prescription_contract import round_bank as round_bank
 from tests.test_prescription_contract import bass_packet as bass_packet
+from tests.test_prescription_contract import measure_take
+from tests.crossover_v2_fixtures import _one_way_preset
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.profile import ActiveSpeakerPreset, SIDES_BY_LAYOUT
@@ -23,7 +25,7 @@ from jasper.active_speaker.preset_binding import build_passive_mains_preset
 from jasper.bass_extension.dynamic_graph import validated_base_graph
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
 from tests.test_bass_extension_dynamic import _descriptor as _bass_descriptor
-from tests.test_crossover_v2_blend_prescription import _receipt, _document as blend_document
+from tests.test_crossover_v2_blend_prescription import _document as blend_document
 from jasper.active_speaker.crossover_v2.topology_prescription import candidate_topology
 from jasper.active_speaker.measured_crossover_candidate import compile_candidate_config, prove_candidate_config
 from jasper.active_speaker.round_packet import store_banked_evidence
@@ -33,7 +35,7 @@ from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
 from jasper.active_speaker.measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
 )
-from jasper.active_speaker.crossover_v2.blend_prescription import prescription_sha256
+from jasper.active_speaker.crossover_v2.blend_prescription import REGION_UNAVAILABLE, prescription_sha256
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2 import room_prescription
 import yaml
@@ -488,7 +490,6 @@ def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsy
 def test_a_section_authored_without_its_envelope_is_judged_and_carries_the_rationale_its_reader_names(
     base, evidence, bass_packet,
 ):
-    evidence = replace(evidence, sources={**deepcopy(dict(evidence.sources)), "receipt": _receipt()})
     authored = {
         "driver": driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 2}], dict(evidence.packet)),
         "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
@@ -663,10 +664,6 @@ def test_bass_compose_refuses_malformed_descriptor(bank, tmp_path, capsys, descr
 
 @pytest.mark.parametrize("delay", [-100, 100])
 def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, delay):
-
-    sources = deepcopy(dict(evidence.sources))
-    sources["receipt"] = _receipt()
-    evidence = replace(evidence, sources=sources)
     sections = {
         "driver": driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": 2}], dict(evidence.packet)),
         "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
@@ -682,6 +679,25 @@ def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, del
     emitted = compile_candidate_config(child, playback_device="null")
     prove_candidate_config(child, emitted)
     assert yaml.safe_load(emitted)["devices"]["volume_limit"] == 0.0
+
+
+@pytest.mark.parametrize("one_way", [False, True])
+def test_a_blend_document_judges_over_the_overlap_band_its_round_trusts(bank, base, evidence, one_way):
+    """ADR-0402: the base crosses at 1600 Hz and the round's far take trusts 1000 Hz up."""
+    if one_way:
+        base = publish_authored_candidate(replace(_candidate(preset=_one_way_preset(), trims={"full_range": 0.0}),
+                                                  analysis={"measurement_status": "unmeasured"}), root=bank)
+    evidence = replace(evidence, sources={**evidence.sources, "manifest": {"sets": [
+        {"set_id": "base", "capture_basis": {}, "takes": [measure_take(1000.0, None)]}]}})
+    raw = document(base.fingerprint, {"blend": blend_document(
+        [{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet))})
+    if one_way:
+        with pytest.raises(PrescriptionDocumentRefused) as refused:
+            judge_prescription_document(raw, base=base, evidence=evidence)
+        assert (refused.value.section, refused.value.code) == ("blend", REGION_UNAVAILABLE)
+        return
+    judged = judge_prescription_document(raw, base=base, evidence=evidence).analysis["evidence"]["prescriptions"]
+    assert judged["blend"]["band_hz"] == [1000.0, 3200.0]
 
 
 @pytest.mark.parametrize("section, payload, code", [

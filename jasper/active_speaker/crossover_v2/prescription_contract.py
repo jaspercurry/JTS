@@ -16,8 +16,10 @@ from typing import Any
 
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.design_inputs import declared_by_target
-from jasper.audio_measurement.evidence_reasons import unavailable
+from jasper.audio_measurement.comparison_bands import overlap_band_hz
+from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
 from jasper.audio_measurement.piston import beaming_onset_hz
+from jasper.audio_measurement.trusted_band import within_trusted
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
     resolve_driver_measurement_band_hz,
@@ -49,6 +51,9 @@ from . import room_prescription as room
 from . import topology_prescription as topology
 from .feature_classification import UNCERTAINTY_RANDOM
 from .corner_admissibility import fc_rejection_scenarios
+from .journey import PHASE_MEASURE
+from .pose_curve import WINDOW_GATED
+from .position_cycle import curve_band, take_curves
 
 CONTRACT_COMMAND = "jasper-crossover-prescriber contract"
 #: A round that banked no candidate has no base its packet may charge (ADR-0371).
@@ -160,9 +165,28 @@ def _base_charge(candidate: Mapping[str, Any]) -> tuple[float | None, str | None
         return None, getattr(exc, "code", COMPOSITION_INVALID)
 
 
-def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
-             preset: ActiveSpeakerPreset | None, candidate: Mapping[str, Any],
-             manifest: Mapping[str, Any]) -> dict[str, Any]:
+def _blend_band(corner: float | None, takes: list[Mapping[str, Any]]) -> tuple[list[float] | None, dict[str, Any]]:
+    """The blend region, Fc ÷ 2 to Fc × 2 clipped to the gated trusted band of every kept MEASURE take
+    whose pose names no driver, and its status (ADR-0402)."""
+    if corner is None:
+        return None, unavailable(blend.REGION_UNAVAILABLE)
+    overlap = overlap_band_hz(corner)
+    try:
+        trusted = [curve_band(take, curve) for take in takes
+                   if take.get("phase") == PHASE_MEASURE and not as_mapping(take.get("pose")).get("driver")
+                   for curve in take_curves(take, WINDOW_GATED) or ()]
+    except EvidenceUnavailable as exc:
+        return None, unavailable(exc.reason, exc.detail)
+    band = within_trusted(overlap, *trusted)
+    if band is None:
+        return None, unavailable(blend.REGION_UNAVAILABLE, {"overlap_band_hz": list(overlap), "trusted_band_hz": [
+            max((one.low_hz for one in trusted if one.low_hz is not None), default=None),
+            min((one.high_hz for one in trusted if one.high_hz is not None), default=None)]})
+    return list(band), {"status": "available"}
+
+
+def _speaker(draft: Mapping[str, Any], preset: ActiveSpeakerPreset | None,
+             candidate: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
     blend_format = blend.prescription_response_format()
     driver_format = driver.driver_prescription_response_format()
     alignment_format = alignment.alignment_prescription_response_format()
@@ -193,9 +217,9 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         "binding": PROGRAM_HEADROOM_BINDING if spent is not None and spent >= MAX_PROGRAM_HEADROOM_DB else None,
         "reason": reason,
     } for role in (required_driver_roles(preset.way_count) if preset else sorted(passbands))}
-    band = as_mapping(as_mapping(receipt.get("round_measurements")).get("blend")).get("band_hz")
     fc = topology.candidate_topology(SimpleNamespace(source_preset=preset))
     corner = fc["fc_hz"] if fc else None
+    band, blend_status = _blend_band(corner, takes)
     delay = None
     if preset is not None:
         delay = alignment.alignment_delay_search_bounds_us(preset)
@@ -270,7 +294,7 @@ def _speaker(draft: Mapping[str, Any], receipt: Mapping[str, Any],
         },
         "blend": {
             "filters_are_a_total": blend_format["filters_are_a_total"],
-            **({"status": "available"} if band else unavailable(blend.REGION_UNAVAILABLE)),
+            **blend_status,
             "schema": _document(blend_format, {
                 blend.PACKET_FINGERPRINT_FIELD: {"type": "string"},
                 "filters": {"type": "array", "items": _filter(), "maxItems": blend.BLEND_MAX_FILTERS},
@@ -570,7 +594,6 @@ def _rear() -> dict[str, Any]:
 
 
 def prescription_contracts(*, programs: Collection[str] = SECTIONS, draft: Mapping[str, Any] | None = None,
-                           receipt: Mapping[str, Any] | None = None,
                            candidate: Mapping[str, Any] | None = None,
                            room_median: Mapping[str, Any] | None = None,
                            room_persistence: Mapping[str, Any] | None = None,
@@ -580,7 +603,7 @@ def prescription_contracts(*, programs: Collection[str] = SECTIONS, draft: Mappi
                            manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     candidate = candidate or {}
     preset = _preset(candidate, applied_profile or {})
-    return {name: (_speaker(draft or {}, receipt or {}, preset, candidate, manifest or {}) if name == "speaker" else
+    return {name: (_speaker(draft or {}, preset, candidate, manifest or {}) if name == "speaker" else
                    _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset) if name == "room" else
                    _bass(bass_evidence or {}) if name == "bass" else _rear()) for name in SECTIONS if name in programs}
 
