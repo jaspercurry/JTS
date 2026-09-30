@@ -150,17 +150,14 @@ def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
 
 
 @pytest.mark.parametrize(("purposes", "has_room", "expected"), [
-    (("speaker",), False, (("frequency", False, False), ("inventory", True, False))),
-    (("speaker",), True, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
-                          ("inventory", True, False))),
-    (("room",), False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False),
-                        ("inventory", True, False))),
-    (("bass",), False, (("bass", True, False), ("frequency", False, False), ("inventory", True, False))),
+    (("speaker",), False, (("frequency", False, False),)),
+    (("speaker",), True, (("room", True, False), ("room-grade", True, True), ("frequency", False, False))),
+    (("room",), False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False))),
+    (("bass",), False, (("bass", True, False), ("frequency", False, False))),
     (("reference",), False, ()),
-    (("rear",), False, (("rear", False, False), ("frequency", False, False),
-                        ("inventory", True, False))),
+    (("rear",), False, (("rear", False, False), ("frequency", False, False))),
     (("rear", "room"), False, (("room", True, False), ("room-grade", True, True), ("rear", False, False),
-                               ("frequency", False, False), ("inventory", True, False))),
+                               ("frequency", False, False))),
 ])
 def test_the_view_table_answers_every_automatic_view(purposes, has_room, expected):
     assert bookkeeping_views(purposes, has_room=has_room) == expected

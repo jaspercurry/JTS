@@ -70,13 +70,14 @@ def test_a_room_rounds_index_gets_no_rear_lines(tmp_path):
     assert not any(line.startswith("rear ") for line in index.splitlines())
 
 
-def test_a_pair_rounds_index_names_the_null_and_the_front_rear_comparisons(tmp_path, banked_candidates):
+def test_a_pair_rounds_index_names_the_take_views_of_its_null(tmp_path, banked_candidates):
+    """Every set's first take of each pose kind gets the take views, so the null behind the cabinet does."""
     root = pair_round(tmp_path, behind_gap_ms=0.5)
-    packet_of(root)
+    packet, _ = packet_of(root)
     index = (root / INDEX_FILENAME).read_text()
-    commands = [shlex.split(line.strip("`- ")) for line in index.splitlines() if "jasper-round-views compare" in line]
+    commands = [shlex.split(line[3:-1]) for line in index.splitlines() if line.startswith("- `")]
 
     assert "behind the speaker" in index
-    roles = sorted(tuple(command[command.index(flag) + 1] for flag in ("--a-role", "--b-role")) for command in commands)
-    # Front against rear woofer at each pose kind, and front against behind for the sum.
-    assert roles == [("summed", "summed"), ("woofer", "woofer:rear"), ("woofer", "woofer:rear")]
+    assert {(command[1], command[command.index("--set") + 1]) for command in commands
+            if command[-1].endswith("-behind-1")} == {
+        (view, group["set_id"]) for group in packet["sets"] for view in ("sweep", "impulse", "group-delay", "decay")}

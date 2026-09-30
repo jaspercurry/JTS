@@ -343,9 +343,9 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
     assert document["boundary_reason"] == boundary_reason
     assert not {"freqs_hz", "median_db", "positions"} & result.keys()
     assert isinstance(result["features"], int)
-    inventory = _run(capsys, ["inventory", str(root), "--set", selected.set_id])
-    rows = json.loads(Path(inventory["out"]).read_text())["artifacts"]
-    assert next(row for row in rows if row["view"] == "room")["present"] is True
+    catalog = _run(capsys, ["catalog", str(root), "--set", selected.set_id])
+    room, = next(tool for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room")["calls"]
+    assert (room["present"], room["out"]) == (True, result["out"])
 
 
 @pytest.mark.parametrize("matches,reason", [
@@ -450,7 +450,9 @@ def test_retired_room_verbs(verb):
 
 
 @pytest.mark.parametrize("purpose,floor_hz", [("speaker", 20.0), ("room", 30.0)])
-def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speaker_round, tmp_path, purpose, floor_hz):
+def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
+    speaker_round, tmp_path, capsys, purpose, floor_hz,
+):
     root, driver, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
@@ -502,5 +504,6 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(speak
     assert limits["bounds"]["freqs_hz"] == room["median"]["freqs_hz"]
     assert len(limits["bounds"]["cut_floor_db"]) == len(room["median"]["freqs_hz"])
     assert {row["set_id"] for row in views if row["view"] == "room" and row["status"] == "written"} == {"summed"}
-    inventories = [json.loads(Path(row["out"]).read_text()) for row in views if row["view"] == "inventory"]
-    assert any(row["view"] == "room" and row["present"] for inventory in inventories for row in inventory["artifacts"])
+    catalog = _run(capsys, ["catalog", str(root)])
+    assert {call["set_id"] for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room"
+            for call in tool["calls"] if call["present"]} == {"summed"}

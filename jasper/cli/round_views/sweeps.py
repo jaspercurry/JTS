@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.active_speaker.crossover_v2.gate_sweep import summary_lines, sweep_round
+from jasper.active_speaker.crossover_v2.round_inputs import take_artifact_name
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from .frequency import add_image_args, render_image
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
@@ -77,7 +78,8 @@ def _cmd_windows(args: argparse.Namespace) -> int:
     take_subject, take_id, role = resolve_set_take(Path(args.round_dir), args.set, args.take, args.role)
     report = window_view(Path(args.round_dir), capture_id=take_id, rungs_ms=args.rungs_ms, role=role)
     spec = ARTIFACT_BY_VIEW[f"sweep --scope {args.scope}"]
-    written = _write(report, args.out, resolved_out(Path(args.round_dir), spec.artifact, args.set), schema=spec.schema)
+    written = _write(report, args.out, resolved_out(Path(args.round_dir), take_artifact_name(spec.artifact, take_id, role)),
+                     schema=spec.schema)
     run, = report["runs"]
     return answer(args.command, schema=spec.schema, subject=take_subject,
                   parameters={**_frame_parameters(run["metadata"]["frame"]), "role": role},

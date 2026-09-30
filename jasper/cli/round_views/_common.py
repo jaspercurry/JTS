@@ -17,7 +17,7 @@ from typing import Any
 from jasper.active_speaker import round_bank
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS as ANSWER_SCHEMAS
 from jasper.active_speaker.round_view_artifacts import (
-    PROG as PROG, ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, CATALOG as CATALOG, INVENTORY_ARTIFACT as INVENTORY_ARTIFACT,
+    PROG as PROG, ARTIFACT_BY_VIEW as ARTIFACT_BY_VIEW, CATALOG as CATALOG,
     context_artifacts as context_artifacts, view_rows as view_rows,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS

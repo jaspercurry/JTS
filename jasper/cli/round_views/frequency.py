@@ -7,7 +7,9 @@
 * ``frequency <source-a> [<source-b>]`` — the renderer-neutral frequency view
   shared with the JTS web page. A source may be a banked round, a session
   bundle, or a JSON measurement/analysis document. A round's or a bundle's
-  curves carry the set and selection its run manifest gives them.
+  curves carry the set and selection its run manifest gives them. A banked
+  round reads the view its bank filed, and the view never writes over a file
+  it read.
 """
 
 from __future__ import annotations
@@ -49,6 +51,13 @@ def _frequency_default_out(source: Path) -> Path:
     return source / name
 
 
+def _banked_view(source: Path) -> Path | None:
+    """The view a bank filed for this banked round, or for the bundle it banked."""
+    round_dir = source if (source / "bundle").is_dir() else banked_round_of(source)
+    view = round_dir / ARTIFACT_BY_VIEW["frequency"].artifact if round_dir is not None else None
+    return view if view is not None and view.is_file() else None
+
+
 def _frequency_source(path: Path):
     """One round, bundle, or JSON document as a neutral frequency run."""
 
@@ -67,14 +76,18 @@ def _frequency_source(path: Path):
 
 
 def _cmd_frequency(args: argparse.Namespace) -> int:
-    source_a = Path(args.source_a)
+    sources = [Path(source) for source in (args.source_a, args.source_b) if source]
+    # A banked round reads the view its bank filed, gated overlays included; this
+    # verb's own build has none (#5928 TB5).
+    read = [(_banked_view(source) if source.is_dir() else None) or source for source in sources]
     # Resolving a source IS this verb's load stage, "that document holds no
     # curves" included: the fix is to name a different source.
-    run_a = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, source_a)
-    run_b = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, Path(args.source_b)) if args.source_b else None
-    payload, series = frequency_payload(run_a, run_b, ref_band_hz=args.ref_band_hz, normalize=args.normalize)
+    runs = [stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, _frequency_source, path) for path in read]
+    payload, series = frequency_payload(*runs, ref_band_hz=args.ref_band_hz, normalize=args.normalize)
     schema = ARTIFACT_BY_VIEW[args.command].schema
-    written = _write(payload, args.out, _frequency_default_out(source_a), schema=schema)
+    default = _frequency_default_out(sources[0])
+    # Never over a file it read, the bank's own view included.
+    written = None if args.out is None and default in read else _write(payload, args.out, default, schema=schema)
     return answer(
         args.command, schema=schema,
         subject=[subject(round_inputs(Path(source))) if Path(source).is_dir() else {}

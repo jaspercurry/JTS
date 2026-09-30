@@ -22,6 +22,7 @@ from tests.crossover_v2_fixtures import _one_way_preset
 @pytest.fixture
 def live_round():
     packet = json.loads((Path(__file__).parent / "fixtures/round_d5dbe9ccdbd2.json").read_text())
+    packet["manifest"]["preset"] = "speaker/mark"  # speaker/arm is retired (#2902)
     for fit in packet["fits"]:
         fit["boost_evidence"] = fit.pop("cloud")
     for group in packet["manifest"]["sets"]:  # each take as the join reads it: the curve is its record's
@@ -118,7 +119,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
             "takes": [groups[0]["takes"][0]],
         }
     )
-    manifest = {"sets": groups}
+    manifest = {"preset": "speaker", "sets": groups}
     sources = live_round["sources"]
     sources["applied_profile"]["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = 2400
     plot = {"freqs_hz": [100, 1000, 10000], "deviation_db": [-2, 0, 2],
@@ -192,17 +193,17 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     assert ceiling["band_hz"] == (None if gap is None else [1600, 4000])
     assert ceiling["take_ids"] == ["woofer", "tweeter"]
     json.dumps(packet, allow_nan=False)
-    index = packet_index(packet, tmp_path, [], manifest)
+    index = packet_index(packet, tmp_path, manifest)
     (tmp_path / INDEX_FILENAME).write_text(index)
+    lines = index.splitlines()
     for prefix in ("series woofer:", "fit woofer:", "null ceiling "):
-        assert sum(line.startswith(prefix) for line in index.splitlines()) == 1
+        assert sum(line.startswith(prefix) for line in lines) == 1
     for group in manifest["sets"]:
-        role = group["capture_basis"].get("role") or "summed"
-        assert any(f"impulse {tmp_path} --set {group['set_id']} --take " in line and line.endswith(f"--role {role}`")
-                   for line in index.splitlines())
+        first = group["takes"][0]["take_id"]
+        assert f"- `jasper-round-views impulse {tmp_path} --set {group['set_id']} --take {first}`" in lines
     curveless = {**manifest, "sets": [{**group, "takes": [{**take, "curves": []} for take in group["takes"]]}
                                       for group in manifest["sets"]]}
-    assert "jasper-round-views impulse" not in packet_index(packet, tmp_path, [], curveless)
+    assert "jasper-round-views impulse" not in packet_index(packet, tmp_path, curveless)
 
 
 @pytest.mark.parametrize("change", [
@@ -294,7 +295,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
             }
         packet["series"].append({**fit, "selected": True, "stats": {"flatness_rms_db": {"value": 2.4}}})
     packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
-    index = packet_index(packet, tmp_path, [], manifest)
+    index = packet_index(packet, tmp_path, manifest)
     assert any(line.startswith("series tweeter: pose sofa;") for line in index.splitlines())
     for fit, token in zip((f for f in packet["fits"] if f["role"] == "tweeter"), ("0°", "-20°", "+20°")):
         for kind in ("fit", "series"):
@@ -318,5 +319,5 @@ def test_no_applied_crossover_is_disclosed(tmp_path, live_round, profile):
               "limits": {}, "packet_fingerprint": None, "sets": [], "series": [], "fits": fits}
     assert round_verdicts(packet, manifest=live_round["manifest"], sources=sources, clouds={}) == []
     assert all(fit["crossover_band_spread"] is None and fit["crossover_band_spread_reason"] == "no_applied_crossover" for fit in fits)
-    index = packet_index(packet, tmp_path, [], {})
+    index = packet_index(packet, tmp_path, {})
     assert index.splitlines().count("crossover_band_spread=null; reason=no_applied_crossover") == 1

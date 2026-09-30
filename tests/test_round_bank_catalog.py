@@ -129,11 +129,11 @@ def test_a_view_reads_a_round_by_id_as_by_its_path(campaign, tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     answers = []
     for ref in ("r3", str(campaign / "r3")):
-        assert round_views.main(["inventory", ref, "--out", str(tmp_path / "inventory.json")]) == 0
+        assert round_views.main(["catalog", ref]) == 0
         answers.append(json.loads(capsys.readouterr().out))
     assert answers[0] == answers[1]
 
     (tmp_path / "r3").mkdir()
     with pytest.raises(SystemExit) as usage:
-        round_views.main(["inventory", "r3"])
+        round_views.main(["catalog", "r3"])
     assert usage.value.code == 2
