@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shlex
 from collections.abc import Mapping
 from dataclasses import replace
@@ -33,6 +34,7 @@ from jasper.active_speaker.crossover_declaration import preset_crossover_geometr
 from jasper.active_speaker.design_draft import ActiveSpeakerDesignDraftError, load_design_draft
 from jasper.active_speaker.crossover_v2.conductor_context import published_driver_caps
 from jasper.active_speaker.crossover_v2.blend_prescription import BlendPrescriptionRefused, read_prescription_bytes
+from jasper.active_speaker.crossover_v2.corner_rank import rank_corners
 from jasper.active_speaker.crossover_v2.room_views import room_median_sha256
 from jasper.active_speaker.crossover_v2.room_prescription import ROOM_MEDIAN_UNAVAILABLE, RoomMedian, RoomPrescriptionRefused, read_room_median
 from jasper.active_speaker.crossover_v2.evidence_packet import (
@@ -151,8 +153,11 @@ def _preview_parameters(result: Mapping[str, Any]) -> dict[str, Any]:
 def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any], inputs: RoundInputs | None) -> int:
     kind = preview_kind(document)
     axes = [parse_vary_axis(text) for text in args.vary]
+    # A grid that moves the corner ranks its forecasts into a shortlist (ADR-0401).
+    corners = any(path.split(".")[0] == "topology" for paths, _ in axes for path in paths)
     directory = Path(args.out_dir)
-    rows = []
+    rows: list[dict[str, Any]] = []
+    forecasts: list[tuple[dict[str, Any], float, Mapping[str, Any]]] = []
     read = subject(inputs)
     for index, (values, variant) in enumerate(vary_document(document, axes), 1):
         try:
@@ -167,13 +172,22 @@ def _cmd_vary_document(args: argparse.Namespace, document: Mapping[str, Any], in
             atomic_write_json(path.with_suffix(".preview.json"), {**result, "schema": _PREVIEW_SCHEMA})
         except OSError as exc:
             return failed(EXIT_WRITE_FAILED, REASON_UNWRITABLE, str(exc))
-        rows.append({"out": str(path), "values": values,
-                     **({"program_charge_db": result["program_charge_db"], **summary_rows(result["preview"])}
-                        if result["section"] == "rear_calibration"
-                        else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
-                        else {"preview": result["preview"]})})
+        row = {"out": str(path), "values": values,
+               **({"program_charge_db": result["program_charge_db"], **summary_rows(result["preview"])}
+                  if result["section"] == "rear_calibration"
+                  else {"summary": result["preview"]["summary"]} if result["section"] == "emitted_graph"
+                  else {"preview": result["preview"]})}
+        rows.append(row)
+        if corners:
+            forecasts.append((row, float(variant["sections"]["topology"]["fc_hz"]), result["preview"]["prediction"]))
+    band = None
+    if forecasts:
+        band, figures = rank_corners([(fc_hz, prediction) for _, fc_hz, prediction in forecasts])
+        for (row, _, _), figure in zip(forecasts, figures):
+            row.update(figure)
+        rows.sort(key=lambda row: row.get("rank", math.inf))
     return _answer(args, "judge --preview --vary", read,
-                   {"axes": [{"paths": paths, "values": values} for paths, values in axes]},
+                   {"axes": [{"paths": paths, "values": values} for paths, values in axes], "rank_band_hz": band},
                    section=kind, variants=rows, adopted=False, banked=False)
 
 

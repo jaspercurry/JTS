@@ -16,7 +16,7 @@ ANSWER_SCHEMAS = {
     "repeat --set": "jts_repeat/1",
     "jasper-crossover-prescriber judge": "jts_prescription_judgement/3",
     "jasper-crossover-prescriber judge --preview": "jts_prescription_preview/3",
-    "jasper-crossover-prescriber judge --preview --vary": "jts_prescription_preview_grid/3",
+    "jasper-crossover-prescriber judge --preview --vary": "jts_prescription_preview_grid/4",
     "jasper-crossover-prescriber compose": "jts_prescription_candidate/2",
     "jasper-crossover-prescriber contract": "jts_prescription_contract/2",
     "jasper-crossover-prescriber status": "jts_prescriber_status/5",
