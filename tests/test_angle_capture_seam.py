@@ -1314,15 +1314,19 @@ def test_a_stop_is_one_take_of_its_pose():
 _NEAR_FIELD = mp.preset("nearfield/each").stimulus
 
 
-@pytest.mark.parametrize("driver,stimulus", [
-    ("woofer", mp.preset("bass/axis").stimulus), ("", _NEAR_FIELD), ("woofer", {**_NEAR_FIELD, "gap_s": 3.0})],
-    ids=["ceiling-on-one-driver", "band-on-the-candidate-graph", "gap-past-the-standby-bound"])
-def test_a_staged_stop_whose_stimulus_cannot_play_refuses_by_name(driver, stimulus):
+@pytest.mark.parametrize("regime,driver,stimulus", [
+    (mp.REGIME_SUMMED, "woofer", mp.preset("bass/axis").stimulus), (mp.REGIME_SUMMED, "", _NEAR_FIELD),
+    (mp.REGIME_SUMMED, "woofer", {**_NEAR_FIELD, "gap_s": 3.0}),
+    (mp.REGIME_PER_DRIVER, "", mp.preset("bass/axis").stimulus)],
+    ids=["ceiling-on-one-driver", "band-on-the-candidate-graph", "gap-past-the-standby-bound", "ceiling-on-each-driver"])
+def test_a_staged_stop_whose_stimulus_cannot_play_refuses_by_name(regime, driver, stimulus):
     """A plan's stimulus is judged before anything composes it (#5737): a
     ceiling row plays on the candidate graph, a band row on one driver alone,
-    with silences the analysis and the amplifier both keep."""
+    with silences the analysis and the amplifier both keep, and a per-driver
+    stop that names no driver plays neither."""
     doc = ac.summed_at([0]).to_dict()
-    doc["stops"][0].update(pose={"azimuth_deg": 0, "elevation_deg": 0, "driver": driver}, stimulus=stimulus)
+    doc["stops"][0].update(regime=regime, pose={"azimuth_deg": 0, "elevation_deg": 0, "driver": driver},
+                           stimulus=stimulus)
     with pytest.raises(ac.LateralWalkRefused) as refused:
         ac.AngleCaptureRequest.from_mapping(doc)
     assert refused.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED

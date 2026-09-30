@@ -528,13 +528,17 @@ def test_only_rear_joins_speaker_in_the_branches_regime(purpose, regime, support
             mp.validated_capture_purpose(purpose, regime)
 
 
+def _pose_with(kind, distance_m, driver):
+    seat_offset_m = (0.0, 0.0, 0.0) if kind == mp.POSE_KIND_SEAT else None
+    return mp.Pose(0, 0, kind=kind, distance_m=distance_m, driver=driver, seat_offset_m=seat_offset_m)
+
+
 def _program_with(purpose, regime, kind, distance_m, driver):
-    return mp.Preset("t/t", (mp.Pose(0, 0, kind=kind, distance_m=distance_m, driver=driver),),
-                                 purposes=(purpose,), regime=regime)
+    return mp.Preset("t/t", (_pose_with(kind, distance_m, driver),), purposes=(purpose,), regime=regime)
 
 
 def _stop_with(purpose, regime, kind, distance_m, driver):
-    return ac.AngleStop(mp.Pose(0, 0, kind=kind, distance_m=distance_m, driver=driver), regime, purpose=purpose)
+    return ac.AngleStop(_pose_with(kind, distance_m, driver), regime, purpose=purpose)
 
 
 @pytest.mark.parametrize("door,refusal", [(_program_with, ValueError), (_stop_with, CrossoverV2FlowError)])
@@ -543,6 +547,7 @@ def _stop_with(purpose, regime, kind, distance_m, driver):
     (mp.PURPOSE_SPEAKER, mp.REGIME_SUMMED, mp.POSE_KIND_BEARING, 2.0, "tweeter", True),
     (mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, mp.POSE_KIND_CLOSE, 0.15, "woofer", True),
     (mp.PURPOSE_REAR, mp.REGIME_SUMMED, mp.POSE_KIND_BEHIND, 0.5, "woofer:rear", True),
+    (mp.PURPOSE_ROOM, mp.REGIME_SUMMED, mp.POSE_KIND_SEAT, 0.05, "woofer", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_CLOSE, 0.015, "woofer:rear", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_PER_DRIVER, mp.POSE_KIND_BEARING, None, "tweeter", True),
     (mp.PURPOSE_REFERENCE, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.015, "woofer", True),
@@ -552,16 +557,17 @@ def _stop_with(purpose, regime, kind, distance_m, driver):
     (mp.PURPOSE_SPEAKER, mp.REGIME_PER_DRIVER, mp.POSE_KIND_CLOSE, 0.015, "woofer", False),
     (mp.PURPOSE_ROOM, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, NEAR_FIELD_MAX_DISTANCE_M, "woofer", False),
     (mp.PURPOSE_BASS, mp.REGIME_SUMMED, mp.POSE_KIND_CLOSE, 0.03, "woofer", False),
+    (mp.PURPOSE_BASS, mp.REGIME_SUMMED, mp.POSE_KIND_BEARING, None, "woofer", False),
 ])
 def test_a_pose_of_any_purpose_names_its_driver_and_a_near_field_one_is_reference(
     door, refusal, purpose, regime, kind, distance_m, driver, accepted,
 ) -> None:
     """Every door a pose enters through judges its driver the same way: a
     program row or layout, and a stop in a hand-written plan. A pose of any
-    purpose names the driver it plays alone, at any regime, kind and distance
-    (ADR-0366 §1); one within that driver's near-field distance is reference
-    evidence (ADR-0360 §2), and a reference pose on a regime that plays drivers
-    names one."""
+    purpose but bass names the driver it plays alone, at any regime, kind and
+    distance (ADR-0366 §1); one within that driver's near-field distance, never
+    at a seat (ADR-0400 §1), is reference evidence (ADR-0360 §2), and a
+    reference pose on a regime that plays drivers names one."""
     if accepted:
         door(purpose, regime, kind, distance_m, driver)
     else:

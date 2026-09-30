@@ -63,7 +63,7 @@ Room defaults to `room/seat`: the three `seat_express` poses with the human move
 
 `drivers/each` (woofer, a cardioid's rear woofer, then tweeter; `--driver` narrows it to one) plays each driver alone at the mark, on the speaker round's 150 Hz sweep band, with no CHECK or timing take. The microphone stays put; confirm it once per driver, since each driver finds its own level. The takes are gated reference evidence, read with the same view.
 
-A pose of any program may name its driver the same way, for example `--program speaker --poses '[{"azimuth_deg": 20, "elevation_deg": 0, "driver": "woofer"}]'`: it plays that driver alone, as `drivers/each` does, and banks under that program. A pose within 0.1 m of its driver is reference evidence only, so only `nearfield/each` or `drivers/each` takes one there ([ADR-0366](adr/0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) §1).
+A pose of any program but bass may name its driver the same way, for example `--program speaker --poses '[{"azimuth_deg": 20, "elevation_deg": 0, "driver": "woofer"}]'`: it plays that driver alone, as `drivers/each` does, and banks under that program. A round whose every pose names a driver is not that program's latest round: it holds no take the program's next step reads ([#5696](https://github.com/jaspercurry/JTS/issues/5696)). A pose within 0.1 m of its driver is reference evidence only, so only `nearfield/each` or `drivers/each` takes one there ([ADR-0366](adr/0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) §1).
 
 ## Cabinet model (optional, laptop-side)
 

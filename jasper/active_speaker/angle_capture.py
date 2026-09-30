@@ -238,6 +238,8 @@ class AngleStop:
             raise CrossoverV2FlowError(str(exc)) from None
         if self.stimulus is not None:
             try:
+                if not self.pose.driver and self.regime != REGIME_SUMMED:
+                    raise ValueError(f"a {self.regime} stop plays a stimulus only on the driver its pose names")
                 validated_stimulus(self.stimulus, one_driver=bool(self.pose.driver))
             except ValueError as exc:
                 raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from None
@@ -864,6 +866,7 @@ WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 
 #: The walk's stimulus statement is not one that can be played: a summed sweep
 #: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
+#: stop's declared stimulus its pose and regime cannot play (:class:`AngleStop`), a
 #: template field ``MeasureSpec`` refuses that is neither R-1 half
 #: (:func:`walk_template`), or a stop pose it refuses when the host places the
 #: template (:func:`stop_specs`) -- detail is the spec's own sentence.

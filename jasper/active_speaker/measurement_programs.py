@@ -144,7 +144,7 @@ PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNAB
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).
 _REGIMES_BY_PURPOSE = {name: next((row.regimes for row in _PROGRAM_SECTIONS if row.purpose == name),
                                 (REGIME_SUMMED,)) for name in PURPOSES}
-# A reference take may play one driver alone on any regime (ADR-0366); see validated_pose_driver.
+# Reference evidence is taken on any regime (ADR-0366); see validated_pose_driver.
 _REGIMES_BY_PURPOSE[PURPOSE_REFERENCE] = REGIMES
 #: The layout a run banks when its poses are its own inline list, not a named layout's.
 CUSTOM_LAYOUT = "custom"
@@ -215,11 +215,14 @@ def validated_capture_purpose(purpose: str | None, regime: str) -> str:
 
 
 def validated_pose_driver(pose: Pose, *, regime: str, purpose: str) -> None:
-    """A pose of any purpose may name the one driver it plays alone, at any
-    kind and distance (ADR-0366 §1). A pose within that driver's near-field
+    """A pose of any purpose but bass may name the one driver it plays alone,
+    at any kind and distance (ADR-0366 §1); the bass tables read the whole
+    speaker (ADR-0360, ADR-0260 §3). A pose within that driver's near-field
     distance is reference evidence, which no tuning reader admits (ADR-0360
     §2), until #5926 session C's far-field check proves the near-field model.
     A reference pose on any regime but summed names its driver."""
+    if pose.driver and purpose == PURPOSE_BASS:
+        raise ValueError(f"a {PURPOSE_BASS} pose plays the whole speaker, not one driver")
     if pose.near_field and purpose != PURPOSE_REFERENCE:
         raise ValueError(f"a pose within {NEAR_FIELD_MAX_DISTANCE_M:g} m of its driver is "
                          f"{PURPOSE_REFERENCE} evidence, not {purpose}")
@@ -333,7 +336,7 @@ class Pose:
     seat_offset_m: tuple[float, float, float] | None = None
     headline: str = ""
     detail: str = ""
-    #: The one driver this pose plays and sits at, a measurement target id
+    #: The one driver this pose plays alone, a measurement target id
     #: (``woofer``, ``woofer:rear``); empty when the pose plays the program's own
     #: scope (:func:`validated_pose_driver`).
     driver: str = ""
@@ -373,9 +376,10 @@ class Pose:
 
     @property
     def near_field(self) -> bool:
-        """Whether this pose sits at its driver within the near-field distance
-        (ADR-0360 §3), where the room reads about 40 dB down."""
-        return at_driver_near_field(self.driver, self.distance_m)
+        """Whether this pose sits at its driver within the near-field distance,
+        where the room reads about 40 dB down; a seat pose is the room's own
+        measurement, never near-field (ADR-0400 §1)."""
+        return self.kind != POSE_KIND_SEAT and at_driver_near_field(self.driver, self.distance_m)
 
 
 @dataclass(frozen=True)
