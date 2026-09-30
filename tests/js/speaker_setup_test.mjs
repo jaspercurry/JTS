@@ -121,8 +121,8 @@ for (const [stage, programs, links] of [
   assert.deepEqual(nodes(ui.root).filter(n => n.tag === 'a').map(n => n.href), links);
 });
 
-for (const [stage, answer, asked, applied] of [['tune', false, 1, 0], ['tune', true, 1, 1], ['apply', false, 0, 1]]) {
-  test(`save to speaker in the ${stage} stage asks ${asked} time(s) and applies ${applied} time(s)`, async () => {
+for (const [stage, answer, asked, applied] of [['tune', false, 1, 0], ['tune', true, 1, 1], ['apply', false, 0, 1]]) test(
+  `save to speaker in the ${stage} stage asks ${asked} time(s) and applies ${applied} time(s)`, async () => {
     let asks = 0;
     const ui = setup(state(stage), async () => ({result: {status: 'applied'}, setup: state('tune')}), undefined,
       async () => { asks += 1; return answer; });
@@ -131,7 +131,6 @@ for (const [stage, answer, asked, applied] of [['tune', false, 1, 0], ['tune', t
     assert.equal(asks, asked);
     assert.deepEqual(ui.requests.map(request => request.path), Array(applied).fill('./setup/apply'));
   });
-}
 
 test('failed import keeps pasted text; failed apply never reports an active setup', async () => {
   const ui = setup(undefined, async () => { throw new Error('Wrong driver target'); });
