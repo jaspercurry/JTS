@@ -400,6 +400,14 @@ class PoseLevel:
 
 
 SPOT_LEVEL = PoseLevel(target_db_spl=80.0, tolerance_db=2.0, max_raise_db=15.0)
+#: A run's first seat spot reads at most 76 dB, 9 dB under the stop, which leaves
+#: room for a later seat spot that reads louder than the first (ADR-0403 §4).
+SEAT_LEVEL = PoseLevel(target_db_spl=74.0, tolerance_db=2.0, max_raise_db=15.0)
+
+
+def run_level(pose_kind: str) -> PoseLevel:
+    """The level a run's first spot finds its fader at (ADR-0403 §4)."""
+    return SEAT_LEVEL if pose_kind == POSE_KIND_SEAT else SPOT_LEVEL
 
 
 def pose_level(pose: Pose) -> PoseLevel | None:

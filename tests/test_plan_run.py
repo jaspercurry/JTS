@@ -9,8 +9,8 @@ import asyncio
 import json
 import math
 from copy import deepcopy
-from itertools import count
-from contextlib import AsyncExitStack
+from itertools import count, takewhile
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from unittest.mock import AsyncMock, Mock
 from types import SimpleNamespace
@@ -34,6 +34,7 @@ from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE,
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
+from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
     REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_LEVEL_OFF_TARGET, REASON_RETRIES_SPENT,
@@ -43,7 +44,9 @@ from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdm
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
 from jasper.active_speaker.crossover_v2.playback_transaction import PlaybackInterrupted
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
-from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements
+from jasper.active_speaker.run_manifest import (
+    RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements, view_sets,
+)
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
@@ -54,6 +57,7 @@ from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import (
     ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program, build_summed_level_probe_program,
+    is_level_probe,
 )
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
@@ -63,7 +67,7 @@ from tests.crossover_v2_fixtures import (
     FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,
 )
 from tests.crossover_v2_banked_round import bank_seat_round
-from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, SeamFailure, open_session
+from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFailure, open_session
 from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import ready_facts
@@ -1272,6 +1276,179 @@ def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_le
     assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
+#: A two-way speaker's drivers, and CHECK's plan for them, as the fake run chain composes its plays.
+_RUN_BANDS = {"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(1500, 20000)}
+_RUN_GAINS = {"woofer": -20.0, "tweeter": -26.0}
+
+
+class _Fader(FakeVolume):
+    async def prove(self):
+        return self.acquired[-1]
+
+
+class _RunChain:
+    """A fake chain: each stimulus reads its peak at the output plus the chain at
+    its spot, over a 35 dB room. A probe reads each burst until the first over
+    the 76 dB ramp bound, which stops it (ADR-0365)."""
+
+    def __init__(self, manifest, play, caps, chain_db):
+        self.manifest, self.play, self.caps, self.chain_db = manifest, play, caps, chain_db
+
+    async def bank(self, record):
+        record = self.manifest.capture_record(record)
+        excitation = SessionExcitation(tuple(RoleBand(role, channel, band) for channel, (role, band) in enumerate(
+            _RUN_BANDS.items())), self.caps, record["level_db"], 2000.0, dict.fromkeys(self.caps, 8.0),
+            target_bands=_RUN_BANDS)
+        program = program_for_spec(self.play.calls[-1]["spec"], excitation, _RUN_GAINS, record.get("stimulus_dbfs"),
+                                   safety_profile={}, role_targets={})
+        heard = [(segment.gain_db, segment.gain_db + record["level_db"] + self.chain_db[record["pose_kind"]])
+                 for segment in program.stimulus_segments()]
+        heard = (heard[:max(1, len(list(takewhile(lambda burst: burst[1] <= 76.0, heard))))] if is_level_probe(program)
+                 else [max(heard, key=lambda burst: burst[1])])
+        record.update(program=program.to_dict(), levels=[
+            (gain, _MIC.dbfs_from_db_spl(level), _MIC.dbfs_from_db_spl(35.0)) for gain, level in heard],
+            capture_integrity={"spl": {"max_window_db_spl": heard[-1][1], "loudest_half_second_db_spl": heard[-1][1],
+                                       "ceiling_db_spl": 85.0, "sens_factor_db": _MIC.sens_factor_db}})
+        return await self.manifest.bank(record)
+
+
+def _run_chain_analysis(record):
+    program = ExcitationProgram.from_dict(record["program"])
+    return replace(_measure_analysis(program), stimulus_levels=tuple(LevelReading(*level) for level in record["levels"]))
+
+
+async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals=None):
+    """A run through a door that finds its fader, on a fake chain; each take that
+    does not level itself is accepted. Answers the result, the plays and the
+    fader of each level window, in order."""
+    windows = []
+
+    @asynccontextmanager
+    async def window(level_db, *, hold, spl_monitor):
+        windows.append(level_db)
+        yield SimpleNamespace(measurement_volume_db=level_db, spl_monitor=spl_monitor)
+
+    monkeypatch.setattr(plan_run, "level_window", window)
+    fakes = FakeSeams(volume=_Fader())
+    manifest = RunManifest("run", _Store(fakes.records))
+    chain = _RunChain(manifest, fakes.play, caps, chain_db)
+    door = plan_run.RunDoor(nullcontext(SimpleNamespace()), lambda opened, allocate: TuningSession(
+        "run", replace(fakes, records=chain).seams(), opened.measurement_volume_db, allocate),
+        _MIC, SimpleNamespace(model_key="minidsp_umik2"), 85.0, caps_dbfs=caps)
+    result = await plan_run.run_plan(
+        request, door=door, manifest=manifest, analyze=_run_chain_analysis, gate=gate or AnsweredGate(),
+        aborts=_ABORTS, signals=signals, captures=plan_run.prepare_plan_captures(request),
+        assessor=lambda analysis, **kw: (TakeVerdict(True, next="accept") if kw["pose_level"] is None
+                                         else capture_dispatch.assess(analysis, **kw)))
+    return result, fakes.play.calls, windows
+
+
+@pytest.mark.parametrize("tweeter_cap", [-6.0, -20.0], ids=["under the cap", "held by the tweeter cap"])
+@pytest.mark.parametrize(("stated", "held", "source"), [(0.0, -9.0, "probe"), (-15.0, -15.0, "operator")])
+def test_a_run_probes_its_first_summed_take_before_check_and_holds_the_fader_it_finds(
+        monkeypatch, tweeter_cap, stated, held, source):
+    """A speaker run's first play is its timing take's probe, at the loudest
+    cap's fader, from −60 dBFS at the output, and it banks as that take's first
+    attempt. The run then holds the fader where that take lands 1 dB under
+    80 dB at the mark, never above the level the plan states, and plays from
+    CHECK (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), level=ac.LevelPolicy(level_db=stated))
+    gate = AnsweredGate()
+
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": tweeter_cap}, chain_db={"bearing": 100.0}, gate=gate))
+
+    probe, *takes = plays
+    assert len(gate.grants) == 1
+    assert (probe["spec"].graph_scope, probe["spec"].level_probe, probe["level_db"]) == ("timing", True, 0.0)
+    assert [call["spec"].program_phase for call in takes] == ["check", "timing", "measure", "measure"]
+    assert windows == [0.0, held] and {call["level_db"] for call in takes} == {held}
+    timing = sorted((take for take in _takes(result.joined()) if take["phase"] == "timing"), key=lambda take: take["attempt"])
+    assert [(take["attempt"], take["selected"]) for take in timing] == [(1, False), (2, True)]
+    first = ExcitationProgram.from_dict(timing[0]["program"]).stimulus_segments()[0]
+    assert first.effective_peak_dbfs == pytest.approx(-60.0)
+    assert timing[1]["capture_integrity"]["spl"]["max_window_db_spl"] == pytest.approx(79.0 + held + 9.0)
+    assert {key: result.level["run"][key] for key in ("level_db", "probe_fader_db", "probe_level_db", "source")} == {
+        "level_db": held, "probe_fader_db": 0.0, "probe_level_db": -9.0, "source": source}
+    assert result.status == "complete"
+
+
+@pytest.mark.parametrize(("stated", "held", "source"), [(0.0, -3.0, "probe_fader"), (-10.0, -10.0, "operator")])
+def test_a_first_spot_where_every_take_levels_itself_holds_the_probe_fader(monkeypatch, stated, held, source):
+    """A run whose first spot is a driver's pose solves no fader: it holds the
+    probe fader, the loudest driver cap, never above the level stated, and the
+    pose finds its own level from −60 dBFS at the output (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("drivers/each", poses='[{"azimuth_deg": 0, "elevation_deg": 0, '
+                                                                      '"kind": "close", "distance_m": 0.015, "driver": "woofer"}]'),
+                                    targets=("woofer", "tweeter"), level=ac.LevelPolicy(level_db=stated))
+
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": -3.0, "tweeter": -6.0}, chain_db={"close": 125.0}))
+
+    assert windows == [held] and [call["stimulus_dbfs"] for call in plays] == [None, -46.0 - held]
+    probe = ExcitationProgram.from_dict(min(_takes(result.joined()), key=lambda take: take["attempt"])["program"])
+    assert probe.stimulus_segments()[0].effective_peak_dbfs == pytest.approx(-60.0)
+    assert (result.level["run"]["level_db"], result.level["run"]["source"]) == (held, source)
+
+
+def test_a_run_whose_first_spot_is_a_seat_lands_it_under_74_db(monkeypatch):
+    """A first seat spot is levelled 1 dB under 74 dB, and the other seat spots
+    hold that fader (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("room", "seat_express"), level=ac.LevelPolicy(level_db=0.0))
+
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0}))
+
+    assert windows == [0.0, -9.0] and len(plays) == 4
+    first = min((take for take in _takes(result.joined()) if take["selected"]), key=lambda take: take["index"])
+    assert first["capture_integrity"]["spl"]["max_window_db_spl"] == pytest.approx(73.0)
+
+
+def test_a_run_probe_that_finds_no_level_ends_the_run_before_any_take(monkeypatch):
+    """A probe the room buries asks for the microphone again, and one that never
+    finds a level ends the run: nothing plays at a fader no probe found (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), level=ac.LevelPolicy(level_db=0.0))
+
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 50.0}))
+
+    assert result.reason == REASON_SNR_FLOOR and windows == [0.0]
+    assert len(plays) > 1 and all(call["spec"].level_probe and call["spec"].graph_scope == "timing" for call in plays)
+    assert result.level["run"]["level_db"] is None
+
+
+def test_a_redo_before_the_run_probe_places_the_microphone_for_the_probe_again(monkeypatch):
+    """A redo pressed before the run has its fader asks for the placement again,
+    and the probe, not CHECK, plays first (ADR-0403 §4)."""
+    signals = plan_run.RunSignals()
+    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), level=ac.LevelPolicy(level_db=0.0))
+
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0},
+        gate=_RedoOnPlacementGate(signals), signals=signals))
+
+    assert plays[0]["spec"].level_probe and windows == [0.0, -9.0] and result.status == "complete"
+
+
+def test_a_close_set_after_the_run_probe_plays_only_at_its_own_level(monkeypatch):
+    """At the fader the run found, a close set still plays its own probe from
+    −60 dBFS at the output and then its takes at the level it solves, never at
+    the run's fader; no view reads a probe's set (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("rear/express", "rear_behind"), level=ac.LevelPolicy(level_db=0.0))
+
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0, "behind": 110.0}))
+
+    assert windows == [0.0, -9.0]
+    assert [(call["spec"].level_probe, call["stimulus_dbfs"]) for call in plays] == [
+        (True, None), (False, None), (True, None), (True, -22.0)]
+    close_probe = next(take for take in _takes(result.joined()) if take["pose_kind"] == "behind" and take["attempt"] == 1)
+    assert ExcitationProgram.from_dict(close_probe["program"]).stimulus_segments()[0].effective_peak_dbfs == pytest.approx(-60.0)
+    document = result.to_dict()
+    assert sum(bool(row["capture_basis"].get("level_probe")) for row in document["sets"]) == 2
+    assert not any(row["capture_basis"].get("level_probe") for row in view_sets(document))
+
+
 @pytest.mark.parametrize("web", [True, False], ids=["web", "ladder"])
 @pytest.mark.parametrize("retries", [0, 2])
 def test_a_repeat_that_keeps_drifting_is_retaken_only_for_its_retries(web, retries):
@@ -1845,7 +2022,8 @@ def test_a_pose_that_levels_itself_is_timed_as_its_probes_and_its_takes():
     driver = MeasureSpec(kind="candidate", branch_target_ids=("woofer",), program_phase="lateral", level_probe=True)
     branch = MeasureSpec(kind="candidate", graph_scope="candidate_branches", candidate_id="fp-a",
                          branch_target_ids=("woofer", "woofer:rear"), program_phase="lateral", level_probe=True)
-    captures = ([({"place": "at_driver", "driver": "woofer"}, driver)] * 2
+    captures = ([({"place": "at_driver", "driver": "woofer"}, driver),
+                 ({"place": "at_driver", "driver": "woofer"}, replace(driver, level_probe=False))]
                 + [({"place": "far"}, MeasureSpec(kind="candidate", program_phase="lateral"))]
                 + [({"place": "mark"}, branch), ({"place": "mark"}, replace(branch, level_probe=False))])
 

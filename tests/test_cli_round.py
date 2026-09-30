@@ -1308,6 +1308,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.audio_measurement.calibration import MicSensitivity
+    from jasper.audio_measurement.program import build_summed_level_probe_program, is_level_probe
     from jasper.active_speaker import round_bookkeeping, bass_table_inputs
     from jasper.web import correction_run_host as host, correction_crossover_v2_wired as wired
     from tests.active_speaker_fixtures import mono_output_topology
@@ -1335,7 +1336,12 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     entry_volume = box.volume_db
     fakes.graph.entry_scope_fingerprint = "entry"
     monkeypatch.setattr(host, "resolved_household_sensitivity", lambda _: MicSensitivity(-12, 18, "1234"))
-    monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, lambda *a, **kw: TakeVerdict(True)))
+
+    def assess(*_a, program=None, **_kw):
+        # A run with a stated level probes its first spot, and holds that level (ADR-0403 §4).
+        return (TakeVerdict(False, next="retake_louder", next_gain_db=0.0) if program and is_level_probe(program)
+                else TakeVerdict(True))
+    monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, assess))
     hold = host.isolation_hold
     monkeypatch.setattr(host, "isolation_hold", lambda **kw: hold(**{**kw, "plan": None, "volume_state_path": tmp_path / "volume.json"}))
     for name in ("persist_conductor_state", "persist_execution_result", "persist_terminal_failure"):
@@ -1343,6 +1349,10 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
 
     def engine(**kw):
         async def capture_record(record):
+            probe = fakes.play.calls[-1]["spec"].level_probe
+            record = {**record, **({"program": build_summed_level_probe_program(
+                (-65.01,), sweep_band_hz=(20.0, 20000.0), gap_s=0.5, downstream_gain_db=record["level_db"]).to_dict()}
+                if probe else {})}
             return await kw["records"].inner.bank({**record, "curves": [], "stimulus_id": "sweep", "stimulus_dbfs": -20,
                 "capture_integrity": {"spl": {"loudest_half_second_db_spl": 93 + record["level_db"],
                     "max_window_db_spl": 93 + record["level_db"], "ceiling_db_spl": 85}}})
@@ -1364,7 +1374,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
                 production=SimpleNamespace(graph=fakes.graph, compose=None),
                 conductor=conductor, refs={}, trims={},
                 ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box,
-                level=plan.level, ladder=report if isinstance(report, LevelLadder) else None,
+                ladder=report if isinstance(report, LevelLadder) else None,
             )
             runner = wired.build_v2_wired_run_and_consume(
                 conductor, door=door, signals=plan_run.RunSignals(), position_gate=gate,
@@ -1404,7 +1414,8 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
     code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
-    expected = [(level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
+    expected = ([(0.0, "lateral")] if verb == "run" else []) + [
+        (level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
     assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
     assert len(gate.grants) == fakes.graph.restores == 1
     assert box.volume_db == entry_volume
@@ -1414,9 +1425,9 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
     assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if verb == "trial" else 1)
     assert len(packet["bass"]) == len(packet["artifacts"]["bass_views"])
-    timing_sets = {group["set_id"] for group in json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]
-                   if group["capture_basis"].get("graph_scope") == "timing"}
-    assert {entry["set_id"] for entry in packet["bass"]} == {group["set_id"] for group in packet["sets"]} - timing_sets
+    unread = {group["set_id"] for group in json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]
+              if group["capture_basis"].get("graph_scope") == "timing" or group["capture_basis"].get("level_probe")}
+    assert {entry["set_id"] for entry in packet["bass"]} == {group["set_id"] for group in packet["sets"]} - unread
     for entry in packet["bass"]:
         assert entry == {**json.loads(Path(entry["out"]).read_text()), "set_id": entry["set_id"], "out": entry["out"]}
     assert {take["record"]["level_db"] for entry in packet["bass"] for take in entry["takes"]} == set(levels)
