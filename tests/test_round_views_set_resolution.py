@@ -134,12 +134,13 @@ _SPEAKER = {"directivity", "delay-landscape", "distortion", "classify-features"}
 
 
 @pytest.mark.parametrize("program,listed,excluded", [
-    ("speaker", {"room", "room-grade"}, _BASS),
+    ("speaker", _SPEAKER, _BASS | {"room", "room-grade"}),
     ("room", {"room", "room-grade"}, _SPEAKER | _BASS),
     ("bass", _BASS, _SPEAKER | {"room", "room-grade"}),
 ])
 def test_catalog_lists_a_rounds_views_for_its_programs_only(tmp_path, capsys, program, listed, excluded):
-    """A speaker round's seat sweeps are room sets, so the room views read it too."""
+    """A round's catalog lists the views of its own programs: a speaker round
+    keeps no room sweep, so no room view reads it (ADR-0400)."""
     root = bank_seat_round(tmp_path)
     write_manifest(root, program=program)
 

@@ -668,12 +668,10 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
     plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
     assert plan.repeats == 1
     assert Counter(stop.place for stop in plan.stops) == {
-        pose.place: (pose.repeats if repeats is None else repeats) + selected.room_sweep
-        for pose in selected.poses
+        pose.place: pose.repeats if repeats is None else repeats for pose in selected.poses
     }
-    # The answer counts takes per pose and configuration; a room sweep is taken once (ADR-0389).
-    takes = sorted({pose.repeats if repeats is None else repeats for pose in selected.poses}
-                   | ({1} if selected.room_sweep else set()))
+    # The answer counts takes per pose and configuration (ADR-0389).
+    takes = sorted({pose.repeats if repeats is None else repeats for pose in selected.poses})
     assert (body["parameters"]["repeats"], body["parameters"]["driver"]) == (
         takes[0] if len(takes) == 1 else takes, "woofer" if program == "nearfield" else None)
 
@@ -1060,7 +1058,7 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
 
 
-_PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair", "room_sweep",
+_PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair",
                 "cleared_layers", "stimulus", "level_ladder_db", "layout", "layouts"}
 _LAYOUT_KEYS = {"layout", "description", "use_when", "mover", "poses", "targets", "captures", "seconds", "refused"}
 

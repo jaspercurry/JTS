@@ -41,7 +41,6 @@ from jasper.active_speaker.crossover_v2.playback_transaction import PlaybackInte
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramForStimulus, ProgramPlaybackTransaction
 from jasper.active_speaker.run_manifest import RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
-from jasper.active_speaker.round_view_builders import analyzed_frequency_run
 from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
@@ -149,12 +148,11 @@ def _takes(document):
     ("staged_stop", ac.LateralWalkRefused, "reason", ac.WALK_STOP_NO_LONGER_VALID),
     ("kept_take", CodedFieldError, "code", "field_required"),
     ("purpose_take", CodedFieldError, "code", "field_required"),
-    ("gated_overlay", CodedFieldError, "code", "field_required"),
 ])
 def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, reader, refusal, field, code):
     """No purpose is inferred from a pose kind (#2902): a staged stop that
     names none is no longer valid, and a banked take that names none refuses
-    by that field, the frequency view's gated room overlay included."""
+    by that field."""
     plan = ac.request_for_preset(run_preset("room", "seat_cube")).to_dict()
     del plan["stops"][0]["purpose"]
     root = bank_seat_round(tmp_path)
@@ -166,7 +164,6 @@ def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, read
         "staged_stop": lambda: ac.AngleCaptureRequest.from_mapping(plan),
         "kept_take": lambda: list(kept_measurements(session, phases=("lateral",), purposes=("room",))),
         "purpose_take": lambda: purpose_take_records(session, purpose="room"),
-        "gated_overlay": lambda: analyzed_frequency_run(root, gated_overlay=True),
     }
     with pytest.raises(refusal) as refused:
         reads[reader]()
@@ -724,18 +721,17 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     assert not graph.installs
 
 
-@pytest.mark.parametrize("layout,poses", [("baseline_express", 5), ("baseline_full", 13)])
-def test_baseline_pairs_driver_and_room_reads_and_keeps_timing_at_entry(layout, poses):
+@pytest.mark.parametrize("layout", ["baseline_express", "baseline_full"])
+def test_a_baseline_keeps_timing_at_entry_and_reads_no_room(layout):
+    """A speaker baseline takes its timing at entry, then each driver at each
+    pose, and no room sweep: room evidence comes from a room or rear seat
+    round (ADR-0400)."""
     program = run_preset("speaker", layout)
     request = ac.request_for_preset(program, repeats=2)
     captures = plan_run.prepare_plan_captures(request)
     timing = [capture for capture in captures if capture.spec.graph_scope == "timing"]
     assert [(capture.stop.angle_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
-    room = [capture for capture in captures if capture.stop.purpose == "room"]
-    assert len(room) == poses * 2
-    assert {capture.stop.place for capture in room} == {pose.place for pose in program.poses}
-    assert {(capture.spec.program_phase, capture.spec.graph_scope) for capture in room} == {("lateral", "candidate")}
-    assert all(capture.resolved(request).prompt.purpose == "room" for capture in room)
+    assert {capture.stop.purpose for capture in captures} == {"speaker"}
     assert [capture.stop.place for capture in captures if capture.spec.program_phase == "measure"] == [
         pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
 
@@ -754,30 +750,24 @@ def test_a_hand_written_branch_plan_resolves_its_timing_take_as_a_summed_take():
         ("woofer", "woofer:rear")}
 
 
-def test_speaker_room_layout_pairs_driver_and_summed_stops_with_entry_timing():
-    program = run_preset("speaker", poses="0,-20,20")
-    request = ac.request_for_preset(program, mover=ac.MOVER_ARM)
+def test_a_speaker_preset_walks_its_driver_stops_and_no_summed_stop_names_a_band():
+    """A speaker preset plays each driver alone at each pose after the entry
+    timing take, and keeps no room sweep; a room take's summed stop names no
+    band of its own, so it sweeps the audio band like every summed sweep
+    (ADR-0328, ADR-0400)."""
     _, safety, targets = _profile_and_targets(woofer_floor=30)
     roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
         safety, fingerprint, program_admission=True)[0])
         for channel, (role, fingerprint) in enumerate(targets.items()))
+    request = ac.request_for_preset(run_preset("speaker", poses="0,-20,20"), mover=ac.MOVER_ARM)
 
-    assert [(stop.regime, stop.purpose) for stop in request.stops] == [
-        pair for _pose in program.poses
-        for pair in [(ac.REGIME_PER_DRIVER, "speaker"), (ac.REGIME_SUMMED, "room")]
-    ]
+    assert [(stop.regime, stop.purpose) for stop in request.stops] == [(ac.REGIME_PER_DRIVER, "speaker")] * 3
     captures = plan_run.prepare_plan_captures(request, roles_bands=roles)
-    room_capture = next(capture for capture in captures if capture.stop.purpose == "room")
-    room_band = ac.room_sweep_band_hz(
-        roles, (room_capture.resolved(request).prompt,)
-    )
-    assert room_band == (20.0, 20000.0)
-    assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "room"} == {room_band}
-    assert {capture.spec.sweep_band_hz for capture in captures if capture.stop.purpose == "speaker"} == {()}
-    timing = [capture for capture in captures
-              if capture.spec.graph_scope == "timing"]
-    assert [(capture.stop.angle_deg, capture.spec.program_phase) for capture in timing] == [
-        (0, "timing")]
+    assert [(capture.stop.angle_deg, capture.spec.program_phase) for capture in captures
+            if capture.spec.graph_scope == "timing"] == [(0, "timing")]
+    room = plan_run.prepare_plan_captures(ac.request_for_preset(run_preset("room", "room_quick"), mover=ac.MOVER_ARM),
+                                          roles_bands=roles)
+    assert {(capture.stop.regime, capture.spec.sweep_band_hz) for capture in room} == {(ac.REGIME_SUMMED, ())}
 
 
 @pytest.mark.parametrize(("regime", "candidate", "purpose", "program", "phases", "scope"), [
@@ -1088,13 +1078,13 @@ def _staged(name, layout, restaged):
 
 
 @pytest.mark.parametrize("name,layout,restaged,banked", [
-    ("speaker/mark", "speaker_mark", {}, {("speaker", ("speaker",)), ("room", ("room",))}),
+    ("speaker/mark", "speaker_mark", {}, {("speaker", ("speaker",))}),
     ("rear/seat", "seat_express", {}, {("rear", ("rear", "room"))}),
     ("rear/seat", "seat_express", {"purpose": "room", "purposes": ["room"]}, {("room", ("room",))}),
 ])
 async def test_a_take_banks_the_purposes_its_stop_names(name, layout, restaged, banked):
-    """A preset names its purposes on each stop, a room sweep's stop names room alone, and a
-    stop staged under a preset's id serves what it names, not the preset's (ADR-0336, ADR-0383)."""
+    """A preset names its purposes on each stop, and a stop staged under a preset's id serves
+    what it names, not the preset's (ADR-0336, ADR-0383)."""
     request = _staged(name, layout, restaged)
     result, fakes = await _run_gated(request, captures=plan_run.prepare_plan_captures(request),
                                      assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept"))

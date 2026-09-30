@@ -46,6 +46,7 @@ from jasper.audio_measurement.program_analysis.response import (
 from scipy.signal import butter, fftconvolve, resample_poly, sosfilt, sosfreqz
 
 from jasper.active_speaker.crossover_v2.planning import analysis_json
+from jasper.active_speaker.measurement_programs import POSE_KIND_SEAT
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import (
     deconv,
@@ -5265,13 +5266,13 @@ def test_a_verify_analysis_under_a_gate_exemption_keeps_the_room():
     cap += np.random.default_rng(5).normal(0.0, 1e-8, cap.size)
     exempt = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(),
-        geometry=MeasurementGeometry(gate_exempt_reason=gating.SEAT_EXEMPT),
+        geometry=MeasurementGeometry(gate_exempt_reason=POSE_KIND_SEAT),
     )
     gated = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
 
     response = exempt.summed_response
     assert response.gating["applied"] is False
-    assert response.gating["exempt_reason"] == gating.SEAT_EXEMPT
+    assert response.gating["exempt_reason"] == POSE_KIND_SEAT
     assert response.validity_floor_hz is None
     assert gated.summed_response.gating["applied"] is True
     bass = (response.freqs_hz >= 30) & (response.freqs_hz <= 60)

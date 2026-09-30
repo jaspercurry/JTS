@@ -50,7 +50,6 @@ from jasper.active_speaker.measurement_programs import preset, run_preset
 from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
-from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt, room_sweep_band_hz
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
     COURTESY_PRELUDE_PHASES,
@@ -587,7 +586,10 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
     ("speaker", "speaker_mark"), ("room", "room_quick"), ("room", "seat_cloud"), ("bass", "room_quick"),
     ("bass", "seat_cloud"),
 ])
-def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, poses):
+def test_prepared_summed_captures_name_no_band_of_their_purpose(purpose, poses):
+    """A summed stop names no band for its purpose: a speaker or room take
+    sweeps the audio band the resolved driver bands give (ADR-0328), and a
+    bass take plays its stimulus (ADR-0400)."""
     layout = run_preset(purpose, poses)
     request = request_for_preset(layout, mover=layout.mover or "human")
     _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000,
@@ -609,7 +611,7 @@ def test_prepared_summed_captures_use_the_stop_purpose_band(purpose, poses):
         expected = {"speaker": (20, 20000), "room": (20, 20000), "bass": (30, 1100)}[stop_purpose]
         assert len(sweeps) == (3 if purpose == "bass" else 1)
         assert all((sweep.f1_hz, sweep.f2_hz) == expected for sweep in sweeps)
-        assert spec.sweep_band_hz == (expected if stop_purpose == "room" else ())
+        assert spec.sweep_band_hz == ()
 
 
 @pytest.mark.parametrize("row", ["branches", "front_rear"])
@@ -683,15 +685,15 @@ def test_the_measurement_band_unions_the_roles_in_any_order():
 
 
 @pytest.mark.parametrize("floor", [20.0, 30.0, 45.0])
-def test_summed_room_band_reads_resolved_driver_bands(floor):
+def test_every_summed_sweep_covers_the_audio_band_from_resolved_driver_bands(floor):
+    """The resolved driver bands union to 20 Hz-20 kHz (ADR-0328), so a
+    summed sweep needs no band of its own for any purpose (ADR-0400)."""
     _, safety, targets = _profile_and_targets(woofer_floor=floor, woofer_upper=4000)
     next(target for target in safety["targets"] if target["role"] == "tweeter")["hard_excitation_band_hz"][1] = 18000
     roles = [RoleBand(role, channel, resolve_driver_excitation_ceilings(
         safety, fingerprint, program_admission=True)[0])
         for channel, (role, fingerprint) in enumerate(targets.items())]
-    assert room_sweep_band_hz(
-        roles, (CloudPositionPrompt("room", purpose="room"),)
-    ) == (20.0, 20000.0)
+    assert programs.measurement_band_hz(roles) == (20.0, 20000.0)
 
 
 @pytest.mark.parametrize("scope,ids,refused", [

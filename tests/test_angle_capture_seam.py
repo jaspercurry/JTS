@@ -834,16 +834,13 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     assert len({(s.angle_deg, s.elevation_deg) for s in request.stops}) == (
         program.mic_move_count
     )
-    assert [stop.regime for stop in request.stops] == [
-        regime for pose in program.poses
-        for regime in ([ac.REGIME_PER_DRIVER] * pose.repeats + ([ac.REGIME_SUMMED] if program.room_sweep else []))
-    ]
+    assert [stop.regime for stop in request.stops] == [program.regime for pose in program.poses for _ in range(pose.repeats)]
     # Table order, with each pose's repeats ADJACENT: the microphone moves once
     # per distinct pose, so a repeat that drifted apart would be a second trip.
     assert [(s.angle_deg, s.elevation_deg) for s in request.stops] == [
         (pose.azimuth_deg, pose.elevation_deg)
         for pose in program.poses
-        for _ in range(pose.repeats + program.room_sweep)
+        for _ in range(pose.repeats)
     ]
     assert (request.program, request.layout) == (program.preset, program.layout)
 
@@ -1157,7 +1154,7 @@ _GOLDEN_BASELINE_EXPRESS = (
     ("candidates", "regime", "phase", "price"),
     [
         ((), ac.REGIME_PER_DRIVER, PHASE_MEASURE,
-         {"mic_moves": 5, "captures": 15, "ceiling_min": 54,
+         {"mic_moves": 5, "captures": 10, "ceiling_min": 44,
           "stimulus_s": None}),
         (("base", "fpA"), ac.REGIME_SUMMED, PHASE_CLOUD_VERIFY,
          {"mic_moves": 5, "captures": 17, "ceiling_min": 58,
@@ -1171,7 +1168,7 @@ def test_shipped_program_geometry_and_full_capture_price(
     request = ac.request_for_preset(
         mp.run_preset("speaker", "baseline_express"), candidates=candidates,
     )
-    stops = tuple(stop for stop in ac.resolve_request(request) if candidates or stop.regime == ac.REGIME_PER_DRIVER)
+    stops = ac.resolve_request(request)
     geometries = [capture_plan.position_geometry(stop.prompt) for stop in stops]
 
     assert [

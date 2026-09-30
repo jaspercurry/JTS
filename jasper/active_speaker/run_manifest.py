@@ -108,11 +108,6 @@ def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
             and isinstance(row.get("set_id"), str) and row.get("capture_basis", {}).get("graph_scope") != "timing"]
 
 
-def room_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    return [row for row in view_sets(manifest) if row["capture_basis"].get("gating_applied") is False
-            and row["capture_basis"].get("role") in (None, "summed")]
-
-
 #: dB two drivers of one role (so of one declared size) may play apart for the
 #: same drive, each measured close to its own cone, before a round shows it.
 #: Matched drivers sit well inside it; jts3's two woofers of one model play

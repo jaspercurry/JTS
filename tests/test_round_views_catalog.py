@@ -68,9 +68,9 @@ def test_every_verbs_help_has_a_description_and_examples_its_parser_accepts(prog
 @pytest.mark.parametrize("program", PURPOSES)
 def test_the_catalog_lists_every_tool_a_programs_rounds_can_use(program, capsys):
     """The rows naming the program, and every view its rounds' bookkeeping publishes:
-    a speaker round that keeps a room sweep is read by the room views too."""
+    a rear seat round is read by the room views too."""
     published = {f"{PROG} {name}" for row in map(preset, available_presets()) if row.purpose == program
-                 for name, _, _ in bookkeeping_views(row.purposes, has_room=row.room_sweep)}
+                 for name, _, _ in bookkeeping_views(row.purposes)}
     own = {command for command, row in CATALOG.items() if not row.programs or program in row.programs}
     assert round_views.main(["catalog", "--program", program]) == 0
     answer = json.loads(capsys.readouterr().out)

@@ -187,9 +187,6 @@ ENTANGLEMENT_SOURCES = frozenset(
 SEARCH_BOUND_DECLARED = ENTANGLEMENT_SOURCE_DECLARED
 SEARCH_BOUND_DEFAULT = "search_default"
 NEAR_FIELD_EXEMPT = "near_field"
-#: A seat take is the room's own measurement, so its reflections stay in
-#: (ADR-0260).
-SEAT_EXEMPT = "seat"
 
 
 @dataclass(frozen=True)

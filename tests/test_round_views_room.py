@@ -450,9 +450,12 @@ def test_retired_room_verbs(verb):
 
 
 @pytest.mark.parametrize("purpose,floor_hz", [("speaker", 20.0), ("room", 30.0)])
-def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
+def test_a_speaker_packet_holds_driver_fits_and_a_room_packet_holds_the_room(
     speaker_round, tmp_path, capsys, purpose, floor_hz,
 ):
+    """A speaker round's packet holds each driver's fit at three poses and no
+    room section; a room round's summed takes at the same poses hold the room
+    evidence (ADR-0400)."""
     root, driver, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
@@ -462,14 +465,14 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
     for record in summed:
         record["curves"][0]["band_hz"][0] = floor_hz
     groups = []
-    for role in ("woofer", "tweeter", "summed"):
+    for role in ("woofer", "tweeter") if purpose == "speaker" else ("summed",):
         rows = []
         for index, degrees in enumerate((0, -20, 20)):
             source = summed[index] if role == "summed" else driver
             record = {**source, "take_id": f"{role}-{index}", "pose_kind": "bearing",
                       "position_deg": degrees, "vertical_deg": 0, "mark_distance_m": 1.0,
                       "gating_applied": role != "summed", "graph_scope": "candidate" if role == "summed" else "drivers",
-                      "measurement_purpose": "room" if role == "summed" else "speaker"}
+                      "measurement_purpose": purpose}
             record.pop("seat_offset_m", None)
             path = directory / "positions" / f"{record['take_id']}.json"
             path.write_text(json.dumps(record))
@@ -481,29 +484,35 @@ def test_speaker_packet_holds_driver_fits_and_room_evidence_at_three_poses(
             take.update(role=role, analysis=analysis,
                         curve=next(curve for curve in record["curves"] if curve["role"] == role))
         groups.append(group)
-    groups.append({**groups[-1], "set_id": "timing", "takes": [{**groups[-1]["takes"][0], "phase": "timing"}],
-                   "capture_basis": {**groups[-1]["capture_basis"], "graph_scope": "timing", "candidate_id": "projected-timing"}})
+    if purpose == "speaker":
+        groups.append({**groups[-1], "set_id": "timing", "takes": [{**groups[-1]["takes"][0], "phase": "timing"}],
+                       "capture_basis": {**groups[-1]["capture_basis"], "graph_scope": "timing",
+                                         "candidate_id": "projected-timing"}})
     write_manifest(root, program=purpose, groups=groups)
     manifest_path, views = _bookkeeping(root, inputs.session_dir, round_views.run_bookkeeping)
     packet = write_round_packet(root, manifest_path, views)
     # A timing set bounds no prescription, so it is not listed as unavailable (#5632 F8).
-    assert set(packet["limits"]) == {"woofer", "tweeter", "summed"}
-    assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
-        (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
-    assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])
+    assert set(packet["limits"]) == ({"woofer", "tweeter"} if purpose == "speaker" else {"summed"})
+    catalog = _run(capsys, ["catalog", str(root)])
+    room_calls = {call["set_id"] for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room"
+                  for call in tool["calls"] if call["present"]}
+    if purpose == "speaker":
+        assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
+            (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
+        assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])
+        assert (packet["room"], room_calls) == ([], set())
+        return
     room, = packet["room"]
     assert room["set_id"] == room["incumbent"]["set_id"] == "summed"
     assert room["median"]["n_positions"] == room["persistence"]["spatial_support"]["n_positions"] == 3
     assert room["median"]["window"] == "ungated"
     assert set(room) == {"ceiling", "median", "spread_rms_db", "persistence", "incumbent", "boundary", "boundary_reason",
                          "incumbent_reason", "room_median_sha256", "admit_boost", "out", "set_id", "schema"}
-    assert packet["limits"]["summed"]["bounds"]["admit_boost"] == room["admit_boost"]
     limits = packet["limits"]["summed"]
+    assert limits["bounds"]["admit_boost"] == room["admit_boost"]
     assert limits["status"] == "available"
     assert limits["bounds"]["band_hz"][0] == room["median"]["coverage_hz"][0] == floor_hz
     assert limits["bounds"]["freqs_hz"] == room["median"]["freqs_hz"]
     assert len(limits["bounds"]["cut_floor_db"]) == len(room["median"]["freqs_hz"])
     assert {row["set_id"] for row in views if row["view"] == "room" and row["status"] == "written"} == {"summed"}
-    catalog = _run(capsys, ["catalog", str(root)])
-    assert {call["set_id"] for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room"
-            for call in tool["calls"] if call["present"]} == {"summed"}
+    assert room_calls == {"summed"}

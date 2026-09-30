@@ -11,6 +11,7 @@ from jasper.active_speaker.bass_fit import fit_bass_shape
 from jasper.cli.round_views._bass_inputs import join_bass_rounds
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, REASON_REGISTRY
 from dataclasses import replace
+from functools import partial
 import json
 import sys
 from pathlib import Path
@@ -21,7 +22,6 @@ import pytest
 
 from jasper.active_speaker.bundles import open_bundle
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
-from jasper.active_speaker.crossover_v2 import gate_sweep
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks, analysis_provenance
 from jasper.active_speaker.crossover_v2.journey import PHASE_TIMING
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -33,7 +33,7 @@ from jasper.active_speaker.measurement_analysis import analyzed_measurements
 from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA, bass_evidence
 from jasper.audio_measurement.calibration import CalibrationCurve, CalibrationRecord
 from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, REASON_UNREADABLE, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
-from jasper.audio_measurement.gating import SEAT_EXEMPT
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, POSE_KIND_SEAT, gate_exemption
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, analyze_program_capture
@@ -50,7 +50,6 @@ from jasper.active_speaker.frequency_view import (
 from jasper.active_speaker.frequency_plot import render_frequency_view
 from jasper.active_speaker import frequency_plot
 from jasper.active_speaker.round_bank import bank_round
-from jasper.active_speaker.round_view_builders import analyzed_frequency_run
 from jasper.active_speaker import measurement_archive
 from tests.crossover_v2_banked_round import bank_executor_take
 from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE
@@ -664,21 +663,22 @@ def summed_capture_bundle(tmp_path, request):
     signal += np.random.default_rng(8).normal(0, 1e-8, signal.size)
     raw = np.column_stack([signal, np.zeros(signal.size)])
 
-    def host_analysis(answer, _record):
-        """The analysis the capture host banks on a take (ADR-0383), read ungated as a seat take is."""
+    def host_analysis(answer, _record, *, exempt=POSE_KIND_SEAT):
+        """The analysis the capture host banks on a take (ADR-0383), read ungated as a seat take
+        is, or through the gate with no ``exempt`` reason (ADR-0400)."""
         if answer.program is None:
             return {}
         played = ExcitationProgram.from_dict(answer.program)
         calibration = resolve_setup_calibration(answer.setup, device=answer.device, root=calibration_root)
         curve = calibration.curve if calibration is not None else None
-        geometry = MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT)
+        geometry = MeasurementGeometry(gate_exempt_reason=exempt)
         samples, rate = decode_wav_to_mono(answer.wav)
         analysis = analyze_program_capture(played, samples, rate, calibration=curve,
                                            geometry=geometry, capture_report=answer.capture_integrity)
         analysis = replace(analysis, bass=bass_evidence(played, analysis, samples, curve))
         return {**analysis_provenance(played, analysis, calibration, curve, geometry), **analysis_blocks(analysis, played, None)}
 
-    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, **fields):
+    async def bank(take_id, *, setup=None, scope="candidate", candidate="baseline-fp", retain_program=True, wav_hash=None, capture_gap_frames=0, capture_gain_db=0.0, analyzed=True, exempt=POSE_KIND_SEAT, **fields):
         anchor = 800 + program.segment("sweep_verify").start_sample
         samples = np.delete(raw, np.s_[anchor - capture_gap_frames:anchor], axis=0)
         samples *= 10 ** (capture_gain_db / 20)
@@ -705,7 +705,7 @@ def summed_capture_bundle(tmp_path, request):
             bundle, recorder_factory=lambda *_: Recorder(), setup_reference=lambda: setup,
         )
         records = CapturedRecordStore(BankedRecordStore(evidence, "capture"), configured,
-                                      enrich=host_analysis if analyzed else None)
+                                      enrich=partial(host_analysis, exempt=exempt) if analyzed else None)
         await configured.around(play, program=program)
         answer = configured.take_answer()
         if not retain_program:
@@ -781,25 +781,32 @@ def _without_recordings(bundle: Path) -> None:
         path.unlink()
 
 
-@pytest.mark.parametrize("purpose,program,gap", [
-    ("room", build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14)), None),
-    ("bass", repeat_summed_program(build_verify_program(2500, sweep_band_hz=(20, 1100), sweep_s=1.5, gain_db=-30),
-                                   passes=3, quiet_samples=96000, cooldown_s=2.0), None),
-    *(("room", build_verify_program(2500, sweep_band_hz=band, sweep_s=1.5, gain_db=-30,
-                                    leading_pilot_gains_db=(-24, -14)), REASON_COVERAGE_SHORT)
+_ROOM_PROGRAM = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
+_BASS_PROGRAM = repeat_summed_program(build_verify_program(2500, sweep_band_hz=(20, 1100), sweep_s=1.5, gain_db=-30),
+                                      passes=3, quiet_samples=96000, cooldown_s=2.0)
+
+
+@pytest.mark.parametrize("purpose,kind,program,gap", [
+    ("room", POSE_KIND_SEAT, _ROOM_PROGRAM, None), ("room", POSE_KIND_BEARING, _ROOM_PROGRAM, None),
+    ("bass", POSE_KIND_SEAT, _BASS_PROGRAM, None), ("bass", POSE_KIND_BEARING, _BASS_PROGRAM, None),
+    *(("room", POSE_KIND_SEAT, build_verify_program(2500, sweep_band_hz=band, sweep_s=1.5, gain_db=-30,
+                                                    leading_pilot_gains_db=(-24, -14)), REASON_COVERAGE_SHORT)
       for band in ((250, 20000), (100, 300))),
 ])
-def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monkeypatch, purpose, program, gap):
+def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monkeypatch, purpose, kind, program, gap):
     """The capture host banks a summed take's curves and bass reading, bit for
     bit, as a decode of its recording reads them, and the reader then serves
-    them with the recording gone. A sweep above the bass band, or too narrow
-    for H3 in it, banks its curves and the harmonics' coded gap."""
+    them with the recording gone. A take at a seat banks its ungated curve; one
+    at a bearing, whatever its purpose, banks both windows (ADR-0400). A sweep
+    above the bass band, or too narrow for H3 in it, banks its curves and the
+    harmonics' coded gap."""
     pcm = render_program_pcm(program)[:, 0] * 0.4 * 10 ** (-20 / 20)
     signal = np.concatenate([np.zeros(800), pcm + 2 * pcm ** 2, np.zeros(5000)])
     signal += np.random.default_rng(8).normal(0, 1e-6, signal.size)
     record = bank_executor_take(tmp_path, monkeypatch, program=program,
                                 recording=(signal * (2 ** 31 - 1)).astype(np.int32),
-                                pose={"kind": "seat", "seat_offset_m": (0.0, 0.0, 0.0), "purpose": purpose},
+                                pose={"purpose": purpose, **({"kind": kind, "seat_offset_m": (0.0, 0.0, 0.0)}
+                                                             if kind == POSE_KIND_SEAT else {})},
                                 raw_record={"measurement_status": "captured", "phase": "lateral"})
     bundle, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     path, = (take.record_path for take in analyzed_measurements(bundle))
@@ -808,13 +815,14 @@ def test_a_summed_take_banks_what_a_decode_of_its_recording_reads(tmp_path, monk
                                             root=tmp_path / "calibration")
     samples, rate = decode_wav_to_mono(wav)
     analysis = analyze_program_capture(program, samples, rate, calibration=calibration.curve,
-                                       geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT),
+                                       geometry=MeasurementGeometry(gate_exempt_reason=gate_exemption(kind)),
                                        capture_report=record["capture_integrity"])
     decoded = analysis_blocks(replace(analysis, bass=bass_evidence(program, analysis, samples, calibration.curve)), program,
                               {curve["window"]: curve["trusted_band"] for curve in record["curves"]})
     reading = record["analysis"]["bass"]
     assert (record["curves"], reading) == (decoded["curves"], decoded["analysis"]["bass"])
-    assert {curve["window"] for curve in record["curves"]} == {"ungated"}
+    assert [curve["window"] for curve in record["curves"]] == (
+        ["ungated"] if kind == POSE_KIND_SEAT else ["gated", "ungated"])
     assert reading["harmonics"].get("reason") == gap
     assert gap or (reading["bands"] and reading["harmonics"]["orders"])
 
@@ -845,21 +853,6 @@ def test_a_take_is_read_from_its_record_never_its_recording(summed_capture_bundl
     if not read:
         assert round_views_main(["frequency", str(bundle), "--out", str(tmp_path / "f.json")]) == EXIT_REFUSED
         assert json.loads(capsys.readouterr().out)["reason"] == TAKE_CURVES_NOT_BANKED
-
-
-def test_the_gated_overlay_labels_the_calibration_it_applied(summed_capture_bundle, monkeypatch):
-    bundle, _, _, bank = summed_capture_bundle
-    asyncio.run(bank("seat", phase="lateral", measurement_purpose="room", setup={
-        "calibration": {"mode": "stored", "calibration_id": "recorded-mic", "model": "minidsp_umik2"},
-    }))
-    write_manifest(bundle, program="room")
-    monkeypatch.setattr(gate_sweep, "resolve_setup_calibration", lambda *_args, **_kwargs: None)
-
-    measured, gated = analyzed_frequency_run(bundle, gated_overlay=True).series
-
-    assert measured.details["calibration"] == {"applied": True, "calibration_id": "recorded-mic"}
-    assert (gated.details["window"], gated.details["calibration"]) == (
-        "gated", {"applied": False, "calibration_id": None})
 
 
 def test_a_take_banked_before_its_bass_reading_refuses_the_bass_view_by_that_field(

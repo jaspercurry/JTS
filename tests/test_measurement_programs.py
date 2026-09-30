@@ -29,7 +29,7 @@ from jasper.active_speaker.design_draft import design_draft_view
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
-from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT
+from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT
 from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M
 from jasper.cli import crossover_prescriber, round as round_cli, round_views
 
@@ -103,9 +103,9 @@ def test_program_table_projections(site):
 
 
 @pytest.mark.parametrize(("preset", "layout", "poses", "moves", "captures"), [
-    ("speaker/mark", "speaker_mark", 1, 1, 3),
-    ("speaker/mark", "baseline_full", 13, 13, 29),
-    ("speaker/mark", "baseline_express", 5, 5, 13),
+    ("speaker/mark", "speaker_mark", 1, 1, 2),
+    ("speaker/mark", "baseline_full", 13, 13, 16),
+    ("speaker/mark", "baseline_express", 5, 5, 8),
     ("tournament/express", "tournament_full", 3, 3, 3),
     ("tournament/express", "tournament_express", 1, 1, 1),
     ("room/seat", "seat_cloud", 11, 11, 11),
@@ -123,7 +123,6 @@ def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures
     assert len(row.poses) == poses
     assert row.mic_move_count == moves
     assert row.capture_count == captures
-    assert row.room_sweep is (preset == "speaker/mark")
 
 
 @pytest.mark.parametrize("preset_id", mp.available_presets())
@@ -145,22 +144,17 @@ def test_summed_bookkeeping_includes_one_frequency_image(purpose):
     assert ("frequency", False, False) in bookkeeping_views((purpose,))
 
 
-def test_speaker_bookkeeping_uses_room_views_when_the_round_holds_room_sweeps():
-    assert bookkeeping_views(("speaker",), has_room=True) == bookkeeping_views(("room",))
-
-
-@pytest.mark.parametrize(("purposes", "has_room", "expected"), [
-    (("speaker",), False, (("frequency", False, False),)),
-    (("speaker",), True, (("room", True, False), ("room-grade", True, True), ("frequency", False, False))),
-    (("room",), False, (("room", True, False), ("room-grade", True, True), ("frequency", False, False))),
-    (("bass",), False, (("bass", True, False), ("frequency", False, False))),
-    (("reference",), False, ()),
-    (("rear",), False, (("rear", False, False), ("frequency", False, False))),
-    (("rear", "room"), False, (("room", True, False), ("room-grade", True, True), ("rear", False, False),
-                               ("frequency", False, False))),
+@pytest.mark.parametrize(("purposes", "expected"), [
+    (("speaker",), (("frequency", False, False),)),
+    (("room",), (("room", True, False), ("room-grade", True, True), ("frequency", False, False))),
+    (("bass",), (("bass", True, False), ("frequency", False, False))),
+    (("reference",), ()),
+    (("rear",), (("rear", False, False), ("frequency", False, False))),
+    (("rear", "room"), (("room", True, False), ("room-grade", True, True), ("rear", False, False),
+                        ("frequency", False, False))),
 ])
-def test_the_view_table_answers_every_automatic_view(purposes, has_room, expected):
-    assert bookkeeping_views(purposes, has_room=has_room) == expected
+def test_the_view_table_answers_every_automatic_view(purposes, expected):
+    assert bookkeeping_views(purposes) == expected
     assert {name for name, row in ARTIFACT_BY_VIEW.items() if row.builder} == set(BOOKKEEPING_ORDER)
     for view, _, _ in expected:
         row = ARTIFACT_BY_VIEW[view]
@@ -172,8 +166,7 @@ def test_the_view_table_answers_every_automatic_view(purposes, has_room, expecte
 def test_a_branch_preset_is_a_speaker_run_that_keeps_its_pair(preset, pair):
     row = mp.run_preset(preset)
 
-    assert (row.purpose, row.regime, row.branch_pair, row.room_sweep) == (
-        mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, pair, False)
+    assert (row.purpose, row.regime, row.branch_pair) == (mp.PURPOSE_SPEAKER, mp.REGIME_BRANCHES, pair)
 
 
 @pytest.mark.parametrize("preset,layout,mover", [
@@ -487,7 +480,8 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> 
     ]
     assert {row.purpose for row in (cloud, quick)} == {purpose}
     assert {row.regime for row in (cloud, quick)} == {mp.REGIME_SUMMED}
-    assert mp.gate_exemption(cloud.purpose) == SEAT_EXEMPT
+    assert [{mp.gate_exemption(pose.kind) for pose in row.poses} for row in (cloud, quick)] == [
+        {mp.POSE_KIND_SEAT}, {None}]
 
 
 @pytest.mark.parametrize("layout,poses", [
@@ -502,19 +496,21 @@ def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(layout, poses) -> No
     assert [(pose.azimuth_deg, pose.repeats) for pose in row.poses] == poses
 
 
-@pytest.mark.parametrize("purpose,driver,distance_m,reason", [
-    (mp.PURPOSE_REAR, "", None, SEAT_EXEMPT),
-    (mp.PURPOSE_ROOM, "", None, SEAT_EXEMPT),
-    (mp.PURPOSE_REFERENCE, "woofer:rear", 0.015, NEAR_FIELD_EXEMPT),
-    (mp.PURPOSE_REFERENCE, "woofer", NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
-    (mp.PURPOSE_REFERENCE, "woofer", 0.5, None),
-    (mp.PURPOSE_REFERENCE, "", 0.03, None),
+@pytest.mark.parametrize("kind,driver,distance_m,reason", [
+    (mp.POSE_KIND_SEAT, "", None, mp.POSE_KIND_SEAT),
+    (mp.POSE_KIND_BEARING, "", 1.0, None),
+    (mp.POSE_KIND_BEHIND, "", 0.1, None),
+    (mp.POSE_KIND_CLOSE, "woofer:rear", 0.015, NEAR_FIELD_EXEMPT),
+    (mp.POSE_KIND_CLOSE, "woofer", NEAR_FIELD_MAX_DISTANCE_M, NEAR_FIELD_EXEMPT),
+    (mp.POSE_KIND_BEARING, "woofer", 0.5, None),
+    (mp.POSE_KIND_CLOSE, "", 0.03, None),
 ])
-def test_a_take_reads_ungated_for_the_room_or_within_one_drivers_near_field(purpose, driver, distance_m, reason) -> None:
-    """A rear comparison reads below the gate's trusted floor, same as room
-    (issue #5330); a pose at one driver reads ungated only within the
-    near-field distance, so a far-field one-driver take is gated (ADR-0366)."""
-    assert mp.gate_exemption(purpose, driver=driver, distance_m=distance_m) == reason
+def test_a_take_reads_ungated_only_at_a_seat_or_within_one_drivers_near_field(kind, driver, distance_m, reason) -> None:
+    """A seat take is the room's own measurement; a pose at one driver reads
+    ungated only within the near-field distance, so a far-field one-driver
+    take is gated. A room, bass or rear take at a bearing or behind the
+    cabinet is gated too: a purpose never exempts a take (ADR-0400)."""
+    assert mp.gate_exemption(kind, driver=driver, distance_m=distance_m) == reason
 
 
 @pytest.mark.parametrize("purpose,regime,supported", [
@@ -623,7 +619,7 @@ def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_p
     assert (row.purpose, row.regime, row.branch_pair) == (
         mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
     assert row.poses is mp.preset("rear/express").poses
-    assert row.mover is None and row.room_sweep is False
+    assert row.mover is None
     assert mp.preset("rear").preset == "rear/express"
 
 
@@ -691,7 +687,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("broken", ["empty", "repeats", "regime", "mode", "layout_key",
-                                    "mover", "room_sweep", "room_sweep_mode", "offers_unknown", "offers_without_default",
+                                    "mover", "offers_unknown", "offers_without_default",
                                     "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
                                     "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
                                     "purposes_not_text", "driver_purposes", "driver_purposes_reversed", "levels",
@@ -711,7 +707,7 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         next(row for row in config["presets"] if row["preset"] == "drivers/each")["purposes"] = (
             ["speaker", "reference"] if broken.endswith("reversed") else ["reference", "speaker"])
     elif broken.startswith("purposes_"):
-        config["presets"][0].update(regime="summed", room_sweep=False, purposes={
+        config["presets"][0].update(regime="summed", purposes={
             "purposes_unknown": ["other"], "purposes_none": [], "purposes_regime": ["rear", "room"],
             "purposes_not_list": "rear", "purposes_duplicate": ["rear", "rear"], "purposes_not_text": [None],
         }[broken])
@@ -724,7 +720,7 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     elif broken == "offers_without_default":
         config["presets"][0]["layouts"] = ["baseline_full"]  # type: ignore[index]
     elif broken == "branch_pair":
-        config["presets"][0].update(regime="branches", room_sweep=False, branch_pair="both")
+        config["presets"][0].update(regime="branches", branch_pair="both")
     elif broken == "branch_pair_regime":
         config["presets"][0]["branch_pair"] = "front_rear"
     elif broken == "empty":
@@ -735,10 +731,8 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         config["layouts"]["room_quick"]["moverr"] = "arm"  # type: ignore[index]
     elif broken == "mover":
         config["layouts"]["room_quick"]["mover"] = []  # type: ignore[index]
-    elif broken in ("room_sweep", "timing_take"):
+    elif broken == "timing_take":
         config["presets"][0][broken] = "yes"
-    elif broken == "room_sweep_mode":
-        config["presets"][0].update(purposes=["room"], regime="summed", room_sweep=True)
     elif broken == "regime":
         config["presets"][0]["regime"] = "other"  # type: ignore[index]
     else:

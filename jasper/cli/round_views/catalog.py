@@ -15,7 +15,7 @@ from typing import Any
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, with_records
 from jasper.active_speaker.measurement_programs import PURPOSES, available_presets, preset
 from jasper.active_speaker.round_catalog import round_calls
-from jasper.active_speaker.round_view_artifacts import CatalogRow, read_purposes
+from jasper.active_speaker.round_view_artifacts import CatalogRow
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, exit_codes_help, stage
 
 from ._common import (
@@ -26,11 +26,10 @@ from ._common import (
 
 def _purposes(program: str) -> set[str]:
     """The purposes whose views read a round of any preset of this program, by the
-    rule the round's bookkeeping follows: a rear seat round, or a speaker round
-    that keeps a room sweep, is read by the room views too."""
+    rule the round's bookkeeping follows: a rear seat round is read by the room
+    views too."""
     presets = (preset(name) for name in available_presets())
-    return {program}.union(*(read_purposes(row.purposes, has_room=row.room_sweep)
-                             for row in presets if row.purpose == program))
+    return {program}.union(*(row.purposes for row in presets if row.purpose == program))
 
 
 def _tool(command: str, row: CatalogRow) -> dict[str, Any]:

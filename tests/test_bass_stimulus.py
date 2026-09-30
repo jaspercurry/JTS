@@ -24,13 +24,12 @@ from jasper.active_speaker.measurement_analysis import BankedMeasurement
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_evidence, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.measurement_programs import (
-    gate_exemption, load_presets, preset, run_preset, validated_capture_purpose,
+    POSE_KIND_BEARING, POSE_KIND_SEAT, gate_exemption, load_presets, preset, run_preset, validated_capture_purpose,
 )
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import ProgramAdmissionRefusal, readmit_summed_program_from_wav
 from jasper.audio_measurement.deconv import required_pre_guard_s
-from jasper.audio_measurement.gating import SEAT_EXEMPT
 from jasper.audio_measurement.program import segment_sweep_meta
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, render_program_pcm, write_program_wav
@@ -97,7 +96,7 @@ def _replay(bass, raw):
     wav = io.BytesIO()
     wavfile.write(wav, bass.sample_rate_hz, raw.astype(np.float32))
     samples, rate = decode_wav_to_mono(wav.getvalue())
-    analysis = analyze_program_capture(bass, samples, rate, geometry=MeasurementGeometry(gate_exempt_reason=SEAT_EXEMPT))
+    analysis = analyze_program_capture(bass, samples, rate, geometry=MeasurementGeometry(gate_exempt_reason=POSE_KIND_SEAT))
     analysis = replace(analysis, bass=bass_evidence(bass, analysis, samples, None))
     record = {"program": bass.to_dict(), **analysis_blocks(analysis, bass, None)}
     return SimpleNamespace(analysis=analysis, view=bass_take(BankedMeasurement(record, "capture")))
@@ -362,10 +361,9 @@ def test_pass_alignment_peaks_and_edges(bass_fixture, edge):
     assert set(alignment.offsets_samples.values()) == {0}
 
 
-@pytest.mark.parametrize("purpose", ["room", "speaker"])
-def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purpose):
-    spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="trial",
-                       program_phase="cloud_verify" if purpose == "room" else "verify")
+@pytest.mark.parametrize("program_phase,kind", [("cloud_verify", POSE_KIND_SEAT), ("verify", POSE_KIND_BEARING)])
+def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, program_phase, kind):
+    spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="trial", program_phase=program_phase)
     stimulus = compose_plan_program(SimpleNamespace(excitation=bass_fixture[3], set_program=lambda *args: None),
                                     spec, None, context=plan_context())
     raw = np.pad(render_program_pcm(stimulus)[:, 0].astype(np.float64) * 0.1, (800, 48000))
@@ -373,7 +371,7 @@ def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, purp
     assert sum(s.kind == KIND_SUMMED_SWEEP for s in stimulus.segments) == 1
     assert average_summed_capture(stimulus, raw, 800) is raw
     analyze = lambda: analyze_program_capture(stimulus, raw, stimulus.sample_rate_hz,
-                        geometry=MeasurementGeometry(gate_exempt_reason=gate_exemption(purpose)))
+                        geometry=MeasurementGeometry(gate_exempt_reason=gate_exemption(kind)))
     result = analyze()
     monkeypatch.setattr("jasper.audio_measurement.program_analysis.dispatch.align_summed_capture",
                         lambda _program, capture, _offset, **kw: (capture, None))

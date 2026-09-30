@@ -343,14 +343,8 @@ def context_artifacts(inputs: RoundInputs, round_dir: Path) -> dict[str, Any]:
     }
 
 
-def read_purposes(purposes: tuple[str, ...], *, has_room: bool = False) -> set[str]:
-    """The purposes whose views read a round of these purposes: a speaker round
-    that kept its summed stops as room sets is read by the room views too."""
-    return set(purposes) | ({PURPOSE_ROOM} if purposes[0] == PURPOSE_SPEAKER and has_room else set())
-
-
-def bookkeeping_views(purposes: tuple[str, ...], *, has_room: bool = False) -> tuple[tuple[str, bool, bool], ...]:
+def bookkeeping_views(purposes: tuple[str, ...]) -> tuple[tuple[str, bool, bool], ...]:
     """View name, per-set scope, and whether it grades against the base, for a round of these purposes."""
-    wanted = read_purposes(purposes, has_room=has_room)
     rows = ((name, ARTIFACT_BY_VIEW[name]) for name in BOOKKEEPING_ORDER)
-    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows if wanted.intersection(row.bookkeeping))
+    return tuple((name, row.per_set, row.grades_against_base) for name, row in rows
+                 if set(purposes).intersection(row.bookkeeping))

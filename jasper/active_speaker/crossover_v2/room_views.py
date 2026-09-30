@@ -31,7 +31,7 @@ from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.platform.json_fields import finite_float
 from ..measurement_programs import PURPOSE_SPEAKER
-from ..run_manifest import kept_measurements, room_sets, view_sets
+from ..run_manifest import kept_measurements, view_sets
 
 from .evidence_packet.incumbent import applied_profile_source
 from .journey import PHASE_LATERAL, PHASE_MEASURE
@@ -286,7 +286,7 @@ def incumbent_room(
     snapshot = profile.get("recomposition_snapshot") or {}
     correction = snapshot.get("room_correction", profile.get("room_correction")) or {}
     basis = correction.get("basis") or {}
-    matches = [row["set_id"] for row in (room_sets(manifest) or view_sets(manifest)) if row.get("base")]
+    matches = [row["set_id"] for row in view_sets(manifest) if row.get("base")]
     if len(matches) != 1:
         return None, "room_incumbent_set_ambiguous" if matches else "room_incumbent_set_unavailable"
     return {

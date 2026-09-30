@@ -38,7 +38,7 @@ def bass(inputs, target, set_id, incumbent) -> _Answer:
 
 
 def frequency(inputs, target, set_id, incumbent) -> _Answer:
-    payload, series = frequency_payload(analyzed_frequency_run(target, gated_overlay=True))
+    payload, series = frequency_payload(analyzed_frequency_run(target))
     return payload, {"runs": [run["id"] for run in payload["runs"]], "series": series}
 
 

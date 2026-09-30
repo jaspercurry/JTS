@@ -16,19 +16,17 @@ import re
 from itertools import combinations
 from unittest.mock import Mock
 
-import numpy as np
 from pathlib import Path
 
 import pytest
 
 from jasper.audio_measurement.gating import f_trusted_floor_hz
-from jasper.audio_measurement.program_analysis import analyze_program_capture
 from jasper.active_speaker import baseline_profile as bp
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.frequency_reference import band_limited_curve
 from jasper.active_speaker.frequency_view import FrequencyRun, build_frequency_view, frequency_series
-from jasper.active_speaker.crossover_v2 import evidence_packet, gate_sweep
+from jasper.active_speaker.crossover_v2 import evidence_packet
 from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY, EVIDENCE_NOT_BANKED
 from jasper.cli import crossover_prescriber
 from jasper.cli.round_views import main as round_views_main
@@ -408,7 +406,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, capsys, purpose, b
                     phase="lateral", measurement_purpose="rear", gating_applied=False,
                     pose_kind=pose.kind, seat_offset_m=pose.seat_offset_m, vertical_deg=0, mark_distance_m=1.0,
                 ))
-                records.append((record_id, json.loads(gate_sweep.take_artifact_path(session, record_id).read_text())))
+                records.append((record_id, json.loads(take_artifact_path(session, record_id).read_text())))
             group.update(manifest_set(records, set_id=group["set_id"]))
         mark_state(session, "applied")
     else:
@@ -473,7 +471,7 @@ def test_every_bookkeeping_view_writes_from_one_run(tmp_path, monkeypatch, reque
         else:
             assert Path(answer["image"]) == target / "frequency.png"
             assert Path(answer["image"]).read_bytes().startswith(b"\x89PNG")
-        assert len(answer["series"]) == (14 if purpose == "room" else 1)
+        assert len(answer["series"]) == (7 if purpose == "room" else 1)
 
 
 @pytest.mark.parametrize("purpose", ["room", "bass"])
@@ -527,7 +525,7 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
                 band["fundamental_qualified"] for band in saved["bands"]]
     candidates = {group["set_id"]: group["candidate_id"] for group in packet["sets"]}
     assert all(candidates.values())
-    assert len(packet["series"]) == (14 if purpose == "room" else 1)
+    assert len(packet["series"]) == (7 if purpose == "room" else 1)
     for series in packet["series"]:
         assert series["set_id"] in packet["limits"]
         assert series["candidate_id"] == candidates[series["set_id"]]
@@ -757,54 +755,31 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, l
     assert json.loads(match[3]) == packet["applied"]["layers"]
 
 
-@pytest.mark.parametrize("purpose", ["room", "speaker"], ids=["trial", "speaker-room-sweep"])
-def test_banked_candidate_has_gated_and_ungated_sum(request, tmp_path, monkeypatch, purpose):
-    bundle, _, program, bank = request.getfixturevalue("summed_capture_bundle")
-    record_id = asyncio.run(bank("candidate-take", candidate="trial-fp", gating_applied=False,
-                                measurement_purpose="room", vertical_deg=0, mark_distance_m=1.0))
-    _, wav = gate_sweep.reopen_measurement_capture(
-        bundle, gate_sweep.take_artifact_path(bundle, record_id))
-    samples, rate = gate_sweep.decode_wav_to_mono(wav)
-    reference = analyze_program_capture(program, samples, rate).summed_response
-    assert reference is not None and reference.gating["applied"]
-    original, = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())["curves"]
+@pytest.mark.parametrize("purpose", ["room", "speaker"])
+def test_a_banked_take_shows_each_window_it_banked(request, tmp_path, purpose):
+    """A take the gate read banks both windows, whatever its purpose; the
+    bank's frequency view and packet show each one, named by its window,
+    read from the record alone (ADR-0400)."""
+    bundle, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    record_id = asyncio.run(bank("candidate-take", candidate="trial-fp", exempt=None, measurement_purpose=purpose,
+                                 vertical_deg=0, mark_distance_m=1.0))
+    curves = json.loads(take_artifact_path(bundle, record_id).read_text())["curves"]
     group, = write_manifest(bundle, program=purpose)["sets"]
-    take, = group["takes"]
-    pose = json.loads(gate_sweep.take_artifact_path(bundle, take["record_id"]).read_text())["pose"]
     mark_state(bundle, "applied")
     before = {p: p.read_bytes() for p in bundle.rglob("*") if p.is_file()}
-    deconvolve = Mock(wraps=gate_sweep.deconvolve_window)
-    monkeypatch.setattr(gate_sweep, "deconvolve_window", deconvolve)
+
     banked = bank_round(bundle, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping,
                         **_ssot(tmp_path, present=False))
-    assert deconvolve.call_count == 1
-    view = json.loads((banked.path / "frequency_view.json").read_text())
-    ungated, gated = view["runs"][0]["series"]
+
+    series = json.loads((banked.path / "frequency_view.json").read_text())["runs"][0]["series"]
     packet = json.loads((banked.path / "packet.json").read_text())
-    assert len(packet["series"]) == 2
-    for curves in ((ungated, gated), packet["series"]):
-        assert [row["window"] for row in curves] == ["ungated", "gated"]
-        assert {row["set_id"] for row in curves} == {group["set_id"]}
-        assert {row["take_id"] for row in curves} == {"candidate-take"}
-        assert {row["role"] for row in curves} == {"summed"}
-        assert curves[0]["gate_window_ms"] is curves[0]["trusted_floor_hz"] is None
-        assert curves[1]["gate_window_ms"] == reference.gating["window_ms"]
-        assert curves[1]["trusted_floor_hz"] == reference.gating["f_trusted_hz"]
-        assert curves[1]["floor_source"] == reference.gating["floor_source"]
-    assert ungated["position"] == gated["position"]
-    assert [row["pose"] for row in packet["series"]] == [pose, pose]
-    assert (ungated["freqs_hz"], ungated["magnitude_db"]) == tuple(map(list, band_limited_curve(original)))
-    hz, db = np.asarray(gated["freqs_hz"]), np.asarray(gated["magnitude_db"])
-    keep = (reference.freqs_hz >= gate_sweep.GRID_LO_HZ * 0.7) & (
-        reference.freqs_hz <= gate_sweep.GRID_HI_HZ * 1.3)
-    expected_db = np.interp(hz, reference.freqs_hz[keep], gate_sweep.smooth_fractional_octave(
-        reference.freqs_hz[keep], reference.magnitude_db[keep], gated["smoothing_fractional_octave"]))
-    np.testing.assert_array_equal(db, expected_db)
-    band = db[(hz >= gated["trusted_floor_hz"]) & (hz <= 10000)]
-    assert packet["series"][1]["stats"]["flatness_rms_db"] == {
-        "band_hz": [gated["trusted_floor_hz"], 10000],
-        "value": pytest.approx(float(np.std(band))),
-    }
+    assert [(row["window"], row["label"].rsplit(" · ", 1)[-1]) for row in series] == [
+        ("gated", "Gated"), ("ungated", "Ungated")]
+    assert [(row["window"], row["set_id"], row["take_id"]) for row in packet["series"]] == [
+        (window, group["set_id"], "candidate-take") for window in ("gated", "ungated")]
+    assert [row["gate_window_ms"] is None for row in series] == [False, True]
+    for row, curve in zip(series, curves):
+        assert (row["freqs_hz"], row["magnitude_db"]) == tuple(map(list, band_limited_curve(curve)))
     assert all(p.read_bytes() == content for p, content in before.items())
 
 
@@ -817,12 +792,12 @@ def test_candidates_reads_every_pose_and_window_of_a_banked_trial(request, tmp_p
         for position in (-20, 0, 20):
             record_id = asyncio.run(bank(
                 f"{candidate}-{position}", candidate=candidate, phase="lateral",
-                gating_applied=False, measurement_purpose="room", position_deg=position,
+                exempt=None, measurement_purpose="room", position_deg=position,
                 vertical_deg=0, mark_distance_m=1.0,
                 capture_gain_db=6.0 if candidate == "candidate-b" else 0.0,
             ))
-            record = json.loads(gate_sweep.take_artifact_path(bundle, record_id).read_text())
-            assert [curve["window"] for curve in record["curves"]] == ["ungated"]
+            record = json.loads(take_artifact_path(bundle, record_id).read_text())
+            assert [curve["window"] for curve in record["curves"]] == ["gated", "ungated"]
             records.append((record_id, record))
         group = manifest_set(records)
         group["base"] = candidate == candidates[0]

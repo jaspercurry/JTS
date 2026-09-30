@@ -129,7 +129,8 @@ seconds, supports a speaker claim
 ### Document
 
 `jasper-round run --program speaker --layout baseline_express` collects driver
-fits, timing and room evidence in one round; `baseline_full` adds poses.
+fits and timing in one round; `baseline_full` adds poses. Room evidence comes
+from a room round (`room/seat`) or a rear seat round (`rear/seat`).
 Write one document with every section the evidence supports.
 `jasper-crossover-prescriber judge --help` shows the document's envelope, and
 `jasper-crossover-prescriber contract --round <dir> --section speaker` prints

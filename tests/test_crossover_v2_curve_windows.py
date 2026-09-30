@@ -83,11 +83,18 @@ def _only(windows) -> str:
     return window
 
 
-def _ladder_windows(order: tuple[str, ...], root: Path) -> str:
+def _ladder_windows(order: tuple[str, ...], root: Path) -> tuple[str, ...]:
     """The windows the candidate ladder compares two candidates' takes through."""
     _bundle(root, _banked(order, index=1, candidate="cfg-a"), _banked(order, index=2, candidate="cfg-b"))
     ladder = candidate_ladder(root, round_inputs(root))
-    return _only(row["window"] for table in ladder["tables"] for row in table["roles"])
+    return tuple(sorted({row["window"] for table in ladder["tables"] for row in table["roles"]}))
+
+
+def _page_windows(take: dict) -> list[tuple[str, str, str]]:
+    """Each series the page draws of one take: its role, the window it reads
+    and the word its label ends in."""
+    return sorted((series.details["role"], _by_level(series.magnitude_db[0]), series.label.rsplit(" · ", 1)[-1])
+                  for series in frequency_run_from_documents(run_id="r", documents=[take]).series)
 
 
 def _cloud_windows(order: tuple[str, ...], root: Path) -> str:
@@ -125,19 +132,19 @@ def _bass_take_window(order: tuple[str, ...], root: Path) -> str:
 _ROW = Measurement("p", "sess-1", "", PHASE_LATERAL, 0, 0, "", None, "", "", "bearing")
 
 #: Each changed reader, as the window it read from one take: room and rear
-#: readers read ungated, speaker readers gated, and the take views, the page and
-#: the packet the take's own window. The seat selection, the rear pair and the
-#: packet are read through their private step: their public paths need a
-#: recorded capture per take, a rear pair round and a whole banked packet.
+#: readers read ungated, speaker readers gated, the page and the candidate
+#: ladder both, and the take views and the packet the take's own window
+#: (ADR-0400). The seat selection, the rear pair and the packet are read
+#: through their private step: their public paths need a recorded capture per
+#: take, a rear pair round and a whole banked packet.
 READERS = {
     "take_curve": (lambda order, root: take_curve(_banked(order), "summed", OWN_WINDOW)["window"], "gated"),
     "room_selection": (lambda order, root: _by_level(room_selection._take(_ROW, _banked(order)).magnitude_db[0]),
                        "ungated"),
     "rear_pair": (lambda order, root: _by_level(20 * np.log10(abs(_pair_segments(_banked(order))[1]["summed"][0]))),
                   "ungated"),
-    "frequency_series": (lambda order, root: _only(_by_level(series.magnitude_db[0]) for series in
-                                                  frequency_run_from_documents(run_id="r", documents=[_banked(order)])
-                                                  .series), "gated"),
+    "frequency_series": (lambda order, root: tuple(sorted({window for role, window, _ in _page_windows(_banked(order))})),
+                         ("gated", "ungated")),
     "round_verdicts": (lambda order, root: _by_floor(common_measured_band([_banked(order)], "woofer")[0]), "gated"),
     "design_cloud": (_cloud_windows, "gated"),
     "directivity": (lambda order, root: _directivity([_banked(order, index=1), _banked(order, index=2)], "woofer"),
@@ -148,7 +155,7 @@ READERS = {
         else "ungated", "gated"),
     "round_captures": (lambda order, root: record_captures(_banked(order), ("woofer",), root, record_path=Path("t.json"),
                                                            wav=Path("t.wav"))[0].curve["window"], "gated"),
-    "candidate_ladder": (_ladder_windows, "gated"),
+    "candidate_ladder": (_ladder_windows, ("gated", "ungated")),
     "delay_pair": (lambda order, root: select_pose_curve_pair(
         _bundle(root, _banked(order)), phases=(PHASE_LATERAL,), position_deg=0,
         roles=("woofer", "tweeter")).lower["window"], "gated"),
@@ -180,9 +187,8 @@ OWN = {"woofer": "gated", "tweeter": "ungated"}
 MIXED_READERS = {
     "take_curve": (lambda take, root: {role: take_curve(take, role, OWN_WINDOW, required=True)["window"]
                                        for role in ("woofer", "tweeter")}, OWN),
-    "frequency_series": (lambda take, root: {series.details["role"]: _by_level(series.magnitude_db[0]) for series in
-                                             frequency_run_from_documents(run_id="r", documents=[take]).series
-                                             if series.details["role"] in ("woofer", "tweeter")}, OWN),
+    "frequency_series": (lambda take, root: [row for row in _page_windows(take) if row[0] in ("woofer", "tweeter")],
+                         [("tweeter", "ungated", "Ungated"), ("woofer", "gated", "Gated"), ("woofer", "ungated", "Ungated")]),
     "delay_pair": (_delay_pair, {}),
     "round_verdicts": (lambda take, root: {role: _by_floor(band[0]) for role in ("woofer", "tweeter")
                                            if (band := common_measured_band([take], role))}, {"woofer": "gated"}),
@@ -200,7 +206,8 @@ def test_each_role_is_read_through_the_window_its_reader_names(tmp_path, reader)
     tweeter banks woofer [gated, ungated] and tweeter [ungated]. A reader of
     the take's own window reads each role through that role's own; a speaker
     reader names the gated window, so it reads no tweeter, and a pair of both
-    drivers finds none."""
+    drivers finds none; the page draws every window each role banked, each
+    named by its window."""
     take = _banked(("gated", "ungated"), gate_missed=("tweeter",))
     read, expected = MIXED_READERS[reader]
 

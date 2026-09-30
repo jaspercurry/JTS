@@ -34,7 +34,6 @@ from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
-from .crossover_v2.capture_plan import room_sweep_band_hz
 from .crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
@@ -46,7 +45,7 @@ from .crossover_v2.measure_spec import (
 )
 from .crossover_v2.programs import program_for_phase
 from .measurement_programs import (
-    BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_ROOM, PURPOSE_SPEAKER,
+    BASE_CANDIDATE, POSE_KIND_BEARING, PURPOSE_SPEAKER,
     BRANCH_PAIR_DRIVERS,
     candidate_identity,
     cleared_layers,
@@ -709,10 +708,7 @@ def stop_specs(
             request.template,
             kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
             positions=(stop.angle_deg,),
-            sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz or (
-                room_sweep_band_hz(roles_bands, (prompt,))
-                if roles_bands and stop.purpose != PURPOSE_SPEAKER else None
-            ) or (),
+            sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz,
             sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.elevation_deg,
             pose_prompts=(prompt.text,),
@@ -793,7 +789,7 @@ def request_for_preset(
     targets: Sequence[str] = (),
     driver: str = "",
 ) -> AngleCaptureRequest:
-    """Expand poses with adjacent driver repeats, room sweeps and candidate trials.
+    """Expand poses with adjacent driver repeats and candidate trials.
 
     ``targets`` are the outputs this speaker declares for a pose to play alone; a
     preset's driver role expands to them, and ``driver`` narrows the run to one
@@ -807,26 +803,18 @@ def request_for_preset(
             preset.purpose, base=True, regime=REGIME_BRANCHES)):
         raise LateralWalkRefused(REASON_MEASUREMENT_CANDIDATE_REQUIRED,
                                  f"{preset.preset} plays one candidate: name one saved fingerprint")
-    room_sweep = preset.room_sweep and not candidates
     return AngleCaptureRequest(
         stops=tuple(
-            replace(
-                stop, elevation_deg=pose.elevation_deg, candidate_id=candidate,
-                kind=pose.kind,
-                distance_m=pose.distance_m,
-                seat_offset_m=pose.seat_offset_m,
-                purpose=PURPOSE_ROOM if room_sweep and stop.plays_summed else preset.purpose,
-                purposes=(PURPOSE_ROOM,) if room_sweep and stop.plays_summed else preset.purposes,
-                headline=pose.headline, detail=pose.detail,
-                stimulus=preset.stimulus,
-                branch_pair=preset.branch_pair,
+            AngleStop(
+                pose.azimuth_deg, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
+                elevation_deg=pose.elevation_deg, candidate_id=candidate, kind=pose.kind,
+                distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,
+                purpose=preset.purpose, purposes=preset.purposes,
+                headline=pose.headline, detail=pose.detail, stimulus=preset.stimulus,
+                branch_pair=preset.branch_pair, driver=pose.driver,
             )
             for pose in plan_poses(preset, targets, driver)
-            for stop in (both_at((pose.azimuth_deg,), mover=mover).stops if room_sweep else (
-                AngleStop(pose.azimuth_deg, REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
-                          kind=pose.kind, distance_m=pose.distance_m, seat_offset_m=pose.seat_offset_m,
-                          purpose=preset.purpose, driver=pose.driver),))
-            for _ in range(1 if room_sweep and stop.plays_summed else pose.repeats)
+            for _ in range(pose.repeats)
             for candidate in (candidates or (BASE_CANDIDATE,))
         ),
         mover=mover,
@@ -894,7 +882,7 @@ def resolve_request(request: AngleCaptureRequest) -> tuple[ResolvedStop, ...]:
             stop.angle_deg, stop.elevation_deg, kind=stop.kind,
             distance_m=stop.distance_m, seat_offset_m=stop.seat_offset_m, driver=stop.driver,
         )
-        pose = replace(pose, purpose=stop.purpose, preserve_text=bool(stop.headline or stop.detail),
+        pose = replace(pose, preserve_text=bool(stop.headline or stop.detail),
                        headline=stop.headline or pose.headline, detail=stop.detail or pose.detail)
         resolved.append(
             ResolvedStop(

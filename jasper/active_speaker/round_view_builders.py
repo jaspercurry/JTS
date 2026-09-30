@@ -17,9 +17,8 @@ from .frequency_plot import DEFAULT_REF_BAND_HZ, prepare_plot_curve, render_freq
 from .measurement_archive import ArchivedMeasurement, load_measurement
 from .measurement_bass import bass_view
 from .measurement_programs import PURPOSE_ROOM, run_purposes
-from .crossover_v2.gate_sweep import reference_gated_measurement
 from .crossover_v2.rear_views import rear_document
-from .crossover_v2.record_index import measurement_documents, take_purpose
+from .crossover_v2.record_index import measurement_documents
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
@@ -30,12 +29,9 @@ from .round_packet_report import gate_fields
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
 
 
-def analyzed_frequency_run(path: Path, *, gated_overlay: bool = False) -> FrequencyRun:
+def analyzed_frequency_run(path: Path) -> FrequencyRun:
     """Every banked take's curves, read as the measurements page reads them and
-    tagged with the set and selection its run manifest gives them. With
-    ``gated_overlay``, a selected room take's summed curve gains the gated
-    overlay, decoded from its recording; only the bookkeeping asks for it, until
-    #5737 C3 deletes it."""
+    tagged with the set and selection its run manifest gives them."""
     try:
         inputs = round_inputs(path)
         try:
@@ -50,33 +46,16 @@ def analyzed_frequency_run(path: Path, *, gated_overlay: bool = False) -> Freque
                                                    info.get("state")), documents=documents)
         if unbanked := run.metadata.get("curves"):
             raise EvidenceUnavailable(unbanked["reason"], {"bundle_dir": str(inputs.session_dir)})
-        by_take = {document.get("take_id"): (row, document) for row, document in documents}
         rows: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = [
             (group, take) for group in manifest.get("sets", ()) for take in group["takes"]]
         series = []
-        derived: dict[str, dict[str, Any]] = {}
         for curve in run.series:
             role = curve.details.get("role")
             group, take = next(((g, t) for g, t in rows if t["take_id"] == curve.details.get("take_id")
                                and (g["capture_basis"].get("role") or "summed") == role), ({}, {}))
-            curve = replace(curve, details={**curve.details, "base": group.get("base", False),
-                                           "set_id": group.get("set_id"), "selected": bool(take.get("selected")),
-                                           **gate_fields(curve.details)})
-            series.append(curve)
-            if not gated_overlay or not take.get("selected") or role != "summed":
-                continue
-            row, document = by_take[take["take_id"]]
-            if take_purpose(row, document) != PURPOSE_ROOM:
-                continue
-            record_path = row.path
-            if record_path not in derived:
-                derived[record_path] = reference_gated_measurement(inputs.session_dir, record_path)
-            gated = derived[record_path]
-            series.append(replace(curve, id=f"{curve.id}:gated", label=f"{curve.label} · Gated",
-                                  freqs_hz=gated["freqs_hz"], magnitude_db=gated["magnitude_db"],
-                                  smoothing_fractional_octave=gated["smoothing_fractional_octave"],
-                                  details={**curve.details, **{key: value for key, value in gated.items()
-                                           if key not in {"freqs_hz", "magnitude_db", "smoothing_fractional_octave"}}}))
+            series.append(replace(curve, details={**curve.details, "base": group.get("base", False),
+                                                  "set_id": group.get("set_id"), "selected": bool(take.get("selected")),
+                                                  **gate_fields(curve.details)}))
         return replace(run, series=tuple(series))
     except CommissioningEvidenceStoreError as exc:
         raise RoundViewsError(f"{exc.code.value}: {exc}", code=exc.code.value) from exc
