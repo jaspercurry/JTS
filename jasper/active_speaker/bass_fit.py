@@ -126,7 +126,7 @@ def sealed_fit(freqs: np.ndarray, y_db: np.ndarray, lo: float, hi: float) -> Sea
                      y_db[sel] + fit.fun)
 
 
-def bass_alignment(freqs_hz: Sequence[float], level_db: Sequence[float], band_hz: Sequence[float],
+def bass_alignment(freqs_hz: np.ndarray, level_db: np.ndarray, band_hz: Sequence[float],
                    trusted_band: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The sealed-box alignment one curve fits over ``band_hz`` clipped to its
     trusted band (ADR-0366): the Linkwitz transform's ``source_hz`` and
