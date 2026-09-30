@@ -70,7 +70,8 @@ stdout is one JSON document:
                  "restart": "ran"|"skipped", "restart_reason"}}
   wake --model/--threshold
                  {{"model", "threshold", "restart", "restart_reason"}}
-  a failure      {{"status": "refused"|"unreadable"|"unwritable", "reason", "detail"}}
+  a failure      {{"status": "refused"|"unreadable"|"unwritable", "reason", "detail"}},
+                 and "next_action" when its reason has one
 
 exit codes:
   0  answered; a change is saved, and voice restarted or its restart was
@@ -128,7 +129,7 @@ def _answer(view: Callable[[], dict[str, Any]]) -> int:
     try:
         document = view()
     except OSError as exc:
-        return failed(EXIT_UNREADABLE, "unreadable", str(exc))
+        return failed(EXIT_UNREADABLE, "settings_unreadable", str(exc))
     return answered(document)
 
 
@@ -158,7 +159,7 @@ def _voice(args: argparse.Namespace) -> int:
         # The files select_voice reads, read first: unreadable is exit 2, not 3.
         keys_set(voice_env_files())
     except OSError as exc:
-        return failed(EXIT_UNREADABLE, "unreadable", str(exc))
+        return failed(EXIT_UNREADABLE, "settings_unreadable", str(exc))
     try:
         selection = select_voice(args.provider, args.model, via="cli", voice=args.voice,
             barge_in=None if args.barge_in is None else args.barge_in == "on")

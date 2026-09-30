@@ -21,7 +21,6 @@ from jasper.active_speaker.round_view_artifacts import (
     context_artifacts as context_artifacts, view_rows as view_rows,
 )
 from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
-from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
     resolve_set as resolve_set, ROUND_INPUT_ERRORS,
@@ -133,7 +132,7 @@ def refused_by_name(
     evidence here — fields, or a sentence — never this tool's stage bucket."""
     if not isinstance(detail, str):
         detail = json.dumps(detail, sort_keys=True, default=str)
-    return failed(code, reason, detail, next_action=refusal_copy_for(reason)[1])
+    return failed(code, reason, detail)
 
 
 def resolved_out(round_dir: Path, artifact: str, set_id: str | None = None) -> Path:

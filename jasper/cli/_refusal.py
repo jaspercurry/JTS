@@ -68,7 +68,8 @@ def exit_codes_help(codes: Sequence[int] = tuple(EXIT_MEANINGS)) -> str:
         *(f"  {code}  {STATUS_BY_CODE[code] + ': ' if code in failing else ''}{EXIT_MEANINGS[code]}"
           for code in codes),
         *(['  a failure prints "<status> (<reason>): <detail>" on stderr and the\n'
-           '  same record as JSON on stdout'] if failing else []),
+           '  same record as JSON on stdout, with a "next_action" when its code\n'
+           '  has one'] if failing else []),
     ))
 
 
@@ -153,6 +154,13 @@ def answer(
     return answered(envelope(view, schema=schema, subject=subject, parameters=parameters, out=out, **fields), line)
 
 
+def _registered_action(*codes: str | None) -> Mapping[str, Any] | None:
+    """The next action ``REASON_REGISTRY`` holds for the first of ``codes`` that has one (ADR-0300)."""
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: import cost (NumPy); jasper-round's parser and reads stay light (ADR-0393, tests/test_cli_round.py)
+
+    return next((spec.next_action for code in codes if (spec := REASON_REGISTRY.get(code or "")) and spec.next_action), None)
+
+
 def refused(
     reason: str, detail: Any, *, exit_code: int, status: str = "refused",
     code: str | None = None, next_action: Mapping[str, Any] | None = None, line: str | None = None,
@@ -162,7 +170,8 @@ def refused(
     ``detail`` is a sentence or the fields the failure carried -- everything the
     tool would otherwise have published as top-level keys goes here, so one
     reader parses every refusal. ``line``, when given, is the stderr sentence
-    in place of ``detail``'s own.
+    in place of ``detail``'s own. ``next_action`` is the caller's, else the
+    registry's for ``code`` or ``reason``, whichever has one.
     """
 
     sentence = (
@@ -173,6 +182,8 @@ def refused(
     record = {"status": status, "reason": reason, "detail": detail}
     if code is not None:
         record["code"] = code
+    if next_action is None:
+        next_action = _registered_action(code, reason)
     if next_action is not None:
         record["next_action"] = dict(next_action)
     print(render_report(record))

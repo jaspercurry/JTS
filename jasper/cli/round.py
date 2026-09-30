@@ -129,9 +129,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         return failed(EXIT_REFUSED, exc.reason, exc.detail, code=exc.reason)
     except PermissionError as exc:
         return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
-                      code="local_state_unreadable", next_action={
-                          "id": "run_as_root", "label": "run on the speaker as root (`sudo -n`)",
-                      })
+                      code="local_state_unreadable")
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
     if report.plan.mover == MOVER_ARM and not args.wait and not args.dry_run:
@@ -300,7 +298,6 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: reset-only prescription stack imports NumPy
         PrescriptionDocumentRefused, judge_prescription_document, reset_prescription_document, saved_base,
     )
-    from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for  # lazy: refusal copy imports NumPy
     from jasper.audio_measurement.bundles import BundleError  # lazy: reset-only bank writer
 
     try:
@@ -314,7 +311,7 @@ def _cmd_reset(client: WizardClient, args: argparse.Namespace) -> int:
         published = publish_authored_candidate(candidate)
     except PrescriptionDocumentRefused as exc:
         return failed(EXIT_UNREADABLE if exc.code == REASON_UNREADABLE else EXIT_REFUSED, exc.code,
-                      exc.failure_detail(), code=exc.code, next_action=refusal_copy_for(exc.code)[1])
+                      exc.failure_detail(), code=exc.code)
     except (CandidateBankRefusal, BundleError, OSError, TypeError, ValueError) as exc:
         return failed(EXIT_UNREADABLE, "reset_compose_failed", str(exc))
     result = apply_by_fingerprint(client, published.fingerprint)
@@ -345,7 +342,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_presets(args: argparse.Namespace) -> int:
     from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context  # lazy: reads this speaker's setup
-    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, refusal_copy_for  # lazy: refusal copy imports NumPy
+    from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused  # lazy: refusal copy imports NumPy
     from jasper.active_speaker.preset_catalog import preset_catalog  # lazy: composes each layout's schedule
     from jasper.active_speaker.setup_status import conductor_status  # lazy: reads this speaker's setup
 
@@ -353,7 +350,7 @@ def _cmd_presets(args: argparse.Namespace) -> int:
         context = resolve_conductor_context(conductor_status(), require_banked_level=False)
     except CrossoverV2Refused as exc:
         code = exc.code or "measure_box_not_ready"
-        return failed(EXIT_REFUSED, code, str(exc), code=code, next_action=exc.next_action or refusal_copy_for(code)[1])
+        return failed(EXIT_REFUSED, code, str(exc), code=code, next_action=exc.next_action)
     presets = preset_catalog(context)
     return answer("presets", schema=ANSWER_SCHEMAS[f"{PROG} presets"], subject={}, parameters={},
                   line=f"{len(presets)} presets; run one with jasper-round run --request", presets=presets)

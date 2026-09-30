@@ -128,9 +128,8 @@ def _cmd(args: argparse.Namespace) -> int:
                 read = [subject(round_inputs(path)) for path in args.round_dir]
                 parameters = {"reference_band_hz": list(args.reference_band_hz)}
     except CrossoverV2Refused as refusal:
-        message, action = refusal_copy_for(refusal.code)
-        return failed(EXIT_REFUSED, refusal.code, refusal.args[0] if refusal.args else message,
-                      code=refusal.code, next_action=action)
+        return failed(EXIT_REFUSED, refusal.code, refusal.args[0] if refusal.args else refusal_copy_for(refusal.code)[0],
+                      code=refusal.code)
     except RoundSetRefused:
         raise
     except OSError as exc:
