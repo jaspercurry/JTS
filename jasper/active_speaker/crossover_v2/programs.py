@@ -429,8 +429,9 @@ def program_for_phase(
 def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Mapping[str, float] | None,
                      stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
                      role_targets: Mapping[str, str]) -> ExcitationProgram:
-    if spec.level_probe and stimulus_dbfs is None:
-        # A take that finds its level plays its probe until a level is asked (ADR-0365, ADR-0403).
+    if spec.level_probe and stimulus_dbfs is None and spec.graph_scope != "candidate_branches":
+        # A take that finds its level plays its probe until a level is asked; a branch take
+        # plays its branches' own probes first (branch_probes; ADR-0365, ADR-0403).
         return compose_level_probe(excitation, spec) if solo_target(spec) else compose_summed_probe(excitation, spec)
     if solo_target(spec):
         return compose_target_program(excitation, spec, stimulus_dbfs)

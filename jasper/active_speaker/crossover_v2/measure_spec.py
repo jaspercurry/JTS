@@ -11,7 +11,7 @@ owners, which cost ~1,100 modules including ``numpy`` on a 1 GB Pi.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
@@ -22,6 +22,7 @@ from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS, val
 from .contracts import (
     DRIVER_ROLES,
     DRIVER_ROLE_WOOFER,
+    MEASURE_KIND_CANDIDATE,
     MEASURE_KINDS,
     POLARITIES,
     POLARITY_INVERTED,
@@ -37,6 +38,7 @@ __all__ = [
     "GRAPH_SCOPES",
     "GRAPH_SCOPE_DRIVERS",
     "branch_channels_for",
+    "branch_probes",
     "branch_target_ids_for",
     "inverted_roles_for",
     "level_trims_for",
@@ -119,8 +121,9 @@ class MeasureSpec:
     cleared_layers: tuple[str, ...] = ()
     #: Whether this take finds its level, playing its level probe when no level
     #: is asked: a driver's take, or the first take of a driverless summed set
-    #: closer than the mark. Only ``capture_schedule.prepare_plan_captures``
-    #: sets it (ADR-0365, ADR-0403).
+    #: closer than the mark. The first take of a branch set plays its branches'
+    #: probes instead (:func:`branch_probes`). Only
+    #: ``capture_schedule.prepare_plan_captures`` sets it (ADR-0365, ADR-0403).
     level_probe: bool = False
 
     def __post_init__(self) -> None:
@@ -351,6 +354,18 @@ def branch_target_ids_for(branch_pair: str, roles_bands: Sequence[Any]) -> tuple
     if branch_pair == BRANCH_PAIR_FRONT_REAR:
         return (DRIVER_ROLE_WOOFER, measurement_target_id(DRIVER_ROLE_WOOFER, "rear"))
     return tuple(band.role for band in roles_bands)
+
+
+def branch_probes(spec: MeasureSpec) -> tuple[MeasureSpec, ...]:
+    """What a branch take that finds its level plays before it: each branch
+    alone on the drivers graph, the probe a driver's pose plays (ADR-0365,
+    ADR-0403 §3). Empty for any other take."""
+    if not (spec.level_probe and spec.graph_scope == "candidate_branches"):
+        return ()
+    return tuple(replace(spec, kind=MEASURE_KIND_CANDIDATE, graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
+                         branch_target_ids=(target,), sweep_band_hz=(), sweep_s=None, cleared_layers=(),
+                         scope_gains_db=None, level_ladder_dbfs=())
+                 for target in spec.branch_target_ids)
 
 
 def solo_target(spec: MeasureSpec) -> str:

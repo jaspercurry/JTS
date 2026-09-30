@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from copy import deepcopy
 from itertools import count
 from contextlib import AsyncExitStack
@@ -29,6 +30,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, with_r
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.refusal_copy import (
@@ -862,6 +864,29 @@ class _LevelRecords:
         return await self.manifest.bank(record)
 
 
+class _BranchChain:
+    """A fake chain at one spot. One target alone reads its sensitivity over the
+    peak it played, and a branch take's two branches add in phase, as a raw rear
+    woofer and the front woofer do in the bass."""
+
+    def __init__(self, manifest, sensitivity_db, *, ceiling_db):
+        self.manifest, self.sensitivity_db, self.ceiling_db = manifest, sensitivity_db, ceiling_db
+
+    async def bank(self, record):
+        record = self.manifest.capture_record(record)
+        targets, asked = record["targets"], record.get("stimulus_dbfs")
+        peak = min(-42.0 if asked is None else asked, self.ceiling_db)
+        band = RoleBand(targets[0], 0, FrequencyBand(20, 2000))
+        reading = 20 * math.log10(sum(10 ** ((peak + self.sensitivity_db[target]) / 20) for target in targets))
+        program = (build_level_probe_program(band, (peak,), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
+                                             downstream_gain_db=0.0, channels=1) if asked is None else
+                   build_measure_program({band.role: peak}, (band,), repeat_count=1, sweep_durations={band.role: 0.2}))
+        record.update(program=program.to_dict(), capture_integrity={"spl": {
+            "max_window_db_spl": reading, "loudest_half_second_db_spl": reading, "ceiling_db_spl": 85.0,
+            "sens_factor_db": _MIC.sens_factor_db}})
+        return await self.manifest.bank(record)
+
+
 class _RedoOnPlacementGate(AnsweredGate):
     """Presses Redo once, just after the operator confirms the first placement."""
 
@@ -890,12 +915,13 @@ def _heard_analysis(record):
                    stimulus_levels=(LevelReading(stimulus_peak_dbfs(program), heard, heard - 30.0),))
 
 
-def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True):
+def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True, chain=None):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
     (or, not ``web``, run as the bass ladder runs it: no gate, no ``admit``) and
     judged on the level each take read; the microphone is re-placed at take
     ``replace_at``, and the operator presses Redo during each take in
-    ``redo_at``, take 0 being just after the first placement is confirmed."""
+    ``redo_at``, take 0 being just after the first placement is confirmed. A
+    ``chain`` reads each take from its targets' sensitivities (:class:`_BranchChain`)."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
     manifest = RunManifest("run", _Store(fakes.records))
@@ -911,7 +937,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         return capture_dispatch.assess(analysis, **kwargs)
 
     async def run():
-        records = _LevelRecords(manifest, readings, probe_db=-42.0, ceiling_db=ceiling_db)
+        records = (_BranchChain(manifest, chain, ceiling_db=ceiling_db) if chain else
+                   _LevelRecords(manifest, readings, probe_db=-42.0, ceiling_db=ceiling_db))
         async with open_session(replace(fakes, records=records), allocate_take_id=manifest.allocate_take_id) as (
                 session, _):
             return await plan_run.run_plan(
@@ -1044,6 +1071,30 @@ def test_a_close_driverless_set_shares_one_level():
     assert result.status == "complete"
     assert fakes.play.rungs == [None] + [-53.0] * 4
     assert selected == [False] + [True] * 4
+
+
+@pytest.mark.parametrize("front_db, rear_db, ask_db", [(110.0, 110.0, -37.0), (106.0, 112.0, -39.0)],
+                         ids=["equal", "rear-louder"])
+def test_a_branch_take_at_the_mark_plays_6_db_under_its_quieter_branch(front_db, rear_db, ask_db):
+    """At the mark, each branch plays alone the probe a driver's pose plays, on
+    the drivers graph. The take, and the next take of its set, play 6 dB under
+    the lower level found, so a raw rear branch in phase with the front woofer
+    reads at most 80 dB. The take is never levelled by its own reading
+    (ADR-0403 §3)."""
+    request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
+
+    result, fakes, selected, _ = _run_levelled(request, (), ceiling_db=-12.0,
+                                               chain={"woofer": front_db, "woofer:rear": rear_db})
+
+    assert result.status == "complete"
+    assert [(call["spec"].graph_scope, call["spec"].branch_target_ids, call["stimulus_dbfs"])
+            for call in fakes.play.calls] == [
+        ("drivers", ("woofer",), None), ("drivers", ("woofer:rear",), None),
+        *[("candidate_branches", ("woofer", "woofer:rear"), ask_db)] * 2]
+    assert selected == [False, False, True, True]
+    readings = [take["level"]["loudest_half_second_db_spl"]
+                for take in sorted(_takes(result.joined()), key=lambda take: take["take_id"])]
+    assert max(readings[2:]) <= 80.0
 
 
 def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():
@@ -1620,23 +1671,28 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
         assert all("retake_reason" not in p for p in live)
 
 
-def test_a_driver_pose_is_timed_as_its_probe_and_its_takes():
-    """A driver's pose plays its whole level probe once before its takes; a
-    far-field pose plays no probe (ADR-0365)."""
+def test_a_pose_that_levels_itself_is_timed_as_its_probes_and_its_takes():
+    """A driver's pose plays its whole level probe once before its takes, and a
+    branch set's first take one probe of each branch; a far-field pose plays no
+    probe (ADR-0365, ADR-0403 §3)."""
     band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
     take = build_measure_program({"woofer": -20.0}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2})
     probe = build_level_probe_program(band, (-40.0, -34.0), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
                                       downstream_gain_db=0.0, channels=1)
-    driver = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
-    far = SimpleNamespace(graph_scope="drivers", candidate_id="", program_phase="lateral")
-    captures = [({"place": "at_driver", "driver": "woofer"}, driver)] * 2 + [({"place": "far"}, far)]
+    driver = MeasureSpec(kind="candidate", branch_target_ids=("woofer",), program_phase="lateral", level_probe=True)
+    branch = MeasureSpec(kind="candidate", graph_scope="candidate_branches", candidate_id="fp-a",
+                         branch_target_ids=("woofer", "woofer:rear"), program_phase="lateral", level_probe=True)
+    captures = ([({"place": "at_driver", "driver": "woofer"}, driver)] * 2
+                + [({"place": "far"}, MeasureSpec(kind="candidate", program_phase="lateral"))]
+                + [({"place": "mark"}, branch), ({"place": "mark"}, replace(branch, level_probe=False))])
 
     facts = plan_run.schedule_facts(
-        captures, lambda spec, stimulus_dbfs=None: probe if spec is driver and stimulus_dbfs is None else take,
+        captures, lambda spec, stimulus_dbfs=None: (
+            probe if spec.level_probe and spec.graph_scope == "drivers" and stimulus_dbfs is None else take),
         mover="arm")
 
     take_s = sum(segment.n_samples for segment in take.stimulus_segments()) / take.sample_rate_hz
-    assert facts["estimated_seconds"] == pytest.approx(3 * take_s + probe.total_samples / probe.sample_rate_hz)
+    assert facts["estimated_seconds"] == pytest.approx(5 * take_s + 3 * probe.total_samples / probe.sample_rate_hz)
 
 
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])

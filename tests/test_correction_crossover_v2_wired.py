@@ -1366,7 +1366,7 @@ _TAKE_RECORD_KEYS = frozenset({
     ("nearfield/each", None, (), "lateral", "close", ["woofer"]),
     ("room/seat", None, ("speaker-candidate",), "lateral", "seat", []),
     ("bass/axis", None, (), "lateral", "bearing", []),
-    ("rear/pair", "rear_behind", ("speaker-candidate",), "lateral", "behind", ["woofer", "woofer:rear"]),
+    ("rear/pair", "rear_behind", ("speaker-candidate",), "lateral", "behind", ["woofer"]),
     ("speaker/mark", None, (), "check", "bearing", []),
     ("speaker/mark", None, (), "timing", "bearing", []),
 ], ids=["speaker", "reference", "room", "bass", "rear", "check", "timing"])

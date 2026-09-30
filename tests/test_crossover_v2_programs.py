@@ -70,7 +70,7 @@ from jasper.active_speaker.crossover_v2.programs import (
 )
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
-from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, solo_target
+from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, branch_probes, solo_target
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit_measurement_graph
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -836,6 +836,26 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
                                                                           sweep.f2_hz)}
 
 
+def test_a_branch_take_finds_its_level_from_a_drivers_probe_of_each_branch():
+    """A branch set's first take plays each branch alone first: the probe a
+    driver's pose plays, on the drivers graph, measuring no candidate. The take
+    has no probe of its own and plays at its ceiling until a level is asked
+    (ADR-0403 §3)."""
+    band, targets = FrequencyBand(20.0, 4000.0), ("woofer", "woofer:rear")
+    excitation = SessionExcitation((RoleBand("woofer", 0, band),), dict.fromkeys(targets, 0.0), -20.0, None,
+                                   dict.fromkeys(targets, 8.0), target_bands=dict.fromkeys(targets, band))
+    take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial", program_phase="lateral",
+                       branch_target_ids=targets, cleared_layers=("rear_calibration",), level_probe=True)
+
+    probes = branch_probes(take)
+
+    assert [(p.graph_scope, p.branch_target_ids, p.candidate_id, p.cleared_layers) for p in probes] == [
+        ("drivers", (target,), "", ()) for target in targets]
+    assert [is_level_probe(program_for_spec(spec, excitation, None, safety_profile={}, role_targets={}))
+            for spec in (*probes, take)] == [True, True, False]
+    assert branch_probes(replace(take, level_probe=False)) == ()
+
+
 @pytest.mark.parametrize("rear,target", [
     (False, "woofer"), (False, "tweeter"),
     (True, "woofer"), (True, "woofer:rear"), (True, "tweeter"),
@@ -885,8 +905,8 @@ DRIVER_POSES = """[
 def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
     """Every take of every shipped preset and layout, and a driver's pose at each
     kind and distance, at any level asked up to full scale, plays at or under
-    that level: one driver alone at or under the seat-equivalent level under
-    that driver's cap (ADR-0361 §1), each MEASURE driver at or under its own
+    that level: one driver alone, a branch take's probes too, at or under the
+    seat-equivalent level under that driver's cap (ADR-0361 §1), each MEASURE driver at or under its own
     CHECK plan, moved with the level asked, under its cap, and every other take
     at or under the seat-equivalent level under the tightest cap. A driver's
     take or CHECK whose graph's level is unknown stays its blind cut lower."""
@@ -906,12 +926,12 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
         plan = run_preset(name, layout, poses)
         request = request_for_preset(plan, mover=plan.mover or "human", targets=near_field_drivers(topology),
                                      candidates=("trial",) if plan.regime == REGIME_BRANCHES else ())
-        for capture in prepare_plan_captures(request, roles_bands=roles):
-            target = solo_target(capture.spec)
-            measure = (capture.spec.graph_scope == "drivers" and capture.spec.program_phase != journey.PHASE_CHECK
-                       and not target)
+        for played in (each for capture in prepare_plan_captures(request, roles_bands=roles)
+                       for each in (capture.spec, *branch_probes(capture.spec))):
+            target = solo_target(played)
+            measure = played.graph_scope == "drivers" and played.program_phase != journey.PHASE_CHECK and not target
             # A blind take keeps its fixed cut; one whose graph is known plays at the ceiling itself.
-            for spec, asked in product((capture.spec, replace(capture.spec, scope_gains_db={})), asked_levels):
+            for spec, asked in product((played, replace(played, scope_gains_db={})), asked_levels):
                 program = program_for_spec(spec, excitation, GAIN_PLAN_DB, asked,
                                            safety_profile=safety, role_targets=targets)
                 blind = spec.scope_gains_db is None and (bool(target) or spec.program_phase == journey.PHASE_CHECK)

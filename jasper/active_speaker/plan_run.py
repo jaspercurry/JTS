@@ -40,7 +40,7 @@ from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, po
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK
-from .crossover_v2.measure_spec import MeasureSpec
+from .crossover_v2.measure_spec import MeasureSpec, branch_probes, solo_target
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
 from .crossover_v2.refusal_copy import (
@@ -62,6 +62,9 @@ Analyze = Callable[[Mapping[str, Any]], ProgramAnalysis]
 _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
 #: The verdicts that retake at the level they name.
 _LEVEL_RETAKES = frozenset({"retake_louder", "retake_quieter"})
+#: dB a branch take plays under the lower of its branches' levels: two branches in
+#: phase read at most 6 dB over the louder one alone (ADR-0403 §3).
+BRANCH_SUM_MARGIN_DB = 6.0
 #: A graded take's host effects (a rearm, an acceptance), held while its capture
 #: plays so that no later rung is composed from them (ADR-0383).
 _held_effects: ContextVar[list[Callable[[], None]] | None] = ContextVar("held_effects", default=None)
@@ -167,6 +170,12 @@ class _Work:
     level_set: int | None
 
 
+def _first_play(spec: MeasureSpec) -> MeasureSpec:
+    """What a take plays first: a branch take that finds its level plays its
+    first branch's probe (ADR-0403 §3)."""
+    return next(iter(branch_probes(spec)), spec)
+
+
 def _pose(stop: Any) -> dict[str, Any]:
     pose = stop.pose
     return {"kind": pose.kind, "deg": pose.azimuth_deg, "elevation_deg": pose.elevation_deg,
@@ -194,13 +203,16 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             if not details:
                 poses.append(dict(pose))
             first = program_for_spec(spec)
-            # A driver's pose plays its level probe before its first take (ADR-0365).
+            # A driver's pose plays its level probe before its first take (ADR-0365), and a
+            # branch set's first take one probe of each branch alone (ADR-0403 §3).
             probe = first if is_level_probe(first) else None
             excitation = first if probe is None else program_for_spec(spec, stimulus_dbfs=0.0)
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
             if measurement == 1 and probe is not None:
                 probe_seconds += probe.total_samples / probe.sample_rate_hz
+            for branch_probe in map(program_for_spec, branch_probes(spec)):
+                probe_seconds += branch_probe.total_samples / branch_probe.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
                 details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
@@ -416,11 +428,14 @@ async def _run(
             assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
                                             spl=(record.get("capture_integrity") or {}).get("spl"),
                                             program=program, gain_ceiling_db=gain_ceiling_db, level_verdict=level_verdict,
-                                            pose_level=item.pose_level,
+                                            # A branch take is levelled by its branches' probes, never by
+                                            # its own reading (ADR-0403 §3).
+                                            pose_level=None if spec.graph_scope == "candidate_branches"
+                                            else item.pose_level,
                                             level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
             if program is not None and is_level_probe(program):
                 log_event(logger, "active_speaker.level_probe", fields={
-                    "pose": item.pose_index + 1, "driver": item.stop["pose"].get("driver"),
+                    "pose": item.pose_index + 1, "driver": solo_target(spec) or None,
                     "distance_m": item.stop["pose"].get("distance_m"), "fault": assessed.fault,
                     "next_gain_db": assessed.next_gain_db,
                     **{key: value for key, value in assessed.evidence.items()
@@ -451,7 +466,8 @@ async def _run(
     offset, grant_epoch = 0, 0
     retry: TakeVerdict | None = None
     retry_was_measured = False
-    playing = [item.spec for item in work]
+    playing = [_first_play(item.spec) for item in work]
+    branch_levels: dict[int, list[float]] = {}
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
     schedule: dict[str, Any] = schedule_facts([(item.stop["pose"], item.spec) for item in work], door.program_for_spec,
@@ -519,7 +535,8 @@ async def _run(
                         # A new placement of a pose that levels itself starts at its probe again (ADR-0365).
                         for index, row in enumerate(work):
                             if row.pose_index == item.pose_index:
-                                playing[index] = row.spec
+                                playing[index] = _first_play(row.spec)
+                                branch_levels.pop(index, None)
                 if retry.next in _LEVEL_RETAKES:
                     if retry.next_gain_db is None:
                         manifest.reason = retry.fault or "retry_gain_missing"
@@ -631,6 +648,18 @@ async def _run(
                 if verdict.next != "accept":
                     retry = verdict
                     retry_was_measured = outcome.complete and any(record_id for _, record_id in records)
+                    probes = branch_probes(item.spec)
+                    if spec in probes and verdict.next in _LEVEL_RETAKES and verdict.next_gain_db is not None:
+                        # A branch take probes each branch alone, then plays under the lower level
+                        # found by what its two branches in phase add (ADR-0403 §3).
+                        levels = branch_levels.setdefault(offset, [])
+                        levels.append(verdict.next_gain_db)
+                        if len(levels) < len(probes):
+                            playing[offset] = probes[len(levels)]
+                            retry = replace(verdict, next="retake_same", next_gain_db=None)
+                        else:
+                            playing[offset] = item.spec
+                            retry = replace(verdict, next_gain_db=min(levels) - BRANCH_SUM_MARGIN_DB)
                     continue
                 retry = None
                 retry_was_measured = False

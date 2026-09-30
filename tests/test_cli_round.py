@@ -1032,7 +1032,9 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     """`--request`, the page's start action and the session door resolve one
     request to one plan and one level ladder (#5737 A3)."""
     topology, context = mono_output_topology(), _inline_context()
-    context = replace(context, topology=topology, driver_bands={role.role: role.band for role in context.roles_bands})
+    bands, caps = {role.role: role.band for role in context.roles_bands}, context.driver_caps_dbfs
+    context = replace(context, topology=topology, driver_bands={**bands, "woofer:rear": bands["woofer"]},
+                      driver_caps_dbfs={**caps, "woofer:rear": caps["woofer"]})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
                         lambda *_args, **_kwargs: context)
     monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
