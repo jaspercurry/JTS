@@ -30,7 +30,7 @@ def _take(take_id, driver, distance_mm, level_db, *, selected=True, first_low_db
     # Each sweep's gate as its banked curve states it; ``None`` is a sweep left ungated.
     gates = [{"window": "ungated"} if ms is None else {"window": "gated", "gate_window_ms": ms, "validity_floor_hz": 1000.0 / ms,
                                                        "trusted_floor_hz": 2500.0 / ms, "floor_source": "measured_reflection"}
-             for ms in gate_ms] or [{}] * 3
+             for ms in gate_ms] or [{"window": "ungated"}] * 3
     curve = {"freqs_hz": FREQS.tolist(), "magnitude_db": sweeps[0].tolist(), "band_hz": list(band_hz), **gates[0],
              "repeat_curves": [{"freqs_hz": FREQS.tolist(), "magnitude_db": sweep.tolist(), **gate}
                                for sweep, gate in zip(sweeps[1:], gates[1:])]}

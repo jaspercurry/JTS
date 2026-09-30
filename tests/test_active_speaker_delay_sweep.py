@@ -51,6 +51,7 @@ def _curve(role: str, *, arrival_us: float = 0.0, band=(200.0, 12000.0)):
         "freqs_hz": [float(hz) for hz in freqs],
         "magnitude_db": [float(db) for db in 20.0 * np.log10(np.abs(tf))],
         "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
+        "window": "gated",
     }
 
 

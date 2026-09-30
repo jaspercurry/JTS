@@ -157,6 +157,7 @@ def frequency_run_from_documents(
                 stimulus_dbfs=document.get("stimulus_dbfs"),
                 calibration=document.get("calibration"),
                 graph_fingerprint=graph or None,
+                window=curve.get("window"),
                 validity_floor_hz=curve.get("validity_floor_hz", document.get("validity_floor_hz")),
                 gate_window_ms=curve.get("gate_window_ms", document.get("gate_window_ms", (document.get("diagnostic") or {}).get("verify_gate_window_ms") if role == "summed" else None)),
                 smoothing_fractional_octave=curve.get("smoothing_fractional_octave"),

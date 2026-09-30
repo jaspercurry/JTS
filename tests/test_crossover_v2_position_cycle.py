@@ -597,7 +597,7 @@ def test_a_raised_pose_is_its_own_group_at_the_same_bearing(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-_BOTH_ROLES = [{"role": "woofer"}, {"role": "tweeter"}]
+_BOTH_ROLES = [{"role": "woofer", "window": "gated"}, {"role": "tweeter", "window": "gated"}]
 
 
 def _pose_bank(tmp_path: Path) -> Path:

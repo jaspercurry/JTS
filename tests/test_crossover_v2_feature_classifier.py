@@ -1240,6 +1240,7 @@ def test_the_cli_reads_banked_lateral_poses_into_persistence(tmp_path, capsys):
             vertical_deg=10,
             curves=[{
                 "role": "woofer",
+                "window": "gated",
                 "band_hz": list(banked_curve.band_hz),
                 "freqs_hz": [float(v) for v in banked_curve.freqs_hz],
                 "magnitude_db": [float(v) for v in banked_curve.magnitude_db],

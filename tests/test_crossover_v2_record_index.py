@@ -328,7 +328,8 @@ def test_a_scanner_reads_only_the_takes_the_round_kept(tmp_path, scanner, intrud
             "position_deg": 0, "vertical_deg": 0, "pose_kind": "bearing", "candidate_id": candidate, "gating_applied": True,
             "curves": [{"role": role, "band_hz": [200.0, 12000.0], "freqs_hz": freqs,
                         "magnitude_db": [0.0] * len(freqs), "phase_deg": [0.0] * len(freqs),
-                        "gate_window_ms": 5.0, "trusted_floor_hz": floor_hz} for role in ("woofer", "tweeter")],
+                        "window": "gated", "gate_window_ms": 5.0, "trusted_floor_hz": floor_hz}
+                       for role in ("woofer", "tweeter")],
         }))
     write_bundle_manifest(
         _session(tmp_path), refused={"take_0003"} if intruder == "refused" else (),
