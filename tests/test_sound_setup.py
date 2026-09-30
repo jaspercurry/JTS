@@ -5273,7 +5273,6 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     assert "jts7.local" in prompt
     assert DEFAULT_HOSTNAME not in prompt
     assert str(payload["binding"]["design_draft_revision"]) in prompt
-    assert len(prompt.split()) < 250
 
 
 @pytest.mark.parametrize("banked", [True, False])

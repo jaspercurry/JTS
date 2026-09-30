@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import json
+import shlex
 from typing import Any, Collection, Mapping
 
 from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQUIRED
 from jasper.active_speaker.design_inputs import declared_by_target
+from jasper.active_speaker.excitation_safety_plan import _role_sensitivities
 from jasper.active_speaker.measurement_programs import (
-    PROGRAM_ENTRIES, RUNNABLE_PROGRAMS, available_presets, offered_here, preset,
+    PROGRAM_ENTRIES, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, offered_here, preset,
 )
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
@@ -29,33 +31,40 @@ NO_APPLIED_BASELINE = "no_applied_baseline"
 #: Installed console-script paths, not bare names: an SSH session gets no
 #: ``EnvironmentFile=`` and /opt/jasper/.venv is not on the default PATH.
 _BIN = "/opt/jasper/.venv/bin"
-ORIENTATION_COMMAND = f"sudo {_BIN}/jasper-crossover-prescriber status"
+_PRESCRIBER = f"sudo {_BIN}/jasper-crossover-prescriber"
 
 
-def pointer_commands(program_id: str) -> tuple[str, str, str]:
-    """Where tuning stands, what the agent can ask, and what a document may write (#5928 TB6)."""
-    return (ORIENTATION_COMMAND,
-            f"sudo {_BIN}/jasper-round-views catalog --program {program_id}",
-            f"sudo {_BIN}/jasper-crossover-prescriber contract --section {program_id}")
+def catalog_command(program: str) -> str:
+    """What the agent can ask of this program's rounds (ADR-0393)."""
+    return f"sudo {_BIN}/jasper-round-views catalog --program {program}"
+
+
+def pointer_commands(program_id: str, round_dir: str | None = None) -> tuple[str, str, str]:
+    """Where tuning stands, what the agent can ask, and what a document may write, its bounds
+    evaluated on ``round_dir`` when there is one (#5928 TB6)."""
+    on_round = f" --round {shlex.quote(round_dir)}" if round_dir else ""
+    return (f"{_PRESCRIBER} status", catalog_command(program_id), f"{_PRESCRIBER} contract{on_round} --section {program_id}")
 
 
 def _declared_components(design_draft: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Each declared driver output, by the id ``jasper-round run --driver`` takes: its role, its
-    output, its role's passband as ``status`` reports it, its diameter (ADR-0384) and its
-    sensitivity after its pad."""
+    """Each declared driver output by its target id (speaker group, then output): its role, its
+    physical output, its role's passband as ``status`` reports it, its diameter (ADR-0384) and its
+    sensitivity after its pad, or its role's when it declares none (ADR-0382 §3)."""
     from jasper.active_speaker.crossover_v2.driver_prescription import driver_passbands_from_safety_profile  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
 
     profile = design_draft.get("driver_safety_profile") or {}
+    targets = profile.get("targets") or []
     passbands = driver_passbands_from_safety_profile(profile)
+    sensitivities, _disagreeing = _role_sensitivities(targets)
     diameters = declared_by_target(design_draft, "radiating_diameter_mm")
     components = []
-    for target in profile.get("targets") or ():
-        driver = target["target_id"].removeprefix(f"{target['speaker_group_id']}:")
-        band = passbands.get(target["role"])
+    for target in targets:
+        role, band, own = target["role"], passbands.get(target["role"]), target.get("effective_sensitivity_db_2v83_1m")
         components.append({
-            "driver": driver, "role": target["role"], "physical_output_index": target.get("physical_output_index"),
-            "passband_hz": list(band) if band else None, "radiating_diameter_mm": diameters.get(driver),
-            "effective_sensitivity_db_2v83_1m": target.get("effective_sensitivity_db_2v83_1m"),
+            "target_id": target["target_id"], "role": role, "physical_output_index": target.get("physical_output_index"),
+            "role_passband_hz": list(band) if band else None,
+            "radiating_diameter_mm": diameters.get(target["target_id"].removeprefix(f"{target['speaker_group_id']}:")),
+            "effective_sensitivity_db_2v83_1m": sensitivities.get(role) if own is None else own,
         })
     return components
 
@@ -120,7 +129,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
     latest_round = binding.get("latest_round_dir")
     components = binding.get("components") or ()
     presets = binding.get("one_driver_presets") or ()
-    status, catalog, contract = pointer_commands(program_id)
+    status, catalog, contract = pointer_commands(program_id, latest_round)
     return "\n".join((
         "Read these documents in this order:",
         documents,
@@ -132,11 +141,11 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         f"crossover: {binding.get('crossover_url') or ''}",
         f"declaration revision: {binding.get('design_draft_revision')}",
         *(("declared components:", *map(json.dumps, components)) if components else ()),
-        *(("one-driver presets:", *(f"{name}: {preset(name).use_when}" for name in presets)) if presets else ()),
+        *(("one-driver presets:", *(f"{name}: {preset(name).use_when}" for name in presets),
+           f"Tools for their rounds: {catalog_command(PURPOSE_REFERENCE)}") if presets else ()),
         "",
         applied,
-        (f"Latest round directory: {latest_round}" if latest_round
-         else f"Latest round directory: find it with {ORIENTATION_COMMAND}"),
+        *((f"Latest round directory: {latest_round}",) if latest_round else ()),
         "",
         f"Run the tuning programs in order: {' → '.join(RUNNABLE_PROGRAMS)} (skip rear if there is no rear driver).",
         "Re-run room after any upstream change.",

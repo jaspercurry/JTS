@@ -27,7 +27,7 @@ from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.crossover_v2 import prescription_document as pd, prescription_contract as pc
 from jasper.active_speaker.design_draft import design_draft_view
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
 from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT, SEAT_EXEMPT
 from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M
@@ -208,65 +208,87 @@ def test_a_layout_passed_as_poses_refuses_by_name():
         mp.POSES_NAME_A_LAYOUT, {"poses": "seat_express", "use": "--layout"})
 
 
+_ROUND_DIR = "/var/lib/jasper/active_speaker/campaigns/round-7"
+
+
 def test_every_programs_prompt_is_one_template_that_lists_the_declared_components(monkeypatch):
-    """The copied prompt comes from the rows (#5737 P11): it lists each declared output as its
-    owners resolve it (the rear woofer's size is the front's, its sensitivity is after its pad;
-    ADR-0384) and the one-driver presets this speaker runs, and blanking the program row's own
-    fields leaves one text for every program."""
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [])
+    """The copied prompt comes from the rows (#5737 P11). It lists each declared output as its
+    owners resolve it: the rear woofer declares no size or sensitivity, so it takes the front's
+    size (ADR-0384) and its role's sensitivity (ADR-0382 §3); the tweeter's is after its pad. It
+    lists the one-driver presets this speaker runs and the catalog that reads their rounds.
+    Blanking the program row's own fields leaves one text for every program, and a 2-way
+    cardioid's prompt, with an applied tune and a round, stays under 250 words."""
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
+                        lambda **_kwargs: [Path(_ROUND_DIR)])
     topology = mono_output_topology(card_id=None)
     group, = topology.speaker_groups
     rear = replace(group.channels[0], output_variant="rear", physical_output_index=2)
     topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, rear)),))
-    woofer = {"role": "woofer", "model": "W", "measurement_band_hz": [40, 3000], "sensitivity_db_2v83_1m": 86.0}
+    woofer = {"role": "woofer", "model": "W", "measurement_band_hz": [40, 3000]}
     manual = {"drivers": [
-        {**woofer, "target_id": "mono:woofer", "radiating_diameter_mm": 115},
+        {**woofer, "target_id": "mono:woofer", "radiating_diameter_mm": 115, "sensitivity_db_2v83_1m": 86.0},
         {"target_id": "mono:tweeter", "role": "tweeter", "model": "T", "measurement_band_hz": [2000, 20000],
-         "recommended_highpass_hz": 2000, "radiating_diameter_mm": 25, "sensitivity_db_2v83_1m": 91.0},
-        {**woofer, "target_id": "mono:woofer:rear", "pad": {"kind": "direct_db", "attenuation_db": -3.0}},
+         "recommended_highpass_hz": 2000, "radiating_diameter_mm": 25, "sensitivity_db_2v83_1m": 94.0,
+         "pad": {"kind": "direct_db", "attenuation_db": -3.0}},
+        {**woofer, "target_id": "mono:woofer:rear"},
     ], "crossover_candidates": []}
     draft = design_draft_view({"revision": 3, "topology": topology.to_dict(), "manual_settings": manual},
                               topology=topology)
-    view = cc.build_commissioning_view(topology, design_draft=draft, applied_profile={"candidate_fingerprint": "fp"})
+    view = cc.build_commissioning_view(topology, design_draft=draft, applied_profile={
+        "source": {"measured_candidate_fingerprint": "a" * 64}, "config": {"sha256": "b" * 64},
+        "applied_at": "2026-09-13T12:00:00Z"})
+    woofer_facts = {"role": "woofer", "role_passband_hz": [40.0, 3000.0], "radiating_diameter_mm": 115,
+                    "effective_sensitivity_db_2v83_1m": 86.0}
     components = [
-        {"driver": "woofer", "role": "woofer", "physical_output_index": 0, "passband_hz": [40.0, 3000.0],
-         "radiating_diameter_mm": 115, "effective_sensitivity_db_2v83_1m": 86.0},
-        {"driver": "tweeter", "role": "tweeter", "physical_output_index": 1, "passband_hz": [2000.0, 20000.0],
-         "radiating_diameter_mm": 25, "effective_sensitivity_db_2v83_1m": 91.0},
-        {"driver": "woofer:rear", "role": "woofer", "physical_output_index": 2, "passband_hz": [40.0, 3000.0],
-         "radiating_diameter_mm": 115, "effective_sensitivity_db_2v83_1m": 83.0},
+        {"target_id": "mono:woofer", "physical_output_index": 0, **woofer_facts},
+        {"target_id": "mono:tweeter", "role": "tweeter", "physical_output_index": 1,
+         "role_passband_hz": [2000.0, 20000.0], "radiating_diameter_mm": 25, "effective_sensitivity_db_2v83_1m": 91.0},
+        {"target_id": "mono:woofer:rear", "physical_output_index": 2, **woofer_facts},
     ]
     templates = set()
     for row in mp.PROGRAM_ROWS:
         handoff = th.build_tuning_handoff(commissioning_view=view, design_draft=draft, program_id=row.purpose)
-        lines = handoff["prompt"].splitlines()
-        assert (handoff["binding"]["components"], handoff["binding"]["one_driver_presets"]) == (
-            components, ["drivers/each", "nearfield/each"])
-        assert {*map(json.dumps, components), "drivers/each: " + mp.preset("drivers/each").use_when,
-                "nearfield/each: " + mp.preset("nearfield/each").use_when} <= set(lines)
-        template = handoff["prompt"]
+        binding, prompt = handoff["binding"], handoff["prompt"]
+        assert (binding["components"], binding["one_driver_presets"]) == (components, ["drivers/each", "nearfield/each"])
+        assert {*map(json.dumps, binding["components"]), "drivers/each: " + mp.preset("drivers/each").use_when,
+                "nearfield/each: " + mp.preset("nearfield/each").use_when} <= set(prompt.splitlines())
+        assert th.catalog_command(mp.PURPOSE_REFERENCE) in prompt
+        assert len(prompt.split()) < 250
         for value, blank in ((row.title, "<title>"), (row.description, "<description>"),
                              (f"--program {row.purpose}", "--program <p>"), (f"--section {row.purpose}", "--section <p>")):
-            assert value in template
-            template = template.replace(value, blank)
-        templates.add(template)
+            assert value in prompt
+            prompt = prompt.replace(value, blank)
+        templates.add(prompt)
     assert len(templates) == 1
 
 
+def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_preset(monkeypatch):
+    """A component is named by its speaker group too, so a pair's two drivers of one role are two
+    components; a pair plays no driver alone (ADR-0360), so no one-driver preset is listed."""
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [])
+    topology = passive_stereo_output_topology()
+    draft = design_draft_view({"revision": 1, "topology": topology.to_dict(), "manual_settings": None},
+                              topology=topology)
+    binding = th.build_tuning_handoff_binding(draft, cc.build_commissioning_view(topology, design_draft=draft))
+    assert ([component["target_id"] for component in binding["components"]], binding["one_driver_presets"]) == (
+        ["left:full_range", "right:full_range"], [])
+
+
+@pytest.mark.parametrize("round_dir", [None, _ROUND_DIR])
 @pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
-def test_the_prompt_points_at_status_the_catalog_and_the_contract(program):
-    """Where tuning stands, what the agent can ask and what a document may write (#5928 TB6),
-    each a call its tool's own parser accepts."""
+def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round_dir):
+    """Where tuning stands, what the agent can ask and what a document may write (#5928 TB6), each
+    a call its tool's own parser accepts; the contract evaluates its bounds on the latest round."""
     parsers = {module.PROG: module.build_parser() for module in (crossover_prescriber, round_views)}
-    prompt = th.build_tuning_handoff_prompt({}, program)
+    prompt = th.build_tuning_handoff_prompt({"latest_round_dir": round_dir}, program)
     calls = []
-    for command in th.pointer_commands(program):
+    for command in th.pointer_commands(program, round_dir):
         assert command in prompt
         _sudo, path, *argv = shlex.split(command)
         args = vars(parsers[Path(path).name].parse_args(argv))
-        calls.append((Path(path).name, args["command"], args.get("program") or args.get("section")))
-    assert calls == [(crossover_prescriber.PROG, "status", None), (round_views.PROG, "catalog", program),
-                     (crossover_prescriber.PROG, "contract", program)]
+        calls.append((Path(path).name, args["command"], args.get("program") or args.get("section"), args.get("round")))
+    assert calls == [(crossover_prescriber.PROG, "status", None, None), (round_views.PROG, "catalog", program, None),
+                     (crossover_prescriber.PROG, "contract", program, round_dir)]
 
 
 def test_run_help_names_every_registry_pose_set(capsys):
