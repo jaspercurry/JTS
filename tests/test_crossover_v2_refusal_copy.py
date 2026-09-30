@@ -14,18 +14,18 @@ import pytest
 
 import jasper
 from jasper.active_speaker.angle_capture import WALK_REFUSAL_REASONS
-from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker import crossover_v2_flow as flow, measured_crossover_candidate, wizard_client
 from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStoreErrorCode
 from jasper.active_speaker.crossover_v2 import (
-    _prescription_common, corner_admissibility, evidence_packet, intervention, prescription_document, refusal_copy,
-    take_reading,
+    _prescription_common, corner_admissibility, evidence_packet, intervention, refusal_copy, take_reading,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import offline_reads
 from jasper.active_speaker.crossover_v2.room_views import incumbent_room
-from jasper.active_speaker.round_bank import RoundBankError
+from jasper.active_speaker.measurement_programs import DRIVER_NOT_OFFERED, LAYOUT_NOT_OFFERED, POSES_NAME_A_LAYOUT
 from jasper.audio_measurement import evidence_reasons
 from jasper.bass_extension.dynamic import DYNAMIC_BASS_REFUSAL_REASONS
 from jasper.cli import _refusal, audition, mic_calibration
+from jasper.cli import round as round_cli
 from jasper.cli.round_views._common import refused_by_name
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
@@ -144,6 +144,15 @@ def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):
     assert (spec.code, spec.next_action and spec.next_action["id"]) == (code, action)
 
 
+#: The web failure screen shows a hard stop's action as a link, so each link names the page its label names.
+@pytest.mark.parametrize("code, href", [
+    ("tweeter_unprotected", "/sound/speaker/"), ("delay_graph_proof_failed", "/sound/speaker/"),
+    ("key_unset", "/assistant/voice/"),
+])
+def test_an_action_links_to_the_page_its_label_names(code, href):
+    assert refusal_copy.REASON_REGISTRY[code].next_action["href"] == href
+
+
 @pytest.mark.parametrize("layer", ["base", "tune", "room"])
 def test_upstream_mismatch_reasons_are_retired(layer):
     assert f"measurement_candidate_{layer}_mismatch" not in refusal_copy.REASON_REGISTRY
@@ -188,19 +197,31 @@ _FORWARDED_CODES = {
     # ``refuse`` as ``exc.reason``, and a pinned corner's two reach the topology refusal as ``reason``.
     *(code.value for code in CommissioningEvidenceStoreErrorCode), *DYNAMIC_BASS_REFUSAL_REASONS,
     corner_admissibility.FC_REJECT_BELOW_DECLARED_FLOOR, corner_admissibility.FC_REJECT_ABOVE_LOWER_DRIVER_BAND,
+    # ``jasper-round``'s three plan refusals carry their code as a class attribute, and its wizard client
+    # answers with each ``REASON_*`` it names.
+    LAYOUT_NOT_OFFERED, POSES_NAME_A_LAYOUT, DRIVER_NOT_OFFERED,
+    *(value for name, value in vars(wizard_client).items() if name.startswith("REASON_")),
+    # The candidate refuses each of its mapping-shaped optional fields as ``<name>_invalid``, in a loop.
+    *(f"{name}_invalid" for name, kind in measured_crossover_candidate._OPTIONAL_FIELD_TYPES.items() if kind is dict),
 }
 #: Each helper that names a code in a gap or a refusal: the position of the argument that carries it, and the keywords
-#: that do. ``BlendPrescriptionRefused`` is what ``refuse`` raises and what each judge's ``*PrescriptionRefused``
-#: aliases; ``failed`` and ``refused`` are every CLI's refusal record.
+#: that do. ``refuse`` is what each judge's ``*PrescriptionRefused`` aliases raise, and ``_refuse`` what the candidate's
+#: field checks raise; ``failed`` and ``refused`` are every CLI's refusal record, and ``_wizard_failure`` is
+#: ``jasper-round``'s when the wizard named no code. An exception class needs no row here:
+#: :func:`_classes_a_cli_catches` finds it by its constructor.
 _CODE_ARGUMENTS: dict[Callable[..., object], tuple[int | None, tuple[str, ...]]] = {
     **dict.fromkeys((
-        evidence_reasons.EvidenceUnavailable, evidence_reasons.unavailable, refused_by_name,
-        _prescription_common.refuse, _prescription_common.BlendPrescriptionRefused,
-        prescription_document.PrescriptionDocumentRefused, RoundBankError,
+        evidence_reasons.unavailable, refused_by_name, _prescription_common.refuse, measured_crossover_candidate._refuse,
     ), (0, ())),
     refusal_copy.CrossoverV2Refused: (None, ("code",)),
     _refusal.failed: (1, ("reason", "code")), _refusal.refused: (0, ("reason", "code")),
+    round_cli._wizard_failure: (1, ()),
 }
+
+
+def _module_name(path: pathlib.Path) -> str:
+    parts = path.relative_to(pathlib.Path(jasper.__file__).parent.parent).with_suffix("").parts
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
 def _resolved(node: ast.expr, namespace: dict[str, object]) -> object:
@@ -227,28 +248,49 @@ def _code_arguments(call: ast.Call, position: int | None, keywords: tuple[str, .
     return [*positional, *(each.value for each in call.keywords if each.arg in keywords)]
 
 
+def _classes_a_cli_catches(
+    trees: dict[pathlib.Path, ast.Module], aliases: dict[str, str],
+) -> dict[Callable[..., object], tuple[int | None, tuple[str, ...]]]:
+    """Each exception class whose constructor takes its code first, as ``reason`` or ``code``, and that a
+    ``jasper/cli`` module names in an ``except``: the codes it carries reach a CLI's refusal record."""
+    cli = pathlib.Path(jasper.__file__).parent / "cli"
+    caught = {getattr(name, "id", getattr(name, "attr", None))
+              for path, tree in trees.items() if path.is_relative_to(cli) for handler in ast.walk(tree)
+              if isinstance(handler, ast.ExceptHandler) and handler.type is not None
+              for name in (handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type])}
+    found: dict[Callable[..., object], tuple[int | None, tuple[str, ...]]] = {}
+    for path, tree in trees.items():
+        for node in (each for each in ast.walk(tree) if isinstance(each, ast.ClassDef)):
+            init = next((each for each in node.body if isinstance(each, ast.FunctionDef) and each.name == "__init__"), None)
+            first = init.args.args[1].arg if init and len(init.args.args) > 1 else None
+            if first in ("reason", "code") and {node.name, *(alias for alias, name in aliases.items() if name == node.name)} & caught:
+                found[getattr(import_module(_module_name(path)), node.name)] = (0, (first,))
+    return found
+
+
 def _codes_raised_by_name() -> dict[str, str]:
     """Each code that a raise site or a gap names outright, and the first place it does."""
     root = pathlib.Path(jasper.__file__).parent
     trees = {path: ast.parse(path.read_text(encoding="utf-8")) for path in sorted(root.rglob("*.py"))}
-    names = {entry.__name__ for entry in _CODE_ARGUMENTS}
     # ``AlignmentPrescriptionRefused = BlendPrescriptionRefused``: an alias raises the same codes.
-    names |= {target.id for tree in trees.values() for node in tree.body
-              if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name) and node.value.id in names
-              for target in node.targets if isinstance(target, ast.Name)}
+    aliases = {target.id: node.value.id for tree in trees.values() for node in tree.body
+               if isinstance(node, ast.Assign) and isinstance(node.value, ast.Name)
+               for target in node.targets if isinstance(target, ast.Name)}
+    arguments = {**_CODE_ARGUMENTS, **_classes_a_cli_catches(trees, aliases)}
+    names = {entry.__name__ for entry in arguments}
+    names |= {alias for alias, name in aliases.items() if name in names}
     raised: dict[str, str] = {}
     for path, tree in trees.items():
         calls = [call for call in ast.walk(tree) if isinstance(call, ast.Call)
                  and getattr(call.func, "id", getattr(call.func, "attr", None)) in names]
         if not calls:
             continue
-        parts = path.relative_to(root.parent).with_suffix("").parts
-        module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        module = _module_name(path)
         namespace = vars(import_module(module))
         for call in calls:
-            entry = next((each for each in _CODE_ARGUMENTS if _resolved(call.func, namespace) is each), None)
-            arguments = [] if entry is None else _code_arguments(call, *_CODE_ARGUMENTS[entry])
-            for code in {code for argument in arguments for code in _named_codes(argument, namespace)}:
+            entry = next((each for each in arguments if _resolved(call.func, namespace) is each), None)
+            found = [] if entry is None else _code_arguments(call, *arguments[entry])
+            for code in {code for argument in found for code in _named_codes(argument, namespace)}:
                 raised.setdefault(code, f"{module}:{call.lineno}")
     return raised
 
@@ -258,13 +300,19 @@ def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action()
     shape, the evidence exception, the prescription refusals, the round bank or a CLI's
     ``failed()`` and ``refused()`` with no registry row, so a reader got a code with neither
     copy nor a next action. A code that reaches a gap or a refusal through a variable is listed
-    above."""
+    above. An exception class is found by its constructor when a ``jasper/cli`` module names it in
+    an ``except``; a class a CLI reaches only through a base class is not seen."""
     raised = _codes_raised_by_name()
     assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED, "alignment_no_crossover_region",
             "driver_filter_malformed", "prescription_polarity_invalid", "composition_base_required",
             "already_banked", "baseline_config_validation_failed", "walk_refused", "not_root",
             mic_calibration.REFUSE_NONE_REGISTERED, audition.NOT_RESTORED,
-            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias and a keyword"
+            # Each class found by its constructor, and ``jasper-round``'s wizard fallbacks.
+            "audition_restore_failed", "authored_status_required", "candidate_malformed", "key_unset",
+            "not_downloaded", "round_set_unknown", "run_refused",
+            # The candidate's field checks: a literal, a module constant, and a gate.
+            "delay_us_invalid", "room_correction_invalid", "tweeter_unprotected",
+            } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias, a keyword and a class"
     lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
                if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}
     assert not lacking

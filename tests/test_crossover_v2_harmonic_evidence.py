@@ -44,7 +44,9 @@ from jasper.active_speaker.crossover_v2.programs import pilot_gains
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents, record_path, reopen_measurement_record
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.distortion import DriveLevel, HarmonicReading, read_segment_distortion
-from jasper.audio_measurement.evidence_reasons import REASON_HARMONIC_WINDOW_OUT_OF_RANGE, TAKE_CURVES_NOT_BANKED, unavailable
+from jasper.audio_measurement.evidence_reasons import (
+    REASON_HARMONIC_WINDOW_OUT_OF_RANGE, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable,
+)
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import (
     KIND_SWEEP, ExcitationProgram, FrequencyBand, RoleBand, build_level_probe_program, build_measure_program,
@@ -449,6 +451,22 @@ def test_a_take_without_a_reading_is_refused_by_its_reason_beside_the_takes_that
     assert [take["take_id"] for take in captures["read"]] == [document["take_id"]]
     assert [(take["take_id"], take["reason"]) for take in captures["refused"]] == [
         ("take-failed", TAKE_CURVES_NOT_BANKED), ("take-gap", REASON_HARMONIC_WINDOW_OUT_OF_RANGE)]
+
+
+def test_a_round_whose_takes_all_refuse_for_different_reasons_holds_no_take_the_view_can_read(banked_takes, tmp_path):
+    """One code for a round with no take a view can read (ADR-0404)."""
+    bundle, record = _copied(banked_takes[False], tmp_path)
+    document = json.loads(record.read_text())
+    failed = {key: value for key, value in document.items() if key not in {"analysis", "curves"}}
+    record.write_text(json.dumps({**failed, "analysis_error": {"code": "internal_error", "error_type": "ValueError"}}))
+    record.with_name("take-gap.json").write_text(json.dumps({
+        **document, "take_id": "take-gap",
+        "analysis": {**document["analysis"], "distortion": unavailable(REASON_HARMONIC_WINDOW_OUT_OF_RANGE)}}))
+
+    with pytest.raises(EvidenceUnavailable) as refused:
+        he.read_round_harmonics(bundle)
+
+    assert refused.value.reason == "no_admissible_captures"
 
 
 def test_a_take_banked_before_its_reading_refuses_the_view_by_that_field(banked_takes, tmp_path, capsys):

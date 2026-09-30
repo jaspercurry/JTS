@@ -868,7 +868,7 @@ def test_lateral_per_driver_capture_classifies_without_inventing_timing(tmp_path
 
 
 @pytest.mark.parametrize(("phases", "manifest", "expected"), [
-    pytest.param((), "kept", fx.NO_ADMISSIBLE_CAPTURES, id="no_take"),
+    pytest.param((), "kept", "no_admissible_captures", id="no_take"),
     pytest.param(("measure",), "kept", fx.ROUND_SHAPE_INADMISSIBLE, id="no_take_of_a_classified_phase"),
     pytest.param(("lateral",), "refused", NO_KEPT_TAKES, id="every_take_refused"),
     pytest.param(("lateral",), None, NO_KEPT_TAKES, id="an_older_bank_with_no_run_manifest"),

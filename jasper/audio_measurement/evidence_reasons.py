@@ -14,7 +14,7 @@ from typing import Any
 
 CAPTURE_UNREADABLE_SIDECAR = "unreadable_sidecar"
 EVIDENCE_NOT_BANKED = "evidence_not_banked"
-NO_ADMISSIBLE_CAPTURES = "classification_no_admissible_captures"
+NO_ADMISSIBLE_CAPTURES = "no_admissible_captures"
 NO_FEATURES_DETECTED = "classification_no_features_detected"
 NO_KEPT_TAKES = "classification_no_kept_takes"
 REASON_COVERAGE_SHORT = "coverage_short"

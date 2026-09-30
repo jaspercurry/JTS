@@ -344,7 +344,8 @@ ARM_STOP_COPY = {
 ARM_STOP_REASONS = frozenset(ARM_STOP_COPY) | {REASON_ARM_HOST_STUCK, REASON_INTERNAL_ERROR}
 
 #: The household copy of the analysis-side evidence codes and the command-line tools' own codes, under the next action each names.
-_EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
+#: A group's key is ``(id, label)``, and its action links to the crossover page unless the key adds the page its label names.
+_EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
     ("measure_again", "Measure this round again"): {
         evidence_reasons.REASON_FIT_NOT_FINITE: "A fitted filter term is not a finite number, so the fit is published without numbers.",
         evidence_reasons.REASON_GAP_NOT_CONFIDENT: "The measured arrival gap is below the confidence threshold.",
@@ -363,7 +364,6 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "measurement_captures_missing": "No take in the measurement was captured and analysed.",
         "measurement_capture_identity_mismatch": "A take's recording does not match the identity its record banked.",
         "measurement_program_manifest_missing": "A take's record banked no program manifest.",
-        "no_admissible_captures": "The round banked no measure or branch take this view can read.",
         "round_capture_unreadable": "A take's banked record, recording or impulse cannot be read.",
         "round_no_captures": "The round banked no take record this view can read.",
         "round_radiated_band_missing": "A take banked no curve, so the band its driver radiates is unknown.",
@@ -428,12 +428,13 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         evidence_reasons.CAPTURE_UNREADABLE_SIDECAR: "This recording's sidecar is not a readable object with a phase.",
         evidence_reasons.EVIDENCE_NOT_BANKED: "This round's packet holds no evidence this build reads.",
         "capture_bundle_unavailable": "The run's session bundle is missing, or more than one matches, so its round was not banked.",
+        "round_manifest_missing": "Bank the run manifest with this round.",
         "session_unfinished": "The session has not finished, so it cannot be banked yet.",
         "view_runner_unavailable": "The bank ran with no view runner, so it filed no round views.",
         "write_failed": "The round could not be written to the bank.",
     },
-    ("select_round", "Select the round these takes belong to"): {
-        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "This round holds no take to classify.",
+    ("select_round", "Name a round that holds takes this view can read"): {
+        evidence_reasons.NO_ADMISSIBLE_CAPTURES: "The round holds no take this view can read.",
     },
     ("name_round", "Name a banked round or a live session bundle"): {
         "already_banked": "The session is already banked as a round.",
@@ -489,6 +490,9 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "close_reference_no_capture": "The round has no take with the named id, or more than one.",
         "room_capture_not_found": "No room take matches the named take id.",
         "room_capture_selection_required": "The round holds more than one room set, so a take id must choose one.",
+        "round_take_not_kept": "Select a kept take, in this set or another; a refused attempt or level probe is banked, never read.",
+        "round_take_selection_required": "Select a retained take from this set with the take selector.",
+        "round_take_unknown": "Select a retained take from this set.",
     },
     ("measure_room", "Measure a new room round"): {
         "incompatible_measurement_basis": "The candidate and incumbent room medians were measured on different bases.",
@@ -498,7 +502,10 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "room_no_seat_takes": "The round has no readable room take at a seat, so no room median exists.",
     },
     ("select_candidate", "Select a candidate with one banked identity"): {
+        "authored_candidate_conflict": "A different candidate is already banked under this identity.",
+        "candidate_malformed": "The candidate is malformed, so it cannot be read.",
         "composition_base_required": "The document names no base: it needs a banked candidate fingerprint, or saved.",
+        "composition_saved_tune_unrepresentable": "The saved driver corrections cannot be rebuilt as a candidate.",
         "gate_sweep_mixed_graphs": "The takes played more than one candidate or graph, so their windows cannot compare.",
     },
     ("match_bass_capture", "Measure both graphs at the same pose and settings"): {
@@ -520,6 +527,9 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "mic_calibration_vendor_unreachable": "The vendor could not be reached, so nothing was fetched.",
     },
     ("speaker_setup", "Finish the protected speaker setup"): {
+        "audition_commission_load_active": "A per-driver setup config is loaded, so the applied tune is not what plays.",
+        "audition_no_applied_profile": "No speaker tune is applied, so there is no graph to reduce.",
+        "composition_saved_tune_unavailable": "The saved tune is not available to build on.",
         "driver_passband_unavailable": "The speaker declares no band for its drivers, so a per-driver prescription "
                                        "has nothing to check against.",
         "prescription_fc_unknown": "The crossover corner is unknown, so an alignment cannot be checked at it.",
@@ -528,6 +538,33 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "aplay_failed": "The aplay tool failed, so the speaker cannot list its playback devices.",
         "aplay_missing": "The aplay tool is missing, so the speaker cannot list its playback devices.",
         "aplay_timeout": "The aplay tool timed out, so the speaker cannot list its playback devices.",
+    },
+    ("speaker_setup", "Review the protected speaker graph.", "/sound/speaker/"): {
+        "audition_applied_profile_displaced": "The saved applied tune is not the one the speaker plays.",
+        "audition_emit_refused": "The reduced graph could not be built, or it failed its safety check.",
+        "audition_malformed_graph": "The applied graph is malformed, so no comparison can be built.",
+        "audition_no_rear_stage": "The applied graph has no single rear stage to compare.",
+        "audition_running_graph_differs": "An unsaved EQ draft or another live edit is playing, so no comparison can start.",
+        "cardioid_compare_unavailable": "The applied tune cannot compare the rear output.",
+        "delay_graph_proof_failed": "The candidate's graph does not bind its delay to the outputs of the driver it names.",
+        "tweeter_unprotected": "The candidate's graph leaves a tweeter output without its protective high-pass.",
+    },
+    ("review_candidate", "Review the candidate graph and driver declaration."): {
+        "audition_rear_muted_in_tune": "The applied tune mutes the rear output, so there is nothing to compare.",
+        "authored_status_required": "Only an unmeasured candidate can be authored.",
+        # ``measured_crossover_candidate``'s field checks. The code and the detail name the field, so one sentence serves.
+        **{code: "The candidate holds a value that is malformed, out of range or not supported." for code in (
+            "alignment_invalid", "alignment_malformed", "alignment_partial", "analysis_invalid", "attenuation_out_of_range",
+            "bass_extension_invalid", "bass_extension_malformed", "blend_correction_invalid", "blend_correction_malformed",
+            "candidate_invalid", "candidate_schema_unsupported", "candidate_tampered", "delay_role_ambiguous",
+            "delay_role_invalid", "delay_role_unknown", "delay_us_invalid", "delay_us_out_of_range",
+            "effective_preset_invalid", "exclusion_evidence_invalid", "exclusion_evidence_malformed",
+            "linearization_invalid", "linearization_malformed", "linearization_outcome_invalid",
+            "linearization_outcome_malformed", "polarity_invalid", "program_id_invalid",
+            "rear_calibration_case_unsupported", "rear_calibration_malformed", "rear_calibration_mode_unsupported",
+            "role_attenuations_incomplete", "role_attenuations_malformed", "room_correction_invalid",
+            "room_correction_malformed", "source_preset_invalid", "trim_decision_invalid", "trim_decision_malformed",
+        )},
     },
     ("read_contract", "Read the section's contract"): {
         "above_lower_driver_band": "The crossover corner is above the band the lower driver declares.",
@@ -549,6 +586,8 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "boost_not_admitted": "The measured positions do not admit a boost at this frequency.",
         "boost_route_unavailable": "The blend stage carries no boost.",
         "composed_boost_exceeded": "The filters together boost more than the section's ceiling allows.",
+        "composition_filters_invalid": "A driver's filters are not a list of filters for a driver role this speaker declares.",
+        "composition_topology_required": "The hardware topology section cannot be cleared.",
         "driver_expectation_malformed": "The expected change or the tilt is not a finite number inside its bound.",
         "driver_filter_count_exceeded": "A driver role carries more filters than its branch may hold.",
         "driver_filter_malformed": "A driver filter, or the filter list, is not in the shape or the range the contract allows.",
@@ -600,8 +639,17 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "verb_not_registered": "No artifact row registers this view, so the bank did not run it.",
     },
     ("finish_measurement", "Review the active measurement"): {
+        "audition_measurement_session_active": "A measurement holds the speaker's graph, so the audition cannot start.",
         "capture_slot_busy": "Another measurement holds the capture slot. Finish or cancel it, then join again.",
+        "placement_refused": "The speaker refused the microphone position.",
+        "position_mismatch": "The position that waits is not the one named.",
+        "position_not_pending": "No microphone position waits for confirmation.",
+        "round_manifest_unfinalized": "Wait for the run to finish.",
         "run_answer_invalid": "The speaker's answer to the run request names no run.",
+        "run_not_current": "The speaker runs a different run than the one named.",
+        "run_not_live": "The run is no longer live.",
+        "stop_refused": "The speaker refused to stop the run.",
+        "wait_timeout": "The wait ended before the run did.",
     },
     ("run_as_root", "Run it on the speaker as root"): {
         "dry_run_requires_local_host": "Dry-run reads this machine's facts. Run it on the speaker.",
@@ -609,7 +657,15 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
         "not_root": "This tool runs only as root.",
     },
     ("name_value", "Name a value the tool accepts"): {
+        "measurement_driver_not_offered": "The preset cannot play that driver alone here.",
+        "measurement_layout_not_offered": "The preset does not offer that layout.",
+        "measurement_poses_name_a_layout": "The poses name a layout: pass it as --layout.",
+        "not_downloaded": "The wake model is not downloaded on this speaker.",
+        "provider_unset": "No voice provider is selected yet.",
         "threshold_out_of_range": "The wake threshold is not a number from 0 to 1.",
+        "unknown_model": "The tool offers no model with that name.",
+        "unknown_provider": "The tool knows no voice provider with that name.",
+        "unknown_voice": "The provider offers no voice with that name.",
         "unusable_value": "The value holds a character that a settings file cannot store.",
         "walk_refused": "The settle time is under the floor a landed arm needs, or the poll interval is not above zero.",
     },
@@ -625,9 +681,23 @@ _EVIDENCE_COPY: dict[tuple[str, str], dict[str, str]] = {
     },
     ("check_speaker", "Check that the speaker answers, then read its state"): {
         "answer_lost": "The speaker gave no usable answer.",
+        "apply_not_applied": "The speaker did not report the candidate as applied.",
+        "audition_load_refused": "CamillaDSP did not load the graph.",
+        "audition_no_durable_anchor": "CamillaDSP reports no saved graph to put back, so the audition does not start.",
+        "authored_candidate_unreadable": "The candidate was written and cannot be read back.",
+        "run_refused": "The speaker refused to open the run.",
+        "status_unavailable": "The speaker gave no run status.",
     },
     ("stop_audition", "Put the full graph back with jasper-audition stop"): {
         "audition_not_restored": "The audition ended, and the speaker is not back on its full graph.",
+        "audition_restore_failed": "The reduced graph still plays, and the applied graph did not reload.",
+    },
+    ("name_set", "Name a set this round banked"): {
+        "round_set_unknown": "Select a set listed in the run manifest.",
+        "set_required": "Name --set with one of the listed set ids.",
+    },
+    ("add_api_key", "Add the provider's API key on the voice page", "/assistant/voice/"): {
+        "key_unset": "The voice provider has no API key set.",
     },
 }
 
@@ -719,8 +789,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         next_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
     ),
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
-                        next_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
-       for (action, label), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
+                        next_action={"id": action, "label": label, "href": next(iter(page), "/sound/speaker/crossover/")})
+       for (action, label, *page), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
                         next_action={"id": "measure_again", "label": "Measure this round again",
                                      "href": "/sound/speaker/crossover/"})
@@ -736,15 +806,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("baseline_graph_safety_proof_failed", "speaker_setup", "Review the protected speaker graph."),
            ("baseline_config_validation_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
-    "round_manifest_missing": ReasonSpec("round_manifest_missing", TEMPLATE_HARD_STOP, 0, "", "Bank the run manifest with this round."),
-    "round_manifest_unfinalized": ReasonSpec("round_manifest_unfinalized", TEMPLATE_HARD_STOP, 0, "", "Wait for the run to finish."),
-    "round_set_unknown": ReasonSpec("round_set_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a set listed in the run manifest."),
-    "set_required": ReasonSpec("set_required", TEMPLATE_HARD_STOP, 0, "", "Name --set with one of the listed set ids."),
-    "round_take_unknown": ReasonSpec("round_take_unknown", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set."),
-    "round_take_not_kept": ReasonSpec(
-        "round_take_not_kept", TEMPLATE_HARD_STOP, 0, "",
-        "Select a kept take, in this set or another; a refused attempt or level probe is banked, never read."),
-    "round_take_selection_required": ReasonSpec("round_take_selection_required", TEMPLATE_HARD_STOP, 0, "", "Select a retained take from this set with the take selector."),
     "wired_mic_missing": ReasonSpec(
         "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
         next_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},

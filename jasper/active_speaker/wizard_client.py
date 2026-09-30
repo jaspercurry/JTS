@@ -26,10 +26,14 @@ SESSION_PATH = "/sound/speaker/crossover/v2/session"
 APPLY_PATH = "/sound/speaker/crossover/v2/apply"
 CAPTURE_CANCEL_PATH = "/sound/speaker/crossover/capture-cancel"
 
-REASON_NO_FINGERPRINT = "no_fingerprint_named"
+REASON_NO_FINGERPRINT = "fingerprint_required"
 REASON_NOT_APPLIED = "apply_not_applied"
 REASON_ANSWER_LOST = "answer_lost"
 REASON_WAIT_TIMEOUT = "wait_timeout"
+REASON_RUN_NOT_CURRENT = "run_not_current"
+REASON_RUN_NOT_LIVE = "run_not_live"
+REASON_POSITION_NOT_PENDING = "position_not_pending"
+REASON_POSITION_MISMATCH = "position_mismatch"
 
 _CSRF_META_RE = re.compile(r'<meta name="jts-csrf" content="([^"]+)"')
 
@@ -132,7 +136,7 @@ class WizardClient:
             return http, {"code": REASON_ANSWER_LOST}
         live_id = capture.get("session_id")
         if live_id and live_id != run_id:
-            return 409, {"code": "run_not_current", "run_id": run_id, "current_run_id": live_id}
+            return 409, {"code": REASON_RUN_NOT_CURRENT, "run_id": run_id, "current_run_id": live_id}
         if not live_id:
             if capture.get("status") == CAPTURE_STOPPED and capture.get("code"):
                 return http, {"run_id": run_id, "status": capture["status"],
@@ -157,11 +161,11 @@ class WizardClient:
             return http, status
         pending = status.get("pending")
         if not pending:
-            return 409, {"code": "position_not_pending", "run_id": run_id}
+            return 409, {"code": REASON_POSITION_NOT_PENDING, "run_id": run_id}
         if pending.get("mover") != MOVER_CONFIRMED:
             return 409, {"code": REASON_WALK_MOVER_MISMATCH, "run_id": run_id}
         if pose is not None and pose != (status.get("pose") or 1):
-            return 409, {"code": "position_mismatch", "run_id": run_id}
+            return 409, {"code": REASON_POSITION_MISMATCH, "run_id": run_id}
         return self.post_json(POSITION_READY_ENDPOINT, {"index": pending["index"],
                               "attempt": pending["attempt"], "run_id": run_id})
 
@@ -172,7 +176,7 @@ class WizardClient:
         if http != 200:
             return http, status
         if status.get("status") in SESSION_ENDED_STATUSES:
-            return 409, {"code": "run_not_live", "run_id": run_id}
+            return 409, {"code": REASON_RUN_NOT_LIVE, "run_id": run_id}
         return self.post_json(CAPTURE_CANCEL_PATH, {"reason": REASON_USER_STOPPED})
 
     def apply(self, expected_fingerprint: str) -> tuple[int, Any]:

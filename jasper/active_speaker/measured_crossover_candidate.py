@@ -107,6 +107,7 @@ _ROOM_CORRECTION_KEYS = frozenset({
 })
 _ROOM_BASIS_KEYS = frozenset({"round_id", ROOM_MEDIAN_FIELD, "admitted_boosts_hz"})
 _ROOM_FILTER_KEYS = frozenset({"freq", "q", "gain"})
+_ROOM_INVALID = "room_correction_invalid"
 
 
 class MeasuredCrossoverCandidateError(ValueError):
@@ -206,7 +207,6 @@ def _validated_room_correction(
 
     if not raw:
         return {}
-    _ROOM_INVALID = "room_correction_invalid"
     if len(layout_sides) > 1:
         _refuse(
             _ROOM_INVALID,
@@ -936,7 +936,8 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
     import yaml as _yaml
 
     preset = effective_preset(candidate)
-    view = view_from_yaml_dict(_yaml.safe_load(yaml_text))
+    parsed = _yaml.safe_load(yaml_text)
+    view = view_from_yaml_dict(parsed)
     tweeter_channels = {
         output.index
         for output in preset.channel_map.outputs
@@ -954,10 +955,6 @@ def prove_candidate_config(candidate: MeasuredCrossoverCandidate, yaml_text: str
     if delay_role is None:
         return
     assert candidate.alignment.delay_us is not None
-    try:
-        parsed = _yaml.safe_load(yaml_text)
-    except _yaml.YAMLError as exc:
-        _refuse("candidate_config_unparseable", str(exc))
     channels = tuple(_channels_for_role(preset, delay_role))
     try:
         prove_static_delay_binding(

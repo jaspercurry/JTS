@@ -11,7 +11,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from jasper.platform.atomic_io import atomic_write_json
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
+from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action
 
@@ -252,7 +252,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
                 contract = prescription_contracts(programs=(purpose,), **section_sources)[purpose]
                 limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}
         except ROUND_INPUT_ERRORS as exc:
-            limits[group["set_id"]] = unavailable(_refusal_code(exc, "evidence_unreadable"))
+            limits[group["set_id"]] = unavailable(_refusal_code(exc, REASON_UNREADABLE))
     stored, error = banked_evidence(inputs)
     if error is not None:
         errors.append({"artifact": EVIDENCE_KEY, "reason": getattr(error, "reason", "evidence_unavailable"),

@@ -40,6 +40,7 @@ from jasper.audio_measurement.calibration import (
 )
 from jasper.audio_measurement.distortion import read_segment_distortion, worst_clear_of_floor
 from jasper.audio_measurement.evidence_reasons import (
+    NO_ADMISSIBLE_CAPTURES,
     REASON_COVERAGE_SHORT,
     REASON_HARMONIC_WINDOW_OUT_OF_RANGE,
     REASON_SWEEP_GRIDS_DISAGREE,
@@ -83,9 +84,6 @@ _DB_DECIMALS = 1
 #: Decimal places for THD percent, which is a small number where the first
 #: significant digit often sits three places in.
 _PERCENT_DECIMALS = 3
-
-#: The round banks no MEASURE or branch take this view can read.
-NO_ADMISSIBLE_CAPTURES = "no_admissible_captures"
 
 
 class SweepGridsDisagree(ValueError):
