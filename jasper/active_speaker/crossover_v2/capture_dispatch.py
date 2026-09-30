@@ -35,6 +35,7 @@ from .refusal_copy import TakeCharge, TakeNext, TakeVerdict as TakeVerdict
 from .programs import back_off_gain
 
 if TYPE_CHECKING:
+    from jasper.active_speaker.measurement_programs import PoseLevel
     from jasper.audio_measurement.program import ExcitationProgram
 
 # Clip retries lower stimulus gain, never the admitted hardware ceiling.
@@ -43,12 +44,6 @@ ACROSS_POSE_DRIFT_DB = 6.0
 CLIP_RETRY_BACKOFF_DB = 3.0
 # dB, recorder transfer stability; see ADR-0182.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
-#: A take at one driver's pose aims its loudest 21 ms window at the microphone
-#: here, never above the admission bound under its own stop (ADR-0361).
-NEAR_FIELD_TARGET_DB_SPL = 80.0
-NEAR_FIELD_TARGET_TOLERANCE_DB = 2.0
-#: The most one near-field level retake raises a take's gain (ADR-0361).
-NEAR_FIELD_MAX_RAISE_DB = 15.0
 #: dB a VERIFY sweep's impulse must clear its take's ambient floor by; real jts3 takes
 #: read 9.1 dB and up (replay: #5672).
 SWEEP_OVER_AMBIENT_MIN_DB = 6.0
@@ -75,11 +70,12 @@ def level_drift_verdict(
 
 
 class _LevelTarget(NamedTuple):
-    """A near-field play's loudest reading in dB SPL against its target, and the peak it played at."""
+    """A play's loudest reading in dB SPL against its pose's target, and the peak it played at."""
 
     reading: LevelReading
     target_db_spl: float
     peak_dbfs: float
+    rule: PoseLevel
 
     @property
     def gap_db(self) -> float:
@@ -87,11 +83,11 @@ class _LevelTarget(NamedTuple):
 
 
 def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
-                  program: ExcitationProgram | None) -> _LevelTarget | None:
-    """The play's loudest located sweep in dB SPL (ADR-0364), held to a target never
-    above the admission bound under its own stop (ADR-0361). A stopped probe's last
-    burst may have been cut short, so it reads only when no burst before it does
-    (ADR-0365)."""
+                  program: ExcitationProgram | None, rule: PoseLevel) -> _LevelTarget | None:
+    """The play's loudest located sweep in dB SPL (ADR-0364), held to its pose's
+    target, never above the admission bound under its own stop (ADR-0361). A
+    stopped probe's last burst may have been cut short, so it reads only when no
+    burst before it does (ADR-0365)."""
     spl = spl or {}
     sens_factor_db = finite_float(spl.get("sens_factor_db"))
     stop = finite_float(spl.get("ceiling_db_spl"))
@@ -105,15 +101,15 @@ def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
     heard = max(readings, key=lambda reading: reading.level_db)
     return _LevelTarget(replace(heard, level_db=to_spl(heard.level_db),
                                 floor_db=None if heard.floor_db is None else to_spl(heard.floor_db)),
-                        min(NEAR_FIELD_TARGET_DB_SPL, spl_raise_bound_db_spl(stop) - NEAR_FIELD_TARGET_TOLERANCE_DB),
-                        peak)
+                        min(rule.target_db_spl, spl_raise_bound_db_spl(stop) - rule.tolerance_db),
+                        peak, rule)
 
 
 def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
     """A retake at the gain that lands ``level`` just under its target (ADR-0364). A
     probe's evidence names how far its take's ceiling holds it under that gain (ADR-0365)."""
     solved = solve_gain(level.reading, target_db=level.target_db_spl,
-                        tolerance_db=NEAR_FIELD_TARGET_TOLERANCE_DB, max_raise_db=NEAR_FIELD_MAX_RAISE_DB)
+                        tolerance_db=level.rule.tolerance_db, max_raise_db=level.rule.max_raise_db)
     shortfall = solved - level.peak_dbfs if probe else 0.0
     return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
                        next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
@@ -134,12 +130,12 @@ def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | Non
 
 def assess(
     analysis: ProgramAnalysis, *, level_verdict: TakeVerdict | None = None,
-    near_field: bool = False, level_asked_dbfs: float | None = None,
+    pose_level: PoseLevel | None = None, level_asked_dbfs: float | None = None,
     prior_verdict: TakeVerdict | None = None, **kwargs: Any,
 ) -> TakeVerdict:
     program = kwargs.get("program")
     probe = program is not None and is_level_probe(program)
-    level = _level_target(analysis, kwargs.get("spl"), program) if near_field else None
+    level = _level_target(analysis, kwargs.get("spl"), program, pose_level) if pose_level is not None else None
     # A take the microphone heard is levelled before its recording is judged; one it did
     # not hear is judged, never levelled blind; one its ceiling held under the peak it
     # asked for is kept too quiet, since a louder retake would replay it (ADR-0361). A
@@ -150,7 +146,7 @@ def assess(
     if prior_verdict is None and _stimulus_locate_ok(analysis):
         if probe and (level is None or not level.reading.trusted):
             prior_verdict = TakeVerdict(False, fault=reasons.REASON_SNR_FLOOR, next="fix_and_retake", charge="operator")
-        elif level is not None and (probe or (abs(level.gap_db) > NEAR_FIELD_TARGET_TOLERANCE_DB and not capped)):
+        elif level is not None and (probe or (abs(level.gap_db) > level.rule.tolerance_db and not capped)):
             prior_verdict = _level_retake(level, probe=probe)
     verdict = prior_verdict if prior_verdict is not None else _assess_recording(analysis, **kwargs)
     # Removal condition: see the output mute guard in preflight.py.
@@ -170,7 +166,7 @@ def assess(
                                              "level_target_db_spl": level.target_db_spl,
                                              **({"level_capped": True} if capped else {})})
         if verdict.next == "retake_louder" and verdict.next_gain_db is not None:
-            # No retake raises a near-field take past its target.
+            # No retake raises a take past its pose's target.
             verdict = replace(verdict, next_gain_db=min(verdict.next_gain_db, level.peak_dbfs + level.gap_db))
     if level_verdict is None:
         return verdict

@@ -27,7 +27,7 @@ from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
 from jasper.active_speaker.measurement_emit import compile_tuning_graph, room_layer_charge_db
 from jasper.active_speaker.measurement_programs import Pose, preset, run_preset
-from jasper.active_speaker.preflight import NEAR_FIELD_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
+from jasper.active_speaker.preflight import POSE_LEVEL_SPL_BASIS, PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY, SPL_RAISE_MARGIN_DB
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
@@ -206,20 +206,22 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
     assert [(issue.code, issue.evidence["unoffered_drivers"]) for issue in report.issues] == (
         [(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, unoffered)] if unoffered else [])
     if not unoffered:
-        assert report.rung_admission["predicted_spl_basis"] == NEAR_FIELD_SPL_BASIS
+        assert report.rung_admission["predicted_spl_basis"] == POSE_LEVEL_SPL_BASIS
 
 
-@pytest.mark.parametrize("distance_m,stimulus,near", [
-    (0.015, NEAR_FIELD, True), (0.015, None, True), (0.15, NEAR_FIELD, False), (None, None, False)])
-def test_the_near_field_spl_basis_follows_the_pose(distance_m, stimulus, near):
-    """The seat anchor under-reads a microphone at a driver within the
-    near-field distance, and preflight says so whatever that pose plays
-    (ADR-0400 §1)."""
+@pytest.mark.parametrize("distance_m,stimulus,driver", [
+    (0.015, NEAR_FIELD, "woofer"), (0.015, None, "woofer"), (0.15, NEAR_FIELD, "woofer"), (None, None, "woofer"),
+    (0.3, None, "")])
+def test_the_spl_basis_names_a_pose_that_levels_itself(distance_m, stimulus, driver):
+    """The seat anchor predicts no take at a pose that levels itself at the
+    microphone: preflight says so for a driver's pose at any distance, whatever
+    it plays, and for no pose that plays at the run's fader (ADR-0361, ADR-0366 §2)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0, kind="bearing" if distance_m is None else "close",
-                                               distance_m=distance_m, driver="woofer"),
-                                          REGIME_PER_DRIVER, purpose="reference", stimulus=stimulus),))
+                                               distance_m=distance_m, driver=driver),
+                                          REGIME_PER_DRIVER if driver else "summed", purpose="reference",
+                                          stimulus=stimulus),))
     report = preflight(plan, ready_facts(plan, near_field_drivers=("woofer",)))
-    assert (report.rung_admission.get("predicted_spl_basis") == NEAR_FIELD_SPL_BASIS) is near
+    assert (report.rung_admission.get("predicted_spl_basis") == POSE_LEVEL_SPL_BASIS) is bool(driver)
 
 
 def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
