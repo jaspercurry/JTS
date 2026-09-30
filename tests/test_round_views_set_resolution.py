@@ -253,6 +253,7 @@ def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_pa
     before, _after = answer["subject"]["rounds"]
     assert (code, answer["comparand"], before["round_id"], before["take_ids"]) == (0, *expected[:2], [expected[2]])
 
+
 @pytest.mark.parametrize("changed", [
     {"candidate_id": "second"},
     {"graph_fingerprint": "other-applied"},
