@@ -35,11 +35,11 @@ class BassStimulusRefused(ValueError):
         super().__init__(code)
 
 
-def build_bass_program(
+def bass_band_hz(
     excitation: SessionExcitation, stimulus: Mapping[str, Any], *,
     safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
-    extra_backoff_db: float = 0.0, courtesy_prelude: bool = True,
-) -> ExcitationProgram:
+) -> tuple[float, float]:
+    """The band a bass take sweeps: its bass driver's hard floor to its stimulus's ceiling."""
     targets = {target["target_fingerprint"]: target for target in safety_profile.get("targets", ())}
     # See ADR-0316: rear variants share the primary driver's acoustic role.
     target_roles = {target_id.split(":", 1)[0] for target_id in role_targets}
@@ -53,13 +53,25 @@ def build_bass_program(
     try:
         target = targets[role_targets[bass_role]]
         floor, ceiling = float(target["hard_excitation_band_hz"][0]), float(stimulus["ceiling_hz"])
-        durations = {role: effective_sweep_duration_limit_s(safety_profile, fingerprint)
-                     for role, fingerprint in role_targets.items()}
     except (KeyError, TypeError, ValueError) as exc:
         raise BassStimulusRefused("bass_stimulus_caps_missing") from exc
     if (not 0 < floor <= REFERENCE_BAND_HZ[0] < REFERENCE_BAND_HZ[1] < ceiling
             or ceiling > float(target["hard_excitation_band_hz"][1])):
         raise BassStimulusRefused("bass_stimulus_band_outside_limits")
+    return floor, ceiling
+
+
+def build_bass_program(
+    excitation: SessionExcitation, stimulus: Mapping[str, Any], *,
+    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
+    extra_backoff_db: float = 0.0, courtesy_prelude: bool = True,
+) -> ExcitationProgram:
+    floor, ceiling = bass_band_hz(excitation, stimulus, safety_profile=safety_profile, role_targets=role_targets)
+    try:
+        durations = {role: effective_sweep_duration_limit_s(safety_profile, fingerprint)
+                     for role, fingerprint in role_targets.items()}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BassStimulusRefused("bass_stimulus_caps_missing") from exc
     single = replace(excitation, summed_sweep_band_hz=(floor, ceiling), sweep_duration_limits_s=durations).verify_program(
         sweep_s=min(durations.values()), extra_backoff_db=extra_backoff_db,
         courtesy_prelude=courtesy_prelude, leading_pilots=False,

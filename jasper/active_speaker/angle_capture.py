@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass, fields, replace
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
@@ -30,7 +29,7 @@ from jasper.audio_measurement.program import RoleBand
 
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
-from .seat_level_reference import ResolvedLevel, seat_level_reference_volume_db
+from .seat_level_reference import ResolvedLevel
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.contracts import (
@@ -112,7 +111,6 @@ __all__ = [
     "walk_template",
     "design_axis_spec",
     "stop_specs",
-    "default_run_level",
     "request_for_preset",
     "per_driver_at",
     "summed_at",
@@ -398,20 +396,6 @@ class LevelPolicy:
         if self.resolved.mic_serial is not None and not isinstance(self.resolved.mic_serial, str):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "mic_serial must be text")
 
-    @property
-    def volume_db(self) -> float | None:
-        return self.level_db if self.level_db is not None else self.resolved.reference_volume_db if self.resolved else None
-
-    @property
-    def offset_db(self) -> float:
-        if self.resolved is None or self.volume_db is None:
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
-        return self.volume_db - self.resolved.reference_volume_db
-
-    @property
-    def predicted_db_spl(self) -> float | None:
-        return self.resolved.db_spl_at(self.level_db if self.level_db is not None else self.resolved.reference_volume_db) if self.resolved else None
-
     def to_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "level_db": self.level_db, **(asdict(self.resolved) if self.resolved is not None else {
             f.name: None for f in fields(ResolvedLevel)
@@ -489,13 +473,13 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
         if self.levels is not None:
             if not isinstance(self.levels, (tuple, list)) or not self.levels or None in self.levels:
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be a nonempty sequence")
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, LADDER_STEPS_DETAIL)
             # LevelPolicy owns the fader range check for each requested level.
             for value in self.levels:
                 replace(self.level, level_db=value)
             levels = tuple(float(value) for value in self.levels)
             if len(set(levels)) != len(levels):
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be distinct")
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, LADDER_STEPS_DETAIL)
             if len(levels) == 1:
                 object.__setattr__(self, "level", replace(self.level, level_db=levels[0]))
             object.__setattr__(self, "levels", levels if len(levels) > 1 else None)
@@ -762,18 +746,6 @@ def summed_at(
     )
 
 
-def default_run_level(
-    program: Preset | AngleCaptureRequest,
-    *,
-    state_path: str | Path | None = None,
-) -> tuple[LevelPolicy, str]:
-    """Choose the scalar default only when the run has no level ladder."""
-    reference_volume_db = seat_level_reference_volume_db(state_path=state_path)
-    if program.levels is None and reference_volume_db is not None:
-        return LevelPolicy(level_db=reference_volume_db), "seat_reference"
-    return LevelPolicy(), "program_default"
-
-
 def request_for_preset(
     preset: Preset,
     *,
@@ -943,6 +915,11 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+
+#: A ladder's levels are steps, not faders: the loudest plays at the level the first rung's probe finds
+#: (ADR-0403 §4).
+LADDER_STEPS_DETAIL = ("levels are distinct steps in dB: the loudest plays at the level the first rung's probe "
+                       "finds, and each other one as far under it as it is under the loudest")
 
 SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 

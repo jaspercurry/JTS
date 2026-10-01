@@ -527,13 +527,8 @@ def test_trial_runs_the_program_its_document_states(
         (pose.place, candidate, "summed")
         for pose in expected.poses for _ in range(pose.repeats) for candidate in ("", fingerprint)
     ]
-    if expected.levels is None:
-        assert plan.level.level_db == -20
-        assert plan.level.resolved.reference_volume_db == -18
-        assert plan.level_source == "seat_reference"
-    else:
-        assert plan.level.level_db is None
-        assert plan.level_source == "program_default"
+    # A run finds its own level (ADR-0403 §4).
+    assert (plan.level.level_db, plan.level_source) == (None, "program_default")
 
 
 @pytest.mark.parametrize("mover", ["human", "arm"])
@@ -563,7 +558,6 @@ def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level,
     assert priced["parameters"] == {**{key: posted[key] for key in ("program", "layout", "mover")},
                                     "level_db": posted["level"]["level_db"], "levels": posted.get("levels"),
                                     "repeats": repeats, "driver": None}
-    assert (posted["level"]["level_db"] is None) is bool(posted.get("levels"))
     assert priced["subject"] == {"candidate_ids": posted["candidates"]}
     assert _unwrapped(priced) == ran["schedule"]
 
@@ -1234,25 +1228,21 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsy
     assert not opener.requests if dry_run else "levels" not in json.loads(opener.posts()[0].data)
 
 
-@pytest.mark.parametrize("program,noise_dbfs,levels", [
-    ("bass", -60, [-33, -28, -23, -18]), ("bass", -100, [-33, -28, -23, -18]),
-    ("bass", -20, [-33, -28, -23, -18]),
-    ("bass", None, []),
-])
-def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbfs, levels):
+@pytest.mark.parametrize("admitted", [True, False])
+def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
+    """A bass dry run lists its ladder's steps under the level its first rung's
+    probe finds (ADR-0403 §4). A refused one names the run it refused, as the
+    answer would have (ADR-0389)."""
     def facts(plan, **kw):
         ready = ready_facts(plan, **kw)
-        if noise_dbfs is None:
-            return replace(ready, anchor=replace(ready.anchor, record={}))
-        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
-            "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise_dbfs}]}}))
+        return ready if admitted else replace(ready, anchor=replace(ready.anchor, record={}))
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code = cli.main(["run", "--program", program, "--dry-run"], opener=opener)
+    code = cli.main(["run", "--program", "bass", "--dry-run"], opener=opener)
     output = capsys.readouterr()
     answered = json.loads(output.out)
-    if levels:
+    if admitted:
         assert (code, answered["schema"]) == (0, ANSWER_SCHEMAS["jasper-round run --dry-run"])
         body = answered
     else:
@@ -1261,12 +1251,10 @@ def test_dry_run_lists_admissible_levels(monkeypatch, capsys, program, noise_dbf
         # The human line is the blocking issue's sentence; the report stays on stdout.
         issue = next(issue for issue in body["issues"] if issue["blocking"])
         assert output.err == f"refused ({answered['reason']}): {issue['detail']}\n"
-    # A refused dry run's detail names the run it refused, as the answer would have (ADR-0389).
-    assert (body["subject"], body["parameters"]["program"], body["parameters"]["levels"]) == ({}, "bass/axis", levels or None)
-    assert body["admissible_levels_db"] == levels
-    expected = [None] * 4 if noise_dbfs is None else levels
-    assert [row["offset_db"] for row in body["levels"]] == [level + 18 if level is not None else None for level in expected]
-    assert [row["level_db"] for row in body["levels"]] == expected
+    steps = [0.0, -5.0, -10.0, -15.0]
+    assert (body["subject"], body["parameters"]["program"], body["parameters"]["level_db"],
+            body["parameters"]["levels"]) == ({}, "bass/axis", None, steps)
+    assert [(row["step_db"], row["admissible"]) for row in body["levels"]] == [(step, admitted) for step in steps]
     assert not opener.requests
 
 
@@ -1293,14 +1281,16 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
     assert seen == ["arm", "human"]
 
 
-@pytest.mark.parametrize("verb,flags,noise,levels", [
-    ("run", ["--level-db", "-18"], -60, [-18]),
-    ("trial", [], -60, [-18, -23, -28, -33]),
+@pytest.mark.parametrize("verb,flags,probe_db,levels", [
+    ("run", ["--level-db", "-18"], -18.0, [-18.0]),
+    ("trial", [], 0.0, [0.0, -5.0, -10.0, -15.0]),
 ])
 def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
-    verb, flags, noise, levels,
+    verb, flags, probe_db, levels,
 ):
+    """A bass run probes its first spot and holds the level it finds, never above
+    a stated one; a ladder's rungs, loudest first, step down from it (ADR-0403 §4)."""
     from jasper.active_speaker import bundles, round_bank, plan_run
     from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
@@ -1323,9 +1313,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch.setattr(bass_table_inputs, "join_bass_rounds", join)
     publish_authored_candidate(candidate)
     def facts(plan, **kw):
-        ready = ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate})
-        return replace(ready, anchor=replace(ready.anchor, record={**ready.anchor.record,
-            "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": noise}]}}))
+        return ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate})
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda: "baseline-fp")
     info = bundles.open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
@@ -1338,7 +1326,6 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch.setattr(host, "resolved_household_sensitivity", lambda _: MicSensitivity(-12, 18, "1234"))
 
     def assess(*_a, program=None, **_kw):
-        # A run with a stated level probes its first spot, and holds that level (ADR-0403 §4).
         return (TakeVerdict(False, next="retake_louder", next_gain_db=0.0) if program and is_level_probe(program)
                 else TakeVerdict(True))
     monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, assess))
@@ -1414,8 +1401,8 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
     code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
-    expected = ([(0.0, "lateral")] if verb == "run" else []) + [
-        (level, "lateral") for level in sorted(levels) for _ in range(2 if verb == "trial" else 1)]
+    expected = [(probe_db, "lateral")] + [
+        (level, "lateral") for level in levels for _ in range(2 if verb == "trial" else 1)]
     assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
     assert len(gate.grants) == fakes.graph.restores == 1
     assert box.volume_db == entry_volume

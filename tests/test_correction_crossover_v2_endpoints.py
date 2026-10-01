@@ -3438,10 +3438,8 @@ def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
-@pytest.mark.parametrize(("reference", "level_source"), [(-18.0, "seat_reference"), (None, "program_default")])
-def test_inline_session_creation_persists_the_plan_and_holds_nothing(
-    monkeypatch, tmp_path, prior_capture, reference, level_source,
-):
+@pytest.mark.parametrize("reference", [-18.0, None])
+def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch, tmp_path, prior_capture, reference):
     from jasper.web import correction_capture
 
     monkeypatch.setattr(correction_capture, "_capture_slot", prior_capture)
@@ -3476,8 +3474,8 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(
     assert env["capture"]["join"] == result["join"]
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert plan["stops"] == _inline_body()["plan"]["stops"]
-    assert plan["level"]["level_db"] == reference
-    assert plan["level_source"] == level_source
+    # A saved level sets no level: the run finds its own (ADR-0403 §4).
+    assert (plan["level"]["level_db"], plan["level_source"]) == (None, "program_default")
     assert v2state.load_v2_state() == before
 
 

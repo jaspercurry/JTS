@@ -253,6 +253,18 @@ def _corner_hz(filters: Sequence[Mapping[str, Any]], suffix: str,
     return pick(corners) if corners else None
 
 
+def front_floor_db(document: Mapping[str, Any]) -> float:
+    """The lowest static response, dB, at which an electrical document's front
+    chain plays the front woofer in its passband: the chain's gain plus every cut
+    of its own and its boundary filters, or minus infinity when it is muted. Its
+    high- and low-passes shape only the band's edges."""
+    front = document["front"]
+    if front["muted"]:
+        return -math.inf
+    return float(front["gain_db"]) + sum(min(0.0, float(entry["parameters"].get("gain", 0.0)))
+                                         for entry in (*front["filters"], *document["boundary"]["front"]))
+
+
 def rear_operating_facts(document: Mapping[str, Any] | None) -> dict[str, Any]:
     """What a validated branches document OPERATES at, for a measured report.
 

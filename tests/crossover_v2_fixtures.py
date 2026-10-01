@@ -973,7 +973,9 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
 def _inline_body():
     from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER
-    return {"plan": AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker"),)).to_dict()}
+    # The speaker program's timing take is the run's probe, which plays before CHECK (ADR-0403 §4).
+    return {"plan": AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker"),),
+                                        program="speaker/mark").to_dict()}
 
 
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:

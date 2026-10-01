@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from itertools import groupby
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Mapping, Sequence, cast
+from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.program import RoleBand
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
@@ -21,28 +21,33 @@ from .crossover_v2.capture_plan import position_screen_keys
 from .crossover_v2.door import IsolationHold
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.position_gate import PositionGate
+from .crossover_v2.refusal_copy import REASON_LEVEL_UNSOLVED
 from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
 from .run_manifest import RunManifest
-from .seat_level_reference import stimulus_mismatch
 
+#: The ladder's rungs, each this many dB under the level its first rung finds (ADR-0403 §4).
 LEVEL_OFFSETS_DB = (0.0, -5.0, -10.0, -15.0)
 
 
 @dataclass(frozen=True)
 class LevelLadder:
+    """A run at several levels, loudest first. Each rung's plan states its step
+    under the first rung, whose run finds the level with its probe (ADR-0403 §4)."""
+
     levels: tuple[PreflightReport, ...]
     facts: PreflightFacts
     admissions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def plan(self) -> AngleCaptureRequest:
-        admitted = self.admissible
-        if not admitted:
-            return self.levels[0].plan
-        return replace(admitted[0].plan, level=replace(admitted[0].plan.level, level_db=None),
-                       levels=tuple(cast(float, report.rung_admission.get("requested_level_db", report.plan.level.volume_db))
-                                    for report in admitted))
+        rungs = self.admissible or self.levels
+        return replace(rungs[0].plan, level=replace(rungs[0].plan.level, level_db=None),
+                       levels=tuple(report.plan.level.level_db or 0.0 for report in rungs))
+
+    @property
+    def rung_admission(self) -> Mapping[str, Any]:
+        return self.levels[0].rung_admission
 
     @property
     def admissible(self) -> tuple[PreflightReport, ...]:
@@ -58,14 +63,7 @@ class LevelLadder:
 
     @property
     def issues(self) -> tuple[PreflightIssue, ...]:
-        if self.blocking:
-            return self.levels[0].issues
-        return tuple(replace(issue, blocking=False,
-                             detail=f"Dropped rung {report.plan.level.predicted_db_spl} dB SPL: {issue.code}",
-                             evidence={**issue.evidence, "level_db": report.plan.level.volume_db,
-                                       "predicted_db_spl": report.plan.level.predicted_db_spl, "dropped": True})
-                     for report in self.levels if report.blocking
-                     for issue in (report.blocking_issue,))
+        return self.levels[0].issues
 
     @property
     def spl_ceiling_db_spl(self) -> float | None:
@@ -73,35 +71,28 @@ class LevelLadder:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "anchor_stimulus": self.facts.anchor.record.get("stimulus"),
             "requested_stimulus": {"program": self.plan.program, "template": self.plan.template.to_dict(),
                                    "stops": [{"regime": stop.regime, "stimulus": stop.stimulus}
                                              for stop in self.plan.stops]},
             "admissions": deepcopy(self.admissions),
             "issues": [asdict(issue) for issue in self.issues],
-            "levels": [{"offset_db": report.plan.level.offset_db if report.plan.level.resolved else None,
-                        "level_db": report.plan.level.volume_db,
-                        "predicted_db_spl": report.plan.level.predicted_db_spl,
-                        "admissible": not report.blocking, **report.to_dict()}
+            "levels": [{"step_db": report.plan.level.level_db, "admissible": not report.blocking, **report.to_dict()}
                        for report in self.levels],
-            "admissible_levels_db": [report.plan.level.volume_db for report in self.admissible],
         }
 
 
 def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadder:
-    plan = replace(plan, levels=None)
-    anchor_report = preflight(replace(plan, level=replace(plan.level, level_db=None)), facts)
-    anchor = anchor_report.plan.level.resolved
-    return _ladder(tuple(replace(plan, level=replace(plan.level,
-                        level_db=anchor.reference_volume_db + offset if anchor else None))
+    return _ladder(tuple(replace(plan, levels=None, level=replace(plan.level, level_db=offset))
                          for offset in LEVEL_OFFSETS_DB), facts)
 
 
 def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
-    reports: list[PreflightReport] = []
-    for plan in sorted(plans, key=lambda plan: plan.level.volume_db or 0.0):
-        reports.append(preflight(plan, facts, defer_rung=any(not report.blocking for report in reports)))
-    return LevelLadder(tuple(reports), facts)
+    """A stated ladder keeps its steps under its loudest rung, which the run's probe finds (ADR-0403 §4).
+    Only its first rung at its first pose probes, so that rung's own door checks the probe's order."""
+    top = max(float(plan.level.level_db or 0.0) for plan in plans)
+    return LevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=float(plan.level.level_db or 0.0) - top)),
+                                       facts, finds_fader=False)
+                             for plan in sorted(plans, key=lambda plan: -(plan.level.level_db or 0.0))), facts)
 
 
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
@@ -135,13 +126,16 @@ async def run_levels(
     aborts: Mapping[type[BaseException], str], signals: RunSignals | None = None,
     save_ladder: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
 ) -> tuple[RunManifest, ...]:
-    """Finish admissible levels at each pose under one mic hold."""
+    """Finish admissible levels at each pose under one mic hold. The first rung at
+    the first pose finds the run's level with its probe, and every rung plays its
+    step under that level; a first rung that finds none ends the ladder (ADR-0403 §4)."""
     admitted = ladder.admissible
     if not admitted:
         issue = ladder.levels[0].blocking_issue
         raise LateralWalkRefused(issue.code, issue.detail)
     signals = signals or RunSignals()
     results: list[RunManifest] = []
+    found: float | None = None
     try:
         async with hold as held:
             for pose_index, (_, group) in enumerate(groupby(ladder.plan.stops, key=lambda stop: stop.pose.place), 1):
@@ -153,17 +147,15 @@ async def run_levels(
                     await _grant(gate, pose_index, pose_index, entry, signals)
                 except _Control:
                     return tuple(results)
-                previous: list[dict[str, Any]] | None = None
                 for level_index, planned in enumerate(admitted):
-                    request = replace(planned.plan, stops=stops, level=replace(planned.plan.level,
-                        level_db=planned.rung_admission.get("requested_level_db", planned.plan.level.volume_db)))
-                    report = preflight(request, ladder.facts, previous_rung=previous)
+                    step = planned.plan.level.level_db or 0.0
+                    request = replace(planned.plan, stops=stops, level=replace(
+                        planned.plan.level, level_db=None if found is None else found + step))
+                    report = preflight(request, ladder.facts, finds_fader=found is None)
                     request = report.plan
                     observations: list[dict[str, Any]] = []
-                    admission = {"pose_index": pose_index, "level_index": level_index + 1,
-                                 "requested_db_spl": request.level.predicted_db_spl,
-                                 "admitted_db_spl": request.level.predicted_db_spl,
-                                 "level_db": request.level.volume_db, **report.rung_admission,
+                    admission = {"pose_index": pose_index, "level_index": level_index + 1, "step_db": step,
+                                 "level_db": request.level.level_db, **report.rung_admission,
                                  "observations": observations}
                     ladder.admissions.append(admission)
                     if save_ladder:
@@ -173,24 +165,18 @@ async def run_levels(
                         raise LateralWalkRefused(issue.code, issue.detail)
                     gate.publish({"status": "running", "pose": pose_index,
                                   "level": {"session": request.level.resolved.session() if request.level.resolved else None,
-                                            "run": {"level_db": request.level.volume_db}},
+                                            "run": {"level_db": request.level.level_db}},
                                   "level_index": level_index + 1, "levels": len(admitted)})
                     bound = prepare(request)
                     def analyze(record: Mapping[str, Any]) -> ProgramAnalysis:
                         basis = capture_basis(record)
                         raw_spl = (record.get("capture_integrity") or {}).get("spl") or {}
-                        spl = {key: finite_float(raw_spl.get(key)) for key in (
-                            "loudest_half_second_db_spl", "max_window_db_spl", "ceiling_db_spl")}
-                        measured = spl["loudest_half_second_db_spl"]
-                        predicted = request.level.predicted_db_spl
-                        anchor_stimulus = ladder.facts.anchor.record.get("stimulus") or {}
-                        observations.append({"take_id": record["take_id"], "level_db": finite_float(basis["level_db"]), "spl": spl,
+                        observations.append({"take_id": record["take_id"], "level_db": finite_float(basis["level_db"]),
+                            "spl": {key: finite_float(raw_spl.get(key)) for key in (
+                                "loudest_half_second_db_spl", "max_window_db_spl", "ceiling_db_spl")},
                             "run_stimulus": {"stimulus_id": basis["stimulus_id"],
                                              "wav_sha256": basis["stimulus_wav_sha256"],
-                                             "peak_dbfs": basis["stimulus_peak_dbfs"]},
-                            "stimulus_mismatch": stimulus_mismatch(anchor_stimulus.get("stimulus_id"), basis["stimulus_id"]),
-                            "measured_offset_db": measured - predicted
-                                if measured is not None and predicted is not None else None})
+                                             "peak_dbfs": basis["stimulus_peak_dbfs"]}})
                         return bound.analyze(record)
 
                     bound.door.hold = nullcontext(held)
@@ -202,11 +188,13 @@ async def run_levels(
                         aborts=aborts, signals=signals,
                     )
                     results.append(result)
+                    if found is None:
+                        found = admission["level_db"] = result.level.get("run", {}).get("probe_level_db")
                     if save_ladder:
                         await save_ladder(ladder.to_dict())
-                    previous = observations
-                    if result.cancelled or result.stopped_at or any(take.get("next") == "stop" for take in result.takes):
-                        signals.request_stop(result.reason or "take_stopped")
+                    if found is None or result.cancelled or result.stopped_at or any(
+                            take.get("next") == "stop" for take in result.takes):
+                        signals.request_stop(result.reason or REASON_LEVEL_UNSOLVED)
                     if signals.complete.is_set() or signals.stop.is_set():
                         return tuple(results)
         return tuple(results)

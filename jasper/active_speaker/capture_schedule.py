@@ -15,7 +15,7 @@ from .angle_capture import (
 )
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
-from .crossover_v2.measure_spec import MeasureSpec
+from .crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec
 from .measurement_programs import (
     BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
     Pose, UnknownPresetError, candidate_identity, preset,
@@ -74,6 +74,39 @@ def prepare_plan_captures(
     return tuple(replace(capture, spec=replace(capture.spec, level_probe=True))
                  if start is not None and (capture.stop.pose.driver or start == index) else capture
                  for index, (capture, start) in enumerate(zip(captures, starts)))
+
+
+def run_takes(captures: Sequence[PlanCapture]) -> list[tuple[str, bool, int]]:
+    """Each capture as its run plays it: its graph scope, whether it shares a
+    level (``angle_capture.level_sets``), and its placement's index."""
+    starts = level_sets([capture.stop for capture in captures])
+    placements = [index for index, (_, placed) in enumerate(groupby(captures, key=lambda capture: capture.stop.pose.place))
+                  for _ in placed]
+    return [(capture.spec.graph_scope, start is not None, placement)
+            for capture, start, placement in zip(captures, starts, placements)]
+
+
+def run_probe_index(takes: Sequence[tuple[str, bool]]) -> int | None:
+    """The take a run probes to find its fader: its first summed take that plays
+    at the run's fader, or ``None`` when every take levels itself (ADR-0403 §4).
+    Each take is its graph scope and whether it shares a level
+    (``angle_capture.level_sets``)."""
+    return next((index for index, (scope, levelled) in enumerate(takes)
+                 if scope in CANDIDATE_SCOPES and not levelled), None)
+
+
+#: Why a plan whose take at the run's fader would play before the run's probe is refused.
+UNPROBED_TAKE_DETAIL = ("A take at the run's level would play before the run found that level. "
+                        "Start the plan at a spot whose first summed take sets the run's level.")
+
+
+def unprobed_take_at_fader(takes: Sequence[tuple[str, bool, int]]) -> bool:
+    """Whether a take that plays at the run's fader could play before the run's
+    probe found that fader: one at a placement before the probe's, or any in a
+    run with no probe (ADR-0403 §4). Each take is its graph scope, whether it
+    shares a level (``angle_capture.level_sets``), and its placement's index."""
+    probe = run_probe_index([(scope, levelled) for scope, levelled, _ in takes])
+    return any(not levelled and (probe is None or placement < takes[probe][2]) for _, levelled, placement in takes)
 
 
 def takes_timing(request: AngleCaptureRequest) -> bool:
