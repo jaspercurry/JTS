@@ -144,7 +144,7 @@ def frequency_run_from_documents(
                     "id": pose_id,
                     "seat_offset_m": document.get("seat_offset_m"),
                     "axis": document.get("position_axis"),
-                    "deg": document.get("position_deg"),
+                    "azimuth_deg": document.get("position_deg"),
                     "vertical_deg": _whole_degrees(document.get("vertical_deg")) or 0,
                     "mark_distance_m": document.get("mark_distance_m"),
                 },
