@@ -3097,7 +3097,7 @@ def test_active_speaker_finish_commissioning_ignores_page_echo(monkeypatch, tmp_
 def test_save_and_apply_answers_a_refusal_as_a_typed_two_hundred(monkeypatch, tmp_path):
     """A refused finish is a 200 carrying the refusal, never an HTTP error: the
     status is a wire contract only HTTP can pin. When the door refuses is
-    pinned at module altitude in test_cli_seat_level.py.
+    pinned at module altitude in test_baseline_profile_commissioning.py.
     """
     _, mux_commands = _stub_baseline_apply(monkeypatch, refusal={
         "status": "blocked",
