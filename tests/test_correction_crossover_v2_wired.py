@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import numpy as np
-from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
+from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.arm_walk import CAPTURE_CANCEL_PATH, LoopbackSession
 from jasper.active_speaker import arm_walk
 from tests.test_arm_walk import FakeMover, _walk as arm_run
@@ -579,7 +579,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     from tests.test_plan_run import _Store, _analysis
     from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
     from jasper.active_speaker.plan_run import PlanCapture
-    from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
+    from jasper.active_speaker.angle_capture import LevelPolicy
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
     fakes, flow = EngineSeams(), FlowSeams()
@@ -591,7 +591,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
     monkeypatch.setattr(v2state, "persist_terminal_failure", lambda *a, **k: None)
     monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
-    request = replace(request or _walk([0, 20]), level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(request or _walk([0, 20]), level=LevelPolicy(level_db=-20))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.pose.azimuth_deg,), program_phase=phase))
         for stop in request.stops) if phase else plan_run.prepare_plan_captures(request)
@@ -631,6 +631,32 @@ def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypa
     assert box.volume_db == HOUSEHOLD_DB
     apply_route.assert_not_called()
     apply_dsp.assert_not_called()
+
+
+def test_a_run_writes_its_fader_first_at_its_level_window(monkeypatch, tmp_path, box):
+    """The conductor hydrates at the probe fader, full scale on these caps, and only
+    composes: a run's first fader write is its level window's, at the run's own level,
+    and the household level comes back after it (ADR-0403 §4)."""
+    from jasper.active_speaker import plan_run
+    from jasper.active_speaker.crossover_v2.programs import probe_fader_db
+    from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
+    from tests import crossover_v2_fixtures as fixtures
+
+    monkeypatch.setattr(fixtures, "SESSION_VOLUME_DB", probe_fader_db(fixtures.CAPS))
+    monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
+    writes = []
+    write = box.set_volume_db
+
+    async def recorded(db, **kwargs):
+        writes.append(db)
+        return await write(db, **kwargs)
+
+    monkeypatch.setattr(box, "set_volume_db", recorded)
+    runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box)
+    asyncio.run(runner(session))
+
+    assert manifest.status == "complete"
+    assert writes == [-20.0, HOUSEHOLD_DB]
 
 
 @pytest.mark.parametrize("signal", ["complete", "stop"])
@@ -805,7 +831,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
     request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),), repeats=repeats,
-                                  level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")), program="speaker/mark")
+                                  level=LevelPolicy(level_db=-20), program="speaker/mark")
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
     manifest = RunManifest("check-exhaustion", _Store(fakes.records))
@@ -1118,10 +1144,10 @@ def test_host_aims_only_check_at_the_first_spots_target(monkeypatch, caplog, sen
                 assert fakes.analyzed[-1][3].target_capture_dbfs == pytest.approx(expected.target_capture_dbfs)
     resolve.assert_called_once_with(_device())
     assert door.sensitivity is sensitivity
-    events = event_field_maps(caplog, "active_speaker.check_level_target")
+    events = event_field_maps(caplog, "correction.check_level_target")
     assert len(events) == (0 if target is None else 1)
     if target is not None:
-        assert float(events[0]["anchor_db_spl"]) == 80.0
+        assert float(events[0]["target_db_spl"]) == 80.0
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
 
 
@@ -1268,7 +1294,7 @@ def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan)
 async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_path, box):
     from jasper.active_speaker import plan_run
     from jasper.active_speaker.plan_run import PlanCapture
-    from jasper.active_speaker.angle_capture import LevelPolicy, ResolvedLevel
+    from jasper.active_speaker.angle_capture import LevelPolicy
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
@@ -1278,7 +1304,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
 
     flow, fakes = FlowSeams(), FakeSeams()
     conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = replace(_walk([0]), level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(_walk([0]), level=LevelPolicy(level_db=-20))
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
                        program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
     manifest = RunManifest("two-rungs", _Store(fakes.records))
@@ -1325,7 +1351,7 @@ async def test_a_rung_asking_louder_rearms_only_once_its_capture_has_played(monk
     graded = iter([refusal_copy.TakeVerdict(True, next="retake_louder", charge="speaker", next_gain_db=-20.0,
                                             evidence={"next_gain_db.tweeter": -20.0})])
     monkeypatch.setattr(correction_run_host, "assess", lambda *_a, **_k: next(graded, refusal_copy.TakeVerdict(True)))
-    request = replace(_walk([0]), level=LevelPolicy(level_db=-20, resolved=ResolvedLevel(75, -20, "1234")))
+    request = replace(_walk([0]), level=LevelPolicy(level_db=-20))
     result = await plan_run.run_plan(request, door=_run_door(tmp_path, box, fakes, manifest, records), manifest=manifest,
                                      analyze=analyze, assessor=assessor, aborts={},
                                      captures=(plan_run.PlanCapture(request.stops[0], spec),))
@@ -1445,7 +1471,7 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     session, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     manifests = [json.loads(path.read_text()) for path in session.rglob(RUN_MANIFEST_FILENAME)]
     rows = [take for manifest in manifests for group in manifest["sets"] for take in group["takes"]]
-    assert {manifest["schema_version"] for manifest in manifests} == {3}
+    assert {manifest["schema_version"] for manifest in manifests} == {4}
     assert rows and all(set(take) == {"take_id", "record_id", "selected"} for take in rows)
     # A ladder's first rung probes first; its probe's row is an attempt no view keeps (ADR-0403 §4).
     assert {json.loads(take_artifact_path(session, take["record_id"]).read_text())["take_id"]

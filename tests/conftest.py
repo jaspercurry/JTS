@@ -210,8 +210,6 @@ _host_state_dirs = itertools.count()
 
 # (env var, file name) — reader module + why absent is the hermetic baseline.
 _HOST_STATE_FILES = (
-    # Runs require a banked session level; tests that open them supply one.
-    ("JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", "seat_level_reference.json"),
     # identity.reader.resolve_hostname's JASPER_HOSTNAME source; absent falls back to the
     # env-or-DEFAULT_HOSTNAME baseline.
     ("JASPER_IDENTITY_FILE", "identity.env"),
@@ -425,13 +423,3 @@ def logging_sandbox(monkeypatch):
         root.setLevel(logging.INFO)
         monkeypatch.setattr(fr, "_ring", None, raising=False)
         yield console
-
-
-@pytest.fixture
-def banked_session_level(tmp_path, monkeypatch):
-    from jasper.active_speaker.seat_level_reference import SeatLevelTarget, write_seat_level_reference
-    path = tmp_path / "session-level.json"
-    monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SEAT_LEVEL_REFERENCE_STATE", str(path))
-    return write_seat_level_reference(reference_volume_db=-20.0, measured_db_spl=75.0,
-        target=SeatLevelTarget(75.0, 1.0), sensitivity={"serial": "1234", "sens_factor_db": -12.0},
-        max_main_volume_db=0.0, state_path=path)

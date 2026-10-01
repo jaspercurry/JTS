@@ -353,7 +353,6 @@ def bind_production_play(
     playback_device: str,
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
-    session_volume_db: float,
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
     config_dir: str | None = None,
     provenance: CaptureProvenanceRecorder | None = None,

@@ -164,8 +164,7 @@ async def run_levels(
                         issue = report.blocking_issue
                         raise LateralWalkRefused(issue.code, issue.detail)
                     gate.publish({"status": "running", "pose": pose_index,
-                                  "level": {"session": request.level.resolved.session() if request.level.resolved else None,
-                                            "run": {"level_db": request.level.level_db}},
+                                  "level": {"run": {"level_db": request.level.level_db}},
                                   "level_index": level_index + 1, "levels": len(admitted)})
                     bound = prepare(request)
                     def analyze(record: Mapping[str, Any]) -> ProgramAnalysis:

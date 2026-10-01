@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor inputs come from declared hardware, caps and the session gain."""
+"""Conductor inputs come from declared hardware and caps."""
 
 from __future__ import annotations
 
@@ -19,10 +19,7 @@ from typing import Any
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("banked_session_level")
-
 from jasper.active_speaker import commission_wiring, design_draft
-from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_TARGETS_MISSING,
     REASON_SPEAKER_SHAPE_UNSUPPORTED,
@@ -107,14 +104,13 @@ def _status() -> dict[str, Any]:
 _REAL_RESOLVE_PRESET = commission_wiring.resolve_capture_preset
 _REAL_RESOLVE_CEILINGS = excitation_safety_plan_mod.resolve_driver_excitation_ceilings
 _REAL_SWEEP_DURATION_LIMIT = excitation_safety_plan_mod.effective_sweep_duration_limit_s
-_REAL_DERIVE_SESSION_VOLUME = session_volume_plan_mod.session_measurement_volume_db
 
 
 @pytest.fixture(autouse=True)
 def _stub_non_topology_inputs(monkeypatch):
     """Stub every conductor-context input EXCEPT topology/playback-device
-    resolution — the bug under test. Real preset, driver-safety, and volume
-    derivation shapes are exercised elsewhere (tests/test_crossover_v2_conductor.py);
+    resolution — the bug under test. Real preset and driver-safety shapes are
+    exercised elsewhere (tests/test_crossover_v2_conductor.py);
     stubbing them here keeps this module focused on the one seam that shipped
     broken and untested.
     """
@@ -171,11 +167,6 @@ def _stub_non_topology_inputs(monkeypatch):
         excitation_safety_plan_mod,
         "effective_sweep_duration_limit_s",
         lambda safety_profile, fingerprint: 6.0,
-    )
-    monkeypatch.setattr(
-        session_volume_plan_mod,
-        "session_measurement_volume_db",
-        lambda safety_profile, fps, **kw: -20.0,
     )
     monkeypatch.delenv(ACTIVE_PLAYBACK_DEVICE_ENV, raising=False)
     yield
@@ -505,11 +496,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         "effective_sweep_duration_limit_s",
         _REAL_SWEEP_DURATION_LIMIT,
     )
-    monkeypatch.setattr(
-        session_volume_plan_mod,
-        "session_measurement_volume_db",
-        _REAL_DERIVE_SESSION_VOLUME,
-    )
 
     context = v2ctx.resolve_conductor_context(status)
 
@@ -520,7 +506,6 @@ def test_context_caps_equal_admission_caps_with_jts3_declaration(monkeypatch):
         "woofer": -8.0,
         "tweeter": pytest.approx(-33.2),
     }
-    assert context.session_volume_db == -20.0
     # Probe: context caps == admission caps, per role, from the same inputs.
     for role, fingerprint in targets.items():
         _band, admission_cap = _REAL_RESOLVE_CEILINGS(
@@ -647,11 +632,6 @@ def test_a_declared_pad_and_diameter_reach_the_conductor_context(monkeypatch):
         "effective_sweep_duration_limit_s",
         _REAL_SWEEP_DURATION_LIMIT,
     )
-    monkeypatch.setattr(
-        session_volume_plan_mod,
-        "session_measurement_volume_db",
-        _REAL_DERIVE_SESSION_VOLUME,
-    )
 
     context = v2ctx.resolve_conductor_context(status)
 
@@ -699,18 +679,12 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION
 
 
-@pytest.mark.parametrize("require_banked_level", [True, False])
-def test_leveling_resolves_hardware_before_a_session_gain_is_banked(monkeypatch, require_banked_level):
+def test_a_run_needs_no_saved_level(monkeypatch):
+    """With no saved level on the box, the context resolves every driver's cap
+    from the declarations alone: a run finds its own fader (ADR-0403 §4-§5)."""
     topology = _topology(HIFIBERRY_DAC8X.id, 8)
     monkeypatch.setenv(ACTIVE_PLAYBACK_DEVICE_ENV, "hw:Lab")
-    def missing(*args, **kwargs):
-        raise session_volume_plan_mod.LevelUnresolved("seat_anchor_unusable", "missing")
-    monkeypatch.setattr(session_volume_plan_mod, "session_measurement_volume_db", missing)
-    if require_banked_level:
-        with pytest.raises(CrossoverV2Refused) as caught:
-            v2ctx.resolve_conductor_context(_status(), topology=topology)
-        assert caught.value.code == "seat_anchor_unusable"
-    else:
-        context = v2ctx.resolve_conductor_context(_status(), topology=topology, require_banked_level=False)
-        assert context.session_volume_db is None
-        assert set(context.driver_caps_dbfs) == {"woofer", "tweeter"}
+
+    context = v2ctx.resolve_conductor_context(_status(), topology=topology)
+
+    assert set(context.driver_caps_dbfs) == {"woofer", "tweeter"}

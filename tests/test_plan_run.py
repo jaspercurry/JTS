@@ -1898,8 +1898,7 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
     manifest = RunManifest("run", _Store(fakes.records))
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-        level=ac.LevelPolicy(level_db=requested, resolved=ac.ResolvedLevel(75, -15, "1234")),
-        level_source=source, program="speaker/mark",
+        level=ac.LevelPolicy(level_db=requested), level_source=source, program="speaker/mark",
     )
     door = _run_door(tmp_path, box, fakes, manifest)
     door.build_session = Mock(wraps=door.build_session)
@@ -1916,14 +1915,13 @@ async def test_check_plays_at_the_session_level(tmp_path, box, requested, level,
     )
     door.build_session.assert_called_once()
     assert result.status == "complete"
-    assert manifest.to_dict()["level"] == {"session": request.level.resolved.session(),
-                                          "run": {"level_db": level, "level_source": source}}
+    assert manifest.to_dict()["level"] == {"run": {"level_db": level, "level_source": source}}
     assert {row["capture_basis"]["level_db"] for row in manifest.to_dict()["sets"]} == {level}
     assert [(call["spec"].program_phase, call["level_db"]) for call in fakes.play.calls] == [
         (phase, level) for phase in ("check", "timing", "measure")]
 
 
-async def test_manifest_discloses_program_default_without_a_seat_reference():
+async def test_manifest_discloses_program_default_when_the_plan_states_no_level():
     result, _ = await _run_gated(_walk([0]))
 
     assert result.to_dict()["level"]["run"] == {"level_db": -20.0, "level_source": "program_default"}
@@ -1931,7 +1929,7 @@ async def test_manifest_discloses_program_default_without_a_seat_reference():
 
 @pytest.mark.parametrize("level", [-20, -25])
 async def test_run_requires_the_chosen_level_in_an_open_session(level):
-    request = replace(_walk([0]), level=ac.LevelPolicy(level_db=level, resolved=ac.ResolvedLevel(75, -15, "1234")))
+    request = replace(_walk([0]), level=ac.LevelPolicy(level_db=level))
     if level == -25:
         with pytest.raises(ac.LateralWalkRefused) as refused:
             await _run_gated(request)
@@ -2003,10 +2001,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
 
     request = _walk([0, 20], candidates=("base",))
     request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
-    facts = ready_facts(request)
-    facts = replace(facts, anchor=replace(facts.anchor, record={**facts.anchor.record,
-        "ambient_report": {"bands": [{"band_hz": [20, 80], "level_dbfs": -60}]}}))
-    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0, -18.0)), facts)
+    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0, -18.0)), ready_facts(request))
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
     entry_volume = box.volume_db
@@ -2155,7 +2150,7 @@ async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_
 
 
 async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
-    manifest = RunManifest("run", _Store(FakeSeams().records), level={"session": {"session_id": "leveled"}})
+    manifest = RunManifest("run", _Store(FakeSeams().records), level={"run": {"level_db": -15.0}})
     cases = [(0, -15, "a", "", 70, True, None), (0, -15, "a", "", 72, True, 2), (0, -15, "a", "", 90, False, 19),
              (20, -15, "a", "", 76, True, 5), (0, -15, "a", "", 72, True, 1), (0, -25, "a", "", 60, True, None),
              (0, -15, "b", "", 55, True, None), (0, -15, "b", "", 58, True, 3), (0, -15, "a", "", 73, True, 1),
@@ -2170,7 +2165,7 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
         row = next(take for take in manifest.takes if take["take_id"] == str(index))
         assert row["level"]["loudest_half_second_db_spl"] == observed
         assert row["level"]["level_delta_db"] == delta
-    assert manifest.to_dict()["level"]["session"]["session_id"] == "leveled"
+    assert manifest.to_dict()["level"] == {"run": {"level_db": -15.0}}
 
 
 @pytest.mark.parametrize("retry", [False, True])

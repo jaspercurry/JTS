@@ -39,7 +39,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import numpy as np
 import pytest
@@ -73,7 +73,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
-from jasper.active_speaker import baseline_profile, seat_level_reference
+from jasper.active_speaker import baseline_profile
 
 import jasper.playback_state.capture_protocol as capture_protocol
 from jasper.playback_state.capture_protocol import MAX_TTL_S
@@ -545,23 +545,6 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     # that tells the three apart, which is why it is written at all.
     assert [e["kind"] for e in info["summed_captures"]] == [expected_kind]
     assert info["captures"] == []
-
-
-@pytest.mark.parametrize("banked", [True, False])
-def test_status_publishes_the_banked_seat_level_once(banked, request):
-    if banked:
-        request.getfixturevalue("banked_session_level")
-    with patch.object(
-        seat_level_reference, "load_seat_level_reference",
-        wraps=seat_level_reference.load_seat_level_reference,
-    ) as load:
-        block = v2status.crossover_v2_status_block()
-    assert block["level"] == (
-        {"seat_level_reference_volume_db": -20.0, "leveled_db_spl": 75.0,
-         "graph": None, "pose": None, "anchor_graph_mismatch": None, "anchor_pose_mismatch": None}
-        if banked else None
-    )
-    load.assert_called_once()
 
 
 def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch):
@@ -1976,7 +1959,7 @@ def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch,
         evidence_store=SimpleNamespace(bundle_dir=tmp_path), capture_session_id="capture",
         topology=None, preset=None, role_channels={"woofer": 0, "tweeter": 1},
         playback_device="null", safety_profile={}, role_targets={},
-        session_volume_db=-20, protection_sections_by_role=protection, roles=(),
+        protection_sections_by_role=protection, roles=(),
     )
     assert play.graph is graph and play.compose == "composer"
     assert bound["profile"].protection_sections_by_role is protection
@@ -3392,7 +3375,6 @@ def _inline_context() -> V2ConductorContext:
         role_targets={role: f"fp-{role}" for role in CAPS},
         driver_caps_dbfs=dict(CAPS),
         driver_sweep_duration_limits_s={role: 6.0 for role in CAPS},
-        session_volume_db=SESSION_VOLUME_DB,
         driver_spacing_m=0.0, driver_spacing_source="unknown",
         topology=SimpleNamespace(topology_id="t-inline"),
         playback_device="hw:Test", role_channels={"woofer": 0, "tweeter": 1},
@@ -3407,18 +3389,6 @@ def _inline_prepared(monkeypatch, tmp_path, body=None):
     store = _bundle_store(tmp_path)
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _: (store, store.session_id))
     return v2host.prepare_v2_session(body or _inline_body(), status={}, run_async=_bg_run_async, camilla_factory=None), store
-
-
-def _store_seat_reference(reference):
-    if reference is None:
-        return
-    from jasper.active_speaker.seat_level_reference import SeatLevelTarget, write_seat_level_reference
-    write_seat_level_reference(
-        reference_volume_db=reference, measured_db_spl=75.0,
-        target=SeatLevelTarget(75.0, 1.0),
-        sensitivity={"serial": "1234", "sens_factor_db": -12.0},
-        max_main_volume_db=0.0,
-    )
 
 
 def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_path):
@@ -3438,15 +3408,13 @@ def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
-@pytest.mark.parametrize("reference", [-18.0, None])
-def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch, tmp_path, prior_capture, reference):
+def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch, tmp_path, prior_capture):
     from jasper.web import correction_capture
 
     monkeypatch.setattr(correction_capture, "_capture_slot", prior_capture)
     monkeypatch.setattr(correction_capture, "_pending_capture", None)
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: pytest.fail("live mic admission before join"))
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.door._measurement_claim", lambda: pytest.fail("claim before join"))
-    _store_seat_reference(reference)
     before = v2state.load_v2_state()
     prepared, store = _inline_prepared(monkeypatch, tmp_path)
     kind = correction_capture.CaptureKind(
@@ -3502,7 +3470,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(
     v2volume.set_volume_plan_for_tests(SessionVolumePlan())
     monkeypatch.setattr(wired, "resolve_v2_wired_mic", _device)
     monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
-                        lambda _: ready_facts(AngleCaptureRequest.from_mapping(_inline_body()["plan"])).anchor.sensitivity)
+                        lambda _: ready_facts(AngleCaptureRequest.from_mapping(_inline_body()["plan"])).mic_sensitivity)
     bound = {}
 
     def build(conductor, **kwargs):

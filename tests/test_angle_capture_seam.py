@@ -32,7 +32,6 @@ from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.plan_run import prepare_plan_captures
-from jasper.active_speaker.seat_level_reference import ResolvedLevel
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import spatial
@@ -1176,16 +1175,13 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
 def test_request_round_trip_and_capture_schedule(repeats, candidates):
     request = ac.request_for_preset(
         mp.run_preset("room", "room_quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
-        retries_per_pose=2,
-        level=ac.LevelPolicy(level_db=-25, resolved=ResolvedLevel(75.8, -12.7, "8108494")),
+        retries_per_pose=2, level=ac.LevelPolicy(level_db=-25),
     )
     doc = request.to_dict()
-    assert doc["artifact_schema_version"] == 7
+    assert doc["artifact_schema_version"] == ac.REQUEST_SCHEMA_VERSION
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
-    assert doc["level"] == {"mode": "hold_reference", "level_db": -25, "anchor_db_spl": 75.8,
-                            "reference_volume_db": -12.7, "mic_serial": "8108494",
-                            "session_id": "", "leveled_at": "", "target_db_spl": 75.0}
+    assert doc["level"] == {"level_db": -25}
     assert doc["level_source"] == "operator"
     assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
     assert ac.AngleCaptureRequest.from_mapping(doc) == request
@@ -1257,18 +1253,10 @@ def test_request_levels_round_trip_and_single_level_bytes(levels):
         assert json.loads(document)["levels"] == list(levels)
 
 
-@pytest.mark.parametrize("fields", [
-    *[{"mode": mode} for mode in ("acquire_at_anchor", "series", "loud")],
-    *[{"level_db": value} for value in (math.nan, math.inf, -math.inf, True, "-20", 1, -60, -1000)],
-    {"anchor_db_spl": math.nan}, {"reference_volume_db": math.inf},
-    {"reference_volume_db": True}, {"reference_volume_db": "-20"},
-    {"reference_volume_db": 1.0}, {"mic_serial": 123},
-])
-def test_invalid_level_policy_refuses_at_construction(fields):
+@pytest.mark.parametrize("level_db", [math.nan, math.inf, -math.inf, True, "-20", 1, -60, -1000])
+def test_invalid_level_policy_refuses_at_construction(level_db):
     with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.LevelPolicy(mode=fields.get("mode", ac.LEVEL_HOLD_REFERENCE), level_db=fields.get("level_db"),
-                       resolved=replace(ResolvedLevel(75.8, -12.7, "8108494"),
-                                        **{k: v for k, v in fields.items() if k not in {"mode", "level_db"}}))
+        ac.LevelPolicy(level_db=level_db)
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
@@ -1312,7 +1300,7 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
     assert {spec.graph_scope for spec in specs} == {"candidate"}
 
 
-@pytest.mark.parametrize("version", [5, 6])
+@pytest.mark.parametrize("version", [6, 7])
 def test_previous_request_version_requires_restage(version):
     doc = {**ac.summed_at([0]).to_dict(), "artifact_schema_version": version}
     with pytest.raises(ac.LateralWalkRefused) as refused:

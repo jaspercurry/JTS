@@ -16,7 +16,6 @@ from typing import Any, Callable, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from jasper.net.http_security import is_loopback_name
-from jasper.platform.json_fields import age_seconds, parse_utc_iso
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
@@ -217,15 +216,11 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "status_unavailable", {"http": http}, payload)
-    session = (payload.get("level") or {}).get("session")
-    stamp = parse_utc_iso(session["leveled_at"]) if session else None
     for line in (packet_lines(payload["round_dir"]) if payload.get("round_dir") else
                  round_lines(payload, pending=bool(payload.get("pending")))):
         print(line, file=sys.stderr)
     # The wizard's capture ``status`` is the run's state; ``status`` names a failure (ADR-0237).
-    return answer("status", schema=ANSWER_SCHEMAS[f"{PROG} status"], subject={}, parameters={},
-                  line=(f"session level {session['leveled_db_spl']:.1f} dB SPL at gain {session['gain_db']:.1f} dB, "
-                        f"leveled {age_seconds(stamp) / 3600:.1f}h ago, reused") if session and stamp is not None else "",
+    return answer("status", schema=ANSWER_SCHEMAS[f"{PROG} status"], subject={}, parameters={}, line="",
                   **{"state" if key == "status" else key: value for key, value in payload.items()})
 
 
@@ -347,7 +342,7 @@ def _cmd_presets(args: argparse.Namespace) -> int:
     from jasper.active_speaker.setup_status import conductor_status  # lazy: reads this speaker's setup
 
     try:
-        context = resolve_conductor_context(conductor_status(), require_banked_level=False)
+        context = resolve_conductor_context(conductor_status())
     except CrossoverV2Refused as exc:
         code = exc.code or "measure_box_not_ready"
         return failed(EXIT_REFUSED, code, str(exc), code=code, next_action=exc.next_action)

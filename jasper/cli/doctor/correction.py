@@ -11,8 +11,6 @@ import json
 import os
 import re
 import subprocess
-import time
-from datetime import datetime as _datetime
 from pathlib import Path
 from ._evidence import evidence
 from ._registry import doctor_check
@@ -30,11 +28,6 @@ from jasper.platform.paths import CANONICAL_CAMILLA_CONFIG_DIR, camilla_statefil
 from ...active_speaker.environment import (
     classify_camilla_config_text,
     read_camilla_statefile_config_path,
-)
-from ...active_speaker.seat_level_reference import (
-    load_seat_level_reference,
-    seat_level_reference_state_path,
-    seat_level_reference_volume_db,
 )
 from ...active_speaker.session_volume_plan import (
     DEFAULT_SESSION_VOLUME_STATE_PATH,
@@ -74,10 +67,6 @@ REASON_CERT_IDENTITY_ABSENT = "cert_identity_absent"
 REASON_CERT_HOSTNAME_UNKNOWN = "cert_hostname_unknown"
 REASON_CERT_SAN_UNREADABLE = "cert_san_unreadable"
 REASON_CERT_SAN_MISMATCH = "cert_san_mismatch"
-
-REASON_SEAT_LEVEL_NOT_MEASURED = "seat_level_not_measured"
-REASON_SEAT_LEVEL_UNUSABLE = "seat_level_unusable"
-REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE = "seat_level_timestamp_unreadable"
 
 REASON_MEASUREMENT_HOLD_CONTROL_UNREACHABLE = "measurement_hold_control_unreachable"
 REASON_MEASUREMENT_HOLD_ACTIVE = "measurement_hold_active"
@@ -555,32 +544,6 @@ def check_correction_cert_hostname() -> CheckResult:
         "the leaf cert after converging the hostname.",
         reason=REASON_CERT_SAN_MISMATCH,
     )
-
-
-def _classify_seat_level_reference(path: Path) -> CheckResult:
-    label = "session level"
-    record = load_seat_level_reference(state_path=path)
-    volume = seat_level_reference_volume_db(state_path=path)
-    if record is None or volume is None:
-        return CheckResult(label, "warn", "Run jasper-seat-level with the current microphone, then measure",
-                           reason=REASON_SEAT_LEVEL_UNUSABLE if path.exists() else REASON_SEAT_LEVEL_NOT_MEASURED)
-    identity = (f" (mic {(record.get('mic_sensitivity') or {}).get('serial') or 'serial unknown'}, "
-                f"session {str(record.get('session_id') or '')[:8]})")
-    try:
-        measured = float(record.get("measured_db_spl"))
-        stamp = _datetime.fromisoformat(str(record["leveled_at"]).replace("Z", "+00:00"))
-        age = (time.time() - stamp.timestamp()) / 86400
-    except (KeyError, TypeError, ValueError):
-        return CheckResult(label, "ok", f"gain {volume:.1f} dB, age unknown{identity}",
-                           reason=REASON_SEAT_LEVEL_TIMESTAMP_UNREADABLE)
-    return CheckResult(label, "ok", f"{measured:.1f} dB SPL at gain {volume:.1f} dB, "
-                       f"leveled {age:.0f}d ago, reused{identity}")
-
-
-@doctor_check()
-def check_seat_level_reference() -> CheckResult:
-    """Surface the measured seat-SPL reference the next session will hold."""
-    return _classify_seat_level_reference(seat_level_reference_state_path())
 
 
 @doctor_check()

@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 import logging
 import math
 import random
@@ -36,10 +35,6 @@ from jasper.active_speaker.preflight import (
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
-from jasper.active_speaker.anchor_provenance import read_pose
-from jasper.active_speaker.seat_level_reference import (
-    SCHEMA_VERSION as SEAT_LEVEL_SCHEMA_VERSION, AnchorFacts, resolve_anchor_level,
-)
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
@@ -69,12 +64,7 @@ def _boost(boost_db, **changes):
 
 def ready_facts(plan, **changes):
     return replace(PreflightFacts(
-        candidates={}, mic_present=True, mic_identified=True,
-        anchor=AnchorFacts({"artifact_schema_version": SEAT_LEVEL_SCHEMA_VERSION, "session_id": "session", "leveled_at": "2026-09-12T00:00:00Z",
-                            "target": {"target_db_spl": 75.0, "tolerance_db": 1.0}, "measured_db_spl": 75.0, "reference_volume_db": -18.0,
-                            "stimulus": {"stimulus_id": "fixture-sweep"},
-                            "mic_sensitivity": {"sens_factor_db": -12.0, "serial": "1234"}},
-                           MicSensitivity(-12.0, 18.0, "1234")),
+        candidates={}, mic_present=True, mic_identified=True, mic_sensitivity=MicSensitivity(-12.0, 18.0, "1234"),
         commissioning_stop_db_spl=85.0, mover=plan.mover, applied_bass_extension={},
     ), **changes)
 
@@ -86,8 +76,7 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
     monkeypatch.setattr(control_client, "get", read)
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
     ready = ready_facts(plan)
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     caplog.set_level(logging.INFO)
@@ -113,9 +102,13 @@ def test_an_unreadable_declared_geometry_refuses_the_run_before_it_plays(monkeyp
         raise measurement_geometry.GeometryFieldError("front_wall_m", "front_wall_m is no longer read")
 
     monkeypatch.setattr(measurement_geometry, "load_declared_geometry", unreadable)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: None)
+    monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
-    ready = ready_facts(plan)
-    issue = preflight(plan, replace(ready, anchor=replace(ready.anchor, pose=read_pose()))).blocking_issue
+    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
+        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    issue = preflight(plan, replace(ready_facts(plan), geometry_unreadable=facts.geometry_unreadable)).blocking_issue
     assert (issue.code, issue.evidence, issue.next_action["id"]) == (
         DECLARED_GEOMETRY_UNREADABLE, {"field": "front_wall_m"}, "declare_geometry")
 
@@ -127,8 +120,7 @@ def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
         200, b'{"muted": false, "percent": 35}')))
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
     ready = ready_facts(plan)
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), role_targets=targets, safety_profile=safety,
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -165,8 +157,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
     monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: context)
     monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
                         lambda *a: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
@@ -247,8 +238,7 @@ def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
     context = SimpleNamespace(topology=mono_output_topology(), roles_bands=(), safety_profile={}, role_targets={},
                               driver_bands={"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(tweeter_floor_hz, 20000)},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
@@ -284,7 +274,6 @@ def test_preflight_per_driver_layout(layout):
     ("mover", "walk_over_mover_envelope"),
     ("mic", "wired_mic_missing"),
     ("identity", "measurement_mic_unidentified"),
-    ("anchor", "seat_anchor_unusable"),
     ("stop", "walk_commissioning_stop_unset"),
     ("context", "measure_box_not_ready"),
     ("context", "program_measurement_inputs_invalid"),
@@ -297,15 +286,13 @@ def test_preflight_issues(change, code):
     if change == "candidate":
         plan = replace(plan, candidates=("missing",), stops=(replace(plan.stops[0], candidate_id="missing"),))
     elif change == "calibration":
-        facts = replace(facts, anchor=replace(facts.anchor, sensitivity=None))
+        facts = replace(facts, mic_sensitivity=None)
     elif change == "mover":
         facts = replace(facts, mover="arm")
     elif change == "mic":
         facts = replace(facts, mic_present=False)
     elif change == "identity":
         facts = replace(facts, mic_identified=False)
-    elif change == "anchor":
-        facts = replace(facts, anchor=replace(facts.anchor, record={}))
     elif change in {"stop", "context"}:
         facts = replace(facts, commissioning_stop_db_spl=None,
                         issues=(PreflightIssue.from_code(code, ""),) if change == "context" else ())
@@ -336,7 +323,6 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     assert report.price["captures"] == 14
     assert report.price["ceiling_min"] > 0
     assert report.spl_ceiling_db_spl == 85
-    assert report.plan.level.resolved.anchor_db_spl == 75
     assert {row.graph_scope for row in report.schedule} == {"candidate"}
 
 
@@ -347,7 +333,6 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
 
     plan = request_for_preset(preset("branches/express"), candidates=("candidate",)) if branch else AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
     facts = ready_facts(plan)
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: facts.anchor.record)
     monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
 
     def context(_status):
@@ -361,7 +346,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
         model_key="minidsp_umik2", model_label="UMIK-2"))
     monkeypatch.setattr(household_mic, "resolved_household_mic", lambda: None if fault == "no_calibration" else (
         object(), SimpleNamespace(model="dayton_imm6" if fault == "wrong_mic" else "minidsp_umik2", raw_path="unused")))
-    monkeypatch.setattr(calibration, "resolve_mic_sensitivity", lambda **kwargs: facts.anchor.sensitivity)
+    monkeypatch.setattr(calibration, "resolve_mic_sensitivity", lambda **kwargs: facts.mic_sensitivity)
     report = preflight(plan, preflight_live.read_preflight_facts(plan))
     code = "measure_box_not_ready" if fault == "box" else "measure_spl_calibration_required"
     assert any(issue.code == code and issue.blocking and issue.next_action for issue in report.issues)
@@ -370,7 +355,6 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
 
 
 def test_supplied_facts_do_not_read_files(monkeypatch):
-    from jasper.active_speaker import seat_level_reference
     from jasper.audio_measurement import calibration
 
     def unexpected_read(*args, **kwargs):
@@ -378,7 +362,7 @@ def test_supplied_facts_do_not_read_files(monkeypatch):
 
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
     facts = ready_facts(plan)
-    monkeypatch.setattr(seat_level_reference, "load_seat_level_reference", unexpected_read)
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", unexpected_read)
     monkeypatch.setattr(calibration, "resolve_mic_sensitivity", unexpected_read)
     assert preflight(plan, facts).issues == ()
 
@@ -414,38 +398,6 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     assert issue.blocking and issue.next_action
 
 
-@pytest.mark.parametrize("banked,serial,sens_factor,delta", [
-    ("1234", "other", -20, 0), ("1234", "1234", -10, -2), ("1234", "1234", -14, 2),
-    ("1234", None, -10, 0), ("1234", None, -14, 2), (None, "1234", -10, 0), (None, "1234", -14, 2),
-])
-def test_calibrated_microphones_resolve_the_banked_anchor(banked, serial, sens_factor, delta):
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),), level=LevelPolicy(level_db=0))
-    facts = ready_facts(plan)
-    record = {**facts.anchor.record, "mic_sensitivity": {"sens_factor_db": -12.0, "serial": banked}}
-    facts = replace(facts, anchor=AnchorFacts(record, MicSensitivity(sens_factor, 18, serial)))
-    report = preflight(plan, facts)
-    assert not report.blocking
-    row = report.rung_admission
-    assert row["anchor_mic_serial"] == banked and row["anchor_rebased_db"] == delta
-    assert report.plan.level.resolved.mic_serial == serial
-    assert report.plan.level.level_db == 0
-
-
-@pytest.mark.parametrize("requested", [None, 0])
-def test_a_carried_anchor_is_replaced_and_sets_no_level(requested):
-    """A plan carrying another anchor runs with the banked one, at the level it
-    states or at none: the saved level sets no played level (ADR-0403 §4)."""
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
-    facts = ready_facts(plan)
-    banked, _ = resolve_anchor_level(facts=facts.anchor)
-    carried = replace(banked, anchor_db_spl=60, reference_volume_db=-25)
-    plan = replace(plan, level=LevelPolicy(level_db=requested, resolved=carried))
-    report = preflight(AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict()))), facts)
-    assert not report.blocking
-    assert (report.plan.level.resolved, report.plan.level.level_db) == (banked, requested)
-    assert report.rung_admission["carried_anchor_replaced"] is True
-
-
 _CUT = PeqFilter(50.0, 8.0, -6.0)
 
 
@@ -459,7 +411,7 @@ _CUT = PeqFilter(50.0, 8.0, -6.0)
 def test_the_room_off_rise_is_the_rooms_charge_less_its_lowest_response_in_band(tuning_profile, room, lin, rise_db):
     """Clearing the applied room layer moves the program charge by what the layer adds to it and
     gives back the layer's response, so the room-off take plays at most that much louder across
-    the band, read off the graphs the anchor and the take play (ADR-0385)."""
+    the band, read off the graphs the probe and the take play (ADR-0385)."""
     profile = replace(tuning_profile, protection_sections_by_role={
         "woofer": (CrossoverSection(40, 4, True),), "tweeter": (CrossoverSection(1800, 4, True),)})
     band_hz, spend = (20.0, 1100.0), sum(entry["gain"] for entry in room if entry["gain"] > 0.0)
@@ -563,8 +515,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     def unreadable(*_args):
         raise candidate_parts.CandidateBankRefusal("composition_saved_tune_unavailable", "gone")
 
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", unreadable)
     monkeypatch.setattr(preflight_live, "_draft_floor_db", lambda _: {"woofer": -2.0})
@@ -769,8 +720,7 @@ def test_live_facts_read_a_cardioid_base_and_its_rear(monkeypatch):
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda _: SimpleNamespace(candidate=applied))
     monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda _: profile)
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
@@ -790,7 +740,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     candidate = replace(_room_candidate(tuning_profile), bass_extension=_boost(18))
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
-    anchor = ready_facts(plan).anchor
+    sensitivity = ready_facts(plan).mic_sensitivity
     # A lone room boost gives the applied tune a program charge.
     applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {}, room_correction=_room_correction(
         sides={"mono": [{"freq": 120.0, "q": 2.0, "gain": 6.0}]}, boost_db_total=6.0, level_cost_db=6.0,
@@ -800,8 +750,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda name: {applied.fingerprint: SimpleNamespace(candidate=applied)}[name])
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda topology: tuning_profile)
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         driver_caps_dbfs={}, fc_hz=None, driver_sweep_duration_limits_s={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
@@ -834,8 +783,7 @@ def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, a
     detect = Mock(side_effect=AssertionError)
     monkeypatch.setattr(arm_walk.TurntableMover, "available", detect)
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
-    monkeypatch.setattr(preflight_live, "load_seat_level_reference", lambda: ready.anchor.record)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.anchor.sensitivity)
+    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(

@@ -36,7 +36,7 @@ def write_bundle_manifest(
         groups = [manifest_set(records, selected=selected, refused=refused)]
     if probe and groups:
         groups = [probe_set(groups[0]), *groups]
-    manifest = {"kind": "jts_run_manifest", "schema_version": 3, "preset": program,
+    manifest = {"kind": "jts_run_manifest", "schema_version": 4, "preset": program,
                 "run_id": "fixture", "finalized": True, "status": "complete", "honoured": {"retakes": 0},
                 "sets": [_banked(session_dir, index, group) for index, group in enumerate(groups)]}
     (directory / RUN_MANIFEST_FILENAME).write_text(json.dumps(manifest))

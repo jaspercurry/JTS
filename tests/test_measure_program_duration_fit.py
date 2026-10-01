@@ -21,8 +21,6 @@ import logging
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("banked_session_level")
-
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     effective_sweep_duration_limit_s,
@@ -32,7 +30,6 @@ from jasper.active_speaker.program_admission import (
     ProgramAdmissionRefusal,
     readmit_program_from_wav,
 )
-from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import (
@@ -49,6 +46,7 @@ from jasper.audio_measurement.sweep import (
 )
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import mono_output_topology
+from tests.crossover_v2_fixtures import SESSION_VOLUME_DB
 
 #: Tonight's jts3 shape: the woofer runs 150-4000 Hz (the band whose 4 s
 #: request realizes over its ceiling) and the tweeter 1600-20000 Hz.
@@ -190,7 +188,7 @@ def test_the_woofer_sweep_that_overshot_a_four_second_limit_is_now_admitted():
     topology, profile, targets = _profile_and_targets()
     limits = _limits_for(profile, targets)
     assert limits["woofer"] == 4.0
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     gains = {"woofer": -6.0, "tweeter": -46.0}
 
     unfitted = _compose(gains, sv)
@@ -214,7 +212,7 @@ def test_every_repeat_of_a_fitted_sweep_is_the_same_length():
     """The repeats are the in-capture drift estimator: a fit that moved only
     the first occurrence would silently break the comparison they exist for."""
     _topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     fitted = _compose(
         {"woofer": -6.0, "tweeter": -46.0}, sv, _limits_for(profile, targets),
     )
@@ -292,7 +290,7 @@ def test_the_declaration_the_research_prompt_asks_for_composes_admissibly():
     assert limits == {"woofer": 4.0, "tweeter": 4.0}
     assert DEFAULT_WOOFER_SWEEP_S == 4.0
 
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     gains = {"woofer": -6.0, "tweeter": -46.0}
     assert not _admit(
         topology, profile, targets, _compose(gains, sv), sv,
@@ -363,7 +361,7 @@ def test_the_tweeter_fits_its_code_side_four_second_ceiling():
     assert driver_sweep_duration_s("tweeter") == 4.0
     assert limits["tweeter"] == 4.0
 
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     fitted = _compose({"woofer": -6.0, "tweeter": -46.0}, sv, limits)
 
     assert _sweep_duration_s(fitted, "sweep_t") <= limits["tweeter"]
@@ -379,7 +377,7 @@ def test_a_tweeter_declaration_below_its_nominal_sweep_is_fitted_too():
     limits = _limits_for(profile, targets)
     assert limits["tweeter"] == 2.0
 
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     gains = {"woofer": -6.0, "tweeter": -46.0}
 
     unfitted = _compose(gains, sv)
@@ -406,7 +404,7 @@ def test_the_production_composer_admits_the_shape_it_actually_plays():
         woofer_max_sweep_s=4, tweeter_max_sweep_s=4,
     )
     limits = _limits_for(profile, targets)
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     roles = []
     caps = {}
     for channel, role in enumerate(("woofer", "tweeter")):

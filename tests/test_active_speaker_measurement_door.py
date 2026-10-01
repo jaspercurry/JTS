@@ -469,7 +469,7 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
         topology=profile.topology, preset=profile.preset,
         role_channels=profile.role_channels,
         playback_device=profile.playback_device,
-        safety_profile={}, role_targets={}, session_volume_db=-20.0, roles=(),
+        safety_profile={}, role_targets={}, roles=(),
         protection_sections_by_role=profile.protection_sections_by_role,
         program_for_phase=lambda phase: None,
     )

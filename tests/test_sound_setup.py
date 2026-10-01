@@ -695,6 +695,8 @@ def test_sound_post_rejects_invalid_body_length_before_read(
     "/active-speaker/summed-test/level",
     "/active-speaker/summed-test/stop",
     "/active-speaker/summed-validation",
+    "/active-speaker/seat-level/start",
+    "/active-speaker/seat-level/stop",
 ])
 def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypatch, path):
     def fail_if_guarded(_handler):
@@ -710,58 +712,6 @@ def test_sound_post_unknown_route_precedes_csrf_and_body_read(tmp_path, monkeypa
 
     assert b" 404 " in response.split(b"\r\n", 1)[0]
     assert read_calls == []
-
-
-@pytest.mark.parametrize(
-    ("path", "builder", "stub", "body", "expected"),
-    [
-        (
-            "/active-speaker/seat-level/start",
-            "_seat_level_start_payload",
-            lambda body: {"route": "seat-level-start", "body": body},
-            b'{"target_db_spl": 78.0}',
-            {"route": "seat-level-start", "body": {"target_db_spl": 78.0}},
-        ),
-        (
-            "/active-speaker/seat-level/stop",
-            "_seat_level_stop_payload",
-            lambda: {"route": "seat-level-stop"},
-            b"{}",
-            {"route": "seat-level-stop"},
-        ),
-    ],
-)
-def test_seat_level_routes_dispatch_and_are_csrf_protected(
-    tmp_path, monkeypatch, path, builder, stub, body, expected,
-):
-    """#2761: each seat-level POST reaches its payload builder only after the
-    CSRF chokepoint (guard_mutating_request, wired via dispatch_post(...,
-    guard="header"))."""
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: False)
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path, path=path, content_length=-1,
-    )
-    assert b" 403 " in response.split(b"\r\n", 1)[0]
-    assert read_calls == []
-
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda _handler: True)
-    monkeypatch.setattr(sound_setup, builder, stub)
-    response, read_calls = _drive_raw_sound_post(
-        tmp_path, path=path, content_length=len(body), body=body,
-    )
-    assert b" 200 " in response.split(b"\r\n", 1)[0]
-    assert json.loads(response.split(b"\r\n\r\n", 1)[1]) == expected
-    assert read_calls == [len(body)]
-
-
-def test_seat_level_status_route_serves_its_builder(tmp_path, monkeypatch):
-    expected = {
-        "state": "idle", "target_db_spl": None,
-        "mic": {"available": False}, "default_target_db_spl": 78.0,
-    }
-    monkeypatch.setattr(sound_setup, "_seat_level_status_payload", lambda: expected)
-
-    assert _get_json(tmp_path, "/active-speaker/seat-level/status") == expected
 
 
 def test_sound_post_csrf_rejection_precedes_body_read(tmp_path, monkeypatch):

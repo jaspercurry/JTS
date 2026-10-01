@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Generic, Literal, Mapping, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.platform.log_event import log_event
 from jasper.active_speaker.crossover_preview import build_crossover_preview
@@ -49,7 +49,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-_Level = TypeVar("_Level", bound=float | None)
 _BOX_NOT_READY = "measure_box_not_ready"
 
 
@@ -58,7 +57,7 @@ def driver_spacing_source(draft: Mapping[str, Any]) -> str:
 
 
 @dataclass(frozen=True)
-class V2ConductorContext(Generic[_Level]):
+class V2ConductorContext:
     """Everything the production conductor needs, resolved from live status."""
 
     preset: Any
@@ -77,7 +76,6 @@ class V2ConductorContext(Generic[_Level]):
     #: rear output too. These two never collapse into one.
     role_targets: dict[str, str]
     safety_profile: Mapping[str, Any]
-    session_volume_db: _Level
     #: The declared woofer<->tweeter acoustic-center spacing, in metres,
     #: or ``None`` when undeclared -- see ``design_draft.declared_driver_spacing_m``,
     #: the ONE owner of this fact. ``MeasurementGeometry.parallax_us`` treats
@@ -166,25 +164,8 @@ def published_driver_caps(
     return caps
 
 
-@overload
-def resolve_conductor_context(
-    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[True] = True,
-) -> V2ConductorContext[float]: ...
-
-
-@overload
-def resolve_conductor_context(
-    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: Literal[False],
-) -> V2ConductorContext[None]: ...
-
-
-def resolve_conductor_context(
-    status: Mapping[str, Any], *, topology: Any = None, require_banked_level: bool = True,
-) -> V2ConductorContext:
-    """Resolve confirmed limits before capture starts, not at play time (#1821).
-
-    Leveling resolves the speaker inputs before a session level can be banked.
-    """
+def resolve_conductor_context(status: Mapping[str, Any], *, topology: Any = None) -> V2ConductorContext:
+    """Resolve confirmed limits before capture starts, not at play time (#1821)."""
     from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset  # lazy: test_correction_crossover_v2_conductor_context patches commission_wiring
     from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
     from jasper.active_speaker.excitation_safety_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches excitation_safety_plan
@@ -192,9 +173,6 @@ def resolve_conductor_context(
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,
-    )
-    from jasper.active_speaker.session_volume_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches session_volume_plan
-        LevelUnresolved, session_measurement_volume_db,
     )
     from jasper.audio_routes.output_topology_store import load_output_topology  # lazy: test_correction_crossover_v2_conductor_context pins the store lookup
 
@@ -310,14 +288,6 @@ def resolve_conductor_context(
         float(preset.crossover_regions[0].fc_hz)
         if preset.crossover_regions else None
     )
-    session_volume_db = None
-    if require_banked_level:
-        try:
-            session_volume_db = session_measurement_volume_db(
-                safety_profile, [role_targets[role] for role in roles],
-            )
-        except LevelUnresolved as exc:
-            raise CrossoverV2Refused(exc.detail, code=exc.reason) from exc
     playback_device, _playback_device_source = resolve_active_playback_device(
         topology
     )
@@ -336,7 +306,6 @@ def resolve_conductor_context(
         driver_sweep_duration_limits_s=sweep_duration_limits_s,
         role_targets=role_targets,
         safety_profile=safety_profile,
-        session_volume_db=session_volume_db,
         # #1864: threaded from the declaration (design_draft.py), never a
         # default. ``None`` when undeclared -- a missing parallax correction
         # is SELF-CANCELLING at the mic position (the same geometric excess is

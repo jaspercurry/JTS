@@ -186,21 +186,6 @@ function setupHarness(fetchHandler, options = {}) {
     get() { return bodyHtml; },
     set(html) {
       bodyHtml = html;
-      const seatIds = ['card', 'target', 'start', 'stop', 'status'].map(id => 'seat-level-' + id);
-      for (const id of seatIds) {
-        if (html.includes('id="' + id + '"')) {
-          elements.set(id, makeEl(id));
-          absent.delete(id);
-        } else {
-          elements.delete(id);
-          absent.add(id);
-        }
-      }
-      const card = elements.get('seat-level-card');
-      if (card) {
-        card.descendants = seatIds.map(id => elements.get(id));
-        card.replaceWith = saved => saved.descendants.forEach(node => elements.set(node.id, node));
-      }
     },
   });
   globalThis.document = {

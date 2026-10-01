@@ -233,7 +233,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         answer_fields=("document", "preview", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
     "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
-                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/5"),
+                       builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/6"),
 }
 
 #: The run order of the views a finished round publishes: ``room-grade``
@@ -285,8 +285,7 @@ CATALOG: dict[str, CatalogRow] = {
         avoid="a round's measured results; jasper-round-views catalog lists the tools that read them",
         answer_fields=("applied", "banked", "context_error", "contracts", "declared", "driver_caps_live", "last_banked",
                        "latest_agent_note", "next", "next_commands", "packet_contracts",
-                       "packet_fingerprint", "reading_order", "recent_rounds", "seat_level_reference_volume_db",
-                       "selected_round", "speaker")),
+                       "packet_fingerprint", "reading_order", "recent_rounds", "selected_round", "speaker")),
     f"{_ROUND} list": CatalogRow(argv=("--program", "<program>"), programs=RUNNABLE_PROGRAMS,
                                  schema=ANSWER_SCHEMAS[f"{_ROUND} list"],
         question="Which rounds are banked, newest first, with their preset, result and applied identity?",

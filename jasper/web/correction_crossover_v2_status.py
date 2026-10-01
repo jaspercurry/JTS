@@ -24,7 +24,6 @@ from typing import Any, Mapping
 from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
-from jasper.active_speaker.seat_level_reference import seat_level_reference_status
 from jasper.platform.log_event import log_event
 
 
@@ -87,7 +86,6 @@ def crossover_v2_status_block(
         "applied": bool((state or {}).get("applied")),
         "candidate": (state or {}).get("candidate"),
         "accepted_sound_revision": (state or {}).get("accepted_sound_revision"),
-        "level": seat_level_reference_status(),
         # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
         "round_receipt": (state or {}).get("round_receipt"),
         "execution": (state or {}).get("execution"),

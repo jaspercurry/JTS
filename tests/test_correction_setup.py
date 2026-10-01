@@ -1085,7 +1085,7 @@ def test_sync_analyze_rejects_oversized_capture_before_body_read():
     assert "WAV body too large" in sent["payload"]["error"]
 
 
-@pytest.mark.parametrize("code", [None, "unknown_refusal", "seat_anchor_unusable"])
+@pytest.mark.parametrize("code", [None, "unknown_refusal", "measure_box_not_ready"])
 @pytest.mark.parametrize("explicit", [False, True])
 def test_refusal_envelope_preserves_codes_and_classifies_at_most_once(code, explicit, monkeypatch):
     from jasper.active_speaker import program_failure  # lazy: numpy import cost
@@ -1108,8 +1108,8 @@ def test_refusal_envelope_preserves_codes_and_classifies_at_most_once(code, expl
     assert body["code"] == code
     assert set(body) == {"ok", "code", "next_action", "error"}
     assert isinstance(body["error"], str)
-    if code == "seat_anchor_unusable":
-        assert body["next_action"]["id"] == "measure_seat_level"
+    if code == "measure_box_not_ready":
+        assert body["next_action"]["id"] == "speaker_setup"
     else:
         assert body["next_action"] is None
 

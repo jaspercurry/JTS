@@ -65,7 +65,6 @@ class RoundPacket:
                 "schedule": {**self.schedule, "issues": [*self.schedule.get("issues", ()), *issues]},
                 "runs": [{key: run[key] for key in ("run_id", "level", "status", "reason", "not_measured", "request_fingerprint")}
                          for run in runs],
-                "level": {"session": first["level"].get("session")},
                 "finalized": self.finalized,
                 "status": "complete" if self.finalized and measured else "partial",
                 "reason": self.manifest.reason or (issues[0]["code"] if issues and not measured else ""),

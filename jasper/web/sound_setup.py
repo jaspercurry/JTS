@@ -71,10 +71,6 @@ from .chrome import (
     json_island,
 )
 from .volume_floor_tone import VOLUME_FLOOR_TONE_SESSION
-from .sound_seat_level import (
-    seat_level_start_payload as _seat_level_start_payload,
-    seat_level_stop_payload as _seat_level_stop_payload,
-)
 from . import sound_speaker_setup
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
@@ -98,9 +94,6 @@ from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_design_draft_payload,
     _active_speaker_rear_calibration_seed_payload,
     _active_speaker_tuning_handoff_payload,
-)
-from .sound_seat_level import (  # noqa: F401 - resolved by name
-    seat_level_status_payload as _seat_level_status_payload,
 )
 
 from .sound_design_draft import _active_speaker_design_draft_save_payload
@@ -273,10 +266,6 @@ _GET_ROUTES = {
     "/active-speaker/rear-calibration/seed": (
         "_active_speaker_rear_calibration_seed_payload",
         "sound.active_speaker_rear_calibration_seed",
-    ),
-    "/active-speaker/seat-level/status": (
-        "_seat_level_status_payload",
-        "sound.active_speaker_seat_level_status",
     ),
 }
 
@@ -498,12 +487,6 @@ def _make_handler(
                     return
                 if path == "/active-speaker/rear-calibration/bank":
                     self._send_json(_active_speaker_rear_calibration_bank_payload(raw))
-                    return
-                if path == "/active-speaker/seat-level/start":
-                    self._send_json(_seat_level_start_payload(raw))
-                    return
-                if path == "/active-speaker/seat-level/stop":
-                    self._send_json(_seat_level_stop_payload())
                     return
                 if path == "/output-topology":
                     try:
@@ -819,8 +802,6 @@ def _make_handler(
         "/active-speaker/driver-research-request": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/validate": Handler._dispatch_post_route,
         "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
-        "/active-speaker/seat-level/start": Handler._dispatch_post_route,
-        "/active-speaker/seat-level/stop": Handler._dispatch_post_route,
         "/active-speaker/baseline-profile/save-and-apply": Handler._dispatch_post_route,
         "/output-topology": Handler._dispatch_post_route,
         "/output-topology/reset": Handler._dispatch_post_route,
