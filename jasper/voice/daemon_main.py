@@ -1035,10 +1035,13 @@ async def _serve_until_stopped(
     connect_live_session: Callable[[], Awaitable[None]],
 ) -> None:
     """Start the schedulers and the control socket, then serve wake."""
-    # Wire timer announcements through the wake loop's session-aware playback
-    # (duck + speak_text + restore, deferred up to 5 s if a voice turn is in
-    # flight). set_on_fire BEFORE start(): start() restores persisted timers
-    # and one whose fire_at is < 1 s away could fire mid-restore.
+    # Before every source of assistant audio (restored timers, the control
+    # socket's CUE_PLAY/START/MUTE) and the first mic frame: a restart inside
+    # a run must not speak through the fader the run holds, nor listen until
+    # the coordinator's next renewal. See ADR-0305.
+    await wake_loop.measurement_hold.adopt_live_window()
+    # set_on_fire BEFORE start(): start() restores persisted timers and one
+    # whose fire_at is < 1 s away could fire mid-restore.
     timer_scheduler.set_on_fire(wake_loop.announce_timer)
     await timer_scheduler.start()
     # Registered after the TtsPlayout so the unwind cancels in-flight
@@ -1052,9 +1055,6 @@ async def _serve_until_stopped(
     _arelease(
         stack, "control_socket", control_socket_mod.close, control_socket,
     )
-    # Before the first mic frame: a restart mid-sweep must come up with
-    # wake already off, not listen until the coordinator's next renewal.
-    await wake_loop.measurement_hold.adopt_live_window()
     await _serve_while_connecting(
         connect_live_session, wake_loop.run,
     )

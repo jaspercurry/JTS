@@ -110,6 +110,19 @@ def _remaining_lease_sec(value: object) -> float | None:
     return seconds
 
 
+def live_hold_lease_sec(hold: dict[str, Any] | None) -> float | None:
+    """The lease left on a hold voice must go quiet under, else ``None``.
+
+    ``hold`` is :func:`read_measurement_hold`'s answer. An unreadable hold,
+    nothing held and no usable lease all return ``None``: voice may play.
+    Startup adoption and the park cue (``jasper.cues.park``) share this rule.
+    """
+
+    if hold is None or not hold.get("active"):
+        return None
+    return _remaining_lease_sec(hold.get("expires_in_s"))
+
+
 class MeasurementHold:
     """The measurement window's voice-side lease and its crash backstop."""
 
@@ -167,7 +180,7 @@ class MeasurementHold:
         if not hold.get("active"):
             self._log_adopt_skipped("inactive")
             return False
-        expires_in_s = _remaining_lease_sec(hold.get("expires_in_s"))
+        expires_in_s = live_hold_lease_sec(hold)
         if expires_in_s is None:
             self._log_adopt_skipped(
                 "no_lease",
