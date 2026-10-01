@@ -1094,6 +1094,32 @@ def test_i2s_reboot_marker_tracks_desired_versus_observed(tmp_path: Path):
     assert stderr_event(parked.stderr, "audio_hardware_reconcile.output_parked")["recognized"] == "0"
 
 
+@pytest.mark.parametrize(("hand_written", "reboot_owed"), [("hifiberry-dac8x", False), ("merus-amp", True)])
+def test_i2s_reboot_marker_follows_whether_a_reboot_can_reach_the_hat(
+    tmp_path: Path, hand_written: str, reboot_owed: bool
+):
+    """A hand-written overlay line refuses the managed one. Naming ANOTHER
+    overlay, it boots again after a reboot, so no restart is owed (#6113)."""
+    model = "Raspberry Pi Zero 2 W Rev 1.0"
+    (tmp_path / "install_profile").write_text("streambox\n", encoding="utf-8")
+    (tmp_path / "i2s_hat.env").write_text(
+        "JASPER_I2S_HAT_PROFILE=innomaker_hifi_amp_pro\n", encoding="utf-8"
+    )
+    marker = tmp_path / "i2s-reboot"
+    marker.write_text("", encoding="utf-8")
+
+    result = _run_reconcile(
+        tmp_path, "", "--reason", "udev",
+        initial_boot_config=f"[all]\ndtoverlay=dwc2,dr_mode=peripheral\ndtoverlay={hand_written}\n",
+        board_model=model, active_usb_role="peripheral",
+    )
+
+    assert result.returncode == 0, result.stderr
+    conflict = stderr_event(result.stderr, "hardware.i2s_hat_boot_config_conflict")
+    assert conflict["colliding_overlays"] == hand_written
+    assert marker.exists() is reboot_owed
+
+
 def _not_durable_boot_config(**kwargs: Any):
     """A boot-config reconcile that published without a durable fsync.
 

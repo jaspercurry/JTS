@@ -190,6 +190,7 @@ class Pass:
         # moved the managed boot block.
         self.i2s_hat_boot_changed: bool | None = None
         self.i2s_hat_apply_error = False
+        self.i2s_hat_blocked_by_collision = False
         self.latency_floor_changed = False
         self.route_fanin_changed = False
 
