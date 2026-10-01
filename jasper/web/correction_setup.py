@@ -37,6 +37,7 @@ import asyncio
 import functools
 import logging
 import os
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from http import HTTPStatus
@@ -46,9 +47,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
+from jasper.active_speaker import session_volume_plan as volume_plan
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.control.measurement_hold import read_measurement_hold
+from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER
 
 from jasper.platform.log_event import log_event
 from jasper.platform.logging_setup import configure_logging
@@ -690,6 +694,53 @@ async def _restore_protected_neutral_program_graph() -> None:
         )
 
 
+def _booted_at() -> float:
+    """When this boot began, on the wall clock that stamps file mtimes."""
+    return time.time() - float(Path("/proc/uptime").read_text(encoding="ascii").split()[0])
+
+
+def _recover_crash_left_session_volume() -> None:
+    """Restore the fader a killed run left, through the recovery button's path.
+
+    A SIGKILL, the OOM killer or the watchdog skips the run's ``finally``, and
+    CamillaDSP's statefile keeps the run's level. An ``active`` plan at start
+    was opened by a process that is gone, unless a live hold names another
+    owner: jasper-seat-level writes the same plan file (removal condition: it
+    stops sharing it). An unreadable hold may be that owner, so it skips too.
+    A previous boot's plan gets no fader write: jasper-voice's start already
+    wrote the listening level.
+
+    The plan records no boot id, so "this boot" is its file's mtime against
+    :func:`_booted_at`. With no RTC, before NTP's first step a previous boot's
+    plan can read as this boot's; the write is then that run's
+    ``original_main_volume_db``, the household's own pre-run level.
+    """
+    plan = v2volume.session_volume_plan()
+    if not plan.needs_recovery or plan.unresolved_volume_safety is not None:
+        return
+    written_after_boot_s = (
+        volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH.stat().st_mtime - _booted_at()
+    )
+    succeeded = False
+    if written_after_boot_s < 0:
+        result = "skipped_previous_boot"
+    elif (hold := read_measurement_hold()) is None:
+        result = "skipped_hold_unreadable"
+    elif hold.get("active") and hold.get("owner") != MEASUREMENT_GATE_OWNER:
+        result = "skipped_live_measurement"
+    else:
+        succeeded, result = v2volume.recover_session_volume(
+            correction_runtime.run_async, correction_runtime.camilla_controller,
+        )
+    log_event(
+        logger,
+        "correction.crossover_v2_volume_startup_recovery",
+        level=logging.INFO if succeeded else logging.WARNING,
+        result=result,
+        written_after_boot_s=f"{written_after_boot_s:.0f}",
+    )
+
+
 def _claim_crossover_state_owners() -> None:
     """Retire prior-process Active work before this service accepts requests."""
 
@@ -699,6 +750,10 @@ def _claim_crossover_state_owners() -> None:
         (
             "correction.crossover_repeat_admission_unavailable",
             repeat_admission.claim_owner,
+        ),
+        (
+            "correction.crossover_v2_volume_startup_recovery_unavailable",
+            _recover_crash_left_session_volume,
         ),
     )
     for event, claim in claims:

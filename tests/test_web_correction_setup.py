@@ -38,6 +38,7 @@ from jasper.web import (
     correction_runtime,
     correction_setup,
 )
+from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER
 from tests._log_events import event_fields, event_records
 from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
@@ -612,6 +613,10 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     monkeypatch.setattr(
         repeat_admission, "claim_owner", lambda: claims.append("repeat")
     )
+    monkeypatch.setattr(
+        correction_setup, "_recover_crash_left_session_volume",
+        lambda: claims.append("volume"),
+    )
 
     async def recover_program():
         claims.append("program")
@@ -621,7 +626,7 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     )
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["repeat", "program"]
+    assert claims == ["repeat", "volume", "program"]
 
 
 def test_program_graph_startup_recovery_is_exact_and_fail_closed(
@@ -754,6 +759,10 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
         raise OSError("repeat state unavailable")
 
     monkeypatch.setattr(repeat_admission, "claim_owner", fail_repeat)
+    monkeypatch.setattr(
+        correction_setup, "_recover_crash_left_session_volume",
+        lambda: claims.append("volume"),
+    )
 
     async def recover_program():
         claims.append("program")
@@ -764,7 +773,79 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
 
     correction_setup._claim_crossover_state_owners()
 
-    assert claims == ["program"]
+    assert claims == ["volume", "program"]
+
+
+@pytest.mark.parametrize(
+    ("written_at", "hold", "restored_to", "result"),
+    [
+        # The killed run's own hold outlives it by up to its 120 s TTL.
+        (2_000.0, {"active": True, "owner": MEASUREMENT_GATE_OWNER}, [-27.0], "exact_restored"),
+        (500.0, {"active": False}, [], "skipped_previous_boot"),
+        (2_000.0, {"active": True, "owner": "seat-level"}, [], "skipped_live_measurement"),
+        (2_000.0, None, [], "skipped_hold_unreadable"),
+    ],
+    ids=["this_boot", "previous_boot", "seat_level_live", "hold_unreadable"],
+)
+def test_service_start_restores_the_fader_a_killed_run_left(
+    monkeypatch, tmp_path, caplog, written_at, hold, restored_to, result,
+):
+    """A kill skips the run's ``finally``; the next start restores the level.
+
+    Only this boot's plan (boot at t=1000), and only when no other process's
+    measurement can own it: jasper-seat-level writes the same plan file.
+    """
+    import asyncio
+    import os
+
+    from jasper.active_speaker import repeat_admission
+    from jasper.active_speaker import session_volume_plan as volume_plan
+
+    fader = {"db": -27.0}
+    writes: list[float] = []
+
+    async def set_fader(db):
+        writes.append(db)
+        fader["db"] = db
+        return True
+
+    async def get_fader():
+        return fader["db"]
+
+    state = tmp_path / "session_volume.json"
+    run = volume_plan.SessionVolumePlan(state_path=state)
+    opened = asyncio.run(run.open(-20.0, volume_plan.FaderVolumeDoor(set_fader, get_fader)))
+    assert opened is volume_plan.SessionVolumeOpenResult.OPENED
+    os.utime(state, (written_at, written_at))
+    writes.clear()
+
+    monkeypatch.setattr(volume_plan, "DEFAULT_SESSION_VOLUME_STATE_PATH", state)
+    monkeypatch.setattr(correction_setup, "_booted_at", lambda: 1_000.0)
+    monkeypatch.setattr(correction_setup, "read_measurement_hold", lambda: hold)
+    seat_process_volume_owner(monkeypatch, set_fader, get_fader)
+    monkeypatch.setattr(
+        correction_runtime, "camilla_controller",
+        lambda: SimpleNamespace(get_volume_db=lambda *, best_effort: get_fader()),
+    )
+    monkeypatch.setattr(repeat_admission, "claim_owner", lambda: None)
+
+    async def graph_untouched():
+        return None
+
+    monkeypatch.setattr(
+        correction_setup, "_restore_protected_neutral_program_graph", graph_untouched,
+    )
+    v2volume.set_volume_plan_for_tests(None)
+    try:
+        with caplog.at_level(logging.INFO, logger=correction_setup.logger.name):
+            correction_setup._claim_crossover_state_owners()
+    finally:
+        v2volume.set_volume_plan_for_tests(None)
+
+    assert writes == restored_to
+    assert volume_plan.SessionVolumePlan(state_path=state).needs_recovery is (not restored_to)
+    fields = event_fields(caplog, "correction.crossover_v2_volume_startup_recovery")
+    assert fields["result"] == result
 
 
 # ---------------------------------------------------------------------------
