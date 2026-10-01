@@ -66,7 +66,7 @@ class PreflightIssue:
     @classmethod
     def from_code(cls, code: str, detail: str, *, blocking: bool = True) -> PreflightIssue:
         spec = REASON_REGISTRY[code]
-        return cls(code, detail, spec.next_action or {
+        return cls(code, detail, spec.own_action or {
             "id": "review_plan", "label": "Review measurement settings", "href": "/sound/speaker/crossover/",
         }, blocking)
 

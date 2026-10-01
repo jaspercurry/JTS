@@ -231,7 +231,7 @@ def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
         if spec.template == TEMPLATE_SILENT_AUTO_RETRY:
             action = None
         elif spec.template == TEMPLATE_HARD_STOP:
-            action = dict(spec.next_action) if spec.next_action else {
+            action = dict(spec.own_action) if spec.own_action else {
                 "id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/",
             }
         elif spec.template == TEMPLATE_SESSION_RESTART:

@@ -27,6 +27,7 @@ from jasper.bass_extension.dynamic import DYNAMIC_BASS_REFUSAL_REASONS
 from jasper.cli import _refusal, audition, mic_calibration
 from jasper.cli import round as round_cli
 from jasper.cli.round_views._common import refused_by_name
+from jasper.web.correction_runtime import refusal_envelope
 
 MOVED_NAMES: dict[str, tuple[str, ...]] = {
     "refusal_copy": (
@@ -120,10 +121,27 @@ def test_refusal_copy_lookup_returns_fallback_copy_and_an_independent_action(cod
     message, action = refusal_copy.refusal_copy_for(code)
     spec = refusal_copy.REASON_REGISTRY.get(code, refusal_copy.REASON_REGISTRY[refusal_copy.REASON_INTERNAL_ERROR])
     assert message is spec.message
-    assert action == spec.next_action
+    assert action == spec.own_action
     if action is not None:
         action["id"] = "changed"
-        assert refusal_copy.refusal_copy_for(code)[1]["id"] == spec.next_action["id"]
+        assert refusal_copy.refusal_copy_for(code)[1]["id"] == spec.own_action["id"]
+
+
+@pytest.mark.parametrize("code", sorted(refusal_copy.REASON_REGISTRY))
+def test_the_web_envelope_carries_a_rows_own_action_and_never_its_templates(code):
+    """A template's action is what a CLI prints; each web screen picks its button from the template itself."""
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert refusal_envelope(code=code) == {
+        "ok": False, "code": code, "error": refusal_copy.reason_message(code, spec),
+        "next_action": dict(spec.own_action) if spec.own_action else None,
+    }
+
+
+def test_every_registry_row_offers_a_next_action_except_a_silent_auto_retry():
+    """``jasper-round`` prints a run's fault under any registry code, so a row with no action of its own
+    needs its template's. A silent auto-retry shows a banner while it retries, and no CLI prints it."""
+    assert {code for code, spec in refusal_copy.REASON_REGISTRY.items()
+            if not spec.next_action} <= refusal_copy.TRANSIENT_AUTO_RETRY_CODES
 
 
 # The readers own most of these codes outside evidence_reasons, so the module scan below cannot see them.
@@ -181,7 +199,7 @@ def test_every_analysis_reason_is_one_evidence_code_with_a_next_action(module_na
     assert codes and codes <= set(constants.values())
     for code in codes:
         spec = refusal_copy.REASON_REGISTRY[code]
-        assert spec.code == code and spec.message and spec.next_action
+        assert spec.code == code and spec.message and spec.own_action
 
 
 _BASE_SET = {"set_id": "a", "base": True, "capture_basis": {}}
@@ -301,7 +319,8 @@ def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action()
     ``failed()`` and ``refused()`` with no registry row, so a reader got a code with neither
     copy nor a next action. A code that reaches a gap or a refusal through a variable is listed
     above. An exception class is found by its constructor when a ``jasper/cli`` module names it in
-    an ``except``; a class a CLI reaches only through a base class is not seen."""
+    an ``except``; a class a CLI reaches only through a base class is not seen. Each code the scan
+    reads keeps an action of its own: a template's action is for a fault a run reports at run time."""
     raised = _codes_raised_by_name()
     assert {"gate_sweep_mixed_graphs", evidence_reasons.TAKE_CURVES_NOT_BANKED, "alignment_no_crossover_region",
             "driver_filter_malformed", "prescription_polarity_invalid", "composition_base_required",
@@ -314,5 +333,5 @@ def test_every_code_a_gap_or_refusal_names_has_registry_copy_and_a_next_action()
             "delay_us_invalid", "room_correction_invalid", "tweeter_unprotected",
             } <= set(raised), "the scan no longer reads a literal, a name, an attribute, an alias, a keyword and a class"
     lacking = {code: raised.get(code, "forwarded") for code in raised.keys() | _FORWARDED_CODES
-               if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.next_action)}
+               if not ((spec := refusal_copy.REASON_REGISTRY.get(code)) and spec.message and spec.own_action)}
     assert not lacking
