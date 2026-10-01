@@ -759,14 +759,14 @@ wheels = [
 
 [[package]]
 name = "gtfs-realtime-bindings"
-version = "2.2.0"
+version = "3.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/63/3e3d190df599b6d25e2c0793f6653bb696c1be8480263ef417ea70a40f25/gtfs_realtime_bindings-2.2.0.tar.gz", hash = "sha256:1e184075ff6aae1f8e8c91ae28eb946af5e5b656b743a41a7bca37818784886b", size = 12013, upload-time = "2026-07-29T19:12:47.132Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/5e/910d71a3902aa1746ca330cb4256d4afd4adf2c4951aeca840ae4973e465/gtfs_realtime_bindings-3.0.0.tar.gz", hash = "sha256:bfa7426ed537b374bbfe410a99e788cdef1b7009fe1e5aae2e3e0bc9fdca7d73", size = 12776, upload-time = "2026-09-17T17:57:39.263Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/14/a73fbb70b7948cd2d2f1c48846889fc6c944a6aede25a31d8111a1d48dcf/gtfs_realtime_bindings-2.2.0-py3-none-any.whl", hash = "sha256:4f222a962bcb8715d9305cc08e7f7662cc70e7479f377e2694439a50724bc676", size = 11297, upload-time = "2026-07-29T19:12:46.089Z" },
+    { url = "https://files.pythonhosted.org/packages/76/49/91d41718731b8c4d8d60bad8c69fc3f7626068b7b137819b389d187101e1/gtfs_realtime_bindings-3.0.0-py3-none-any.whl", hash = "sha256:a270f236e92c13dd1d633492bcee397dcc2361d83cdcc19f9c94fb7c0082ed8b", size = 11875, upload-time = "2026-09-17T17:57:38.114Z" },
 ]
 
 [[package]]
@@ -1002,8 +1002,8 @@ requires-dist = [
     { name = "google-auth-oauthlib", marker = "extra == 'streambox'", specifier = ">=1.2" },
     { name = "google-genai", marker = "extra == 'full'", specifier = "==2.22.0" },
     { name = "google-genai", marker = "extra == 'streambox'", specifier = "==2.22.0" },
-    { name = "gtfs-realtime-bindings", marker = "extra == 'full'", specifier = "==2.2.0" },
-    { name = "gtfs-realtime-bindings", marker = "extra == 'streambox'", specifier = "==2.2.0" },
+    { name = "gtfs-realtime-bindings", marker = "extra == 'full'", specifier = "==3.0.0" },
+    { name = "gtfs-realtime-bindings", marker = "extra == 'streambox'", specifier = "==3.0.0" },
     { name = "httpx", marker = "extra == 'full'", specifier = "==0.28.1" },
     { name = "httpx", marker = "extra == 'streambox'", specifier = "==0.28.1" },
     { name = "libusb-package", marker = "extra == 'full'", specifier = ">=1.0" },
