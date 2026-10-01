@@ -171,11 +171,15 @@ async def test_where_voice_runs_a_lost_voice_pause_ends_the_run_into_its_restore
         marker.write_text("reason=no_mic\n")
     monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(marker))
     events: list = []
+    played = asyncio.Event()
 
     async def voice(_path, cmd, **_kwargs):
         if parked:
             raise FileNotFoundError("jasper-voice is parked")
         if cmd == "MEASURE_PAUSE" and events.count("pause") + 1 >= pauses:
+            if events.count("pause"):
+                # A renewal is lost once a take has played, never by a timer racing the door's opening.
+                await played.wait()
             events.append("lost")
             raise RuntimeError("voice pause lost")
         events.append("pause" if cmd == "MEASURE_PAUSE" else cmd)
@@ -192,13 +196,14 @@ async def test_where_voice_runs_a_lost_voice_pause_ends_the_run_into_its_restore
     monkeypatch.setattr(coordinator, "_acquire_measurement_gate", isolation)
     monkeypatch.setattr(coordinator, "_release_measurement_gate", isolation)
     monkeypatch.setattr(coordinator, "_measurement_hold_command", hold)
-    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.01)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0)
 
     async def run():
         async with _door(tmp_path, box):
             for _ in range(20):
                 events.append(("play", box.volume_db))
-                await asyncio.sleep(0.01)
+                played.set()
+                await asyncio.sleep(0)
 
     if reason is None:
         await run()
