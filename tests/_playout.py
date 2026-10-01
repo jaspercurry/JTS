@@ -63,6 +63,9 @@ class FakeOutputdStream:
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
 
+    def drop_if_peer_closed(self) -> bool:
+        return False
+
     def program_duck(self, on: bool) -> None:
         self.ducks.append(on)
 
@@ -232,6 +235,9 @@ class FakeTts:
     async def pause_content_meter(self) -> None:
         self._note("pause_content_meter")
         self.meter_pauses += 1
+
+    async def refresh_connection(self) -> None:
+        self._note("refresh_connection")
 
     async def pause_content_meter_for_measurement(
         self, deadline_monotonic: float,

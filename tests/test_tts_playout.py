@@ -1005,6 +1005,36 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
     assert p._stream is replacement
 
 
+@pytest.mark.parametrize("fanin_restarted", [True, False])
+async def test_refresh_connection_replaces_only_a_stream_whose_fanin_end_closed(
+    monkeypatch, fanin_restarted,
+) -> None:
+    """A fan-in restart leaves a socket whose far end is gone; the measurement
+    pause's refresh replaces it before the fail-closed PAUSE (#6113), and
+    leaves a live one alone."""
+
+    parent, child = socket.socketpair()
+    stream = tts_mod._OutputdStreamAdapter(parent)
+    if fanin_restarted:
+        child.close()
+    p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
+    p._stream = stream  # type: ignore[assignment]
+    replacement = FakeOutputdStream()
+
+    async def fake_connect():
+        return replacement
+
+    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+
+    await p.refresh_connection()
+
+    assert (p._stream is replacement) is fanin_restarted
+    assert stream.closed is fanin_restarted
+    if not fanin_restarted:
+        parent.close()
+        child.close()
+
+
 async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
     """The fail-closed control is synchronous and cannot escape its reply."""
 

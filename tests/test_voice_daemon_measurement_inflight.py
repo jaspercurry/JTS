@@ -476,6 +476,20 @@ async def test_pause_drains_only_when_opening_over_playing_output() -> None:
     await wl.measurement_hold.resume()
 
 
+async def test_the_pause_refreshes_the_fanin_connection_before_its_meter_pause() -> None:
+    """Fan-in restarts on every layout save, and a dead TTS socket would fail
+    the first measurement's PAUSE (#6113); the pause replaces it first."""
+    tts = FakeTts()
+    wl = wake_loop_for_tests(tts=tts)
+
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    await wl.measurement_hold.resume()
+
+    assert tts.calls.index("refresh_connection") < tts.calls.index(
+        "pause_content_meter_for_measurement"
+    )
+
+
 # --- setup failure, rollback and resume ------------------------------------
 
 

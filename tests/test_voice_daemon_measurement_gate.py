@@ -270,6 +270,9 @@ class _RecordingTts(TtsPlayout):
     async def pause_content_meter(self) -> None:
         return None
 
+    async def refresh_connection(self) -> None:
+        return None
+
     async def pause_content_meter_for_measurement(
         self, deadline_monotonic: float,
     ) -> None:
