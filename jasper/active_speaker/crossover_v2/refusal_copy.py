@@ -1367,6 +1367,18 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The arm host stopped the measurement because the executor made no progress. "
         "Check the run status and arm trail before starting another measurement.",
     ),
+    # The isolation window's own codes (jasper.runtime.measurement_window), where the door holds voice strictly.
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "",
+                        "The voice assistant did not stay paused, so the measurement stopped before it played on. "
+                        "Try again.",
+                        next_action={"id": "measure_again", "label": "Measure again", "href": "/sound/speaker/crossover/"})
+       for code in ("voice_pause_failed", "voice_lease_lost")},
+    "voice_status_unavailable": ReasonSpec(
+        "voice_status_unavailable", TEMPLATE_SESSION_RESTART, 0, "",
+        "The voice assistant is not answering, so the measurement cannot hold it quiet. Check the voice "
+        "assistant, or try again after it starts.",
+        next_action={"id": "check_voice", "label": "Check the voice assistant", "href": "/assistant/voice/"},
+    ),
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
         REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
         "Nothing reported the microphone reaching its next position, so the "

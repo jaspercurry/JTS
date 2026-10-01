@@ -670,6 +670,54 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
     assert failures == [code]
 
 
+@pytest.mark.parametrize("code", ["voice_status_unavailable", "voice_pause_failed", "voice_lease_lost"])
+def test_a_run_the_voice_pause_ends_names_its_own_fault_not_an_internal_error(monkeypatch, tmp_path, box, code):
+    """Where jasper-voice runs, a run whose window cannot hold voice quiet (not
+    answering, a pause refused, a pause lost mid-run) ends with that fault's own
+    sentence and action on the page and in the failure it keeps, never the
+    internal-error copy, and with the fader at the household level (#5925,
+    comment 5921678274)."""
+    from jasper.runtime import measurement_window as coordinator
+    from tests.test_active_speaker_measurement_door import REAL_WINDOW
+    from tests.test_plan_run import AnsweredGate
+
+    async def voice(_path, cmd, **_kwargs):
+        if code == "voice_status_unavailable":
+            raise FileNotFoundError("jasper-voice is not answering")
+        if cmd == "MEASURE_PAUSE" and (code == "voice_pause_failed" or voice.paused):
+            raise RuntimeError("voice pause lost")
+        voice.paused = voice.paused or cmd == "MEASURE_PAUSE"
+        return {"state": "WAKE"} if cmd == "STATUS" else {"result": "ok", "drained": True}
+
+    async def isolation(**_kwargs):
+        return None
+
+    async def hold(_path, body):
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    voice.paused = False
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "voice-input-absent"))
+    monkeypatch.setattr(coordinator, "measurement_window", REAL_WINDOW)
+    monkeypatch.setattr(coordinator, "_voice_uds_command", voice)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", isolation)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", isolation)
+    monkeypatch.setattr(coordinator, "_measurement_hold_command", hold)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.0)
+    gate = AnsweredGate()
+    runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate)
+    failures = []
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda conductor, failed, **kw: failures.append(failed))
+
+    with pytest.raises(coordinator.MeasurementWindowError):
+        asyncio.run(runner(session))
+
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert (failures, gate.progress[-1]["fault"], gate.progress[-1]["next_action"]) == ([code], code, spec.next_action)
+    assert manifest.reason == code
+    assert refusal_envelope(code=code)["error"] == spec.message != refusal_copy.REASON_REGISTRY["internal_error"].message
+    assert box.volume_db == HOUSEHOLD_DB
+
+
 @pytest.mark.parametrize("step,code", [("capture", "internal_error"), ("compose", "program_not_composed"),
                                       ("analysis", "internal_error")])
 async def test_capture_failure_keeps_exception_detail_in_the_round(monkeypatch, tmp_path, box, step, code):

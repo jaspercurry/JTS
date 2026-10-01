@@ -25,6 +25,7 @@ from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
+from jasper.runtime.measurement_window import MeasurementWindowError
 
 from .angle_capture import (
     WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
@@ -421,7 +422,7 @@ async def _run(
 
     def failure_reason(exc: BaseException) -> str:
         classified = classify_program_failure(exc)
-        code = classified[0] if classified else getattr(exc, "code", None)
+        code = classified[0] if classified else getattr(exc, "code", None) or getattr(exc, "reason", None)
         return code if isinstance(code, str) and code in REASON_REGISTRY else REASON_INTERNAL_ERROR
 
     def attempt_records() -> list[tuple[Mapping[str, Any], str]]:
@@ -800,7 +801,10 @@ async def _run(
                 if not manifest.reason:
                     manifest.reason, manifest.detail = exc.reason, exc.detail
             except BaseException as exc:  # noqa: BLE001 - preserve cleanup failures after finalizing
-                manifest.reason = manifest.reason or failure_reason(exc)
+                # A window that cancelled the run names why, as its page does.
+                code = failure_reason(exc)
+                manifest.reason = (code if isinstance(exc, MeasurementWindowError) and manifest.cancelled
+                                   and code != REASON_INTERNAL_ERROR else manifest.reason or code)
                 manifest.detail = manifest.detail or exception_detail(exc)
                 raise
         finally:
