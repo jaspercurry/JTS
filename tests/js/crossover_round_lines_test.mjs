@@ -31,7 +31,7 @@ assert.deepEqual(posted, [{endpoint: action.endpoint, body: action.body}]);
 // Its refused pair (#5321): a choice the server sent no action for renders
 // its reason and no Start button.
 const refused = {id: 'front_rear/express', label: 'front_rear/express', code: 'measurement_candidate_required',
-  lines: ['This measurement needs a saved tuning to test. Select the tuning, then measure again.']};
+  lines: ['server refusal']};
 elements.get('crossover-round-select').value = refused.id;
 render({...env, round_choices: [choice, refused]});
 assert.deepEqual(elements.get('crossover-round-summary').children.map(n => n.textContent), refused.lines);

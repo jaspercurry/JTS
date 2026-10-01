@@ -20,6 +20,8 @@ const make = tag => Object.assign(element(tag), {
   removeAttribute(key) { delete this[key]; },
 });
 globalThis.Node = class { static [Symbol.hasInstance](value) { return !!value?.appendChild; } };
+const navigations = [];
+globalThis.location = {hash: '', assign: url => navigations.push(url)};
 const start = buildFunction([
   repoPath('deploy/assets/shared/js/dom.js'), repoPath('deploy/assets/shared/js/frequency-scale.js'),
   repoPath('deploy/assets/sound-profile/js/speaker.js'),
@@ -109,16 +111,22 @@ test('a refused draft shows its refusal once, in the open driver details card', 
   assert.equal(nodes(ui.root).filter(n => n.tag === 'p' && text(n) === initial.issues[0].message).length, 1);
 });
 
-for (const [stage, programs, links] of [
-  ['tune', ['speaker', 'room'], ['crossover/']],
-  ['tune', ['bass', 'room'], []],
-  ['apply', ['speaker', 'room'], []],
-]) test(`the ${stage} stage with ${programs.join(' and ')} links the measurement page ${links.length} time(s)`, async () => {
+for (const [stage, programs, offered] of [
+  ['tune', ['speaker', 'room'], true],
+  ['tune', ['bass', 'room'], false],
+  ['apply', ['speaker', 'room'], false],
+]) test(`the ${stage} stage with ${programs.join(' and ')} ${offered ? 'offers' : 'omits'} the measurement page as an active primary button`, async () => {
   const initial = state(stage);
   initial.programs = programs.map(id => ({id, title: id, description: ''}));
   const ui = setup(initial);
   await flush();
-  assert.deepEqual(nodes(ui.root).filter(n => n.tag === 'a').map(n => n.href), links);
+  const control = ui.button('Take measurements');
+  assert.equal(control !== undefined, offered);
+  if (!offered) return;
+  assert.ok(control.className.split(' ').includes('btn--primary'));
+  assert.equal(control.disabled, false);
+  await control.click();
+  assert.deepEqual(navigations.splice(0), ['crossover/']);
 });
 
 for (const [stage, answer, asked, applied] of [['tune', false, 1, 0], ['tune', true, 1, 1], ['apply', false, 0, 1]]) test(
