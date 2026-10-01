@@ -22,7 +22,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    Pose, Preset, preset, run_preset,
+    Pose, Preset, available_presets, preset, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
@@ -1127,6 +1127,95 @@ def test_a_re_placed_branch_take_probes_both_branches_again():
         ("drivers", None), ("drivers", None), ("candidate_branches", -37.0)] * 2 + [("candidate_branches", -37.0)]
 
 
+def _set_rule_of_4b2(stops):
+    """The close-set rule before ADR-0406: one set per consecutive run at one kind and distance."""
+    def key(stop):
+        return (stop.pose.place if stop.pose.driver
+                else (stop.regime, stop.branch_pair, stop.pose.kind, stop.pose.distance_m))
+
+    starts = []
+    for index, stop in enumerate(stops):
+        joins = index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)
+        starts.append(None if stop.level is None else starts[-1] if joins else index)
+    return tuple(starts)
+
+
+def test_a_plan_with_one_candidate_per_close_set_keeps_its_sets():
+    """Every shipped preset at every layout, with one candidate per close set,
+    keeps the sets it had before a set became one graph (ADR-0406)."""
+    for name in available_presets():
+        for layout in preset(name).layouts:
+            plan = run_preset(name, layout)
+            request = ac.request_for_preset(plan, mover=plan.mover or "human", targets=("woofer", "tweeter"),
+                                            candidates=("trial",) if plan.regime == ac.REGIME_BRANCHES else ())
+            roles = tuple(RoleBand(role, channel, band) for channel, (role, band) in enumerate(_RUN_BANDS.items()))
+            stops = [capture.stop for capture in plan_run.prepare_plan_captures(request, roles_bands=roles)]
+            assert ac.level_sets(stops) == _set_rule_of_4b2(stops), (name, layout)
+
+
+_BEHIND = [{"azimuth_deg": 0, "elevation_deg": 0},
+           *({"azimuth_deg": angle, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1} for angle in (0, 20))]
+
+
+def test_each_graph_of_a_close_set_probes_once():
+    """A close set is one candidate graph: an A/B pair at two behind spots, with
+    repeats, plays one probe per graph, at that graph's first take, and the
+    graph's repeats and lateral take carry its level (ADR-0406)."""
+    request = replace(ac.request_for_preset(run_preset("rear/express", poses=_BEHIND), candidates=("base", "trial")),
+                      repeats=2)
+
+    captures = plan_run.prepare_plan_captures(request)
+
+    behind = [(ac.candidate_identity(capture.stop.candidate_id), capture.spec.level_probe, start)
+              for capture, start in zip(captures, ac.level_sets([capture.stop for capture in captures]))
+              if capture.stop.pose.kind == "behind"]
+    firsts = {candidate: index for index, (candidate, _, _) in reversed(list(enumerate(behind)))}
+    assert [probe for _, probe, _ in behind] == [index in firsts.values() for index in range(len(behind))]
+    assert sorted(firsts) == ["base", "trial"]
+    assert len({start for _, _, start in behind}) == 2
+
+
+def test_a_branch_run_of_two_candidates_shares_its_drivers_probes():
+    """A branch set's probes play each branch alone on the drivers graph, so a
+    second candidate there would find the same levels: the run stays one set,
+    probed once (ADR-0406)."""
+    pose = Pose(0, 0, kind="behind", distance_m=0.1)
+    request = ac.AngleCaptureRequest(stops=tuple(
+        ac.AngleStop(pose, ac.REGIME_BRANCHES, candidate_id=name, purpose="rear", branch_pair="front_rear")
+        for name in ("a" * 64, "b" * 64)), candidates=("a" * 64, "b" * 64))
+    roles = tuple(RoleBand(role, channel, band) for channel, (role, band) in enumerate(_RUN_BANDS.items()))
+
+    captures = plan_run.prepare_plan_captures(request, roles_bands=roles)
+
+    assert [capture.spec.level_probe for capture in captures] == [True, False]
+    assert ac.level_sets([capture.stop for capture in captures]) == (0, 0)
+
+
+def test_a_cardioid_on_off_trial_behind_the_cabinet_lands_each_graph_at_80_db(monkeypatch, tuning_profile):
+    """Behind the cabinet the trial that plays the rear woofer reads 15 dB over
+    the base that mutes it. Each graph's first take there probes and levels
+    itself, so both land at 80 ± 2 dB, under the 85 dB stop, at both behind spots
+    and every repeat (ADR-0406)."""
+    request = replace(ac.request_for_preset(run_preset("rear/express", poses=_BEHIND), candidates=("base", "trial")),
+                      repeats=2)
+    report = preflight_levels(request, ready_facts(request, applied_rear_plays=False,
+                                                   candidates={"trial": _cardioid_trial()}))
+    assert not report.blocking
+
+    result, _, _ = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0, "behind": 110.0},
+        graph_db={("candidate", "trial", "bearing"): _REAR_SUM_DB, ("candidate", "trial", "behind"): 15.0},
+        margin_db=report.rung_admission["run_margin_db"]))
+
+    behind = [take for take in _takes(result.joined()) if take["pose_kind"] == "behind"]
+    probes = [take for take in behind if is_level_probe(ExcitationProgram.from_dict(take["program"]))]
+    read = {(take["candidate_id"], take["take_id"]): take["capture_integrity"]["spl"]["max_window_db_spl"]
+            for take in behind if take["selected"]}
+    assert result.status == "complete" and len(read) == 8
+    assert sorted({take["candidate_id"] for take in probes}) == ["banked-base", "trial"] and len(probes) == 2
+    assert all(78.0 <= db <= 82.0 for db in read.values()), read
+
+
 def test_a_branch_set_finds_its_own_level_after_a_summed_set_at_its_spot():
     """A branch take after a close summed take at the same spot never shares the
     summed probe's level, which bounds neither branch alone (ADR-0403 §3)."""
@@ -1271,7 +1360,8 @@ class _RunChain:
     its spot, over a 35 dB room. A probe reads each burst until the first over
     the 76 dB ramp bound, which stops it (ADR-0365). A scope's gains over the
     level reference graph back its summed takes off, as composition does, and a
-    graph (scope, candidate) in ``graph_db`` plays that much louder."""
+    graph (scope, candidate), or that graph at one pose kind, in ``graph_db``
+    plays that much louder."""
 
     def __init__(self, manifest, play, caps, chain_db, scope_gains=None, graph_db=None):
         self.manifest, self.play, self.caps, self.chain_db = manifest, play, caps, chain_db
@@ -1285,7 +1375,9 @@ class _RunChain:
         spec = self.play.calls[-1]["spec"]
         program = program_for_spec(replace(spec, scope_gains_db=self.scope_gains.get(spec.graph_scope)), excitation,
                                    _RUN_GAINS, record.get("stimulus_dbfs"), safety_profile={}, role_targets={})
-        chain = self.chain_db[record["pose_kind"]] + self.graph_db.get((spec.graph_scope, spec.candidate_id), 0.0)
+        graph = (spec.graph_scope, spec.candidate_id)
+        chain = self.chain_db[record["pose_kind"]] + self.graph_db.get(
+            (*graph, record["pose_kind"]), self.graph_db.get(graph, 0.0))
         heard = [(segment.gain_db, segment.gain_db + record["level_db"] + chain) for segment in program.stimulus_segments()]
         heard = (heard[:max(1, len(list(takewhile(lambda burst: burst[1] <= 76.0, heard))))] if is_level_probe(program)
                  else [max(heard, key=lambda burst: burst[1])])
