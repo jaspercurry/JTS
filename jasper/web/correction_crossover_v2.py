@@ -318,7 +318,7 @@ def prepare_v2_session(
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
             trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
             ceiling_db_spl=report.spl_ceiling_db_spl,
-            level=report.plan.level, ladder=report if isinstance(report, LevelLadder) else None,
+            ladder=report if isinstance(report, LevelLadder) else None,
         )
         nonlocal held
         source_run = _build_wired_run(

@@ -1068,7 +1068,7 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
     out = tmp_path / 'table.json'
     argv = ['bass-fit-table', *map(str, roots), '--candidate', 'candidate.json', '--out', str(out)]
 
-    def write(takes=takes, change_basis=None, selected=None):
+    def write(takes=takes, change_basis=None, selected=None, probe=False):
         manifests = []
         for root, volume in zip(roots, volumes):
             directory = root / 'bundle/session/evidence/v1/artifacts/crossover_v2' / f'run-{volume}'
@@ -1091,8 +1091,10 @@ def bass_run(bass_fit_pairs, tmp_path, monkeypatch):
                 if change_basis:
                     change_basis(row)
                 manifest_groups.append(row)
-                (root / f"bass_view-{row['set_id']}.json").write_text(json.dumps({'schema': BASS_VIEW_SCHEMA, 'takes': group}))
-            manifest = write_manifest(root, program='bass', groups=list(reversed(manifest_groups)))
+                # The bank names a set's view only in a round of more than one view set.
+                name = f"bass_view-{row['set_id']}.json" if len(groups) > 1 else "bass_view.json"
+                (root / name).write_text(json.dumps({'schema': BASS_VIEW_SCHEMA, 'takes': group}))
+            manifest = write_manifest(root, program='bass', groups=list(reversed(manifest_groups)), probe=probe)
             manifest['run_id'] = f'run-{volume}'
             path = directory / 'run_manifest.json'
             path.write_text(json.dumps(manifest))
@@ -1111,6 +1113,19 @@ def test_bass_sequence_join_writes_levels_in_last_packet(bass_run, round_count):
     assert table["run_ids"] == ["run--10", "run--30", "run--20"][:round_count]
     fitted, = table["tables"]
     assert len(fitted["levels"]) == round_count
+
+
+def test_bass_table_reads_the_view_of_a_one_set_round_beside_its_probe(bass_run):
+    """Two rounds of one measured set each, the base and the candidate at one
+    level, each banked beside its run probe's set: each files its view under no
+    set name, and the table reads both and pairs their takes (ADR-0403 §4)."""
+    base, boost = copy.deepcopy(bass_run.takes[:2])
+    boost["record"]["run_id"] = "run--30"
+    bass_run.write(takes=[base, boost], probe=True)
+    argv = ['bass-fit-table', *map(str, bass_run.roots[:2]), *bass_run.argv[bass_run.argv.index('--candidate'):]]
+    assert round_views_main(argv) == 0
+    table, = json.loads(bass_run.out.read_text())["tables"]
+    assert [level["take_pair_count"] for level in table["levels"]] == [1]
 
 
 @pytest.mark.parametrize("purpose", [None, "bass", "room"])

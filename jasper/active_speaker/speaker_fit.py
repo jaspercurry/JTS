@@ -30,6 +30,7 @@ from jasper.active_speaker.linearization_fit import (
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME_SUMMED
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram
@@ -69,7 +70,7 @@ def design_clouds(
     code; with ``refused``, its sets get no cloud and ``refused`` names the
     refusal by set id instead."""
     groups: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
-    for group in manifest.get("sets", ()):
+    for group in view_sets(manifest):
         basis = group["capture_basis"]
         key = (*capture_identity(basis, set_id=group["set_id"]), basis.get("role"))
         groups.setdefault(key, []).append(group)

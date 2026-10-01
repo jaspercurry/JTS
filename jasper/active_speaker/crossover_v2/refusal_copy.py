@@ -144,7 +144,6 @@ REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
 REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupported_for_per_driver_programs"
-REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
 # The seams raise open-endedly (CamillaUnavailable is a bare Exception,
@@ -1279,13 +1278,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This layout declares three driver roles: woofer, mid and tweeter. '
         'The measurement programs are not built for it yet.',
     ),
-    REASON_WALK_NOTHING_PLAYABLE: ReasonSpec(
-        REASON_WALK_NOTHING_PLAYABLE, TEMPLATE_HARD_STOP, 0, "",
-        'This plan contains only separate driver measurements, which this runner cannot play. Run '
-        'it through the guided speaker measurement.',
-        next_action={"id": 'guided_measurement', "label": 'Open guided measurement',
-                     "href": '/sound/speaker/crossover/'},
-    ),
     # End measurement graph and walk refusals.
     REASON_SPL_CEILING_EXCEEDED: ReasonSpec(
         REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
@@ -1366,6 +1358,18 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_ARM_HOST_STUCK, TEMPLATE_HARD_STOP, 0, "",
         "The arm host stopped the measurement because the executor made no progress. "
         "Check the run status and arm trail before starting another measurement.",
+    ),
+    # The isolation window's own codes (jasper.runtime.measurement_window), where the door holds voice strictly.
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "",
+                        "The voice assistant did not stay paused, so the measurement stopped before it played on. "
+                        "Try again.",
+                        next_action={"id": "measure_again", "label": "Measure again", "href": "/sound/speaker/crossover/"})
+       for code in ("voice_pause_failed", "voice_lease_lost")},
+    "voice_status_unavailable": ReasonSpec(
+        "voice_status_unavailable", TEMPLATE_SESSION_RESTART, 0, "",
+        "The voice assistant is not answering, so the measurement cannot hold it quiet. Check the voice "
+        "assistant, or try again after it starts.",
+        next_action={"id": "check_voice", "label": "Check the voice assistant", "href": "/assistant/voice/"},
     ),
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
         REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",

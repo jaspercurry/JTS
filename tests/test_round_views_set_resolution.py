@@ -231,15 +231,18 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
     ({"room": {"base": [("s0", 0)]}, "r": {"cand": [("c0", 0)]}}, [],
      (EXIT_REFUSED, REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, "room", "s0")),
 ], ids=["same-round-base", "earlier-round", "before-side-named", "none", "comparand-files-no-bass-view"])
-def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_path, capsys, rounds, flags, expected):
+@pytest.mark.parametrize("probe", [False, True], ids=["", "probed"])
+def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_path, capsys, rounds, flags, expected,
+                                                                          probe):
     """ADR-0391: one round named with no --before-* flag is the after take's, and
     the before take is its comparand, read from the bass view its round filed;
     the answer says how it was found. With none, or with a comparand whose round
-    filed no bass view, bass-compare refuses by name."""
+    filed no bass view, bass-compare refuses by name. A round's run probe files
+    no view, so its one measured set's view keeps no set name (ADR-0403 §4)."""
     store = tmp_path / "campaigns"
     paths = {}
     for day, (name, sets) in enumerate(rounds.items()):
-        root = paths[name] = _banked(store, name, f"2026-09-{20 + day}T12:00:00Z", sets)
+        root = paths[name] = _banked(store, name, f"2026-09-{20 + day}T12:00:00Z", sets, probe=probe)
         if name == "room":
             continue  # A room round files no bass view.
         inputs = round_inputs(root)

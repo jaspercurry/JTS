@@ -594,7 +594,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.pose.azimuth_deg,), program_phase=phase))
-        for stop in request.stops) if phase else None
+        for stop in request.stops) if phase else plan_run.prepare_plan_captures(request)
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
         signals=control, ceiling_s=30,
@@ -668,6 +668,54 @@ def test_plan_host_preserves_refusal_reason(monkeypatch, tmp_path, box, reason, 
     copy = detail or refusal_copy.REASON_REGISTRY[code].message
     assert envelope["error"] == (copy if code == reason else f"{reason}: {copy}")
     assert failures == [code]
+
+
+@pytest.mark.parametrize("code", ["voice_status_unavailable", "voice_pause_failed", "voice_lease_lost"])
+def test_a_run_the_voice_pause_ends_names_its_own_fault_not_an_internal_error(monkeypatch, tmp_path, box, code):
+    """Where jasper-voice runs, a run whose window cannot hold voice quiet (not
+    answering, a pause refused, a pause lost mid-run) ends with that fault's own
+    sentence and action on the page and in the failure it keeps, never the
+    internal-error copy, and with the fader at the household level (#5925,
+    comment 5921678274)."""
+    from jasper.runtime import measurement_window as coordinator
+    from tests.test_active_speaker_measurement_door import REAL_WINDOW
+    from tests.test_plan_run import AnsweredGate
+
+    async def voice(_path, cmd, **_kwargs):
+        if code == "voice_status_unavailable":
+            raise FileNotFoundError("jasper-voice is not answering")
+        if cmd == "MEASURE_PAUSE" and (code == "voice_pause_failed" or voice.paused):
+            raise RuntimeError("voice pause lost")
+        voice.paused = voice.paused or cmd == "MEASURE_PAUSE"
+        return {"state": "WAKE"} if cmd == "STATUS" else {"result": "ok", "drained": True}
+
+    async def isolation(**_kwargs):
+        return None
+
+    async def hold(_path, body):
+        return 200, {"measurement": {"active": True, "owner": body.get("owner")}}
+
+    voice.paused = False
+    monkeypatch.setenv("JASPER_VOICE_INPUT_ABSENT_MARKER", str(tmp_path / "voice-input-absent"))
+    monkeypatch.setattr(coordinator, "measurement_window", REAL_WINDOW)
+    monkeypatch.setattr(coordinator, "_voice_uds_command", voice)
+    monkeypatch.setattr(coordinator, "_acquire_measurement_gate", isolation)
+    monkeypatch.setattr(coordinator, "_release_measurement_gate", isolation)
+    monkeypatch.setattr(coordinator, "_measurement_hold_command", hold)
+    monkeypatch.setattr(coordinator, "MEASUREMENT_LEASE_REFRESH_SEC", 0.0)
+    gate = AnsweredGate()
+    runner, session, _, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate)
+    failures = []
+    monkeypatch.setattr(v2state, "persist_terminal_failure", lambda conductor, failed, **kw: failures.append(failed))
+
+    with pytest.raises(coordinator.MeasurementWindowError):
+        asyncio.run(runner(session))
+
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert (failures, gate.progress[-1]["fault"], gate.progress[-1]["next_action"]) == ([code], code, spec.next_action)
+    assert manifest.reason == code
+    assert refusal_envelope(code=code)["error"] == spec.message != refusal_copy.REASON_REGISTRY["internal_error"].message
+    assert box.volume_db == HOUSEHOLD_DB
 
 
 @pytest.mark.parametrize("step,code", [("capture", "internal_error"), ("compose", "program_not_composed"),
@@ -1031,16 +1079,11 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     assert ceilings is conductor._measure_gain_ceiling_db
 
 
-@pytest.mark.parametrize(("anchor", "sensitivity"), [
-    (74.9, MicSensitivity(-12.07)),
-    (0.0, MicSensitivity(-12.07)),
-    (None, MicSensitivity(-12.07)),
-    (74.9, None),
-])
-@pytest.mark.parametrize("offset", [0, -10, 2])
-def test_host_binds_session_level_only_to_check_priors(
-    monkeypatch, caplog, anchor, sensitivity, offset
-):
+@pytest.mark.parametrize("sensitivity", [MicSensitivity(-12.07), None])
+def test_host_aims_only_check_at_the_first_spots_target(monkeypatch, caplog, sensitivity):
+    """CHECK's solve aims at 80 dB at the microphone, the first spot's target, and
+    no other phase's priors move; with no microphone sensitivity it keeps its
+    default (ADR-0403 §4)."""
     fakes = FlowSeams()
     conductor = _conductor(fakes, index_phase_map={1: "check", 2: "measure", 3: "verify"},
                            gain_plan_db={"woofer": -32.0, "tweeter": -38.0})
@@ -1049,15 +1092,13 @@ def test_host_binds_session_level_only_to_check_priors(
     monkeypatch.setattr(correction_run_host, "resolved_household_sensitivity", resolve)
     monkeypatch.setattr(correction_run_host, "CapturedRecordStore", lambda *_args: records)
     monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
-    target = (sensitivity.dbfs_from_db_spl(anchor + offset) + SWEEP_PEAK_TO_RMS_DB
-              if anchor is not None and sensitivity is not None else None)
+    target = sensitivity.dbfs_from_db_spl(80.0) + SWEEP_PEAK_TO_RMS_DB if sensitivity is not None else None
     with caplog.at_level(logging.INFO):
         door, analyze, _assessor, _execute = correction_run_host.bind_run_door(
             host=SimpleNamespace(session_volume_plan=lambda: None),
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
             ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
-            level=LevelPolicy(level_db=-15 + offset, resolved=ResolvedLevel(anchor, -15, "1234") if anchor is not None else None),
         )
         for index, phase in enumerate(("check", "measure", "verify"), 1):
             expected = (
@@ -1080,7 +1121,7 @@ def test_host_binds_session_level_only_to_check_priors(
     events = event_field_maps(caplog, "active_speaker.check_level_target")
     assert len(events) == (0 if target is None else 1)
     if target is not None:
-        assert float(events[0]["anchor_db_spl"]) == anchor + offset
+        assert float(events[0]["anchor_db_spl"]) == 80.0
         assert float(events[0]["target_capture_dbfs"]) == pytest.approx(target)
 
 

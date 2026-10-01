@@ -16,7 +16,7 @@ from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.platform.json_fields import finite_float
-from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP
+from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP, ExcitationProgram, is_level_probe
 from jasper.platform.speaker_layout import measurement_target_parts
 
 from .commissioning_evidence_store import EVIDENCE_ROOT
@@ -37,12 +37,15 @@ TakeJudge = Callable[[Mapping[str, Any]], Awaitable[tuple[TakeVerdict, Mapping[s
 
 def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[str, Any]:
     basis = capture_basis(record)
-    gains = [segment["gain_db"] for segment in (record.get("program") or {}).get("segments", [])
+    segments = (record.get("program") or {}).get("segments", [])
+    gains = [segment["gain_db"] for segment in segments
              if segment.get("kind") in {KIND_SWEEP, KIND_SUMMED_SWEEP}
              and (role is None or (segment.get("role") or "summed") == role)]
     if gains:
         # The composer can cap the requested rung; report the emitted sweep gain.
         basis["stimulus_dbfs"] = max(gains)
+    if record.get("program") and is_level_probe(ExcitationProgram.from_dict(record["program"])):
+        basis["level_probe"] = True
     return basis
 
 
@@ -104,8 +107,10 @@ def _kept_record_ids(bundle_dir: Path) -> frozenset[str]:
 
 
 def view_sets(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The sets a view reads: neither the timing take's nor a level probe's (ADR-0365)."""
     return [row for row in manifest.get("sets", ()) if isinstance(row, Mapping)
-            and isinstance(row.get("set_id"), str) and row.get("capture_basis", {}).get("graph_scope") != "timing"]
+            and isinstance(row.get("set_id"), str) and row.get("capture_basis", {}).get("graph_scope") != "timing"
+            and not row.get("capture_basis", {}).get("level_probe")]
 
 
 #: dB two drivers of one role (so of one declared size) may play apart for the

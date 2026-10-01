@@ -125,8 +125,8 @@ class LevelRun:
     manifest: RunManifest
     door: RunDoor
     analyze: Analyze
-    assessor: Callable[..., Any] | None = None
-    captures: tuple[PlanCapture, ...] | None = None
+    assessor: Callable[..., Any] | None
+    captures: tuple[PlanCapture, ...]
 
 
 async def run_levels(

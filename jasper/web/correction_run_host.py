@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.programs import program_for_spec, predictive_program_for_spec
-from jasper.active_speaker.angle_capture import LevelPolicy
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_copy import take_counts
 from jasper.active_speaker.round_packet import RoundPacket
@@ -29,7 +28,7 @@ from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.summed_alignment import timing_prior
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
-from jasper.active_speaker.measurement_programs import gate_exemption
+from jasper.active_speaker.measurement_programs import SPOT_LEVEL, gate_exemption
 from jasper.active_speaker.plan_run import RunDoor, after_grading
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
@@ -198,14 +197,13 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, provenance: Any = None,
-                  level: LevelPolicy = LevelPolicy(), ladder: LevelLadder | None = None,
+                  ladder: LevelLadder | None = None, finds_fader: bool = True,
                   capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
-    predicted = level.predicted_db_spl
-    check_target = (anchored_check_target(sensitivity, predicted)
-                    if predicted is not None and sensitivity is not None else None)
+    # CHECK aims at the first spot's target at the microphone (ADR-0403 §4).
+    check_target = anchored_check_target(sensitivity, SPOT_LEVEL.target_db_spl) if sensitivity is not None else None
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, provenance=provenance,
@@ -230,6 +228,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
         program_for_spec=predictive_program_for_spec(context) if context else None,
     )
     if ladder is None or ladder.plan.levels is None:
+        door.caps_dbfs = conductor.caps_dbfs if finds_fader else None
         return door, analyze, assessor, None
 
     async def execute(request: Any, *, gate: Any, signals: Any, captures: Any, **_kwargs: Any) -> Any:
@@ -245,7 +244,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
                 production=production, conductor=conductor, refs=refs, trims=trims,
                 ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
-                provenance=provenance, level=plan.level, context=context,
+                provenance=provenance, finds_fader=False, context=context,
                 capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
             )
             bound = LevelRun(child, child_door, child_analyze, child_assessor, selected)

@@ -202,6 +202,25 @@ def _probe_gains(fader_db: float, ceiling: float) -> tuple[float, ...]:
     return tuple(min(start + step * MAX_STEP_DB, ceiling) for step in range(steps + 1))
 
 
+def probe_fader_db(caps_dbfs: Mapping[str, float]) -> float:
+    """The fader a run's probe plays at: full scale reaches the loudest driver
+    cap, never over 0 dB (ADR-0403 §4)."""
+    return min(0.0, max(caps_dbfs.values()))
+
+
+def run_fader_db(probe: ExcitationProgram, solved_dbfs: float, caps_dbfs: Mapping[str, float]) -> float:
+    """The fader at which the take a run probed, with no level asked, plays no
+    louder than the peak its probe solved, never above the probe's own fader
+    (ADR-0403 §4). The probe's last burst is that take's level unless the
+    tightest cap held it lower; then the fader is solved against the summed
+    level before any scope cut, which no summed take plays over."""
+    last = max(probe.stimulus_segments(), key=lambda segment: segment.gain_db)
+    fader = last.effective_peak_dbfs - last.gain_db
+    held = last.gain_db >= back_off_gain(math.inf, fader, min(caps_dbfs.values())) - 1e-9
+    level = BASE_STIMULUS_PEAK_DBFS if held and solved_dbfs < last.gain_db else last.gain_db
+    return min(fader, fader + solved_dbfs - level)
+
+
 def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
     """A driver pose's level probe: its take's target, band and ceiling (ADR-0365)."""
     band, ceiling, channels = _solo_take(excitation, spec)
