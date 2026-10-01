@@ -240,6 +240,13 @@ def test_failure_templates_preserve_their_own_actions(fault, action_id, target):
     assert env["alternate_actions"] == []
 
 
+@pytest.mark.parametrize("code", sorted(code for code, spec in REASON_REGISTRY.items() if not spec.own_action))
+def test_a_row_with_no_action_of_its_own_offers_a_cli_the_button_its_failure_screen_shows(code):
+    env = build_crossover_envelope_v2({**_status(failure={"code": code}), "capture": {"status": "awaiting_capture"}})
+    shown, offered = env["next_action"], REASON_REGISTRY[code].next_action
+    assert (shown and shown["label"]) == (offered and offered["label"])
+
+
 @pytest.mark.parametrize("capture_status, expected_action", [
     ("awaiting_capture", "crossover_v2_retake"), ("failed", None), (None, None),
 ])
@@ -267,7 +274,7 @@ def test_finished_run_uses_the_registry_action_and_reset(terminal, fault):
     reset = {"id": "reset", "label": "Start over",
              "endpoint": "/sound/speaker/crossover/reset", "body": {}}
     spec = REASON_REGISTRY.get(fault)
-    action = dict(spec.next_action) if spec and spec.next_action else None
+    action = dict(spec.own_action) if spec and spec.own_action else None
     assert env["screen"] == "finished"
     assert env["next_action"] == (action or reset)
     assert env["alternate_actions"] == []

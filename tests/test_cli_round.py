@@ -856,8 +856,8 @@ def test_wizard_client_without_session_keeps_ended_status(status, reason):
 
 
 @pytest.mark.parametrize("verb", ["wait", "status"])
-@pytest.mark.parametrize("reason", ["user_stopped", "capture_clipped"])
-def test_never_joined_end_reports_own_reason(verb, reason, monkeypatch, capsys):
+@pytest.mark.parametrize("reason, action", [("user_stopped", "restart_session"), ("capture_clipped", None)])
+def test_never_joined_end_reports_own_reason(verb, reason, action, monkeypatch, capsys):
     monkeypatch.setattr(correction_capture, "_capture_slot", None)
     monkeypatch.setattr(correction_capture, "_pending_capture",
                         (SimpleNamespace(label="crossover_v2:session"), None))
@@ -871,6 +871,7 @@ def test_never_joined_end_reports_own_reason(verb, reason, monkeypatch, capsys):
                 "current": None, "code": reason, "faults": [], "captured": False}
     if verb == "wait":
         assert code == cli.EXIT_REFUSED
+        assert (body.pop("next_action", None) or {}).get("id") == action
         assert body == {"status": "refused", "reason": reason,
                         "detail": {**expected, "status": "terminal"}}
     else:
