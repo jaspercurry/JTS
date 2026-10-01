@@ -4,7 +4,7 @@
 
 """Session-scoped fixed measurement volume + fail-closed latch (Wave 2 C).
 
-Pins the SSOT derivation and the durable latch semantics: intent written BEFORE
+Pins the durable latch semantics: intent written BEFORE
 the first volume mutation, restore-exactly-once, readback-confirm failure ->
 unresolved / emergency, wall-clock ceiling force-drain (live and on hydration),
 and crash hydration staying fail-closed without relying on a process restart to
@@ -17,17 +17,11 @@ import json
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("banked_session_level")
-
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.seat_level_reference import (
-    SeatLevelTarget,
-    write_seat_level_reference,
-)
 from jasper.active_speaker.session_volume_plan import (
     DEFAULT_WALL_CLOCK_CEILING_S,
     FaderVolumeDoor,
@@ -37,8 +31,6 @@ from jasper.active_speaker.session_volume_plan import (
     SessionVolumePlan,
     SessionVolumePlanError,
     SessionVolumeRestoreResult,
-    loudest_driver_cap_dbfs,
-    session_measurement_volume_db,
 )
 from tests.active_speaker_fixtures import mono_output_topology
 from tests._log_events import event_fields
@@ -126,66 +118,6 @@ class FakeVolume:
         return self.value
 
 
-# --- SSOT derivation ---------------------------------------------------------
-
-
-def test_session_measurement_volume_targets_the_least_sensitive_driver():
-    # The B1 rule: V = min(reference -20, max(caps)). The HIGHEST cap (the
-    # least-sensitive driver) governs; more-sensitive drivers attenuate DOWN
-    # digitally (always satisfiable), never the other way around.
-    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
-    # caps: woofer min(0, 0) = 0; tweeter min(-65, -65) = -65; max = 0 -> V = -20.
-    assert session_measurement_volume_db(profile, targets.values()) == -20.0
-
-    # When the highest cap binds BELOW the reference, it wins.
-    profile2, targets2 = _profile_and_targets(woofer_peak=-30.0, tweeter_peak=-70.0)
-    # caps: woofer -30, tweeter -70; max = -30 -> V = min(-20, -30) = -30.
-    assert session_measurement_volume_db(profile2, targets2.values()) == -30.0
-
-
-def _bank_reference(path, volume_db):
-    write_seat_level_reference(
-        reference_volume_db=volume_db,
-        measured_db_spl=77.4,
-        target=SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5),
-        sensitivity={"sens_factor_db": -12.07},
-        max_main_volume_db=-6.0,
-        state_path=path,
-    )
-
-
-def test_a_measured_reference_replaces_the_codified_default(tmp_path):
-    """The whole point: a leveling pass that measured 75-80 dB SPL at -17.25 dB
-    makes the session hold -17.25 dB, not the -20 dB guess."""
-    path = tmp_path / "seat_level_reference.json"
-    _bank_reference(path, -17.25)
-    profile, targets = _profile_and_targets(woofer_peak=0.0, tweeter_peak=-65.0)
-    # caps: max = 0 -> the reference is what binds.
-    assert (
-        session_measurement_volume_db(
-            profile, targets.values(), reference_state_path=path
-        )
-        == -17.25
-    )
-
-
-def test_driver_caps_still_bind_over_a_measured_reference(tmp_path):
-    """The caps half is NOT operator-derivable. A banked reference louder than
-    every driver's excitation ceiling permits is clamped by ``min``, exactly as
-    the codified default is."""
-    path = tmp_path / "seat_level_reference.json"
-    _bank_reference(path, -8.0)
-    profile, targets = _profile_and_targets(woofer_peak=-30.0, tweeter_peak=-70.0)
-    # caps: max = -30, well below the -8 dB reference -> the cap wins.
-    assert (
-        session_measurement_volume_db(
-            profile, targets.values(), reference_state_path=path
-        )
-        == -30.0
-    )
-    assert loudest_driver_cap_dbfs(profile, targets.values()) == -30.0
-
-
 @pytest.mark.parametrize(
     ("woofer_peak", "expected_woofer_cap", "expected_tweeter_cap", "anchor"),
     [
@@ -232,61 +164,6 @@ def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
     assert fields["anchor_cap_dbfs"] == f"{expected_woofer_cap:.1f}"
     # The shift is exactly the anchor's own shift, and nothing else.
     assert expected_tweeter_cap - expected_woofer_cap == pytest.approx(-10.8)
-
-
-# --- the per-branch bound (the second conservatism, retired) ----------------
-#
-# JTS3's declared numbers throughout: woofer admitted at -8.0 dBFS, declared
-# sensitivities 108.5 (tweeter) / 83.3 (woofer), and a -14.4 dB L-pad on the
-# tweeter recorded in the same declaration.
-
-_JTS3_PADDED_SENS = {"woofer": 83.3, "tweeter": 108.5 - 14.4}
-
-
-def test_the_session_measurement_volume_is_untouched_by_branch_facts():
-    """A different contract, deliberately left alone.
-
-    ``session_measurement_volume_db`` derives from ``max(caps)`` because a
-    composed v2 program attenuates every other driver down to its own cap with
-    per-segment gains. It takes no branch peaks and none of this changes it.
-    """
-    profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=None, sensitivities=_JTS3_PADDED_SENS,
-    )
-    assert session_measurement_volume_db(profile, targets.values()) == -20.0
-    assert loudest_driver_cap_dbfs(profile, targets.values()) == pytest.approx(-8.0)
-
-
-def test_session_measurement_volume_unaffected_by_hf_ceiling_derivation():
-    """W6.5 pin: this module exclusively serves the program-admission v2
-    conductor, so it always resolves ceilings on the proven-HP path. With
-    JTS3's DECLARED sensitivities and a tweeter that declares no level limit,
-    the tweeter's OWN resolved cap is -33.2 (derived: the woofer's -8 less the
-    25.2 dB sensitivity delta) -- but ``max(caps)`` is
-    still the woofer's -8, so the derived session volume is unchanged. No
-    behavior change expected; this pins that.
-    """
-    profile, targets = _profile_and_targets(
-        woofer_peak=-8.0, tweeter_peak=None, sensitivities={"woofer": 83.3, "tweeter": 108.5},
-    )
-    assert session_measurement_volume_db(profile, targets.values()) == -20.0
-
-
-def test_session_measurement_volume_refuses_unmeasurable_profile():
-    # Every cap at or below the -60 dB emergency floor: no driver can be
-    # measured at a safe volume -> typed refusal, never a zero-SNR session.
-    # (This invariant would have caught the inverted min(caps) derivation.)
-    profile, targets = _profile_and_targets(woofer_peak=-65.0, tweeter_peak=-70.0)
-    with pytest.raises(
-        SessionVolumePlanError, match="profile_unmeasurable_at_safe_volume"
-    ):
-        session_measurement_volume_db(profile, targets.values())
-
-
-def test_session_measurement_volume_requires_targets():
-    profile, _ = _profile_and_targets()
-    with pytest.raises(SessionVolumePlanError):
-        session_measurement_volume_db(profile, [])
 
 
 # --- latch: intent before mutation ------------------------------------------

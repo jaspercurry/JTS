@@ -33,12 +33,12 @@ from jasper.active_speaker.plan_run import RunDoor, after_grading
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
+from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
 from jasper.platform.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_TIMING
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict, exception_detail
-from jasper.active_speaker.seat_level_reference import check_target_capture_dbfs as anchored_check_target
 from jasper.audio_measurement.program import ExcitationProgram
 
 logger = logging.getLogger(__name__)
@@ -202,8 +202,13 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
     if ladder is not None:
         ceiling_s *= len(ladder.admissible)
     sensitivity = resolved_household_sensitivity(device)
-    # CHECK aims at the first spot's target at the microphone (ADR-0403 §4).
-    check_target = anchored_check_target(sensitivity, SPOT_LEVEL.target_db_spl) if sensitivity is not None else None
+    check_target = None
+    if sensitivity is not None:
+        # CHECK aims at the first spot's target at the microphone (ADR-0403 §4). That
+        # target is a located sweep's RMS level; CHECK's solve compares peaks.
+        check_target = float(sensitivity.dbfs_from_db_spl(SPOT_LEVEL.target_db_spl)) + SWEEP_PEAK_TO_RMS_DB
+        log_event(logger, "correction.check_level_target", target_db_spl=SPOT_LEVEL.target_db_spl,
+                  target_capture_dbfs=check_target)
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, provenance=provenance,

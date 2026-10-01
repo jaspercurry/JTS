@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-pytestmark = pytest.mark.usefixtures("banked_session_level", "isolated_candidate_bank")
+pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 from scipy.io import wavfile
 
@@ -28,7 +28,7 @@ from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossover
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import (
-    SessionExcitation, compose_summed_probe, excitation_from_context, program_for_spec,
+    SessionExcitation, compose_summed_probe, excitation_from_context, probe_fader_db, program_for_spec,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, branch_probes
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer
@@ -55,7 +55,6 @@ from jasper.active_speaker.program_admission import (
     readmit_summed_program_from_wav,
 )
 from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
-from jasper.active_speaker.session_volume_plan import session_measurement_volume_db
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.audio_routes.camilla_emit import emit_gain_filter, emit_linkwitz_riley
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
@@ -75,7 +74,7 @@ from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
-from tests.crossover_v2_fixtures import _preset
+from tests.crossover_v2_fixtures import SESSION_VOLUME_DB, _preset
 
 
 def _profile_and_targets(
@@ -248,7 +247,7 @@ def _admit(prog, *, topology, safety_profile, role_targets, session_volume_db, p
 
 def test_clean_program_is_admitted():
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv)
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
@@ -267,7 +266,7 @@ def test_clean_program_is_admitted():
 @pytest.mark.parametrize("low_hz", [10, 20, 30, 150, 500])
 def test_driver_sweep_keeps_its_analysis_floor(low_hz):
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv, roles=_roles(woofer_band=(low_hz, 1600.0)))
     assert prog.segment("sweep_w").f1_hz == max(150, low_hz)
     adm = _admit(
@@ -296,7 +295,7 @@ def test_asymmetric_caps_woofer_reaches_reference_while_tweeter_lands_at_cap():
     topology, profile, targets = _profile_and_targets(
         woofer_peak=0.0, tweeter_peak=-65.0
     )
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     assert sv == -20.0
     prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -45.0})
     adm = _admit(
@@ -349,7 +348,7 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
         )
         caps[role] = float(cap)
     assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     # max(caps) is still the woofer's -8 (its ceiling is untouched by the HF
     # derivation), so the session volume itself is unaffected by the change.
     assert sv == -20.0
@@ -381,7 +380,7 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
 
 def test_channel_manifest_peak_mismatch_refuses():
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv)
     pcm = render_program_pcm(prog)
     # Inflate the woofer channel's peak far above its declared -6 dBFS, but keep
@@ -408,7 +407,7 @@ def test_courtesy_prelude_still_catches_energy_outside_both_stimulus_and_tone():
     into the courtesy_gap silence (AFTER the tone, before the rest of the
     program) still refuses."""
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv, courtesy_prelude=True)
     pcm = render_program_pcm(prog)
     gap = prog.segment("courtesy_gap")
@@ -431,7 +430,7 @@ def test_courtesy_prelude_tampered_louder_than_cap_is_refused():
     0 dB cap a full-scale sample can't exceed once the session volume folds
     in), so this is the channel that actually exercises CHANNEL_PEAK_OVER_CAP."""
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv, courtesy_prelude=True)
     pcm = render_program_pcm(prog)
     tone1 = prog.segment("courtesy_tone_ch1")
@@ -451,7 +450,7 @@ def test_readmit_courtesy_prelude_wav_is_admitted(tmp_path):
     """Play-time re-admission (the ACTUAL seam ``play_program`` uses) also
     admits a prelude-bearing program cleanly from a fresh WAV byte readback."""
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv, courtesy_prelude=True)
     wav = tmp_path / "prog_prelude.wav"
     write_program_wav(wav, prog)
@@ -464,7 +463,7 @@ def test_readmit_courtesy_prelude_wav_is_admitted(tmp_path):
 
 def test_unmapped_role_refuses():
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv)
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
@@ -490,7 +489,7 @@ def test_verify_program_not_admitted_here():
 
 def test_readmit_clean_wav_is_admitted(tmp_path):
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv)
     wav = tmp_path / "prog.wav"
     write_program_wav(wav, prog)
@@ -503,7 +502,7 @@ def test_readmit_clean_wav_is_admitted(tmp_path):
 
 def test_readmit_tampered_wav_is_refused(tmp_path):
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv)
     wav = tmp_path / "prog.wav"
     write_program_wav(wav, prog)
@@ -522,7 +521,7 @@ def test_readmit_tampered_wav_is_refused(tmp_path):
 
 def test_readmit_wrong_shape_wav_is_refused(tmp_path):
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv)
     wav = tmp_path / "mono.wav"
     # A 1-channel WAV where the program expects 2 channels.
@@ -589,7 +588,7 @@ def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
 
 def test_refused_program_publishes_binding_comparison(caplog):
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -40.0})
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
@@ -612,7 +611,7 @@ def test_refused_program_publishes_binding_comparison(caplog):
 
 def test_declared_sweep_duration_equal_to_the_composed_length_refuses_every_measure():
     topology, profile, targets = _profile_and_targets(max_sweep_duration_s=4)
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     # A woofer band whose phase-closing round lands ABOVE the 4 s request. The
     # rounding is a property of the band ratio, so which side of the limit a
     # given band falls on is incidental — the module default (500-1600) happens
@@ -1073,7 +1072,7 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     }, topology=topology)
     program = SessionExcitation(
         roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
-        session_volume_db=context.session_volume_db, fc_hz=context.fc_hz,
+        session_volume_db=probe_fader_db(context.driver_caps_dbfs), fc_hz=context.fc_hz,
         sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
     ).verify_program()
     assert context.driver_caps_dbfs == {"woofer": -30, "tweeter": -30, "woofer:rear": -36}
@@ -1088,7 +1087,7 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
         program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
-        role_targets=context.role_targets, session_volume_db=context.session_volume_db,
+        role_targets=context.role_targets, session_volume_db=probe_fader_db(context.driver_caps_dbfs),
         graph_evidence=measurement_graph_evidence(scope="candidate", candidate=candidate),
     )
     assert admission.allowed, admission.to_dict()
@@ -1199,7 +1198,7 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.
     }, topology=topology)
     spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), stimulus=preset("nearfield/each").stimulus,
                        program_phase=PHASE_LATERAL, level_probe=True)
-    excitation = excitation_from_context(context, context.session_volume_db)
+    excitation = excitation_from_context(context, probe_fader_db(context.driver_caps_dbfs))
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
         spec, stimulus_dbfs, context=context)
@@ -1242,14 +1241,14 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     write_program_wav(wav, program)
     admission = readmit_program_from_wav(
         program, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db)
+        session_volume_db=probe_fader_db(context.driver_caps_dbfs))
     assert admission.allowed, admission.to_dict()
     *_, probe = _cardioid_solo_take(monkeypatch, target, stimulus_dbfs=None)
     write_program_wav(wav, probe)
     assert is_level_probe(probe)
     assert readmit_program_from_wav(
         probe, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db).allowed
+        session_volume_db=probe_fader_db(context.driver_caps_dbfs)).allowed
 
     plan = build_inline_session_spec(
         [(spec, CloudPositionPrompt("close", pose=Pose(0, 0)), "")], roles_bands=context.roles_bands,
@@ -1281,7 +1280,7 @@ def test_a_branch_probe_sweeps_its_drivers_whole_band_and_is_admitted(tmp_path, 
     write_program_wav(wav, probe)
     assert readmit_program_from_wav(
         probe, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db).allowed
+        session_volume_db=probe_fader_db(context.driver_caps_dbfs)).allowed
 
 
 def test_a_rear_take_is_refused_when_only_the_rear_ceiling_is_lowered(tmp_path, monkeypatch):
@@ -1297,7 +1296,7 @@ def test_a_rear_take_is_refused_when_only_the_rear_ceiling_is_lowered(tmp_path, 
 
     admission = readmit_program_from_wav(
         program, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
-        session_volume_db=context.session_volume_db)
+        session_volume_db=probe_fader_db(context.driver_caps_dbfs))
     assert not admission.allowed
 
 
@@ -1621,7 +1620,7 @@ def test_the_bytes_leg_is_vacuous_for_the_wizard_summed_program():
 
 def test_the_bytes_leg_is_vacuous_for_per_driver_programs():
     topology, profile, targets = _profile_and_targets()
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     program = build_measure_program(
         {"woofer": -6.0, "tweeter": -46.0},
         [RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),

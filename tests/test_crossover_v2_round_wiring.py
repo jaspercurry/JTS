@@ -7,7 +7,9 @@ from __future__ import annotations
 from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 import asyncio
 from tests._async_wait import wait_signalled
+from jasper.active_speaker.crossover_v2.programs import probe_fader_db
 from tests.crossover_v2_fixtures import (
+    SESSION_VOLUME_DB,
     _MINTED_CAPTURE_SESSION_ID,
     _PERSISTED_TOP_LEVEL_KEYS,
     _RecordingCheckStore,
@@ -336,8 +338,10 @@ def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):
     session = captured["tuning"]
 
     assert session.session_id == _MINTED_CAPTURE_SESSION_ID
-    assert session.measurement_level_db == captured["conductor"]._session_volume_db
-    assert session.measurement_level_db < 0.0, "the hearing clamp is never relaxed"
+    # The conductor hydrates at the fader a run opens at, and every take composes at the
+    # fader its level window opened (ADR-0403 §4).
+    assert captured["conductor"]._session_volume_db == probe_fader_db(captured["conductor"].caps_dbfs)
+    assert captured["conductor"].excitation.session_volume_db == session.measurement_level_db == SESSION_VOLUME_DB < 0.0
     assert session.seams.graph is fakes.graph
     assert session.seams.records is fakes.records
     assert not session.is_open, "opening is the run's, not the preparer's"

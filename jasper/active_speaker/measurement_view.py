@@ -78,7 +78,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
             door = run_door(plan)
             try:
                 request, _ = resolve_plan(RunRequest.from_mapping(door["body"]["request"]), targets=lambda: targets)
-                context = resolve_conductor_context(status, require_banked_level=False)
+                context = resolve_conductor_context(status)
             except LateralWalkRefused as exc:
                 choice.update(code=exc.reason, lines=[refusal_copy_for(exc.reason)[0]])
             except CrossoverV2Refused as exc:

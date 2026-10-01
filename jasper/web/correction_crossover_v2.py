@@ -32,7 +32,7 @@ from jasper.active_speaker.baseline_profile import load_applied_baseline_profile
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
-from jasper.active_speaker.crossover_v2.programs import excitation_from_context
+from jasper.active_speaker.crossover_v2.programs import excitation_from_context, probe_fader_db
 from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
 from jasper.active_speaker.plan_run import RunSignals, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
@@ -278,7 +278,6 @@ def prepare_v2_session(
             playback_device=context.playback_device,
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
-            session_volume_db=context.session_volume_db,
             roles=context.roles_bands,
             protection_sections_by_role=protection_sections,
             provenance=capture_provenance,
@@ -297,7 +296,8 @@ def prepare_v2_session(
             driver_caps_dbfs=context.driver_caps_dbfs,
             driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             target_bands=context.driver_bands,
-            session_volume_db=context.session_volume_db,
+            # The fader a run opens at; the run door replaces it at the first level window.
+            session_volume_db=probe_fader_db(context.driver_caps_dbfs),
             seams=seams,
             index_phase_map=stage1_index_phase,
             post_apply_verifies=False,

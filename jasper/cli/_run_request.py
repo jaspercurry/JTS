@@ -15,7 +15,6 @@ from jasper.active_speaker.run_request import REQUEST_KEYS, RunRequest, resolve_
 from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
 from jasper.active_speaker.movers import MOVER_ARM
 from jasper.active_speaker.preflight_live import read_preflight_facts
-from jasper.active_speaker.seat_level_reference import seat_level_reference_state_path
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.audio_measurement.household_mic import household_mic_path
 from jasper.audio_routes.output_topology_store import load_output_topology, topology_path
@@ -36,7 +35,7 @@ def _facts(request: AngleCaptureRequest, args: argparse.Namespace) -> PreflightF
 
 def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
     # Shared loaders suppress read faults; keep this CLI check until they expose them.
-    for path in (topology_path(), baseline_profile_state_path(), household_mic_path(), seat_level_reference_state_path()):
+    for path in (topology_path(), baseline_profile_state_path(), household_mic_path()):
         try:
             with path.open("rb"):
                 pass

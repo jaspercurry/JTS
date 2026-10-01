@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
+from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
@@ -16,9 +17,6 @@ from jasper.platform.log_event import log_event
 from jasper.platform.control_client import read_output_volume
 
 from .angle_capture import AngleCaptureRequest
-from .arm_walk import TurntableMover
-from .anchor_provenance import read_graph, read_pose
-from .movers import MOVER_ARM
 from . import candidate_bank
 from .baseline_profile import load_applied_baseline_profile_state
 from .candidate_parts import candidate_from_applied_profile, candidate_from_design_draft, program_charge_db
@@ -31,7 +29,6 @@ from .measurement_emit import load_tuning_declaration, room_layer_charge_db, tim
 from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
-from .seat_level_reference import AnchorFacts, load_seat_level_reference
 
 
 def _draft_floor_db(topology: Any) -> Mapping[str, float] | None:
@@ -42,6 +39,16 @@ def _draft_floor_db(topology: Any) -> Mapping[str, float] | None:
                                candidate_from_design_draft(topology, load_design_draft(topology=topology)))
     except (OSError, RuntimeError, ValueError, LookupError):
         return None
+
+
+def _geometry_unreadable() -> str | None:
+    """The declared room's unreadable field, or ``None`` when it reads or none is
+    declared: declared but unreadable is not undeclared (ADR-0388)."""
+    try:
+        measurement_geometry.load_declared_geometry()
+    except (OSError, ValueError, TypeError) as exc:
+        return getattr(exc, "field", None) or type(exc).__name__
+    return None
 
 
 def read_preflight_facts(
@@ -96,9 +103,6 @@ def read_preflight_facts(
             candidates[name] = candidate_bank.find_banked_candidate(name).candidate
         except candidate_bank.CandidateBankRefusal as exc:
             candidates[name] = PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}")
-    anchor = AnchorFacts(load_seat_level_reference() or {},
-                         resolved_household_sensitivity(device) if device is not None else None,
-                         graph=read_graph(compile_graph=True), pose=read_pose(arm_offset_deg=TurntableMover(timeout_s=5.0).offset_deg() if plan.mover == MOVER_ARM else None))
     swept_floors = [(stop.pose.driver, stop.stimulus["band_hz"][0]) for stop in plan.stops
                     if stop.pose.driver and stop.stimulus is not None]
     output_volume = read_output_volume()
@@ -109,7 +113,8 @@ def read_preflight_facts(
         output_volume=output_volume,
         candidates=candidates, mic_present=device is not None,
         mic_identified=bool(device is not None and device.model_key),
-        anchor=anchor,
+        mic_sensitivity=resolved_household_sensitivity(device) if device is not None else None,
+        geometry_unreadable=_geometry_unreadable(),
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
         applied_bass_extension=applied_bass_extension, applied_room_peqs=applied_room_peqs,
         applied_room_charge_db=applied_room_charge_db, applied_program_charge_db=applied_program_charge,

@@ -724,19 +724,6 @@ _STORE_COPY: dict[str, str] = {
 # The §5.10 table, as data. The envelope and the session both read it, so
 # copy and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
-    **{code: ReasonSpec(code, TEMPLATE_FIX_AND_RETRY, 0, "", message)
-       for code, message in (
-           ("level_unreachable", "The target level is unreachable at this gain. Check the amplifier and microphone."),
-           ("level_ambient_too_high", "The room is too loud to level. Reduce the ambient noise and try again."),
-           ("spl_level_unsettled", "The microphone level did not settle. Try again."),
-           ("mic_not_observing", "The microphone did not hear the speaker. Check its position and connection."),
-           ("mic_feed_lost", "The microphone stopped sending samples. Check its connection and try again."),
-           ("mic_clipping", "The microphone clipped. Check the microphone and lower the level."),
-           ("volume_latch_unconfirmed", "The amplifier gain could not be confirmed. Check the audio connection."),
-           ("fader_above_cap", "The amplifier gain exceeds the 0 dB cap. Lower it before leveling."),
-           ("spl_target_uncapturable", "The microphone cannot measure the requested level. Use a suitable microphone."),
-           ("seat_level_watchdog_expired", "Leveling timed out. Check the audio connection and try again."),
-       )},
     "bass_fit_capture_context_changed": ReasonSpec(
         "bass_fit_capture_context_changed", TEMPLATE_HARD_STOP, 0, "", "The paired bass captures used different conditions.",
         next_action={"id": "match_bass_capture", "label": "Measure both graphs at the same pose and settings", "href": "/sound/speaker/crossover/"},
@@ -821,10 +808,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     "measure_box_not_ready": ReasonSpec(
         "measure_box_not_ready", TEMPLATE_HARD_STOP, 0, "", "Finish the protected speaker setup.",
         next_action={"id": "speaker_setup", "label": "Finish the protected speaker setup", "href": "/sound/speaker/crossover/"},
-    ),
-    "seat_anchor_unusable": ReasonSpec(
-        "seat_anchor_unusable", TEMPLATE_HARD_STOP, 0, "", "Run jasper-seat-level with the current microphone, then measure.",
-        next_action={"id": "measure_seat_level", "label": "Run jasper-seat-level with the current microphone, then measure", "href": "/sound/speaker/crossover/"},
     ),
     DECLARED_GEOMETRY_UNREADABLE: ReasonSpec(
         DECLARED_GEOMETRY_UNREADABLE, TEMPLATE_HARD_STOP, 0, "",

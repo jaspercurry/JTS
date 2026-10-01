@@ -169,12 +169,10 @@ def _rear_sections(
     return found
 
 
-def _level_facts(manifest: Mapping[str, Any],
-                 observed: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _level_facts(observed: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """The capture facts every take in one batch must share, echoed from the
-    takes' own basis, with the session's asked-for level beside them."""
+    takes' own basis."""
     return {
-        "session_db": (manifest.get("level") or {}).get("session"),
         **{field: _shared([basis.get(field) for basis in observed]) for field in LEVEL_FIELDS},
         "levels_differ": len({basis.get("level_db") for basis in observed}) > 1,
     }
@@ -550,7 +548,7 @@ def rear_document(
             "previous_reference": _previous_reference(
                 inputs, manifest, reference_id, {key: batch[reference_id][key] for key in positions}, basis_of),
             "positions": positions, "positions_unscored": unscored,
-            "level": _level_facts(manifest, observed),
+            "level": _level_facts(observed),
             "repeat_spread": spread,
         },
         "candidates": candidates,
@@ -782,7 +780,7 @@ def _pair_document(
             "coverage_hz": coverage_hz, "ceiling": ceiling.to_dict(),
             "reference": {"candidate_id": candidate, "kind": ROLE_PAIR, "set_id": set_id},
             "positions": sorted(positions), "positions_unscored": unscored,
-            "level": _level_facts(manifest, observed),
+            "level": _level_facts(observed),
             # The summed path's spread answers "how small a candidate
             # difference is real?" A pair batch compares no candidates, so it
             # reads none of those figures; its repeat evidence rides on each

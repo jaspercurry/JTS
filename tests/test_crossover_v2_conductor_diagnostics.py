@@ -40,9 +40,6 @@ from tests.crossover_v2_fixtures import (
 )
 
 
-pytestmark = pytest.mark.usefixtures("banked_session_level")
-
-
 # --- W6.1 Finding A: cap-aware CHECK / MEASURE / VERIFY composition -------------
 #
 # The conductor fixture (CAPS) knew the caps, but the fake play seam never ran
@@ -53,16 +50,13 @@ pytestmark = pytest.mark.usefixtures("banked_session_level")
 
 
 def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
-    from jasper.active_speaker.session_volume_plan import (
-        session_measurement_volume_db,
-    )
-
+    from tests.crossover_v2_fixtures import SESSION_VOLUME_DB
     from tests.test_active_speaker_program_admission import _profile_and_targets
 
     topology, profile, targets = _profile_and_targets(
         woofer_peak=woofer_peak, tweeter_peak=tweeter_peak
     )
-    sv = session_measurement_volume_db(profile, targets.values())
+    sv = SESSION_VOLUME_DB
     caps = {"woofer": float(woofer_peak), "tweeter": float(tweeter_peak)}
     roles = [
         RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),
@@ -223,11 +217,9 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
         resolve_driver_excitation_ceilings,
     )
     from jasper.active_speaker.program_admission import readmit_program_from_wav
-    from jasper.active_speaker.session_volume_plan import (
-        session_measurement_volume_db,
-    )
     from jasper.audio_measurement.program import write_program_wav
 
+    from tests.crossover_v2_fixtures import SESSION_VOLUME_DB
     from tests.test_active_speaker_program_admission import _profile_and_targets
 
     # JTS3 declaration: Epique E150HE-44 83.3 dB / B&C DE250-8 108.5 dB.
@@ -247,8 +239,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
     # -33.2 is the sensitivity arithmetic (-8 less the 25.2 dB delta); the
     # provisional -35 dBFS absolute hedge over it was retired 2026-08-20.
     assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
-    sv = session_measurement_volume_db(profile, targets.values())
-    assert sv == -20.0  # max(caps) is still the woofer's — volume unchanged
+    sv = SESSION_VOLUME_DB
 
     roles = [
         RoleBand("woofer", 0, FrequencyBand(500.0, 1600.0)),

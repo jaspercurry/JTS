@@ -305,7 +305,7 @@ def _profile(topology, *, saved_at: str = "2026-07-28T12:00:00Z"):
 
 
 @pytest.fixture()
-def session_open(monkeypatch, tmp_path, banked_session_level):
+def session_open(monkeypatch, tmp_path):
     """Drive the REAL session-open path with real driver-safety evaluation.
 
     Only the seams this test is not about are stubbed: the crossover-preview

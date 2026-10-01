@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field, replace
 from itertools import product
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
@@ -23,7 +23,7 @@ from .capture_schedule import (
 )
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
-    AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
+    AngleCaptureRequest, WALK_LEVEL_POLICY_INVALID,
     REGIME_BRANCHES,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
@@ -42,7 +42,9 @@ from .measurement_programs import (
     candidate_identity, run_purposes,
 )
 from .profile import DRIVER_ROLES_BY_WAY
-from .seat_level_reference import AnchorFacts, LevelUnresolved, resolve_anchor_level
+
+if TYPE_CHECKING:
+    from jasper.audio_measurement.calibration import MicSensitivity
 
 # Rechecked at participation; a dry run reserves none of these resources.
 LIVE_ADMISSION = (
@@ -74,12 +76,14 @@ class PreflightFacts:
     candidates: Mapping[str, MeasuredCrossoverCandidate | PreflightIssue]
     mic_present: bool
     mic_identified: bool
-    anchor: AnchorFacts
+    mic_sensitivity: MicSensitivity | None
     commissioning_stop_db_spl: float | None
     mover: str
     rig_clear_attested: bool | None = None
     mover_available: bool = True
     issues: tuple[PreflightIssue, ...] = ()
+    #: The declared room's unreadable field, ``None`` when it reads (ADR-0388).
+    geometry_unreadable: str | None = None
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
     #: ``None`` when an applied profile's room layer could not be read.
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
@@ -140,8 +144,7 @@ class PreflightReport:
             "schedule": [asdict(capture) for capture in self.schedule],
             "mic_moves": self.mic_moves, "price": dict(self.price),
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
-            "level": {"resolved": self.plan.level.resolved is not None,
-                      **{key: value for key, value in self.plan.level.to_dict().items() if key != "mode"}},
+            "level": self.plan.level.to_dict(),
             "live_admission": list(LIVE_ADMISSION),
             "rung_admission": dict(self.rung_admission),
             "driver_caps": {target: dict(cap) for target, cap in self.driver_caps.items()},
@@ -324,10 +327,10 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
         add("wired_mic_missing", "No measurement microphone is present")
     elif not facts.mic_identified:
         add("measurement_mic_unidentified", "The measurement microphone has no known identity")
-    if facts.anchor.sensitivity is None:
+    if facts.mic_sensitivity is None:
         add("measure_spl_calibration_required", "Microphone sensitivity cannot be resolved")
     # Every take gates to the declared room and banks its band from it, so an unreadable one refuses the run (ADR-0388).
-    if unreadable := (facts.anchor.pose or {}).get("geometry_unreadable"):
+    if unreadable := facts.geometry_unreadable:
         issues.append(replace(PreflightIssue.from_code(
             DECLARED_GEOMETRY_UNREADABLE, REASON_REGISTRY[DECLARED_GEOMETRY_UNREADABLE].message),
             evidence={"field": unreadable}))
@@ -338,16 +341,6 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
             add("walk_commissioning_stop_unset", "The commissioning stop cannot be resolved")
     else:
         ceiling = stop
-        if facts.anchor.sensitivity is not None:
-            try:
-                anchor, rebase = resolve_anchor_level(facts=facts.anchor)
-                if plan.level.resolved is not None and plan.level.resolved != anchor:
-                    admission["carried_anchor_replaced"] = True
-                plan = replace(plan, level=replace(plan.level, resolved=anchor))
-                admission.update(rebase)
-            except (LevelUnresolved, LateralWalkRefused) as exc:
-                admission.update(status="blocked")
-                add(exc.reason, exc.detail)
 
     schedule = tuple(
         ScheduledCapture(index + 1, stop.pose.place,

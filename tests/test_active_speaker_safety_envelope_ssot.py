@@ -25,10 +25,9 @@ import pytest
 
 from jasper.active_speaker import commission_wiring, preset_binding, tone_plan
 from jasper.active_speaker.crossover_preview import build_crossover_preview
-from jasper.active_speaker.profile import ActiveSpeakerConfigError, SafetyEnvelope
-from jasper.active_speaker.seat_level_reference import (
-    DEFAULT_TOLERANCE_DB,
-    SeatLevelTarget, SeatLevelTargetError, validate_commissioning_spl, validate_ramp_target_spl,
+from jasper.active_speaker.measurement_programs import SEAT_LEVEL, SPOT_LEVEL
+from jasper.active_speaker.profile import (
+    ActiveSpeakerConfigError, SafetyEnvelope, ramp_bound_db_spl, spl_raise_bound_db_spl,
 )
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from tests.active_speaker_fixtures import (
@@ -218,26 +217,14 @@ def test_capture_preset_explicit_arm_passes_its_presets_stop_through(
     assert preset.safety.max_commissioning_level_db_spl == RULED_STOP_DB_SPL
 
 
-def test_ruled_75_db_seat_frame_validates_under_the_ruled_stop() -> None:
-    """The frame the ruling exists to let converge: 75 dB SPL, band 74.0-76.0.
-
-    Under the old 80.0 stop the band itself was already legal; what tripped
-    was the measured post-step transient, which the ramp compares against the
-    same ceiling. This pins the band half.
-    """
-    target = SeatLevelTarget(target_db_spl=75.0, tolerance_db=DEFAULT_TOLERANCE_DB)
-
-    assert (target.low_db_spl, target.high_db_spl) == (74.0, 76.0)
-    target.validate(ceiling_db_spl=RULED_STOP_DB_SPL)
+@pytest.mark.parametrize("level,bound", [(SPOT_LEVEL, spl_raise_bound_db_spl), (SEAT_LEVEL, ramp_bound_db_spl)],
+                         ids=["first-spot", "first-seat-spot"])
+def test_a_run_level_lands_under_its_bound_at_the_ruled_stop(level, bound) -> None:
+    """A first spot lands at most on the admission bound under the stop, and a first
+    seat spot at most on the ramp bound, so a later seat spot has room (ADR-0403 §4)."""
+    assert level.target_db_spl + level.tolerance_db <= bound(RULED_STOP_DB_SPL)
 
 
-@pytest.mark.parametrize("margin_db,edge", [(None, 76.0), (1.0, 84.0), (1.0 + 12.0, 72.0)])
-@pytest.mark.parametrize("excess_db", [0.0, 0.1])
-def test_ramp_and_rung_bounds(margin_db, edge, excess_db):
-    rule = validate_ramp_target_spl if margin_db is None else validate_commissioning_spl
-    kwargs = {} if margin_db is None else {"margin_db": margin_db}
-    if excess_db:
-        with pytest.raises(SeatLevelTargetError):
-            rule(edge + excess_db, ceiling_db_spl=RULED_STOP_DB_SPL, **kwargs)
-    else:
-        rule(edge, ceiling_db_spl=RULED_STOP_DB_SPL, **kwargs)
+def test_the_ruled_stop_sets_both_bounds() -> None:
+    """A narrowed margin fails here; a raised target fails the pin above."""
+    assert (ramp_bound_db_spl(RULED_STOP_DB_SPL), spl_raise_bound_db_spl(RULED_STOP_DB_SPL)) == (76.0, 82.0)

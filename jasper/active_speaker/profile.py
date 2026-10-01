@@ -550,26 +550,10 @@ def ramp_bound_db_spl(stop_db_spl: float) -> float:
 class SafetyEnvelope:
     """Commissioning bounds that keep hardware bring-up conservative."""
 
-    # The commissioning SPL stop rides this dataclass
-    # default; construction sites must not restate it. Two staging sites
-    # hardcoded 80.0, which hid this default and cost a bench night: the ruled
-    # 75 dB seat-level frame could not converge, because a post-step sample
-    # tripped the 80.0 stop and abandoned its window before any median.
-    # What is BANKED, and only that (runs 83/84, replayed verbatim by
-    # ``tests/test_active_speaker_seat_level.py``): the two trip values were
-    # 80.50 and 80.90 — single SAMPLES, not peaks. The settled level at the
-    # refused volume was never measured, because the window was abandoned. So
-    # the excess over settled is a RANGE and not a number: roughly +6 to
-    # +11 dB. The WIDE end extrapolates each run's own banked slope; the NARROW
-    # end comes from a separate calibration (captures 86/87, same campaign
-    # bringup dir as 83/84). The two do not reconcile, and that is the point:
-    # the narrow end needs a chain answering a commanded dB with MORE than a
-    # dB, while ``test_the_new_horn_slope_estimate_never_reached_unity`` pins
-    # every banked pair BELOW unity — room-subtracted too, with both readings
-    # of the estimator's own pair already clear of the room, so "still emerging
-    # from the room" does not account for it. The gap is unexplained by these
-    # runs. That is exactly why neither end may be restated alone.
-    # ``tests/test_active_speaker_safety_envelope_ssot.py`` is the tripwire.
+    # The commissioning SPL stop rides this dataclass default, and no
+    # construction site restates it: a restated stop once hid this one and
+    # cost a bench night. ``tests/test_active_speaker_safety_envelope_ssot.py``
+    # is the tripwire.
     max_commissioning_level_db_spl: float = 85.0
     require_physical_tweeter_protection: bool = True
     emergency_stop_required: bool = True

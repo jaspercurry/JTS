@@ -48,16 +48,12 @@ from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.driver_safety import DriverSafetyProfileError
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment
 from jasper.active_speaker.round_packet import store_banked_evidence
-from jasper.active_speaker.seat_level_reference import (
-    STATE_PATH_ENV as _SEAT_LEVEL_STATE_PATH_ENV,
-)
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, unavailable
 from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_active_speaker_program_admission import _profile_and_targets
-from tests.test_active_speaker_session_volume_plan import _bank_reference
 from tests.test_crossover_v2_blend_prescription import _bank_take_with_diagnostic, _bundle
 from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import (
@@ -635,7 +631,7 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     assert payload["banked"]["status"] == "unavailable"
     # Nothing to run against a speaker with no session: the page that runs one
     # is the handoff, and this verb never invents a command it cannot spell.
-    assert payload["next_commands"] == ["jasper-seat-level"]
+    assert payload["next_commands"] == []
 
 
 @pytest.mark.parametrize("stale_kind", [None, "candidate", "record", "applied_at"])
@@ -674,9 +670,6 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
         timestamp = parse_utc_iso(profile["applied_at"]) + (age - 100 if stale_kind == "applied_at" else age)
         os.utime(directory, (timestamp, timestamp))
         recent[name] = {"round_dir": str(directory), "started_at": timestamp}
-    level = tmp_path / "level.json"
-    monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(level))
-    _bank_reference(level, -9.0)
     packet_builder = []
     monkeypatch.setattr(cli, "round_evidence", lambda *a, **kw: packet_builder.append(kw))
     before = _tree(tmp_path)
@@ -689,8 +682,6 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     names = ["driver" if name == "speaker" else name for name in ("speaker", "room", "bass", "rear") if name in layers]
     assert payload["applied"]["summary"] == "applied layers: " + (", ".join(names) or "none")
     assert payload["applied"]["candidate_fingerprint"] == "saved-speaker"
-    assert payload["applied"]["reference_volume_db"] == payload["seat_level_reference_volume_db"] == -9.0
-    assert payload["applied"]["leveled_db_spl"] == 77.4
     assert payload["last_banked"] == {name: {"round_id": name, "round_dir": recent[name]["round_dir"],
                                             "banked_at": recent[name]["started_at"],
                                             "status": "partial", "stale": bool(stale_kind)}
@@ -850,33 +841,6 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
     assert f"{cli.PROG} contract --round {session}" in with_state["next_commands"]
 
 
-def test_the_banked_seat_level_reference_is_published_either_way(
-    tmp_path, capsys, monkeypatch
-):
-    """A measurement session rides this level, so the number itself is reported.
-
-    Absent one, every session rides a level nobody measured, and the tool that
-    banks one is offered. ``_no_real_pi_paths`` already points the seat-level
-    state path at a file that does not exist, so "not banked" is this suite's
-    ambient default, same as ``--drivers`` above.
-    """
-    session, _ = _speaker_dirs(tmp_path)
-
-    _, without = _status([str(session)], capsys)
-
-    assert without["seat_level_reference_volume_db"] is None
-    assert any("jasper-seat-level" in command for command in without["next_commands"])
-
-    path = tmp_path / "seat-level-reference.json"
-    monkeypatch.setenv(_SEAT_LEVEL_STATE_PATH_ENV, str(path))
-    _bank_reference(path, -9.0)
-
-    _, banked = _status([str(session)], capsys)
-
-    assert banked["seat_level_reference_volume_db"] == -9.0
-    assert not any("jasper-seat-level" in command for command in banked["next_commands"])
-
-
 # --------------------------------------------------------------------------- #
 # 6. status_document — the value door behind the print door (W3-a)
 # --------------------------------------------------------------------------- #
@@ -899,7 +863,6 @@ _STATUS_DOCUMENT_KEYS = {
     "declared",
     "banked",
     "applied",
-    "seat_level_reference_volume_db",
     "driver_caps_live",
     "reading_order",
     "next",

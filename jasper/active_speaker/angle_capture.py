@@ -29,7 +29,6 @@ from jasper.audio_measurement.program import RoleBand
 
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
-from .seat_level_reference import ResolvedLevel
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
 from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.contracts import (
@@ -92,7 +91,6 @@ __all__ = [
     "MOVER_HUMAN",
     "MOVER_CONFIRMED",
     "MOVERS",
-    "LEVEL_HOLD_REFERENCE",
     "MAX_ANGLE_DEG",
     "MAX_ELEVATION_DEG",
     "ARM_ENVELOPE_DEG",
@@ -132,9 +130,8 @@ __all__ = [
 ]
 
 
-LEVEL_HOLD_REFERENCE = "hold_reference"
-LEVEL_SOURCES = ("seat_reference", "program_default", "operator")
-REQUEST_SCHEMA_VERSION = 7
+LEVEL_SOURCES = ("program_default", "operator")
+REQUEST_SCHEMA_VERSION = 8
 REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 
@@ -388,44 +385,24 @@ _EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_targe
 
 @dataclass(frozen=True)
 class LevelPolicy:
-    """The banked anchor and the drive level held for every take."""
+    """The fader every take of a run holds: the one stated, or, with none, the
+    one the run's probe finds (ADR-0403 §4)."""
 
-    mode: str = LEVEL_HOLD_REFERENCE
-    resolved: ResolvedLevel | None = None
     level_db: float | None = None
 
     def __post_init__(self) -> None:
-        if self.mode != LEVEL_HOLD_REFERENCE:
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"unsupported level mode: {self.mode!r}")
         if self.level_db is not None and (finite_float(self.level_db) is None
                 or not EMERGENCY_MEASUREMENT_VOLUME_DB < self.level_db <= 0):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level_db is outside the measurement fader range")
-        if self.resolved is None:
-            return
-        if not isinstance(self.resolved, ResolvedLevel):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "resolved must be a ResolvedLevel")
-        for name in ("anchor_db_spl", "reference_volume_db"):
-            if finite_float(getattr(self.resolved, name)) is None:
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"{name} must be finite")
-        if self.resolved.reference_volume_db > 0:
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "reference volume must be non-positive")
-        if self.resolved.mic_serial is not None and not isinstance(self.resolved.mic_serial, str):
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "mic_serial must be text")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"mode": self.mode, "level_db": self.level_db, **(asdict(self.resolved) if self.resolved is not None else {
-            f.name: None for f in fields(ResolvedLevel)
-        })}
+        return {"level_db": self.level_db}
 
     @classmethod
     def from_mapping(cls, doc: Mapping[str, Any]) -> LevelPolicy:
-        if set(doc) != {"mode", "level_db", *(f.name for f in fields(ResolvedLevel))}:
-            raise ValueError("level must state mode, level_db and the resolved level fields")
-        values = dict(doc)
-        mode = values.pop("mode")
-        level_db = values.pop("level_db")
-        return cls(mode=mode, level_db=level_db,
-                   resolved=None if all(v is None for v in values.values()) else ResolvedLevel(**values))
+        if set(doc) != {"level_db"}:
+            raise ValueError("level must state level_db, and only that")
+        return cls(level_db=doc["level_db"])
 
 
 @dataclass(frozen=True)
@@ -483,8 +460,7 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
         if not self.level_source:
             object.__setattr__(self, "level_source", "operator" if self.level.level_db is not None
-                               or self.levels is not None else
-                               "seat_reference" if self.level.resolved is not None else "program_default")
+                               or self.levels is not None else "program_default")
         if self.level_source not in LEVEL_SOURCES:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
         if self.levels is not None:

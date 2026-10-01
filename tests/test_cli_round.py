@@ -511,7 +511,7 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     ({"driver": "base", "alignment": "saved"}, (), None, None, None),
 ])
 def test_trial_runs_the_program_its_document_states(
-    bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags, program, layout, mover, arm_plan_answer,
+    bank_trial, monkeypatch, capsys, resolution, flags, program, layout, mover, arm_plan_answer,
 ):
     fingerprint = bank_trial(resolution)
     opener = _opener(session='{"session_id": "trial-1"}')
@@ -543,7 +543,7 @@ def test_a_declared_crossover_states_no_trial_program(isolated_candidate_bank, m
 
 @pytest.mark.parametrize("resolution,flags,repeats", [
     ({"driver": "document"}, (), 2), ({"bass": "document"}, ("--mover", "human", "--repeats", "3"), 3)])
-def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, banked_session_level, monkeypatch, capsys, resolution, flags,
+def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, monkeypatch, capsys, resolution, flags,
                                                repeats):
     """The dry run states the run it prices: the ladder's levels, and a preset's own repeats when none are typed."""
     fingerprint = bank_trial(resolution)
@@ -602,7 +602,7 @@ def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, mon
     assert code == 0
     plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert plan["candidates"] == ([] if candidates is None else [candidates])
-    assert (plan["artifact_schema_version"], body["run_id"]) == (7, "run-1")
+    assert (plan["artifact_schema_version"], body["run_id"]) == (8, "run-1")
     assert plan["level"]["level_db"] == -25
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["subject"] == ({"candidate_ids": [candidates]} if candidates else {})
@@ -618,7 +618,7 @@ def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys)
     assert not opener.requests
 
 
-@pytest.mark.parametrize("path_owner", ["topology_path", "baseline_profile_state_path", "household_mic_path", "seat_level_reference_state_path"])
+@pytest.mark.parametrize("path_owner", ["topology_path", "baseline_profile_state_path", "household_mic_path"])
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypatch, capsys):
     path = getattr(_run_request, path_owner)()
@@ -1021,7 +1021,7 @@ def test_a_rear_pair_at_custom_bearings_plans_branch_takes_on_the_applied_base(
 
 @pytest.mark.parametrize("choice_id", ["room/seat", "bass/axis@seat_express", "rear/pair", "nearfield/each"])
 def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
-    monkeypatch, preflight_ready, banked_session_level, choice_id,
+    monkeypatch, preflight_ready, choice_id,
 ):
     """`--request`, the page's start action and the session door resolve one
     request to one plan and one level ladder (#5737 A3)."""
@@ -1235,7 +1235,7 @@ def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
     answer would have (ADR-0389)."""
     def facts(plan, **kw):
         ready = ready_facts(plan, **kw)
-        return ready if admitted else replace(ready, anchor=replace(ready.anchor, record={}))
+        return ready if admitted else replace(ready, mic_present=False)
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()

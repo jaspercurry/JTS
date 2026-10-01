@@ -699,8 +699,7 @@ def _recover_crash_left_session_volume() -> None:
     A SIGKILL, the OOM killer or the watchdog skips the run's ``finally``, and
     CamillaDSP's statefile keeps the run's level. The unit restarts in about
     2 s, and the killed run's own measurement hold lives 60-120 s more. Only
-    that hold restores: jasper-seat-level writes the same plan file and can
-    run with no hold, a jasper-control restart drops holds, a later start
+    that hold restores: a jasper-control restart drops holds, a later start
     must not put an old pre-run level over a newer one, and a previous boot's
     plan never meets this boot's hold.
 

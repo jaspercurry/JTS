@@ -53,7 +53,6 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     SetTakes, subject,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
-from jasper.active_speaker.seat_level_reference import seat_level_reference_status
 from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
@@ -518,7 +517,6 @@ def _next_commands(
     sections: dict[str, Any],
     *,
     packet_gap: dict[str, Any] | None,
-    seat_level_db: float | None,
     session_dir: str | None,
 ) -> list[str]:
     """What to RUN next, with the paths already resolved.
@@ -541,8 +539,6 @@ def _next_commands(
     # Staging every retained artifact would turn discovery into an experiment.
     if len(sections["banked"]["candidates"]) > 1:
         commands.append("jasper-round run --help")
-    if seat_level_db is None:
-        commands.append("jasper-seat-level")
     return commands
 
 
@@ -584,10 +580,6 @@ def status_document(
                 })
     except (CrossoverEvidencePacketError, OSError) as exc:
         context["context_error"] = unavailable(_evidence_code(exc), str(exc))
-    # A level nobody measured is what a session rides without one, so the banked value
-    # itself is published rather than a warning about its absence.
-    level = seat_level_reference_status() or {}
-    seat_level_db = level.get("seat_level_reference_volume_db")
     profile = load_applied_baseline_profile_state(applied_profile_path)
     identity = applied_identity(profile) or {}
     programs = programs_for_topology(load_output_topology())
@@ -598,8 +590,6 @@ def status_document(
     sections["applied"].update(
         layers=layers, candidate_fingerprint=identity.get("candidate"),
         summary="applied layers: " + (", ".join(name for name, applied in layers.items() if applied) or "none"),
-        reference_volume_db=seat_level_db, leveled_db_spl=level.get("leveled_db_spl"),
-        anchor_graph_mismatch=level.get("anchor_graph_mismatch"), anchor_pose_mismatch=level.get("anchor_pose_mismatch"),
     )
     return {
         "speaker": {
@@ -614,7 +604,6 @@ def status_document(
         "recent_rounds": recent,
         **sections,
         **context,
-        "seat_level_reference_volume_db": seat_level_db,
         "driver_caps_live": _live_driver_caps(),
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
@@ -622,10 +611,7 @@ def status_document(
                         if name in banked else None for name in programs},
         "next": {"program": None if action["reason_code"] == "complete" else action["program"],
                  "reason_code": action["reason_code"]},
-        "next_commands": _next_commands(
-            sections, packet_gap=packet_gap, seat_level_db=seat_level_db,
-            session_dir=session_dir,
-        ),
+        "next_commands": _next_commands(sections, packet_gap=packet_gap, session_dir=session_dir),
     }
 
 

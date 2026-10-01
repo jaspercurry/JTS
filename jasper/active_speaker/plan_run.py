@@ -333,17 +333,13 @@ async def run_plan(
     angle_stops = [capture.stop for capture in captures]
     places = [stop.pose.place for stop in angle_stops]
     level_starts = level_sets(angle_stops)
-    anchor = request.level.resolved
     level = request.level.level_db
     if level is None and session is not None:
         level = session.measurement_level_db
     finds = door is not None and bool(door.caps_dbfs)
     if (level is None and not finds) or (door is None and (session is None or level != session.measurement_level_db)):
-        raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a resolved session level")
-    manifest.level = {
-        **({"session": anchor.session()} if anchor is not None else {}),
-        "run": {"level_db": level, "level_source": request.level_source},
-    }
+        raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a level or a probe to find one")
+    manifest.level = {"run": {"level_db": level, "level_source": request.level_source}}
     expanded = []
     planned: list[dict[str, Any]] = []
     for pose_index, (_place, batch) in enumerate(groupby(enumerate(specs), key=lambda row: places[row[0]])):

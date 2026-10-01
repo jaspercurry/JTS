@@ -173,7 +173,6 @@ END_MARKER = "<!-- END GENERATED TOOL MENU -->"
 TUNING_TOOL_MODULES: tuple[str, ...] = (
     "jasper.cli.basic_profile",
     "jasper.cli.mic_calibration",
-    "jasper.cli.seat_level",
     "jasper.cli.angle_capture",
     "jasper.cli.crossover_prescriber",
     "jasper.cli.round",

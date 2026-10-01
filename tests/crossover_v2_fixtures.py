@@ -14,7 +14,6 @@ import asyncio
 import sys
 import pytest
 from jasper.active_speaker import commission_wiring
-from jasper.active_speaker import session_volume_plan as session_volume_plan_mod
 from jasper.active_speaker import design_draft
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
@@ -924,10 +923,6 @@ def _production_host_seams(monkeypatch, tmp_path):
         "effective_sweep_duration_limit_s",
         lambda safety_profile, fingerprint: 6.0,
     )
-    monkeypatch.setattr(
-        session_volume_plan_mod, "session_measurement_volume_db",
-        lambda safety_profile, fps, **kw: -20.0,
-    )
     monkeypatch.delenv(ACTIVE_PLAYBACK_DEVICE_ENV, raising=False)
     monkeypatch.setenv(
         model_error_store.STATE_PATH_ENV, str(tmp_path / "model_errors.json")
@@ -1084,9 +1079,8 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
     monkeypatch.setattr(v2host, "bind_v2_engine_seams", lambda **kwargs: fakes.seams())
     def bind(**kwargs):
         binding, analyze, assessor, execute = real_bind(**kwargs)
-        level = kwargs["conductor"]._excitation.session_volume_db
         monitor = WiredSplMonitor(binding.sensitivity, binding.ceiling_db_spl, 0)
-        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, level, "graph", monitor)
+        door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, SESSION_VOLUME_DB, "graph", monitor)
         captured["tuning"] = binding.build_session(door, kwargs["manifest"].allocate_take_id)
         return binding, analyze, assessor, execute
     monkeypatch.setattr(v2host, "bind_run_door", bind)

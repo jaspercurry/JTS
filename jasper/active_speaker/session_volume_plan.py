@@ -39,8 +39,8 @@ per-step lease does not:
   A per-step lease never needed this because it re-set the volume every step.
   The re-proof stays as the tripwire that would catch the next such writer.
 
-The session gain is banked by jasper-seat-level and bounded by the loudest
-active driver's cap. Composition and admission consume that same fader.
+A run's fader is the one its probe finds (ADR-0403 §4). Composition and
+admission consume that same fader.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Mapping, Protocol
 
 from jasper.platform.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
@@ -61,8 +61,6 @@ from jasper.platform.json_fields import finite_float
 from jasper.platform.log_event import log_event
 from jasper.platform.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
 
-from .excitation_safety_plan import resolve_driver_excitation_ceilings
-from .seat_level_reference import ANCHOR_UNUSABLE, LevelUnresolved, seat_level_reference_volume_db
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB, hold_fader_at
 
 logger = logging.getLogger(__name__)
@@ -132,101 +130,6 @@ class RestoreOutcome(str, Enum):
     DEFERRED = "deferred"
     #: Not in effect and not deferred — the write did not confirm.
     FAILED = "failed"
-
-
-def measurement_reference_volume_db(
-    *, reference_state_path: str | Path | None = None
-) -> float:
-    """The session's banked gain, never an estimated listening level."""
-    measured = seat_level_reference_volume_db(state_path=reference_state_path)
-    if measured is None:
-        raise LevelUnresolved(ANCHOR_UNUSABLE, "Run jasper-seat-level with the current microphone, then measure")
-    return measured
-
-
-def _driver_caps_dbfs(
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Iterable[str],
-) -> list[float]:
-    """Every active driver's admitted effective-peak cap, one derivation path.
-
-    ``program_admission=True``: these caps set each driver's composed segment
-    level and are enforced per channel at admission — always the proven-HP path.
-    """
-    caps: list[float] = []
-    for target_fingerprint in target_fingerprints:
-        _band, maximum_peak = resolve_driver_excitation_ceilings(
-            safety_profile,
-            target_fingerprint,
-            program_admission=True,
-        )
-        caps.append(float(maximum_peak))
-    if not caps:
-        raise SessionVolumePlanError(
-            "cannot derive a session measurement volume with no driver targets"
-        )
-    return caps
-
-
-def loudest_driver_cap_dbfs(
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Iterable[str],
-) -> float:
-    """``max(caps)`` — the cap of the LOUDEST-permitted driver. Read the warning.
-
-    The caps half of :func:`session_measurement_volume_db` and **only** that:
-    it works there because a v2 program attenuates every other driver DOWN to
-    its own cap per segment. **It is NOT "the loudest volume every driver
-    permits"** — on the repo's woofer/compression-driver fixture it returns
-    ``0.0`` dB while the tweeter's cap sits at −65. One signal through the whole
-    graph still needs admission against every driver cap.
-    """
-    return max(_driver_caps_dbfs(safety_profile, target_fingerprints))
-
-
-def session_measurement_volume_db(
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Iterable[str],
-    *,
-    reference_state_path: str | Path | None = None,
-) -> float:
-    """The fixed session measurement volume DERIVED from the profile's ceilings.
-
-    Its job is to let the LEAST-sensitive (highest-cap) driver reach a usable
-    measurement level, while more-sensitive drivers attenuate DOWN to their own
-    caps per segment — always satisfiable, so every cap stays enforceable::
-
-        session_volume = min(measurement_reference_volume_db(),
-                             loudest_driver_cap_dbfs())
-
-    ``max`` over caps rather than ``min``: with a woofer at 0.0 dBFS and a
-    compression-driver tweeter at -65, ``min(caps)`` would pin the woofer ~40 dB
-    under its ceiling and collapse its SNR. Admission enforces every driver's
-    cap against this value (the program graph adds no headroom beyond the main
-    volume), so this is only an INPUT to that enforcement — one definition path.
-
-    Fail-closed floor: the derived volume must sit ABOVE
-    :data:`EMERGENCY_MEASUREMENT_VOLUME_DB`; a profile whose highest cap is at
-    or below it cannot be measured at a safe volume at all and the session
-    refuses to open. Raises if no targets are given or a ceiling cannot be
-    resolved — an underivable session volume is a refusal, never a default.
-    """
-    ceiling = loudest_driver_cap_dbfs(safety_profile, target_fingerprints)
-    volume = min(
-        measurement_reference_volume_db(reference_state_path=reference_state_path),
-        ceiling,
-    )
-    if not math.isfinite(volume) or volume > 0.0:
-        raise SessionVolumePlanError(
-            "derived session measurement volume must be finite and non-positive"
-        )
-    if not volume > EMERGENCY_MEASUREMENT_VOLUME_DB:
-        raise SessionVolumePlanError(
-            "profile_unmeasurable_at_safe_volume: every driver cap sits at or "
-            f"below the {EMERGENCY_MEASUREMENT_VOLUME_DB:g} dB emergency floor; "
-            "the profile cannot be measured at a safe session volume"
-        )
-    return volume
 
 
 def live_measurement_session(
