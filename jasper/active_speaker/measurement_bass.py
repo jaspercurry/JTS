@@ -32,7 +32,7 @@ from .measurement_analysis import BankedMeasurement, analyzed_measurements
 
 logger = logging.getLogger(__name__)
 
-BASS_VIEW_SCHEMA = "jts_bass_view/3"
+BASS_VIEW_SCHEMA = "jts_bass_view/4"
 BASS_BAND_HZ = (BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1])
 
 

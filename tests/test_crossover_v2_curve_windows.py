@@ -99,7 +99,7 @@ def _page_windows(take: dict) -> list[tuple[str, str, str]]:
 def _cloud_windows(order: tuple[str, ...], root: Path) -> str:
     """The window a speaker fit's design cloud reads from two bearings' takes."""
     takes = [{**_banked(order, index=index), "phase": "measure", "captured_at": f"2026-09-29T12:00:0{index}Z",
-              "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0}} for index, deg in ((1, 0), (2, 20))]
+              "pose": {"kind": "bearing", "azimuth_deg": deg, "elevation_deg": 0}} for index, deg in ((1, 0), (2, 20))]
     cloud = design_clouds({"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]})
     return _only(_by_level(response.magnitude_db[0]) for response in cloud["woofer"].boost_responses)
 
@@ -107,7 +107,7 @@ def _cloud_windows(order: tuple[str, ...], root: Path) -> str:
 def _directivity(takes: list[dict], role: str) -> str | None:
     """The window directivity reads of ``role`` from takes at 0° and 20°: its
     band starts at its curves' trusted floor. ``None`` when it reads no curve."""
-    posed = [{**take, "take_id": f"{role}-{deg}", "pose": {"kind": "bearing", "deg": deg, "elevation_deg": 0}}
+    posed = [{**take, "take_id": f"{role}-{deg}", "pose": {"kind": "bearing", "azimuth_deg": deg, "elevation_deg": 0}}
              for take, deg in zip(takes, (0, 20))]
     try:
         document = set_directivity(SetTakes.from_row({"set_id": role, "capture_basis": {"role": role}, "takes": posed}))

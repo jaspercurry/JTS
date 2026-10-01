@@ -44,7 +44,7 @@ def test_retake_uses_registry_words_without_codes(reason):
     line, = round_lines({"retake_pose": 2, "retake_measurement": 1, "retake_reason": reason})
     assert refusal_copy_for(reason)[0] in line
     assert "_" not in line
-    coverage = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": [{"pose": {"deg": 20}, "reason": reason}]})
+    coverage = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": [{"pose": {"azimuth_deg": 20}, "reason": reason}]})
     assert refusal_copy_for(reason)[0] in coverage[-1]
     assert "_" not in coverage[-1]
 
@@ -73,14 +73,14 @@ def test_post_round_coverage_keeps_packet_words():
     packet = {"sets": [{"takes": [{"take_id": "a", "role": "woofer", "selected": True, "trusted_floor_hz": 250}]}],
               "next_action": {"label": "Measure timing again"}, "disclosures": ["packet disclosure"]}
     manifest = {"sets": packet["sets"], "honoured": {"retakes": 0},
-                "not_measured": [{"pose": {"deg": 20}, "reason": "complete_requested"}]}
+                "not_measured": [{"pose": {"azimuth_deg": 20}, "reason": "complete_requested"}]}
     lines = coverage_lines(packet, manifest)
     assert re.findall(r"\d+", " ".join(lines[:3])) == ["1", "0", "20", "250"]
     assert lines[-2:] == [*packet["disclosures"], packet["next_action"]["label"]]
 
 
 def test_unmeasured_poses_are_distinct_and_counted_once():
-    poses = [{"deg": 0, "kind": "bearing"}, {"deg": 0, "kind": "behind"}]
+    poses = [{"azimuth_deg": 0, "kind": "bearing"}, {"azimuth_deg": 0, "kind": "behind"}]
     manifest = {"honoured": {"retakes": 0},
                 "not_measured": [{"pose": pose, "reason": "user_stopped"} for pose in poses for _ in range(2)]}
     lines = coverage_lines({}, manifest)[1:]

@@ -30,7 +30,7 @@ from ..round_inputs import RoundSetRefused, SetTakes
 
 def _pose(take: Mapping[str, Any]) -> dict[str, Any]:
     pose = take["pose"]
-    return {"horizontal_deg": pose.get("deg"), "vertical_deg": pose.get("elevation_deg")}
+    return {"horizontal_deg": pose.get("azimuth_deg"), "vertical_deg": pose.get("elevation_deg")}
 
 
 def _label(pose: Mapping[str, Any]) -> str:

@@ -220,7 +220,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         needs="one bass take by its id (bass/axis); a base take plays no bass boost",
         avoid="the box alone; bass-alignment on a near-field round reads each driver without the room",
         answer_fields=("fits",)),
-    "nearfield": CatalogRow("nearfield_view.json", programs=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/1",
+    "nearfield": CatalogRow("nearfield_view.json", programs=(PURPOSE_REFERENCE,), schema="jts_nearfield_view/2",
         question="What does each driver radiate close up, band by band and per distance, and does its step match a piston?",
         needs="each driver's takes alone: near field at 15 and 30 mm (nearfield/each) or at the mark (drivers/each)",
         avoid="far-field takes; frequency reads those",

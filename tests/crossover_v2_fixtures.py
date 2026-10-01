@@ -462,7 +462,7 @@ def _run_phase(conductor, index, attempt, result=None):
     program = conductor.program_for_phase(phase)
     manifest = RunManifest(conductor.session_id, SimpleNamespace())
     manifest.begin(
-        {"index": index, "candidate_id": "base", "pose": {"kind": "bearing", "deg": 0}, "purpose": "speaker", "purposes": ["speaker"]},
+        {"index": index, "candidate_id": "base", "pose": {"kind": "bearing", "azimuth_deg": 0}, "purpose": "speaker", "purposes": ["speaker"]},
         attempt=attempt,
         pose_index=0,
     )

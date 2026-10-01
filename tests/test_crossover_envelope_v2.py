@@ -33,7 +33,7 @@ V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
 def test_round_lines_and_pose_actions_come_from_the_coordinator(placed, terminal):
     facts = {"pose": 2, "poses": 3, "mover": "human", "sweep": 4, "sweeps_per_pose": [7, 7, 7],
              "role": "tweeter", "repeat": 2, "repeats": 3, "measurement": 2, "measurements": 3,
-             "pose_details": [{}, {"deg": -20, "elevation_deg": 0}, {}]}
+             "pose_details": [{}, {"azimuth_deg": -20, "elevation_deg": 0}, {}]}
     action = {"id": "position_ready", "label": "", "endpoint": "/placed", "body": {"index": 3, "attempt": 1}}
     if terminal:
         facts["status"] = "complete"

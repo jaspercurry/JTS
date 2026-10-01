@@ -343,7 +343,7 @@ def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_rou
     curve = record["curves"][0]
     poses = [(0, 0)] * 4 + [(h, 0) for h in horizontal] + [(0, v) for v in vertical]
     takes = [{"take_id": f"baseline-{i}", "selected": True, "phase": "measure",
-              "pose": {"kind": "bearing", "deg": h, "elevation_deg": v}, "captured_at": f"2026-09-29T12:00:{i:02d}Z",
+              "pose": {"kind": "bearing", "azimuth_deg": h, "elevation_deg": v}, "captured_at": f"2026-09-29T12:00:{i:02d}Z",
               "curves": [{**curve, "magnitude_db": (np.asarray(curve["magnitude_db"]) + i).tolist()}]}
              for i, (h, v) in enumerate(poses)]
     manifest = {"sets": [{"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": takes}]}
@@ -694,13 +694,13 @@ def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, othe
         group["capture_basis"].update(other_identity)
     original = group["takes"][0]
     group["takes"] = [own_record(original, record, take_id=f"pose-{deg}", analysis=analysis, attempt=1,
-                                 pose={"kind": "bearing", "deg": deg, "elevation_deg": 0}, selected=deg != -20)
+                                 pose={"kind": "bearing", "azimuth_deg": deg, "elevation_deg": 0}, selected=deg != -20)
                       for deg in (-20, 0, 20)]
     latest = {**group["takes"][0], "take_id": "retake", "selected": True, "attempt": 2}
     retake = {**group, "set_id": "retaken", "takes": [latest]}
     stale = {**retake, "set_id": "older", "takes": [{**latest, "attempt": 1, "curves": [{"role": "bad"}]}]}
     other = {**group, "set_id": "other", "capture_basis": {**group["capture_basis"], **other_identity},
-             "takes": [own_record(original, record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0})]}
+             "takes": [own_record(original, record, analysis=analysis, pose={"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0})]}
     write_manifest(root, groups=[retake, group, stale, other])
     manifest = _joined(inputs)
     clouds = design_clouds(manifest)
@@ -761,19 +761,19 @@ def test_packet_and_speaker_fit_keep_saved_timing(speaker_round, held, declared,
     evidence = {f"snr.{role}.alignment.{key}": value for role, row in expected["snr"].items() for key, value in row.items()}
     levels = {"tweeter": {"alignment_level_db": -26, "alignment_snr_shortfall_db": {"before": 12.5, "after": 8.5},
                           "alignment_level_capped_by": "driver_cap", "alignment_snr_residual_shortfall_db": 8.5}}
-    take = own_record(group["takes"][0], record, analysis=analysis, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
+    take = own_record(group["takes"][0], record, analysis=analysis, pose={"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0},
                       verdict={"evidence": evidence}, level={**record["level"], "alignment": levels})
     group["takes"] = [take]
     refused = {**take, "take_id": "refused", "selected": False}
     if fault:
         refused.update({"verdict": {**take["verdict"], "fault": fault}} if held else {"incident": fault})
-    group["takes"] += [refused, {**take, "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20},
+    group["takes"] += [refused, {**take, "take_id": "off-axis", "pose": {"kind": "bearing", "azimuth_deg": 20},
                                "analysis": {**analysis, "delay_us": 900}}]
     write_manifest(root, groups=[group, {**group, "set_id": "duplicate", "capture_basis": {
         **group["capture_basis"], "role": "tweeter"}}])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])
     pair, off_axis = packet["alignment"]
-    assert off_axis["pose"]["deg"] == 20
+    assert off_axis["pose"]["azimuth_deg"] == 20
     assert off_axis["committed"]["delay_us"] == 900
     inputs = round_inputs(root)
     fit = speaker_fit(inputs, _joined(inputs), "timing", take["take_id"])
@@ -885,7 +885,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
                         design_draft_path=root / "design-draft.json", applied_profile_path=applied_path,
                         view_runner=round_views.run_bookkeeping)
     packet = json.loads((banked.path / "packet.json").read_text())
-    expected = {(g["set_id"], t["take_id"], t["pose"]["deg"], g["capture_basis"]["role"])
+    expected = {(g["set_id"], t["take_id"], t["pose"]["azimuth_deg"], g["capture_basis"]["role"])
                 for g in manifest["sets"] for t in g["takes"] if t["selected"]}
     assert len(packet["fits"]) == len(expected) == 2 * (pose_count + candidate_count)
     assert all(fit["handover_level_shift_db"] is not None for fit in packet["fits"])
@@ -897,7 +897,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         assert any(feature["positions_deep"] == deep for feature in features)
         assert all(feature["cv_percent"] == (pytest.approx(0) if deep else None)
                    for feature in features if feature["positions_deep"] == deep)
-    assert {(f["set_id"], f["take_id"], f["pose"]["deg"], f["role"]) for f in packet["fits"]} == expected
+    assert {(f["set_id"], f["take_id"], f["pose"]["azimuth_deg"], f["role"]) for f in packet["fits"]} == expected
     assert all(f["mic_tier"] == "reference" and isinstance(f["filters"], list)
                and f["residual_rms_db"] is not None and f["budget"] for f in packet["fits"])
     for fit in packet["fits"]:
@@ -906,7 +906,7 @@ def test_banked_speaker_packet_fits_every_selected_pose_and_role(
         assert fit["composed_boost_cap_db"] == 40.0
     # Every banked take is drawn from its record, tagged with the set its run kept it in (#5737 C1b).
     drawn = [series for series in packet["series"] if series["set_id"]]
-    assert expected <= {(s["set_id"], s["take_id"], s["pose"]["deg"], s["role"]) for s in drawn}
+    assert expected <= {(s["set_id"], s["take_id"], s["pose"]["azimuth_deg"], s["role"]) for s in drawn}
     assert all(s["stats"]["flatness_rms_db"]["value"] is not None for s in drawn)
     assert packet["result"] == "complete" and set(packet["limits"]) == {g["set_id"] for g in groups}
     assert Path(packet["artifacts"]["frequency_png"]).read_bytes().startswith(b"\x89PNG")
@@ -972,8 +972,8 @@ def test_first_speaker_round_banks_its_timing_read_and_no_candidate(
     group["capture_basis"].update(candidate_id=declared.fingerprint if trial else None)
     group["takes"] = [own_record(group["takes"][0], record, analysis=analysis, attempt=2,
                                  captured_at="2026-09-29T12:00:02Z",
-                                 pose={"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1})]
-    off_axis = {**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 30},
+                                 pose={"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0, "distance_m": 1})]
+    off_axis = {**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "azimuth_deg": 30},
                 "captured_at": "2026-09-29T12:00:04Z", "analysis": {**analysis, "delay_us": 999}}
     unselected = {**group["takes"][0], "take_id": "unselected", "selected": False, "captured_at": "2026-09-29T12:00:03Z"}
     older = {**group, "set_id": "older-set", "takes": [{**group["takes"][0], "take_id": "older", "attempt": 1,
@@ -1034,11 +1034,11 @@ def test_packet_timing_verification_and_next_action(speaker_round, verdict, resi
     profile = {"kind": BASELINE_PROFILE_KIND, "artifact_schema_version": SCHEMA_VERSION, "status": "applied"}
     profile_path.write_text(json.dumps({**profile, **({"timing": timing} if timing else {})}))
     group = manifest_set([(path, record)], set_id="timing")
-    group["takes"] = [own_record(group["takes"][0], record, pose={"kind": "bearing", "deg": 0, "elevation_deg": 0},
+    group["takes"] = [own_record(group["takes"][0], record, pose={"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0},
         analysis={"trim_db": {"woofer": 0, "tweeter": -3}, "delay_us": 22, "polarity": "normal",
                   "timing_saved": timing, "timing_verdict": verdict,
                   "timing_verification": verification})]
-    group["takes"].append({**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0},
+    group["takes"].append({**group["takes"][0], "take_id": "off-axis", "pose": {"kind": "bearing", "azimuth_deg": 20, "elevation_deg": 0},
                           "analysis": {**group["takes"][0]["analysis"], "timing_verdict": "needs_measurement"}})
     write_manifest(root, groups=[group])
     packet = write_round_packet(root, str(directory / "run_manifest.json"), [])

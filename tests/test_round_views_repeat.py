@@ -25,7 +25,7 @@ from tests.test_plan_run import _run_gated, _walk, AnsweredGate
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.run_manifest_fixture import write_manifest
 
-MARK = {"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 1.0}
+MARK = {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0, "distance_m": 1.0}
 
 
 def _curve(level_db: float) -> dict:
@@ -55,7 +55,7 @@ def test_repeat_spreads_selected_take_values_and_their_mark_pairs(repeated_round
     omitted.update(take_id="replaced", selected=False, analysis={}, curves=[_curve(9.0)])
     group["takes"].insert(0, omitted)
     off_axis = deepcopy(group["takes"][1])
-    off_axis.update(take_id="off-axis", pose={**off_axis["pose"], "deg": 20}, analysis={}, curves=[_curve(9.0)])
+    off_axis.update(take_id="off-axis", pose={**off_axis["pose"], "azimuth_deg": 20}, analysis={}, curves=[_curve(9.0)])
     group["takes"].append(off_axis)
     write_manifest(root, groups=[group])
     assert round_views.main(["repeat", str(root), "--set", "mark"]) == 0

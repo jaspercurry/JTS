@@ -71,7 +71,7 @@ DECLARED_GEOMETRY_FILENAME = "declared-geometry.json"
 STATEFILE_FILENAME = "camilla-statefile.yml"
 PACKET_FILENAME = "packet.json"
 #: The ``schema`` of the ``packet.json`` this build writes. A packet of any other is stale (#2902).
-ROUND_PACKET_SCHEMA = "jts_round_packet/6"
+ROUND_PACKET_SCHEMA = "jts_round_packet/7"
 PICTURE_FILENAME = "frequency.png"
 INDEX_FILENAME = "index.md"
 ROOM_ARTIFACT = "room.json"
@@ -475,7 +475,7 @@ class SetTakes(NamedTuple):
         joined takes (:meth:`with_records`)."""
         return tuple(take for take in self.takes if take["selected"]
                      and take["pose"].get("kind") == POSE_KIND_BEARING
-                     and take["pose"].get("deg") == 0 and take["pose"].get("elevation_deg") == 0)
+                     and take["pose"].get("azimuth_deg") == 0 and take["pose"].get("elevation_deg") == 0)
 
     def take_id(self, requested: str | None = None) -> str:
         ids = self.selected_ids

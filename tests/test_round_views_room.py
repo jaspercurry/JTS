@@ -478,7 +478,7 @@ def test_a_speaker_packet_holds_driver_fits_and_a_room_packet_holds_the_room(
     room_calls = {call["set_id"] for tool in catalog["tools"] if tool["tool"] == "jasper-round-views room"
                   for call in tool["calls"] if call["present"]}
     if purpose == "speaker":
-        assert {(fit["pose"]["deg"], fit["role"]) for fit in packet["fits"]} == {
+        assert {(fit["pose"]["azimuth_deg"], fit["role"]) for fit in packet["fits"]} == {
             (degrees, role) for degrees in (0, -20, 20) for role in ("woofer", "tweeter")}
         assert all(isinstance(fit["filters"], list) and fit["residual_rms_db"] is not None for fit in packet["fits"])
         assert (packet["room"], room_calls) == ([], set())

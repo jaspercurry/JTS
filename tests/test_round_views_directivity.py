@@ -20,7 +20,7 @@ BASELINE = (*[((0, 0), 0.0)] * 4, ((-20, 0), -2.0), ((20, 0), -2.0), ((0, -10), 
 
 def _take(index: int, pose: tuple[int, int], level_db: float, *, selected: bool = True) -> dict:
     return {"take_id": f"take-{index}", "phase": "measure", "selected": selected,
-            "pose": {"kind": "bearing", "deg": pose[0], "elevation_deg": pose[1]},
+            "pose": {"kind": "bearing", "azimuth_deg": pose[0], "elevation_deg": pose[1]},
             "curves": [{"role": "woofer", "window": "gated", "band_hz": [200.0, 12000.0], "freqs_hz": GRID_HZ.tolist(),
                         "magnitude_db": [level_db] * GRID_HZ.size, "trusted_floor_hz": 300.0}]}
 

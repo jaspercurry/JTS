@@ -36,7 +36,7 @@ def write_bundle_manifest(
         groups = [manifest_set(records, selected=selected, refused=refused)]
     if probe and groups:
         groups = [probe_set(groups[0]), *groups]
-    manifest = {"kind": "jts_run_manifest", "schema_version": 4, "preset": program,
+    manifest = {"kind": "jts_run_manifest", "schema_version": 5, "preset": program,
                 "run_id": "fixture", "finalized": True, "status": "complete", "honoured": {"retakes": 0},
                 "sets": [_banked(session_dir, index, group) for index, group in enumerate(groups)]}
     (directory / RUN_MANIFEST_FILENAME).write_text(json.dumps(manifest))
@@ -133,7 +133,7 @@ def manifest_set(records, *, set_id=None, selected=None, refused=()) -> dict:
         take_id = record.get("take_id") or record.get("position_id") or path
         takes.append({"take_id": take_id, "phase": record.get("phase"),
                       "pose": {"kind": record.get("pose_kind", "bearing"),
-                      "deg": record.get("position_deg"), "elevation_deg": record.get("vertical_deg"),
+                      "azimuth_deg": record.get("position_deg"), "elevation_deg": record.get("vertical_deg"),
                       "distance_m": record.get("mark_distance_m"), "seat_offset_m": record.get("seat_offset_m")},
                       "level": {**{key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")}, "alignment": {}},
                       "artifacts": {"record_id": path},

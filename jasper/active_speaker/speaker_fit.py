@@ -78,9 +78,9 @@ def design_clouds(
     for (_, _, _, _, role), members in groups.items():
         bearings = latest_measure_takes(
             ((group, take) for group in members for take in group["takes"]),
-            key=lambda group, take: (take["pose"]["deg"], take["pose"].get("elevation_deg")) if (
+            key=lambda group, take: (take["pose"]["azimuth_deg"], take["pose"].get("elevation_deg")) if (
                 role and role != REGIME_SUMMED
-                and take["pose"].get("kind") == POSE_KIND_BEARING and take["pose"].get("deg") is not None
+                and take["pose"].get("kind") == POSE_KIND_BEARING and take["pose"].get("azimuth_deg") is not None
             ) else None,
         )
         cloud = CloudFitTerms(n_positions=len(bearings))

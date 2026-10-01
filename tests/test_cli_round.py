@@ -40,6 +40,7 @@ from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
 from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
+from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
 from jasper.web import correction_crossover_v2_evidence as v2evidence, correction_crossover_v2_volume as v2volume
@@ -1392,7 +1393,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
             take["frequency_curve"]["magnitude_db"] = [take["record"]["level_db"]] * 3
             takes.append(take)
         path = default_out(inputs, target, "bass_view.json", set_id)
-        path.write_text(json.dumps({"schema": "jts_bass_view/3", "takes": takes}))
+        path.write_text(json.dumps({"schema": BASS_VIEW_SCHEMA, "takes": takes}))
         return {"view": view, "status": "written", "out": str(path)}
     monkeypatch.setattr(round_bookkeeping, "run_bookkeeping", view)
     bank = round_bank.bank_round
