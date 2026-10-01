@@ -791,6 +791,34 @@ def test_output_endpoint_evidence_marks_non_output_graph_unknown(tmp_path):
     assert evidence.endpoint_recognized is False
 
 
+def test_output_endpoint_evidence_stops_at_a_parked_graph(tmp_path):
+    """A reset box (#6113): camilla#1 holds the parked graph while camilla#2's
+    install-seeded statefile still names an old ring graph. The stale graph is
+    not the live endpoint."""
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+    from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
+
+    parked = tmp_path / "active_speaker_parked.yml"
+    parked.write_text(emit_active_speaker_parked_config(output_count=3), encoding="utf-8")
+    stale = tmp_path / "active_speaker_baseline_candidate_old.yml"
+    stale.write_text(
+        "devices:\n"
+        f"  capture:\n    type: Alsa\n    device: {RING_CAPTURE_DEVICE}\n"
+        f"  playback:\n    type: Alsa\n    device: {RING_ACTIVE_PLAYBACK_DEVICE}\n",
+        encoding="utf-8",
+    )
+    primary = tmp_path / "statefile.yml"
+    primary.write_text(f"config_path: {parked}\n", encoding="utf-8")
+    crossover = tmp_path / "crossover-statefile.yml"
+    crossover.write_text(f"config_path: {stale}\n", encoding="utf-8")
+
+    evidence = output_endpoint_evidence_from_statefiles(primary, crossover)
+
+    assert evidence.parked is True
+    assert evidence.devices is None
+    assert evidence.endpoint_recognized is False
+
+
 def test_runtime_plan_to_dict_exposes_topology_and_correction_latency_gate():
     plan = build_audio_runtime_plan(
         route_mode="solo",

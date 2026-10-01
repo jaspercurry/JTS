@@ -282,19 +282,23 @@ def _reconcile_camilla(
     --check`` before loading and fail-closes on an invalid config, so a failure
     here leaves the previously-loaded config running.
 
-    ONE ``skipped`` IS ACCEPTED, on direct proof only: a mid-commission roleful
-    box boots from the all-muted staged startup anchor, which the carrier refuses
-    to host EQ on (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`), and
-    :func:`ring_endpoint_anchor_converged` proves from the artifacts on disk that
-    the graph IS that anchor at the ring endpoint. Every other ``skipped`` fails.
+    TWO ``skipped`` ANSWERS ARE ACCEPTED, each on direct proof only. A
+    mid-commission roleful box boots from the all-muted staged startup anchor,
+    which the carrier refuses to host EQ on (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`),
+    and :func:`ring_endpoint_anchor_converged` proves from the artifacts on disk
+    that the graph IS that anchor at the ring endpoint. A box with no speaker
+    layout holds the all-muted parked graph, and only the parked carrier raises
+    ``SPEAKER_PARKED_REFUSAL``, for a loaded graph the classifier reads as
+    parked. Every other ``skipped`` fails.
 
     NO acceptance survives a payload that came over the STATEFILE
     (``transport=statefile``): that payload's ``current_config_path`` is the
     durable pointer rather than the daemon's answer, and this rung's contract is
     "re-emit AND LOAD" — with CamillaDSP down nothing was loaded. One guard ahead
-    of all three branches.
+    of every branch.
     """
     from jasper.sound import runtime as sound_runtime  # lazy: import cost, the doctor imports this module for two cheap reads (ADR-0226)
+    from jasper.sound.graph_carrier import SPEAKER_PARKED_REFUSAL  # lazy: import cost, as sound_runtime above
 
     try:
         payload = asyncio.run(sound_runtime.reconcile_current_dsp(force=force))
@@ -337,6 +341,15 @@ def _reconcile_camilla(
         if converged:
             return True, CAMILLA_ANCHOR_CONVERGED_DETAIL
         return False, f"{refusal}: {anchor_detail}"
+    if status == "skipped" and refusal == SPEAKER_PARKED_REFUSAL:
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="camilla_parked",
+            reason=reason,
+            current=payload.get("current_config_path"),
+        )
+        return True, CAMILLA_PARKED_DETAIL
     return False, str(payload.get("reason") or status or "unknown")
 
 
@@ -662,14 +675,14 @@ def _converge_ring(
         restarted_fanin=fan_ok,
         restarted_outputd=out_ok,
         reconciled_camilla=cam_ok,
-        # The camilla step has two success shapes and the operator's stdout line
-        # prints ``detail`` only when non-empty: an ORDINARY re-emit stays silent
-        # there, the anchor-converged acceptance says so.
+        # The camilla step has three success shapes and the operator's stdout
+        # line prints ``detail`` only when non-empty: an ORDINARY re-emit stays
+        # silent there, the anchor and parked acceptances say so.
         detail=(
             detail
             or (
-                CAMILLA_ANCHOR_CONVERGED_DETAIL
-                if cam_detail == CAMILLA_ANCHOR_CONVERGED_DETAIL
+                cam_detail
+                if cam_detail in (CAMILLA_ANCHOR_CONVERGED_DETAIL, CAMILLA_PARKED_DETAIL)
                 else ""
             )
         ),
@@ -874,8 +887,11 @@ CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
 # The camilla step's detail when it converged on an anchor rather than by
 # re-emitting. Distinct from "reconciled"/"unchanged" (a graph that was written)
 # and from the refusal reason, so the journal AND the operator's stdout line say
-# which of the three happened.
+# which one happened.
 CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
+# The camilla step's detail on a box with no speaker layout: CamillaDSP holds the
+# all-muted parked graph, so there was nothing to load.
+CAMILLA_PARKED_DETAIL = "parked"
 
 
 def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:

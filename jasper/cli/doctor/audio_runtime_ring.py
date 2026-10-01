@@ -50,6 +50,7 @@ _JTS_RING_PCMS = (
 assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_conf.RING_CONF_PCMS
 
 REASON_SPLIT_BONDED_RETURN_RING = "split_bonded_return_ring"
+REASON_SPLIT_PARKED = "split_parked"
 REASON_SPLIT_MARKER_CONTRADICTED = "split_marker_contradicted"
 REASON_SPLIT_RING_UNCONSUMED = "split_ring_unconsumed"
 REASON_SPLIT_RING_UNFED = "split_ring_unfed"
@@ -339,6 +340,14 @@ def check_content_transport_coherence() -> CheckResult:
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
         evidence_statefile(), crossover_statefile()
     )
+    if endpoint_evidence.parked:
+        return CheckResult(
+            label,
+            "skipped",
+            "CamillaDSP holds the parked graph (no speaker layout): every output "
+            "is muted and no post-DSP ring is fed until a layout is saved",
+            reason=REASON_SPLIT_PARKED,
+        )
     playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (
         RING_PLAYBACK_DEVICE,

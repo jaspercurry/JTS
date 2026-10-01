@@ -117,11 +117,15 @@ _ACTIVE_ENDPOINT_DEVICES = frozenset(
 
 @dataclass(frozen=True)
 class OutputEndpointEvidence:
-    """Loaded CamillaDSP endpoint evidence plus any unreadable inputs."""
+    """Loaded CamillaDSP endpoint evidence plus any unreadable inputs.
+
+    ``parked``: the loaded graph is the all-muted parked graph (no speaker
+    layout), which feeds no post-DSP endpoint, so ``devices`` is ``None``."""
 
     devices: Mapping[str, Any] | None
     errors: tuple[str, ...] = ()
     endpoint_recognized: bool = True
+    parked: bool = False
 
 
 @dataclass(frozen=True)
@@ -1032,6 +1036,7 @@ def output_endpoint_evidence_from_statefiles(
     from jasper.active_speaker.environment import (  # lazy: import cost, keeps the plan off the active-speaker tree (ADR-0226)
         parse_camilla_statefile_config_path,
     )
+    from jasper.active_speaker.graph_selector import active_graph_is_parked  # lazy: import cost, as above
 
     fallback: dict[str, Any] | None = None
     errors: list[str] = []
@@ -1069,6 +1074,15 @@ def output_endpoint_evidence_from_statefiles(
                 devices=devices,
                 errors=tuple(errors),
                 endpoint_recognized=True,
+            )
+        if active_graph_is_parked(config_path):
+            # Stop here: a later statefile cannot name a parked box's endpoint.
+            # camilla#2's is seeded at install and stays inert on a solo box.
+            return OutputEndpointEvidence(
+                devices=None,
+                errors=tuple(errors),
+                endpoint_recognized=False,
+                parked=True,
             )
     return OutputEndpointEvidence(
         devices=fallback,

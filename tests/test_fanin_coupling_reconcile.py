@@ -483,6 +483,31 @@ def _arm_reconcile_returning(monkeypatch, payload: dict):
     return cr._reconcile_camilla(reason="arm", force=True)
 
 
+@pytest.mark.parametrize(("transport", "accepted"), [("websocket", True), ("statefile", False)])
+def test_the_camilla_rung_accepts_the_loaded_parked_graph(monkeypatch, transport, accepted):
+    """A reset box holds the all-muted parked graph: the pass converges instead
+    of failing jasper-fanin-coupling-auto (#6113), but never off the statefile,
+    where nothing was loaded."""
+    from jasper.fanin import coupling_reconcile as cr
+    from jasper.sound import runtime
+    from jasper.sound.graph_carrier import SPEAKER_PARKED_REFUSAL
+
+    async def fake_reconcile_current_dsp(**_kwargs):
+        return {
+            "status": "skipped",
+            "reason": SPEAKER_PARKED_REFUSAL,
+            "transport": transport,
+            "current_config_path": "/var/lib/camilladsp/configs/active_speaker_parked.yml",
+        }
+
+    monkeypatch.setattr(runtime, "reconcile_current_dsp", fake_reconcile_current_dsp)
+
+    ok, detail = cr._reconcile_camilla(reason="systemd", force=True)
+
+    assert ok is accepted
+    assert (detail == cr.CAMILLA_PARKED_DETAIL) is accepted
+
+
 def _staged_anchor_skip(transport: str) -> dict:
     from jasper.fanin.coupling_reconcile import CARRIER_TRANSIENT_ACTIVE_REFUSAL
 

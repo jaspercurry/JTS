@@ -1433,6 +1433,27 @@ def _arrange(
     monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA2_STATEFILE", crossover)
 
 
+def test_a_parked_box_is_not_a_split(monkeypatch, tmp_path) -> None:
+    """A reset box (#6113): the parked graph feeds no ring by decision, and
+    camilla#2's install-seeded statefile still names an old ring graph."""
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge="shm_ring",
+        playback_device=None,
+        crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+    (tmp_path / "primary-config.yml").write_text(
+        emit_active_speaker_parked_config(output_count=3), encoding="utf-8"
+    )
+
+    result = audio_runtime_ring.check_content_transport_coherence()
+    assert result.status == "skipped", result
+    assert result.reason == audio_runtime_ring.REASON_SPLIT_PARKED
+
+
 @pytest.mark.parametrize(
     "playback_device", [RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE]
 )

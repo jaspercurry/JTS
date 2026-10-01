@@ -221,18 +221,17 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
 
-    # Real premise, not a devices=None stub: point BOTH statefile constants at
-    # real parked statefiles and let output_endpoint_evidence_from_statefiles
-    # actually read them. Its verdict on a parked graph is
-    # devices=<populated>, endpoint_recognized=False — a different shape from
-    # the degraded devices=None read, and the one this branch must handle.
+    # Real premise, not a stub: point BOTH statefile constants at real parked
+    # statefiles and let output_endpoint_evidence_from_statefiles actually read
+    # them. Its verdict on a parked graph is parked=True with no devices, and
+    # that is the shape this branch must handle.
     monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA_STATEFILE", statefile)
     monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA2_STATEFILE", statefile)
     evidence = audio_runtime_plan.output_endpoint_evidence_from_statefiles(
         statefile, statefile
     )
-    assert evidence.devices is not None  # populated...
-    assert evidence.endpoint_recognized is False  # ...but names no outputd lane
+    assert evidence.parked is True
+    assert evidence.endpoint_recognized is False  # it names no outputd lane
 
     topology_path = tmp_path / "output_topology.json"
 

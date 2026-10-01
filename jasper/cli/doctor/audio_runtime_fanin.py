@@ -98,6 +98,7 @@ REASON_HOST_CLOCK_PROBING = "host_clock_probing"
 
 REASON_COUPLING_DEVICES_UNPARSED = "coupling_devices_unparsed"
 REASON_COUPLING_NO_LOADED_CAPTURE = "coupling_no_loaded_capture"
+REASON_COUPLING_PARKED = "coupling_parked"
 REASON_COUPLING_GRAPH_NOT_RING = "coupling_graph_not_ring"
 REASON_COUPLING_ACTIVE_LADDER_PENDING = "coupling_active_ladder_pending"
 
@@ -868,6 +869,7 @@ def check_fanin_coupling() -> CheckResult:
 
     Outputd consumption belongs to :func:`check_content_transport_coherence`.
     """
+    from jasper.active_speaker.graph_selector import active_graph_is_parked
     from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
@@ -901,6 +903,14 @@ def check_fanin_coupling() -> CheckResult:
             "skipped",
             "no loaded capture to compare",
             reason=REASON_COUPLING_NO_LOADED_CAPTURE,
+        )
+    if active_graph_is_parked(config_path):
+        return CheckResult(
+            label,
+            "skipped",
+            "CamillaDSP holds the parked graph (no speaker layout), so no ring "
+            "is expected until a layout is saved",
+            reason=REASON_COUPLING_PARKED,
         )
 
     # WHICH post-DSP ring is EXACTLY ONE answer, taken from the reconciler's

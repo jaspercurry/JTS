@@ -898,6 +898,17 @@ def test_check_skipped_when_no_loaded_capture(monkeypatch, tmp_path):
     assert res.reason == audio_runtime_fanin.REASON_COUPLING_NO_LOADED_CAPTURE
 
 
+def test_check_skipped_on_the_parked_graph(monkeypatch, tmp_path):
+    """A reset box holds the parked graph by decision, not a stale artifact."""
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+
+    res = _run_check(
+        monkeypatch, cfg_text=emit_active_speaker_parked_config(output_count=3), tmp_path=tmp_path
+    )
+    assert res.status == "skipped"
+    assert res.reason == audio_runtime_fanin.REASON_COUPLING_PARKED
+
+
 # --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------
 
 _RING_CFG = """\

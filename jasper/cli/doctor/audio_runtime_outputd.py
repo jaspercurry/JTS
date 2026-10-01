@@ -565,7 +565,9 @@ def _outputd_transport_health(
         or not endpoint_evidence.endpoint_recognized
     ):
         evidence_detail = "; ".join(endpoint_evidence.errors) or (
-            "loaded graph does not target a registered output endpoint"
+            "the loaded graph is the parked graph (no speaker layout)"
+            if endpoint_evidence.parked
+            else "loaded graph does not target a registered output endpoint"
         )
         transport_evidence_warning = (
             "post-DSP transport coherence unknown: " + evidence_detail
