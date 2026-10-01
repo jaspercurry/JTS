@@ -1149,6 +1149,19 @@ def test_each_graph_of_a_close_set_probes_once():
     assert len({start for _, _, start in behind}) == 2
 
 
+@pytest.mark.parametrize(("purposes", "probes"), [(("bass", "speaker"), [True, True]),
+                                                  (("rear", "speaker"), [True, False])])
+def test_a_close_set_is_the_graph_its_takes_play(purposes, probes):
+    """Two purposes at one close spot share a probe only when their takes play
+    one graph: a bass take on the base plays its room and bass layers cleared,
+    a rear or speaker take plays none cleared (ADR-0406)."""
+    pose = Pose(0, 0, kind="behind", distance_m=0.1)
+    request = ac.AngleCaptureRequest(stops=tuple(ac.AngleStop(pose, ac.REGIME_SUMMED, purpose=purpose)
+                                                 for purpose in purposes))
+
+    assert [capture.spec.level_probe for capture in plan_run.prepare_plan_captures(request)] == probes
+
+
 def test_a_branch_run_of_two_candidates_shares_its_drivers_probes():
     """A branch set's probes play each branch alone on the drivers graph, so a
     second candidate there would find the same levels: the run stays one set,
