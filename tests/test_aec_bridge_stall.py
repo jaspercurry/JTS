@@ -287,7 +287,6 @@ def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
     spy = _ParkCues(cue_result)
     monkeypatch.setattr(cue_park, "TtsPlayout", lambda **_kw: FakeTts())
     monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
-    monkeypatch.setattr(cue_park, "read_measurement_hold", lambda: None)
     return spy
 
 

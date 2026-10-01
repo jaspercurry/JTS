@@ -245,12 +245,8 @@ def _parking_daemon(
     *,
     connect_error: BaseException | None = None,
     cue_result: bool | BaseException = True,
-    hold: dict | None = None,
 ):
-    """main() whose run() raises `exc` and whose cue path is spied on.
-
-    `hold` is jasper-control's measurement-hold answer; ``None`` is an
-    unreachable jasper-control."""
+    """main() whose run() raises `exc` and whose cue path is spied on."""
     from jasper.voice import daemon_main
 
     async def _boom() -> None:
@@ -263,7 +259,6 @@ def _parking_daemon(
     playout = FakeTts(connect_error=connect_error)
     monkeypatch.setattr(cue_park, "TtsPlayout", lambda **_kw: playout)
     monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
-    monkeypatch.setattr(cue_park, "read_measurement_hold", lambda: hold)
     return daemon_main, spy
 
 
@@ -310,31 +305,6 @@ def test_boot_parks_keep_their_exit_code_and_cue_policy(
     # Recorded at all means recorded before the exit: nothing plays after it.
     assert spy.played == ([slug] if slug else [])
     assert event_fields(caplog, event)
-
-
-def test_a_boot_park_inside_a_measurement_hold_is_not_cued(
-    monkeypatch, caplog,
-) -> None:
-    """The run holds the fader, so the cue would play at the run's level
-    (ADR-0305). The park keeps its exit code and event, and the cue line
-    names why it is silent."""
-    daemon_main, spy = _parking_daemon(
-        VoiceConfigError("JASPER_IDLE_TIMEOUT_SEC must be a number"),
-        monkeypatch,
-        hold={"active": True, "owner": "crossover_v2", "expires_in_s": 90.0},
-    )
-
-    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        with pytest.raises(SystemExit) as raised:
-            daemon_main.main()
-
-    assert raised.value.code == VOICE_STARTUP_CONFIG_ERROR_EXIT
-    assert spy.played == []
-    assert event_fields(caplog, "voice.config_invalid")
-    assert event_fields(caplog, "voice.park_cue") == {
-        "slug": VOICE_ASSETS_MISSING_CUE_SLUG,
-        "result": "measurement_active",
-    }
 
 
 @pytest.mark.parametrize(

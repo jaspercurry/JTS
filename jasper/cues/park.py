@@ -9,10 +9,8 @@ import asyncio
 import logging
 import os
 
-from jasper.control.measurement_hold import read_measurement_hold
 from jasper.runtime.tts_playout import TtsPlayout
 from jasper.service_state.tts_routing import FANIN_TTS_SOCKET, VOICE_TTS_SOCKET_ENV
-from jasper.voice.measurement_hold import live_hold_lease_sec
 from .factory import build_env_cue_manager
 
 # Keep cue failures within systemd's startup deadline.
@@ -22,14 +20,9 @@ PARK_CUE_TIMEOUT_SEC = 12.0
 def play_park_cue(slug: str, *, logger: logging.Logger) -> str:
     """Play `slug` through the fan-in TTS socket. Never raises.
 
-    Returns the result code the caller logs: ``ok``, ``measurement_active``,
-    ``play_failed``, ``play_error``, ``timeout`` or ``interrupted``. The
-    ``event=`` line stays with the caller so each park keeps its own package's
-    event prefix.
-
-    ``measurement_active``: a measurement hold is live, so nothing played.
-    This process holds no MEASURE_PAUSE, so it reads jasper-control's hold
-    under the rule a restarting voice daemon adopts on. See ADR-0305.
+    Returns the result code the caller logs: ``ok``, ``play_failed``,
+    ``play_error``, ``timeout`` or ``interrupted``. The ``event=`` line stays
+    with the caller so each park keeps its own package's event prefix.
 
     Owns its own event loop, so callers must not be inside a running one.
     Nothing escapes — not even a ``BaseException``: this is called from inside
@@ -55,8 +48,6 @@ def play_park_cue(slug: str, *, logger: logging.Logger) -> str:
             return "ok" if await manager.play(slug) else "play_failed"
 
     try:
-        if live_hold_lease_sec(read_measurement_hold()) is not None:
-            return "measurement_active"
         return asyncio.run(_play())
     except TimeoutError:
         if cap is not None and cap.expired():

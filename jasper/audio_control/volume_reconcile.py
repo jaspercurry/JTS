@@ -35,6 +35,22 @@ logger = logging.getLogger("jasper.volume_reconcile")
 MEASUREMENT_HOLD_READ_TIMEOUT_S = 0.5
 
 
+async def read_fader_hold() -> str | None:
+    """``held`` or ``unreadable`` while jasper-control may hold the fader for
+    a measurement, else ``None``.
+
+    The rule for a fader write made without this process's own MEASURE_PAUSE:
+    the reconciler's raise and the boot restore. An unreadable hold counts as
+    held, which costs only a late write (ADR-0177, ADR-0368).
+    """
+    hold = await asyncio.to_thread(
+        read_measurement_hold, timeout=MEASUREMENT_HOLD_READ_TIMEOUT_S,
+    )
+    if hold is not None and not hold.get("active"):
+        return None
+    return "unreadable" if hold is None else "held"
+
+
 def converged(
     expected_db: float,
     expected_mute: bool,
@@ -287,19 +303,13 @@ class VolumeReconciler:
 
         The backstop for a measurement whose MEASURE_PAUSE never landed here —
         a window that went ahead without it, or whose renewal lapsed: the hold
-        is the window's copy that outlives both. An unreadable hold counts as
-        held, which costs only a late raise; a quieter write never asks, so the
-        safety correction stays live (ADR-0177, ADR-0368).
+        is the window's copy that outlives both. A quieter write never asks, so
+        the safety correction stays live (ADR-0177, ADR-0368).
         """
-        hold = await asyncio.to_thread(
-            read_measurement_hold, timeout=MEASUREMENT_HOLD_READ_TIMEOUT_S,
-        )
-        if hold is not None and not hold.get("active"):
+        hold = await read_fader_hold()
+        if hold is None:
             return False
-        return self._defer(
-            "measurement_hold", reported,
-            hold="unreadable" if hold is None else "held",
-        )
+        return self._defer("measurement_hold", reported, hold=hold)
 
     def _defer(self, reason: str, reported: str | None, **fields: str) -> bool:
         if reason != reported:

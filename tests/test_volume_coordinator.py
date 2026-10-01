@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests._async_wait import wait_signalled
-from tests._log_events import event_fields
+from tests._log_events import event_field_maps, event_fields
 from tests.volume_coordinator_fixtures import (
     _assert_persisted,
     _coord,
@@ -30,6 +30,7 @@ from tests.volume_coordinator_fixtures import (
     _owned_coord,
     _real_coord,
     _use_real_pushes,
+    measurement_hold_served as measurement_hold_served,
     pushes as pushes,
 )
 
@@ -39,6 +40,7 @@ from jasper.service_state import spotify_router as spotify_router_mod
 from jasper.audio_control import volume_push_sources as vps_mod
 from jasper.service_state.accounts import Account
 from jasper.control.volume_ops import with_coordinator
+from jasper.platform.control_client import ControlError
 from jasper.service_state.spotify_router import AccountClient, Router
 from jasper.playback_state.music_sources import Source
 from jasper.voice import measurement_hold as voice_measurement
@@ -648,6 +650,42 @@ async def test_initialize_does_not_bump_last_used_at(tmp_path):
     assert rec.last_used_at is not None
     # 1 s tolerance for the persistence round-trip.
     assert abs((rec.last_used_at - old_ts).total_seconds()) < 1.0
+
+
+@pytest.mark.parametrize("hold_state", ["free", "held", "unreadable"])
+@pytest.mark.parametrize(
+    ("active", "source"),
+    [({}, Source.IDLE), ({"spotactive": True}, Source.SPOTIFY)],
+    ids=["camilla_master", "push"],
+)
+async def test_a_boot_restore_writes_no_fader_while_a_measurement_holds_it(
+    tmp_path, monkeypatch, caplog, measurement_hold_served,
+    hold_state, active, source,
+):
+    """A voice restart inside a run must not move the fader the run owns, in
+    either carrier mode. The hold is read the way the reconciler reads it
+    before a raise, so an unreadable hold waits too (ADR-0368)."""
+    caplog.set_level(logging.INFO, logger="jasper")
+    coord, cam, persistence = _coord(
+        tmp_path, active=active, db=-40.0, level=70, mark_user_change=True,
+    )
+    if hold_state != "free":
+        measurement_hold_served.acquire("crossover_v2")
+    if hold_state == "unreadable":
+        def refused(**_kwargs: object) -> dict:
+            raise ControlError("connection refused")
+
+        monkeypatch.setattr("jasper.platform.control_client.get_measurement", refused)
+
+    target, _reason = await coord.initialize()
+
+    deferred = hold_state != "free"
+    assert (cam.events == []) is deferred
+    assert [
+        (fields["reason"], fields["hold"], fields["source"])
+        for fields in event_field_maps(caplog, "volume.boot_restore_deferred")
+    ] == ([("measurement_hold", hold_state, source.value)] if deferred else [])
+    _assert_persisted(persistence, level=target)
 
 
 async def test_user_change_bumps_last_used_at(tmp_path):
