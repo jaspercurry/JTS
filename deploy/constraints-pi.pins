@@ -102,7 +102,7 @@ truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uritemplate==4.2.0
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.40.0
 websocket-client==1.9.1
 websockets==15.0.1
