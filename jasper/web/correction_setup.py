@@ -37,7 +37,6 @@ import asyncio
 import functools
 import logging
 import os
-import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from http import HTTPStatus
@@ -694,40 +693,33 @@ async def _restore_protected_neutral_program_graph() -> None:
         )
 
 
-def _booted_at() -> float:
-    """When this boot began, on the wall clock that stamps file mtimes."""
-    return time.time() - float(Path("/proc/uptime").read_text(encoding="ascii").split()[0])
-
-
 def _recover_crash_left_session_volume() -> None:
     """Restore the fader a killed run left, through the recovery button's path.
 
     A SIGKILL, the OOM killer or the watchdog skips the run's ``finally``, and
-    CamillaDSP's statefile keeps the run's level. An ``active`` plan at start
-    was opened by a process that is gone, unless a live hold names another
-    owner: jasper-seat-level writes the same plan file (removal condition: it
-    stops sharing it). An unreadable hold may be that owner, so it skips too.
-    A previous boot's plan gets no fader write: jasper-voice's start already
-    wrote the listening level.
+    CamillaDSP's statefile keeps the run's level. The unit restarts in about
+    2 s, and the killed run's own measurement hold lives 60-120 s more. Only
+    that hold restores: jasper-seat-level writes the same plan file and can
+    run with no hold, a jasper-control restart drops holds, a later start
+    must not put an old pre-run level over a newer one, and a previous boot's
+    plan never meets this boot's hold.
 
-    The plan records no boot id, so "this boot" is its file's mtime against
-    :func:`_booted_at`. With no RTC, before NTP's first step a previous boot's
-    plan can read as this boot's; the write is then that run's
-    ``original_main_volume_db``, the household's own pre-run level.
+    The plan is read fresh, not through the process's plan, which reads the
+    disk once: building that here would hide a plan crash-left after this start.
     """
-    plan = v2volume.session_volume_plan()
+    plan = volume_plan.SessionVolumePlan(
+        state_path=volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH,
+    )
     if not plan.needs_recovery or plan.unresolved_volume_safety is not None:
         return
-    written_after_boot_s = (
-        volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH.stat().st_mtime - _booted_at()
-    )
     succeeded = False
-    if written_after_boot_s < 0:
-        result = "skipped_previous_boot"
-    elif (hold := read_measurement_hold()) is None:
+    hold = read_measurement_hold()
+    if hold is None:
         result = "skipped_hold_unreadable"
-    elif hold.get("active") and hold.get("owner") != MEASUREMENT_GATE_OWNER:
-        result = "skipped_live_measurement"
+    elif not hold.get("active"):
+        result = "skipped_hold_inactive"
+    elif hold.get("owner") != MEASUREMENT_GATE_OWNER:
+        result = "skipped_hold_other_owner"
     else:
         succeeded, result = v2volume.recover_session_volume(
             correction_runtime.run_async, correction_runtime.camilla_controller,
@@ -737,7 +729,6 @@ def _recover_crash_left_session_volume() -> None:
         "correction.crossover_v2_volume_startup_recovery",
         level=logging.INFO if succeeded else logging.WARNING,
         result=result,
-        written_after_boot_s=f"{written_after_boot_s:.0f}",
     )
 
 

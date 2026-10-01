@@ -39,7 +39,7 @@ from jasper.web import (
     correction_setup,
 )
 from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER
-from tests._log_events import event_fields, event_records
+from tests._log_events import event_field_maps, event_fields, event_records
 from tests.conftest import bare_root_logger, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
     wizard_harness_fixture as _wizard_harness_fixture,
@@ -777,26 +777,28 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("written_at", "hold", "restored_to", "result"),
+    ("crashed", "hold", "restored_to", "results"),
     [
-        # The killed run's own hold outlives it by up to its 120 s TTL.
-        (2_000.0, {"active": True, "owner": MEASUREMENT_GATE_OWNER}, [-27.0], "exact_restored"),
-        (500.0, {"active": False}, [], "skipped_previous_boot"),
-        (2_000.0, {"active": True, "owner": "seat-level"}, [], "skipped_live_measurement"),
-        (2_000.0, None, [], "skipped_hold_unreadable"),
+        # The unit restarts in about 2 s; the killed run's own hold lives 60-120 s more.
+        ("before_start", {"active": True, "owner": MEASUREMENT_GATE_OWNER}, [-27.0], ["exact_restored"]),
+        ("before_start", {"active": False, "owner": None}, [], ["skipped_hold_inactive"]),
+        ("before_start", {"active": True, "owner": "seat-level"}, [], ["skipped_hold_other_owner"]),
+        ("before_start", None, [], ["skipped_hold_unreadable"]),
+        # The start must not freeze the process's plan before a later crash.
+        ("after_start", {"active": True, "owner": MEASUREMENT_GATE_OWNER}, [], []),
     ],
-    ids=["this_boot", "previous_boot", "seat_level_live", "hold_unreadable"],
+    ids=["own_hold", "no_hold", "other_owner", "hold_unreadable", "crash_after_start"],
 )
 def test_service_start_restores_the_fader_a_killed_run_left(
-    monkeypatch, tmp_path, caplog, written_at, hold, restored_to, result,
+    monkeypatch, tmp_path, caplog, crashed, hold, restored_to, results,
 ):
     """A kill skips the run's ``finally``; the next start restores the level.
 
-    Only this boot's plan (boot at t=1000), and only when no other process's
-    measurement can own it: jasper-seat-level writes the same plan file.
+    Only on positive evidence that this service's own run just died: its
+    measurement hold, still live. Any other start leaves the plan to the
+    recovery screen, which must still see a plan crash-left after the start.
     """
     import asyncio
-    import os
 
     from jasper.active_speaker import repeat_admission
     from jasper.active_speaker import session_volume_plan as volume_plan
@@ -813,14 +815,14 @@ def test_service_start_restores_the_fader_a_killed_run_left(
         return fader["db"]
 
     state = tmp_path / "session_volume.json"
-    run = volume_plan.SessionVolumePlan(state_path=state)
-    opened = asyncio.run(run.open(-20.0, volume_plan.FaderVolumeDoor(set_fader, get_fader)))
-    assert opened is volume_plan.SessionVolumeOpenResult.OPENED
-    os.utime(state, (written_at, written_at))
-    writes.clear()
+
+    def crash_a_run_at_minus_20_db():
+        run = volume_plan.SessionVolumePlan(state_path=state)
+        door = volume_plan.FaderVolumeDoor(set_fader, get_fader)
+        assert asyncio.run(run.open(-20.0, door)) is volume_plan.SessionVolumeOpenResult.OPENED
+        writes.clear()
 
     monkeypatch.setattr(volume_plan, "DEFAULT_SESSION_VOLUME_STATE_PATH", state)
-    monkeypatch.setattr(correction_setup, "_booted_at", lambda: 1_000.0)
     monkeypatch.setattr(correction_setup, "read_measurement_hold", lambda: hold)
     seat_process_volume_owner(monkeypatch, set_fader, get_fader)
     monkeypatch.setattr(
@@ -835,17 +837,22 @@ def test_service_start_restores_the_fader_a_killed_run_left(
     monkeypatch.setattr(
         correction_setup, "_restore_protected_neutral_program_graph", graph_untouched,
     )
+    if crashed == "before_start":
+        crash_a_run_at_minus_20_db()
     v2volume.set_volume_plan_for_tests(None)
     try:
         with caplog.at_level(logging.INFO, logger=correction_setup.logger.name):
             correction_setup._claim_crossover_state_owners()
+        if crashed == "after_start":
+            crash_a_run_at_minus_20_db()
+        assert writes == restored_to
+        assert v2volume.v2_volume_recovery_active() is (not restored_to)
     finally:
         v2volume.set_volume_plan_for_tests(None)
-
-    assert writes == restored_to
-    assert volume_plan.SessionVolumePlan(state_path=state).needs_recovery is (not restored_to)
-    fields = event_fields(caplog, "correction.crossover_v2_volume_startup_recovery")
-    assert fields["result"] == result
+    assert [
+        fields["result"]
+        for fields in event_field_maps(caplog, "correction.crossover_v2_volume_startup_recovery")
+    ] == results
 
 
 # ---------------------------------------------------------------------------
