@@ -180,13 +180,22 @@ def _chain_is_silent(chain: Mapping[str, Any]) -> bool:
     return bool(chain["muted"]) or float(chain["gain_db"]) <= MIN_CHAIN_GAIN_DB
 
 
+def rear_is_silent(document: Mapping[str, Any]) -> bool:
+    """Whether a runtime rear calibration plays no rear woofer: muted, or both its branches silent."""
+    return bool(document["rear_muted"]) or all(
+        _chain_is_silent(document["rear"][branch]) for branch in ("bass", "cancellation")
+    )
+
+
+def plays_rear(candidate: MeasuredCrossoverCandidate) -> bool:
+    """Whether ``candidate``'s graph plays a rear woofer: a rear output with no
+    fitted document is muted (ADR-0318)."""
+    return bool(candidate.rear_calibration) and not rear_is_silent(candidate.rear_calibration)
+
+
 def _rear_calibration_disclosure(document: Mapping[str, Any]) -> dict[str, str] | None:
     """A warning when the document leaves only the tweeter audible."""
-    rear = document["rear"]
-    rear_silent = bool(document["rear_muted"]) or all(
-        _chain_is_silent(rear[branch]) for branch in ("bass", "cancellation")
-    )
-    if not rear_silent or not _chain_is_silent(document["front"]):
+    if not rear_is_silent(document) or not _chain_is_silent(document["front"]):
         return None
     return issue(
         "warning",

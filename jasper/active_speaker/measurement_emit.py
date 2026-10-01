@@ -28,6 +28,7 @@ from jasper.active_speaker.measured_crossover_candidate import (
     prove_candidate_config,
 )
 from jasper.active_speaker.graph_safety import view_from_emitted_text
+from jasper.active_speaker.rear_calibration import front_floor_db
 from jasper.active_speaker.measurement_programs import GRAPH_LAYERS
 from jasper.active_speaker.profile import (
     ActiveSpeakerPreset, required_driver_roles,
@@ -215,6 +216,20 @@ def compile_tuning_graph(
         )))
         return prefix + "\n" + yaml.safe_dump({"mixers": mixers}, sort_keys=False) + "\npipeline:\n" + pipeline
     return candidate_text
+
+
+def timing_floor_db(profile: MeasurementGraphProfile, candidate: MeasuredCrossoverCandidate) -> dict[str, float]:
+    """How far under unity, before ``candidate``'s charge is folded into its trims,
+    the timing take's graph plays each front driver in its passband, dB: the
+    driver's trim, on a cardioid's front woofer the lowest static response of its
+    front chain, less what the timing graph still charges itself (ADR-0385)."""
+    try:
+        still = graph_headroom_db(view_from_emitted_text(compile_tuning_graph(profile, candidate, scope="timing")))
+    except camilla_yaml.ProgramHeadroomExhausted as exc:
+        still = exc.charge_db
+    rear = candidate.rear_calibration
+    return {role: trim - still + (front_floor_db(rear) if rear and role == "woofer" else 0.0)
+            for role, trim in candidate.role_attenuations_db.items()}
 
 
 def room_layer_charge_db(profile: MeasurementGraphProfile, candidate: MeasuredCrossoverCandidate) -> float:

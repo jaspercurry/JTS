@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field, replace
 from itertools import product
 from typing import Any, Mapping, Sequence
@@ -33,7 +34,7 @@ from .crossover_v2.refusal_copy import (
 )
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
-    compile_candidate_config, prove_candidate_config,
+    compile_candidate_config, plays_rear, prove_candidate_config,
 )
 from .movers import MOVER_ARM
 from .measurement_programs import (
@@ -87,6 +88,11 @@ class PreflightFacts:
     #: The applied tune's program charge, which the timing take's graph folds into its
     #: trims (ADR-0385); ``None`` when an applied profile could not be read.
     applied_program_charge_db: float | None = 0.0
+    #: How far under unity, before that charge, the timing take plays each front driver of the
+    #: run's base (``measurement_emit.timing_floor_db``); ``None`` when it could not be read.
+    applied_timing_floor_db: Mapping[str, float] | None = field(default_factory=dict)
+    #: Whether the run's base graph plays a rear woofer; ``None`` when it could not be read.
+    applied_rear_plays: bool | None = False
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
@@ -161,12 +167,16 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
                 bass_extensions: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
     """How much louder than the take a run probes its other takes at the run's
     fader may play: the largest bass lift and the largest rise of a take that
-    clears the room layer, each against the graph the probe plays, and over a
-    timing take the applied program charge its graph folds into its trims, which
-    the candidates' own graphs play back (ADR-0403 §4, ADR-0370, ADR-0385). Empty
-    when no take plays at the run's fader. Raises ``ValueError`` when a take
-    clears a room layer the probe plays and that layer or its charge could not be
-    read, or plays over a timing take and the applied charge could not be read."""
+    clears the room layer, each against the graph the probe plays, plus the most
+    any driver may play over the probe's graph. Over a timing take, a candidate's
+    graph may play each front driver up to unity, so that driver counts the
+    applied charge the timing graph folds into its trims plus how far under unity
+    the timing graph plays it. A rear woofer the probe's graph mutes and a later
+    take plays adds the coherent sum of the woofers sharing its band (ADR-0403 §4,
+    ADR-0370, ADR-0385). Empty when no take plays at the run's fader. Raises
+    ``ValueError`` when a take clears a room layer the probe plays and that layer
+    or its charge could not be read, or plays over a timing take and the applied
+    tune could not be read or plays no front woofer."""
     takes = [(scope, levelled) for scope, levelled, _ in run_takes(captures)]
     probed = run_probe_index(takes)
     if probed is None:
@@ -189,13 +199,36 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     rise = max((rise_without_room_db(room_peqs or (), (
         ROOM_FLOOR_HZ, float((capture.stop.stimulus or {}).get("ceiling_hz") or MEASURE_SWEEP_F_HI_HZ)),
         charge_db=charge or 0.0) for capture in clearing), default=0.0)
-    over_timing = probe.spec.graph_scope == "timing" and any(
-        capture.spec.graph_scope != "timing" for capture in at_fader)
-    if over_timing and facts.applied_program_charge_db is None:
-        raise ValueError("the applied program charge could not be read, so a take over the timing take has no known rise")
-    folded = max(0.0, facts.applied_program_charge_db or 0.0) if over_timing else 0.0
-    return {"lift_bound_db": lift, "room_off_rise_db": rise, "timing_charge_db": folded,
-            "run_margin_db": lift + rise + folded}
+
+    def graph(capture: Any) -> tuple[Any, ...]:
+        return capture.spec.graph_scope, candidate_identity(capture.stop.candidate_id), capture.spec.cleared_layers
+
+    def rear(capture: Any, *, unread: bool) -> bool:
+        # The timing graph mutes the rear woofer (#5632); only a branch take, which levels itself, clears it.
+        if capture.spec.graph_scope == "timing":
+            return False
+        name = candidate_identity(capture.stop.candidate_id)
+        candidate = facts.candidates.get(name)
+        known = (plays_rear(candidate) if isinstance(candidate, MeasuredCrossoverCandidate) else
+                 facts.applied_rear_plays if name == BASE_CANDIDATE else None)
+        return unread if known is None else known
+
+    # Woofers sharing a band add in phase at worst: 20·log10(N_take / N_probe).
+    others = [capture for capture in at_fader if graph(capture) != graph(probe)]
+    summed = max((20 * math.log10((1 + rear(capture, unread=True)) / (1 + rear(probe, unread=False)))
+                  for capture in others), default=0.0)
+    summed = max(0.0, summed)
+    excess = summed
+    if probe.spec.graph_scope == "timing" and others:
+        charge, floors = facts.applied_program_charge_db, facts.applied_timing_floor_db
+        if charge is None or floors is None:
+            raise ValueError("the applied tune could not be read, so a take over the timing take has no known rise")
+        gaps = {role: charge - floor for role, floor in {"woofer": 0.0, **floors}.items()}
+        if not all(math.isfinite(gap) for gap in gaps.values()):
+            raise ValueError("the timing take plays no front woofer, so a take over it has no known rise")
+        excess = max(gap + (summed if role == "woofer" else 0.0) for role, gap in gaps.items())
+    return {"lift_bound_db": lift, "room_off_rise_db": rise, "rear_sum_db": summed, "driver_excess_db": excess,
+            "run_margin_db": lift + rise + excess}
 
 
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: bool = True) -> PreflightReport:

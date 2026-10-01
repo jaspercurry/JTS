@@ -70,7 +70,9 @@ from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFailure, open_session
 from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
-from tests.test_preflight import _unprobed_plans, ready_facts
+from tests.test_preflight import (
+    _REAR_SUM_DB, _TUNE_CHARGE_DB, _TUNE_FLOOR_DB, _cardioid_trial, _unprobed_plans, ready_facts,
+)
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
 
@@ -1577,7 +1579,7 @@ def test_an_ab_trial_over_a_room_boost_lands_under_its_bound(monkeypatch, tuning
     request = ac.request_for_preset(run_preset(program, layout), candidates=("base", "trial"))
     report = preflight_levels(request, ready_facts(request, candidates={"trial": _room_candidate(tuning_profile)},
                                                    applied_program_charge_db=6.0))
-    assert not report.blocking and report.rung_admission["timing_charge_db"] == charge_db
+    assert not report.blocking and report.rung_admission["driver_excess_db"] == charge_db
 
     result, _, _ = asyncio.run(_run_found(
         monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db=chain_db,
@@ -1588,6 +1590,37 @@ def test_an_ab_trial_over_a_room_boost_lands_under_its_bound(monkeypatch, tuning
             if take["selected"] and take["phase"] in ("timing", "lateral")]
     assert result.status == "complete" and len(read) == len(request.stops) + (program == "speaker")
     assert max(read) < bound_db
+
+
+@pytest.mark.parametrize(("program", "layout", "chain_db", "rear", "over_db", "bound_db"), [
+    ("speaker", "speaker_mark", {"bearing": 100.0}, True, 3.32 + _REAR_SUM_DB, 85.0),
+    ("room", "seat_express", {"seat": 94.0}, False, _REAR_SUM_DB, 76.0)],
+    ids=["a timing probe at the mark", "a seat probe that mutes the rear"])
+def test_a_cardioid_ab_trial_lands_under_its_bound(monkeypatch, tuning_profile, program, layout, chain_db, rear,
+                                                   over_db, bound_db):
+    """A cardioid's candidate graphs play the front and rear woofers in phase where
+    the timing take, or a probe graph with the rear muted, plays the front woofer
+    alone, and over the timing take the test tune's woofer plays 3.3 dB more
+    besides. Preflight's margin counts both, so every take of an A/B trial lands
+    under the 85 dB stop at the mark, and at or under 76 dB at the first seat spot
+    (ADR-0403 §4, ADR-0385)."""
+    request = ac.request_for_preset(run_preset(program, layout), candidates=("base", "trial"))
+    report = preflight_levels(request, ready_facts(
+        request, applied_program_charge_db=_TUNE_CHARGE_DB, applied_timing_floor_db=_TUNE_FLOOR_DB,
+        applied_rear_plays=rear, candidates={"trial": _room_candidate(tuning_profile) if rear else _cardioid_trial()}))
+    assert not report.blocking
+
+    played = (("candidate", "banked-base"), ("candidate", "trial")) if rear else (("candidate", "trial"),)
+    result, _, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db=chain_db,
+        graph_db=dict.fromkeys(played, over_db), margin_db=report.rung_admission["run_margin_db"]))
+
+    first = request.stops[0].pose.place
+    read = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in _takes(result.joined())
+            if take["selected"] and take["phase"] in ("timing", "lateral")
+            and (program == "speaker" or (take["pose_kind"], take["seat_offset_m"]) == (first[0], first[4]))]
+    assert result.status == "complete" and windows[-1] < windows[0]
+    assert max(read) < bound_db if program == "speaker" else max(read) <= bound_db + 1e-6
 
 
 @pytest.mark.parametrize(("chain_db", "kept", "reason"), [(50.0, False, REASON_SNR_FLOOR),
