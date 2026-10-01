@@ -282,14 +282,15 @@ def _reconcile_camilla(
     --check`` before loading and fail-closes on an invalid config, so a failure
     here leaves the previously-loaded config running.
 
-    TWO ``skipped`` ANSWERS ARE ACCEPTED, each on direct proof only. A
-    mid-commission roleful box boots from the all-muted staged startup anchor,
-    which the carrier refuses to host EQ on (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`),
-    and :func:`ring_endpoint_anchor_converged` proves from the artifacts on disk
-    that the graph IS that anchor at the ring endpoint. A box with no speaker
-    layout holds the all-muted parked graph, and only the parked carrier raises
-    ``SPEAKER_PARKED_REFUSAL``, for a loaded graph the classifier reads as
-    parked. Every other ``skipped`` fails.
+    TWO ``skipped`` ANSWERS ARE ACCEPTED. A mid-commission roleful box boots
+    from the all-muted staged startup anchor, which the carrier refuses to host
+    EQ on (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`), and
+    :func:`ring_endpoint_anchor_converged` proves from the artifacts on disk
+    that the graph IS that anchor at the ring endpoint. A parked box holds the
+    parked graph (:data:`SPEAKER_PARKED_REFUSAL`, read by its ``# Source:``
+    marker), and its statefile shows that graph is the runtime contract's own
+    pick, not a stale leftover; the graph's contents are the doctor's runtime
+    graph check's to verify. Every other ``skipped`` fails.
 
     NO acceptance survives a payload that came over the STATEFILE
     (``transport=statefile``): that payload's ``current_config_path`` is the
@@ -298,9 +299,13 @@ def _reconcile_camilla(
     of every branch.
     """
     from jasper.sound import runtime as sound_runtime  # lazy: import cost, the doctor imports this module for two cheap reads (ADR-0226)
-    from jasper.sound.graph_carrier import SPEAKER_PARKED_REFUSAL  # lazy: import cost, as sound_runtime above
 
     try:
+        from jasper.active_speaker.environment import (  # lazy: import cost, as sound_runtime above
+            active_graph_is_parked,
+            read_camilla_statefile_config_path,
+        )
+
         payload = asyncio.run(sound_runtime.reconcile_current_dsp(force=force))
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
@@ -314,7 +319,7 @@ def _reconcile_camilla(
     if status in ("reconciled", "unchanged"):
         return True, str(status)
     # A "skipped" reconcile means the ring config was NOT loaded, so it fails —
-    # with the one proven exception below.
+    # with the two proven exceptions below.
     refusal = str(payload.get("reason") or "")
     if status == "skipped" and refusal == CARRIER_TRANSIENT_ACTIVE_REFUSAL:
         # Keyed on the ONE refusal this acceptance is about, not on "skipped"
@@ -342,14 +347,24 @@ def _reconcile_camilla(
             return True, CAMILLA_ANCHOR_CONVERGED_DETAIL
         return False, f"{refusal}: {anchor_detail}"
     if status == "skipped" and refusal == SPEAKER_PARKED_REFUSAL:
+        # The statefile is the runtime contract's pick (the audio-hardware
+        # reconciler writes it). A box whose pick moved on while the daemon
+        # still holds the parked graph (a layout saved, its load failed) is
+        # stuck silent, and must keep failing.
+        intended = read_camilla_statefile_config_path()
+        parked = active_graph_is_parked(intended)
         log_event(
             logger,
             "fanin.coupling_reconcile",
-            result="camilla_parked",
+            result="camilla_parked" if parked else "camilla_parked_not_intended",
             reason=reason,
             current=payload.get("current_config_path"),
+            intended=intended,
+            level=logging.INFO if parked else logging.WARNING,
         )
-        return True, CAMILLA_PARKED_DETAIL
+        if parked:
+            return True, CAMILLA_PARKED_DETAIL
+        return False, f"{refusal}: the statefile names {intended or '(nothing)'}, not the parked graph"
     return False, str(payload.get("reason") or status or "unknown")
 
 
@@ -883,14 +898,18 @@ def reconcile_auto(
 # ``tests/test_ring_anchor_arm_acceptance.py`` pins the two spellings against the
 # real exception.
 CARRIER_TRANSIENT_ACTIVE_REFUSAL = "eq_on_active_not_wired"
+# The carrier's refusal reason for the all-muted PARKED graph, the same way:
+# ``_ParkedCarrier.prepare_eq`` raises it as a bare literal, and
+# ``tests/test_sound_graph_carrier.py`` pins the two spellings.
+SPEAKER_PARKED_REFUSAL = "speaker_parked"
 
 # The camilla step's detail when it converged on an anchor rather than by
 # re-emitting. Distinct from "reconciled"/"unchanged" (a graph that was written)
 # and from the refusal reason, so the journal AND the operator's stdout line say
 # which one happened.
 CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
-# The camilla step's detail on a box with no speaker layout: CamillaDSP holds the
-# all-muted parked graph, so there was nothing to load.
+# The camilla step's detail on a parked box: CamillaDSP holds the all-muted
+# parked graph the runtime contract picked, so there was nothing to load.
 CAMILLA_PARKED_DETAIL = "parked"
 
 

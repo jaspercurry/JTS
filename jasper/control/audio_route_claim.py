@@ -18,7 +18,6 @@ from typing import Any
 
 from ._health_fields import MONITOR_ERRORS
 from jasper.platform import paths
-from ..active_speaker.environment import read_camilla_statefile_config_path
 from ..active_speaker.playback_route import (
     ActiveLaneCapabilityGap,
     active_lane_capability_gap,
@@ -69,8 +68,8 @@ def _transport_state(
     }
 
 
-def _parked_graph_transport() -> dict[str, Any] | None:
-    """Transport state for the intentional PARKED graph, or None when absent.
+def _parked_graph_transport() -> dict[str, Any]:
+    """Transport state for the intentional PARKED graph.
 
     Feeds :func:`~jasper.control.audio_signal_path.parked_signal` through the same
     ``coherence_errors`` channel the transport detector uses, so the parked
@@ -78,14 +77,8 @@ def _parked_graph_transport() -> dict[str, Any] | None:
     :func:`_transport_state` resolves it, so a no-active-lane DAC still gets
     that clause after this reason, not instead of it.
     """
-    from ..active_speaker.graph_selector import (  # lazy: import cost, the graph verifier loads only for a parked graph
-        active_graph_is_parked,
-        parked_muted_exits,
-    )
+    from ..active_speaker.graph_selector import parked_muted_exits  # lazy: import cost, the graph verifier loads only for a parked graph
 
-    config_path = read_camilla_statefile_config_path()
-    if not active_graph_is_parked(config_path):
-        return None
     try:
         topology = load_output_topology_strict()
     except OutputTopologyError:
@@ -129,13 +122,13 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     evidence = output_endpoint_evidence_from_statefiles(
         paths.camilla_statefile(), paths.crossover_statefile()
     )
+    if evidence.parked:
+        # The PARKED graph (#2135) writes to a File sink on purpose, so it names
+        # no outputd lane. That IS the parked state, and it must not read as
+        # ready just because the detector has nothing to compare.
+        return _parked_graph_transport()
     if evidence.devices is None or not evidence.endpoint_recognized:
-        # One unrecognized endpoint is NOT "coherence unknown": the PARKED graph
-        # (#2135) writes to a File sink on purpose, because the saved roleful
-        # layout has no staged startup graph yet. That IS the parked state, so
-        # it must not read as ready just because the graph declines to name an
-        # outputd lane.
-        return _parked_graph_transport() or _empty_transport()
+        return _empty_transport()
     # The plan's own merged outputd env (both EnvironmentFile= layers), not a
     # second read of the same two files: this sampler runs every 60 s.
     outputd_env = dict(plan.outputd_env)

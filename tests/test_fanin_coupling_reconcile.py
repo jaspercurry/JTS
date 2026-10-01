@@ -20,7 +20,10 @@ SHIPPED_RING_CONF_D = (
 from jasper.platform import source_intent_units as units
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.platform.env_file import read_value
+from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 from jasper.fanin.coupling_reconcile import (
+    CAMILLA_PARKED_DETAIL,
+    SPEAKER_PARKED_REFUSAL,
     _write_env_actions,
     reconcile_coupling,
 )
@@ -483,29 +486,39 @@ def _arm_reconcile_returning(monkeypatch, payload: dict):
     return cr._reconcile_camilla(reason="arm", force=True)
 
 
-@pytest.mark.parametrize(("transport", "accepted"), [("websocket", True), ("statefile", False)])
-def test_the_camilla_rung_accepts_the_loaded_parked_graph(monkeypatch, transport, accepted):
+@pytest.mark.parametrize(
+    ("transport", "statefile_names_parked", "accepted"),
+    [("websocket", True, True), ("websocket", False, False), ("statefile", True, False)],
+)
+def test_the_camilla_rung_accepts_the_parked_graph_only_as_the_runtime_pick(
+    monkeypatch, tmp_path, transport, statefile_names_parked, accepted
+):
     """A reset box holds the all-muted parked graph: the pass converges instead
-    of failing jasper-fanin-coupling-auto (#6113), but never off the statefile,
-    where nothing was loaded."""
-    from jasper.fanin import coupling_reconcile as cr
-    from jasper.sound import runtime
-    from jasper.sound.graph_carrier import SPEAKER_PARKED_REFUSAL
+    of failing jasper-fanin-coupling-auto (#6113). Not when the statefile has
+    moved on to another graph (a stuck, silent box), and never off the
+    statefile transport, where nothing was loaded."""
+    parked = tmp_path / "active_speaker_parked.yml"
+    parked.write_text(emit_active_speaker_parked_config(output_count=3), encoding="utf-8")
+    other = tmp_path / "outputd-cutover.yml"
+    other.write_text("devices: {}\n", encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(
+        f"config_path: {parked if statefile_names_parked else other}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
 
-    async def fake_reconcile_current_dsp(**_kwargs):
-        return {
+    ok, detail = _arm_reconcile_returning(
+        monkeypatch,
+        {
             "status": "skipped",
             "reason": SPEAKER_PARKED_REFUSAL,
             "transport": transport,
-            "current_config_path": "/var/lib/camilladsp/configs/active_speaker_parked.yml",
-        }
-
-    monkeypatch.setattr(runtime, "reconcile_current_dsp", fake_reconcile_current_dsp)
-
-    ok, detail = cr._reconcile_camilla(reason="systemd", force=True)
+            "current_config_path": str(parked),
+        },
+    )
 
     assert ok is accepted
-    assert (detail == cr.CAMILLA_PARKED_DETAIL) is accepted
+    assert (detail == CAMILLA_PARKED_DETAIL) is accepted
 
 
 def _staged_anchor_skip(transport: str) -> dict:

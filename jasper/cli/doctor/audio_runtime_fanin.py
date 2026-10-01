@@ -865,11 +865,12 @@ def check_fanin_coupling() -> CheckResult:
     (Ring A). The playback axis has two legal endpoints: the post-DSP ring this
     box's endpoint marker names (``jts_ring_playback``, or
     ``jts_ring_active_playback`` once the active endpoint is armed), or the
-    Snapcast pipe a bonded LEADER feeds instead of any local ring.
+    Snapcast pipe a bonded LEADER feeds instead of any local ring. The parked
+    graph's File sink is judged on its capture axis alone.
 
     Outputd consumption belongs to :func:`check_content_transport_coherence`.
     """
-    from jasper.active_speaker.graph_selector import active_graph_is_parked
+    from jasper.active_speaker.environment import camilla_config_is_parked
     from jasper.dsp_control.fanin_coupling import (
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_CAPTURE_DEVICE,
@@ -904,14 +905,9 @@ def check_fanin_coupling() -> CheckResult:
             "no loaded capture to compare",
             reason=REASON_COUPLING_NO_LOADED_CAPTURE,
         )
-    if active_graph_is_parked(config_path):
-        return CheckResult(
-            label,
-            "skipped",
-            "CamillaDSP holds the parked graph (no speaker layout), so no ring "
-            "is expected until a layout is saved",
-            reason=REASON_COUPLING_PARKED,
-        )
+    # The parked graph still captures Ring A, but plays into a File sink by
+    # decision, so only its playback axis stands down.
+    parked = camilla_config_is_parked(evidence.camilla_config_text())
 
     # WHICH post-DSP ring is EXACTLY ONE answer, taken from the reconciler's
     # marker — not "either is fine". Accepting both would read green through the
@@ -936,7 +932,7 @@ def check_fanin_coupling() -> CheckResult:
     # device at all, so the playback axis is this check's business only on the
     # ring endpoint.
     feeds_the_bond = devices_playback_is_pipe(devices, SNAPFIFO)
-    if not feeds_the_bond and playback_device != expected_playback:
+    if not feeds_the_bond and not parked and playback_device != expected_playback:
         if roleful and not armed:
             ring_mismatches.append(
                 f"playback_device={playback_device or '(missing)'} "
@@ -950,6 +946,14 @@ def check_fanin_coupling() -> CheckResult:
                 f"playback_device={playback_device or '(missing)'} "
                 f"(expected {expected_playback})"
             )
+    if not ring_mismatches and parked:
+        return CheckResult(
+            label,
+            "ok",
+            f"capture={RING_CAPTURE_DEVICE}, playback=the parked graph's File "
+            "sink (every output muted)",
+            reason=REASON_COUPLING_PARKED,
+        )
     if not ring_mismatches:
         endpoint = SNAPFIFO if feeds_the_bond else expected_playback
         return CheckResult(

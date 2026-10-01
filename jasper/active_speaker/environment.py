@@ -422,6 +422,39 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
     }
 
 
+def camilla_config_is_parked(text: str | None) -> bool:
+    """True when ``text`` is the parked graph.
+
+    Content-keyed on the emitted ``# Source:`` provenance marker, not on the
+    filename — a renamed or hand-copied file must not be able to claim (or
+    disclaim) parked status. Fail-soft: False on no text or a parse problem, so a
+    reporting surface degrades to "not parked" rather than raising. Callers that
+    need SAFETY, not reporting, use ``classify_camilla_graph`` — this predicate
+    proves nothing about the graph's contents.
+    """
+
+    if not text:
+        return False
+    try:
+        summary = classify_camilla_config_text(text)
+    except (ValueError, TypeError, RecursionError, yaml.YAMLError):
+        return False
+    return summary.get("classification") == CAMILLA_CLASS_ACTIVE_PARKED
+
+
+def active_graph_is_parked(config_path: str | Path | None) -> bool:
+    """:func:`camilla_config_is_parked` for the file at ``config_path``; False
+    when there is no path or it cannot be read."""
+
+    if not config_path:
+        return False
+    try:
+        text = Path(config_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return False
+    return camilla_config_is_parked(text)
+
+
 def _read_config_summary(
     *,
     config_path: str | Path | None,

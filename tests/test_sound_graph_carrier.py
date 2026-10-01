@@ -48,6 +48,7 @@ from jasper.dsp_control.fanin_coupling import (
     capture_kwargs_for_coupling,
 )
 from jasper.sound.camilla_yaml import BASE_CONFIG_PATH, emit_sound_config
+from jasper.fanin.coupling_reconcile import SPEAKER_PARKED_REFUSAL
 from jasper.sound.graph_carrier import (
     CarrierCannotHostEq,
     ReemitResult,
@@ -210,7 +211,6 @@ def test_parked_graph_is_never_reemitted_as_a_stereo_sound_config(tmp_path):
     # avoid. It must resolve to the refusing parked carrier instead, whose
     # refusal jasper-fanin-coupling-reconcile accepts as converged.
     from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
-    from jasper.sound.graph_carrier import SPEAKER_PARKED_REFUSAL
 
     config_dir = tmp_path / "configs"
     config_dir.mkdir()

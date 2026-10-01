@@ -23,6 +23,7 @@ from .correction import (
 )
 
 REASON_GRAPH_PASSIVE_LAYOUT = "runtime_graph_passive_layout"
+REASON_GRAPH_PASSIVE_LAYOUT_PARKED = "runtime_graph_passive_layout_parked"
 REASON_GRAPH_PARKED_SILENT = "runtime_graph_parked_silent"
 REASON_GRAPH_LAYOUT_INCOMPLETE = "runtime_graph_layout_incomplete"
 REASON_GRAPH_UNCONFIGURED_NOT_PARKED = "runtime_graph_unconfigured_not_parked"
@@ -113,10 +114,8 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     and a mid-commission box must stay deployable.
     """
     from jasper.active_speaker.output_contract import CONTRACT_UNCONFIGURED, classify_output_contract, topology_allows_flat_dac_graph
-    from jasper.active_speaker.graph_selector import (
-        active_graph_is_parked,
-        parked_muted_exits,
-    )
+    from jasper.active_speaker.environment import active_graph_is_parked, camilla_config_is_parked
+    from jasper.active_speaker.graph_selector import parked_muted_exits
     from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
     from jasper.audio_routes.output_topology import OutputTopologyError
 
@@ -134,6 +133,19 @@ def check_active_speaker_runtime_graph() -> CheckResult:
     # "not roleful": unconfigured and incomplete/invalid non-roleful layouts
     # are not passive playback contracts.
     if topology_allows_flat_dac_graph(contract):
+        if camilla_config_is_parked(evidence.camilla_config_text()):
+            # The mirror of an unconfigured box that is NOT parked: a saved
+            # passive layout whose statefile still names the parked graph never
+            # got its flat graph, and nothing else reports that silence.
+            return CheckResult(
+                name, "fail",
+                f"{contract.classification}: a passive layout is saved, but the "
+                "statefile still names the parked graph, so the speaker is silent. "
+                "`sudo /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph "
+                "--json` shows what the runtime contract selects",
+                speaker_silent=True,
+                reason=REASON_GRAPH_PASSIVE_LAYOUT_PARKED,
+            )
         return CheckResult(
             name, "ok",
             f"{contract.classification}: explicit passive layout is valid",

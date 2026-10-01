@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 from jasper.cli.doctor import _evidence, audio_runtime_fanin, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.audio_routes.output_topology import OutputTopologyError
@@ -898,14 +899,13 @@ def test_check_skipped_when_no_loaded_capture(monkeypatch, tmp_path):
     assert res.reason == audio_runtime_fanin.REASON_COUPLING_NO_LOADED_CAPTURE
 
 
-def test_check_skipped_on_the_parked_graph(monkeypatch, tmp_path):
-    """A reset box holds the parked graph by decision, not a stale artifact."""
-    from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
-
+def test_the_parked_graph_is_judged_on_its_capture_axis_alone(monkeypatch, tmp_path):
+    """A reset box holds the parked graph by decision: it still captures Ring A,
+    and its File sink is no stale artifact."""
     res = _run_check(
         monkeypatch, cfg_text=emit_active_speaker_parked_config(output_count=3), tmp_path=tmp_path
     )
-    assert res.status == "skipped"
+    assert res.status == "ok"
     assert res.reason == audio_runtime_fanin.REASON_COUPLING_PARKED
 
 

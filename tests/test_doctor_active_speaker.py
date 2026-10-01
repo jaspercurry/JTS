@@ -147,6 +147,12 @@ def _stage_incomplete_passive_parked(monkeypatch, tmp_path):
     _stage_parked(monkeypatch, tmp_path, _incomplete_passive_topology())
 
 
+def _stage_complete_passive_still_parked(monkeypatch, tmp_path):
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    _stage_parked(monkeypatch, tmp_path, _full_range_stereo())
+
+
 def _stage_flat_graph_without_a_layout(monkeypatch, tmp_path):
     from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
 
@@ -203,6 +209,10 @@ def _seed_control_reports_playing() -> None:
         (
             _stage_complete_passive_layout, "ok",
             active_speaker.REASON_GRAPH_PASSIVE_LAYOUT, False,
+        ),
+        (
+            _stage_complete_passive_still_parked, "fail",
+            active_speaker.REASON_GRAPH_PASSIVE_LAYOUT_PARKED, True,
         ),
         (
             _stage_unreadable_statefile, "fail",
