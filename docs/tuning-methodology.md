@@ -37,8 +37,8 @@ proof; a saved household profile need not be flat.
 ## 1. Prove the measurement setup
 
 Before sound, use the established protected measurement path and the selected
-speaker's declared caps. `jasper-seat-level` can establish a calibrated SPL
-reference. A mic sensitivity quoted at maximum capture gain is valid only with
+speaker's declared caps. Each run finds its own level with a probe at its first
+spot (ADR-0403 §4). A mic sensitivity quoted at maximum capture gain is valid only with
 that capture control at the matching setting. Absolute SPL is unavailable when
 its calibration cannot be established.
 

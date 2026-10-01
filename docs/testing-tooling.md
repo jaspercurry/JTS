@@ -736,8 +736,6 @@ tuning CLI.
 - `jasper-crossover-prescriber` prints contracts, judges and composes
   prescription documents, and reports where the speaker stands. See
   `jasper-crossover-prescriber --help`.
-- `jasper-seat-level` finds the fader level that reads the target SPL at the
-  seat and banks it as the session gain. See `jasper-seat-level --help`.
 - `jasper-round run --mover arm` walks the lab turntable arm.
   [`arm_walk.py`](../jasper/active_speaker/arm_walk.py) owns its loop and
   safety checks.
