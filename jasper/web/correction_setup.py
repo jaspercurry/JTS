@@ -46,9 +46,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 
+from jasper.active_speaker import session_volume_plan as volume_plan
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
+from jasper.control.measurement_hold import read_measurement_hold
+from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER
 
 from jasper.platform.log_event import log_event
 from jasper.platform.logging_setup import configure_logging
@@ -690,6 +693,45 @@ async def _restore_protected_neutral_program_graph() -> None:
         )
 
 
+def _recover_crash_left_session_volume() -> None:
+    """Restore the fader a killed run left, through the recovery button's path.
+
+    A SIGKILL, the OOM killer or the watchdog skips the run's ``finally``, and
+    CamillaDSP's statefile keeps the run's level. The unit restarts in about
+    2 s, and the killed run's own measurement hold lives 60-120 s more. Only
+    that hold restores: jasper-seat-level writes the same plan file and can
+    run with no hold, a jasper-control restart drops holds, a later start
+    must not put an old pre-run level over a newer one, and a previous boot's
+    plan never meets this boot's hold.
+
+    The plan is read fresh, not through the process's plan, which reads the
+    disk once: building that here would hide a plan crash-left after this start.
+    """
+    plan = volume_plan.SessionVolumePlan(
+        state_path=volume_plan.DEFAULT_SESSION_VOLUME_STATE_PATH,
+    )
+    if not plan.needs_recovery or plan.unresolved_volume_safety is not None:
+        return
+    succeeded = False
+    hold = read_measurement_hold()
+    if hold is None:
+        result = "skipped_hold_unreadable"
+    elif not hold.get("active"):
+        result = "skipped_hold_inactive"
+    elif hold.get("owner") != MEASUREMENT_GATE_OWNER:
+        result = "skipped_hold_other_owner"
+    else:
+        succeeded, result = v2volume.recover_session_volume(
+            correction_runtime.run_async, correction_runtime.camilla_controller,
+        )
+    log_event(
+        logger,
+        "correction.crossover_v2_volume_startup_recovery",
+        level=logging.INFO if succeeded else logging.WARNING,
+        result=result,
+    )
+
+
 def _claim_crossover_state_owners() -> None:
     """Retire prior-process Active work before this service accepts requests."""
 
@@ -699,6 +741,10 @@ def _claim_crossover_state_owners() -> None:
         (
             "correction.crossover_repeat_admission_unavailable",
             repeat_admission.claim_owner,
+        ),
+        (
+            "correction.crossover_v2_volume_startup_recovery_unavailable",
+            _recover_crash_left_session_volume,
         ),
     )
     for event, claim in claims:
