@@ -1108,9 +1108,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     REASON_MEASUREMENT_CANDIDATE_REQUIRED: ReasonSpec(
         REASON_MEASUREMENT_CANDIDATE_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
-        'This measurement needs a saved tuning to test. Select the tuning, then measure again.',
-        own_action={"id": 'select_candidate', "label": 'Select a tuning',
-                    "href": '/sound/speaker/crossover/'},
+        "This measurement tests a saved tuning. Your AI assistant makes that tuning. "
+        "On speaker setup, copy a tuning prompt and give it to your assistant.",
+        own_action={"id": "copy_tuning_prompt", "label": "Copy a tuning prompt", "href": "/sound/speaker/"},
     ),
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED: ReasonSpec(
         REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, TEMPLATE_HARD_STOP, 0, "",

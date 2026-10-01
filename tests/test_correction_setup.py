@@ -181,7 +181,7 @@ def test_capture_releases_the_idle_hold_when_the_runner_fails(exc, code):
         assert failure["code"] == code
         assert failure["ok"] is False
         if code == "measurement_candidate_required":
-            assert failure["next_action"]["id"] == "select_candidate"
+            assert failure["next_action"] == REASON_REGISTRY[code].own_action
         else:
             assert failure["next_action"] is None
         if code == "measurement_unregistered":

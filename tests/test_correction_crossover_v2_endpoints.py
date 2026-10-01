@@ -3317,8 +3317,7 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
     assert set(body) == {"ok", "code", "next_action", "error"}
     assert body["ok"] is False
     assert body["code"] == "measurement_candidate_required"
-    assert isinstance(body["next_action"], dict)
-    assert body["next_action"]["id"] == "select_candidate"
+    assert body["next_action"] == refusal_copy.REASON_REGISTRY["measurement_candidate_required"].own_action
 
 
 def _inline_body():

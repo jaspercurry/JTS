@@ -166,6 +166,8 @@ def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):
 @pytest.mark.parametrize("code, href", [
     ("tweeter_unprotected", "/sound/speaker/"), ("delay_graph_proof_failed", "/sound/speaker/"),
     ("key_unset", "/assistant/voice/"),
+    # The measure page has no tuning picker: a household copies a prompt, and its assistant makes the tuning.
+    ("measurement_candidate_required", "/sound/speaker/"),
 ])
 def test_an_action_links_to_the_page_its_label_names(code, href):
     assert refusal_copy.REASON_REGISTRY[code].next_action["href"] == href
