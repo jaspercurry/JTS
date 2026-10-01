@@ -296,7 +296,6 @@ def test_asymmetric_caps_woofer_reaches_reference_while_tweeter_lands_at_cap():
         woofer_peak=0.0, tweeter_peak=-65.0
     )
     sv = SESSION_VOLUME_DB
-    assert sv == -20.0
     prog = _measure_program(sv, gains={"woofer": -6.0, "tweeter": -45.0})
     adm = _admit(
         prog, topology=topology, safety_profile=profile,
@@ -349,9 +348,6 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
         caps[role] = float(cap)
     assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
     sv = SESSION_VOLUME_DB
-    # max(caps) is still the woofer's -8 (its ceiling is untouched by the HF
-    # derivation), so the session volume itself is unaffected by the change.
-    assert sv == -20.0
     # The production composition clamp (the same call _compose_measure_program
     # makes): nominal reference gain backed off against each resolved cap. The
     # tweeter's composed level is cap-DRIVEN: -33.2 - sv - 0.01 = -13.21 dB

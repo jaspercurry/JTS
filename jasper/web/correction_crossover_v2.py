@@ -296,7 +296,7 @@ def prepare_v2_session(
             driver_caps_dbfs=context.driver_caps_dbfs,
             driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
             target_bands=context.driver_bands,
-            # The fader a run opens at; the run door replaces it at the first level window.
+            # The fader a run opens at when no level is asked; the run door replaces it at the first level window.
             session_volume_db=probe_fader_db(context.driver_caps_dbfs),
             seams=seams,
             index_phase_map=stage1_index_phase,

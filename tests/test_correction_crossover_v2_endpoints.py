@@ -86,7 +86,7 @@ from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
 from tests._lock_holder import spawn_lock_holder
 from tests._log_events import event_fields, event_records, leaked_lines
-from tests.conftest import seat_process_volume_owner
+from tests.conftest import owner_door, seat_process_volume_owner
 from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
@@ -1828,16 +1828,13 @@ def test_candidate_summary_none_candidate_returns_none():
 def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatch):
     """E3: enforce_ceiling (previously zero callers) force-drains a session that
     outlived the wall-clock ceiling, and is a no-op on a healthy session."""
-    from jasper.active_speaker.session_volume_plan import (
-        FaderVolumeDoor,
-        SessionVolumePlan,
-    )
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 
     clock = [1000.0]
     plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
     cam = _FakeVolCam(-15.0)
     _own_the_fader(monkeypatch, cam)
-    asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
+    asyncio.run(plan.open(-20.0, owner_door(cam.set, cam.get)))
     assert cam.vol == -20.0
     v2volume.set_volume_plan_for_tests(plan)
 
@@ -2423,17 +2420,13 @@ def _boosting_candidate(preset, *, boost_db: float):
 
 def _open_session_volume_plan(*, household_db: float, measurement_db: float = -20.0):
     """An OPEN plan holding ``measurement_db``, as a live session would."""
-    from jasper.active_speaker.session_volume_plan import (
-        FaderVolumeDoor,
-        SessionVolumeOpenResult,
-        SessionVolumePlan,
-    )
+    from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumePlan
 
     _FakeApplyAndVolumeCam.vol = household_db
     plan = SessionVolumePlan()
     cam = _FakeApplyAndVolumeCam()
     assert (
-        asyncio.run(plan.open(measurement_db, FaderVolumeDoor(cam.set_volume_db, cam.get_volume_db)))
+        asyncio.run(plan.open(measurement_db, owner_door(cam.set_volume_db, cam.get_volume_db)))
         is SessionVolumeOpenResult.OPENED
     )
     assert _FakeApplyAndVolumeCam.vol == measurement_db

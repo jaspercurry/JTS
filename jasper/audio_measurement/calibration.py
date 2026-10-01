@@ -353,16 +353,6 @@ def parse_calibration_sensitivity(text: str) -> MicSensitivity | None:
     )
 
 
-#: What a verb refuses with when no absolute reference can be read, and the
-#: sentence it prints. One owner for both: two operator verbs ask this question.
-REFUSE_MIC_CALIBRATION_UNAVAILABLE = "mic_calibration_unavailable"
-MIC_CALIBRATION_UNAVAILABLE_DETAIL = (
-    "no parseable 'Sens Factor' calibration for this microphone — pass "
-    "--calibration-file, or store the vendor file in the calibration store. "
-    "Absolute SPL is never guessed."
-)
-
-
 def _resolve_calibration_source(
     *,
     calibration_file: str | Path | None,
@@ -408,9 +398,8 @@ def resolve_mic_sensitivity(
 ) -> MicSensitivity | None:
     """The mic's absolute reference, from an explicit file or the stored record.
 
-    ``None`` when no calibration can be read -- the caller REFUSES with
-    :data:`REFUSE_MIC_CALIBRATION_UNAVAILABLE`; a guessed sensitivity would
-    silently mis-scale every SPL decision.
+    ``None`` when no calibration can be read, and the caller refuses: a guessed
+    sensitivity would silently mis-scale every SPL decision.
     """
     source = _resolve_calibration_source(
         calibration_file=calibration_file,

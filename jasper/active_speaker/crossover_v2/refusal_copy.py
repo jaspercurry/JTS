@@ -517,8 +517,6 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "mic_calibration_lookup_invalid": "The model and serial name no calibration that the vendor can look up.",
         "mic_calibration_none_registered": "No household microphone is registered.",
         "mic_calibration_store_unwritable": "The speaker's calibration folder cannot be written. Writing it needs sudo.",
-        "mic_calibration_unavailable": "No calibration is available for the measurement microphone: none is "
-                                       "remembered, or its file cannot be read.",
         "mic_calibration_unresolvable": "The registered microphone names a calibration that is no longer on the speaker.",
         "mic_calibration_vendor_link_off_host": "The vendor sent the lookup to another host, so it was not followed.",
         "mic_calibration_vendor_not_found": "The vendor holds no calibration for that serial.",
