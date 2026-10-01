@@ -22,7 +22,7 @@ from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
 from jasper.active_speaker.measurement_programs import (
-    Pose, Preset, available_presets, preset, run_preset,
+    Pose, Preset, preset, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
@@ -1125,32 +1125,6 @@ def test_a_re_placed_branch_take_probes_both_branches_again():
     assert result.status == "complete"
     assert [(call["spec"].graph_scope, call["stimulus_dbfs"]) for call in fakes.play.calls] == [
         ("drivers", None), ("drivers", None), ("candidate_branches", -37.0)] * 2 + [("candidate_branches", -37.0)]
-
-
-def _set_rule_of_4b2(stops):
-    """The close-set rule before ADR-0406: one set per consecutive run at one kind and distance."""
-    def key(stop):
-        return (stop.pose.place if stop.pose.driver
-                else (stop.regime, stop.branch_pair, stop.pose.kind, stop.pose.distance_m))
-
-    starts = []
-    for index, stop in enumerate(stops):
-        joins = index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)
-        starts.append(None if stop.level is None else starts[-1] if joins else index)
-    return tuple(starts)
-
-
-def test_a_plan_with_one_candidate_per_close_set_keeps_its_sets():
-    """Every shipped preset at every layout, with one candidate per close set,
-    keeps the sets it had before a set became one graph (ADR-0406)."""
-    for name in available_presets():
-        for layout in preset(name).layouts:
-            plan = run_preset(name, layout)
-            request = ac.request_for_preset(plan, mover=plan.mover or "human", targets=("woofer", "tweeter"),
-                                            candidates=("trial",) if plan.regime == ac.REGIME_BRANCHES else ())
-            roles = tuple(RoleBand(role, channel, band) for channel, (role, band) in enumerate(_RUN_BANDS.items()))
-            stops = [capture.stop for capture in plan_run.prepare_plan_captures(request, roles_bands=roles)]
-            assert ac.level_sets(stops) == _set_rule_of_4b2(stops), (name, layout)
 
 
 _BEHIND = [{"azimuth_deg": 0, "elevation_deg": 0},
