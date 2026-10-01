@@ -22,6 +22,7 @@ names it, and normal playback once the window closes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from types import SimpleNamespace
@@ -35,7 +36,8 @@ from jasper.runtime.tts_playout import TtsPlayout
 from jasper.audio_control.audio_buffer import InputFrame
 from jasper.cues.manager import AudioCueManager
 from jasper.service_state.mic_mute_persistence import read_mic_muted, write_mic_muted
-from jasper.service_state.timers import Timer
+from jasper.service_state.timers import Timer, TimerScheduler, TimerStore
+from jasper.voice import daemon_main
 from jasper.voice.measurement_hold import MEASUREMENT_AUTOCLEAR_SEC
 from jasper.voice.turn_lifecycle import InputAdmissionClosed
 from tests._async_wait import wait_signalled
@@ -461,6 +463,54 @@ async def test_a_daemon_restarted_mid_window_comes_up_suspended(monkeypatch):
     assert not wl._measurement_active.is_set()
     assert not wl._output_gate.admission_paused
     assert wl.session_status()["measurement_active"] is False
+
+
+async def test_a_restart_inside_a_hold_adopts_it_before_anything_can_speak(
+    monkeypatch, tmp_path,
+):
+    """A restarted daemon must not speak through the fader a live run holds
+    (ADR-0305): not a restored timer that comes due while jasper-control
+    answers, and not a CUE_PLAY that lands as the control socket opens."""
+    cues = SpyCues()
+    wl = wake_loop_for_tests(cues=cues)
+    store = TimerStore(str(tmp_path / "timers.db"))
+    fire_at = time.time() + 0.05
+    store.add(Timer(
+        id="t1", label="pasta", fire_at=fire_at, total_seconds=60, created_at=0.0,
+    ))
+
+    def _live_hold_answered_after_the_timer_is_due() -> dict:
+        time.sleep(max(0.0, fire_at - time.time()) + 0.2)
+        return {"active": True, "owner": "crossover_v2", "expires_in_s": 90.0}
+
+    monkeypatch.setattr(
+        "jasper.voice.measurement_hold.read_measurement_hold",
+        _live_hold_answered_after_the_timer_is_due,
+    )
+    socket_cues: list[str] = []
+
+    async def _serve_socket(wake_loop, _path):
+        socket_cues.append(await wake_loop.play_cue("cant_connect"))
+        return SimpleNamespace(close=lambda: None, wait_closed=AsyncMock())
+
+    monkeypatch.setattr(daemon_main.control_socket_mod, "serve", _serve_socket)
+    monkeypatch.setattr(daemon_main, "_serve_while_connecting", AsyncMock())
+
+    async with contextlib.AsyncExitStack() as stack:
+        await daemon_main._serve_until_stopped(
+            stack,
+            SimpleNamespace(voice_control_socket="unused"),
+            wake_loop=wl,
+            timer_scheduler=TimerScheduler(store=store),
+            connect_live_session=AsyncMock(),
+        )
+
+    assert cues.spoken == []
+    assert cues.played == []
+    assert socket_cues == ["measurement_active"]
+    assert wl.session_status()["measurement_active"] is True
+    await wl.measurement_hold.resume()
+    store.close()
 
 
 @pytest.mark.parametrize(

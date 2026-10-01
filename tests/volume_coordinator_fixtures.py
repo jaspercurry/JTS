@@ -7,10 +7,9 @@
 Every double sits at a public boundary, so a test reads the same when the
 coordinator's internals move: a CamillaDSP fake whose settings stand in for
 each way the real controller answers, a renderer backend fake, the recorder
-patched onto ``volume_push_sources``' two push functions, the coordinator
-builders, and the minimal pycamilladsp client that runs a REAL
-``CamillaController``. Consumed by name by tests/test_volume_coordinator.py and
-tests/test_sound_setup.py.
+patched onto ``volume_push_sources``' two push functions, jasper-control's
+measurement hold, the coordinator builders, and the minimal pycamilladsp client
+that runs a REAL ``CamillaController``. Consumed by name by the volume tests.
 """
 from __future__ import annotations
 
@@ -21,6 +20,7 @@ import pytest
 
 from jasper.audio_control import volume_push_sources as vps_mod
 from jasper.audio_control.camilla import CamillaController, CamillaUnavailable
+from jasper.control import measurement_hold
 from jasper.playback_state.music_sources import Source
 from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.service_state.volume_persistence import VolumePersistence
@@ -172,6 +172,18 @@ class _Pushes:
 def pushes(monkeypatch: pytest.MonkeyPatch) -> _Pushes:
     """Every Spotify/Bluetooth push, delivered unless a test refuses it."""
     return _Pushes.install(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def measurement_hold_served(monkeypatch) -> measurement_hold.MeasurementHold:
+    """jasper-control's real hold, free unless a test takes it, served where
+    `read_measurement_hold` asks: a fader write without this process's own
+    MEASURE_PAUSE consults it."""
+    hold = measurement_hold.MeasurementHold()
+    monkeypatch.setattr(
+        "jasper.platform.control_client.get_measurement", lambda **_: hold.snapshot(),
+    )
+    return hold
 
 
 def _use_real_pushes(monkeypatch: pytest.MonkeyPatch) -> None:

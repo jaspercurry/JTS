@@ -65,7 +65,7 @@ from jasper.audio_routes.volume_curve import (
     percent_to_db,
 )
 from jasper.audio_control.volume_handoff import VolumeHandoff
-from jasper.audio_control.volume_reconcile import VolumeReconciler, converged
+from jasper.audio_control.volume_reconcile import VolumeReconciler, converged, read_fader_hold
 from jasper.audio_control.volume_state import VolumeState, OutboundStamp
 from jasper.service_state.volume_persistence import (
     FIRST_BOOT_DEFAULT_PCT,
@@ -298,6 +298,7 @@ class VolumeCoordinator:
         Apply-side: if a source is already active when we boot (rare —
         usually voice_daemon starts before any music), we still write
         through the dispatch path. If idle, we set camilla main_volume.
+        Nothing is applied while a measurement may hold the fader.
 
         Boot-time persistence does NOT bump last_used_at — that field
         tracks when the user (or an observed source slider) last
@@ -318,9 +319,23 @@ class VolumeCoordinator:
             # Make camilla consistent with the boot mode. Idle and
             # AirPlay use camilla as the remembered/audible volume;
             # Spotify and Bluetooth carry listening_level on their own
-            # protocol surfaces. Push-mode 0% is the exception: still
-            # assert Camilla main_mute as the content/music mute guarantee.
-            if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
+            # protocol surfaces. Push-mode 0% is the exception: assert
+            # Camilla main_mute as the content/music mute guarantee (while a
+            # hold defers this write, the observer's first reading does).
+            # A held fader is the run's: the reconciler restores a
+            # camilla-master level by its own rule. See ADR-0368.
+            hold = await read_fader_hold()
+            if hold is not None:
+                log_event(
+                    logger,
+                    "volume.boot_restore_deferred",
+                    reason="measurement_hold",
+                    hold=hold,
+                    source=source.value,
+                )
+                if volume_mode(source) == VolumeMode.CAMILLA_MASTER:
+                    self._persistence.save_now(percent_to_db(target_level))
+            elif volume_mode(source) == VolumeMode.CAMILLA_MASTER:
                 await self._set_camilla(target_level)
             else:
                 # No guard at boot: the dispatch below guards if its push fails.

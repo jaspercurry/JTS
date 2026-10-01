@@ -20,11 +20,11 @@ from tests.volume_coordinator_fixtures import (
     _FakeCamilla,
     _owned_coord,
     _real_coord,
+    measurement_hold_served as measurement_hold_served,
 )
 
 from jasper.platform.atomic_io import advisory_file_lock
 from jasper.audio_control.camilla import CamillaUnavailable
-from jasper.control import measurement_hold
 from jasper.dsp_control.dsp_apply import camilla_graph_mutation
 from jasper.playback_state.music_sources import Source
 from jasper.platform.control_client import DEFAULT_TIMEOUT, ControlError
@@ -34,17 +34,6 @@ from jasper.audio_control.volume_coordinator import VolumeCoordinator
 from jasper.audio_routes.volume_curve import percent_to_db
 from jasper.audio_control.volume_observers import VolumeObserver
 from jasper.service_state.volume_persistence import VolumePersistence
-
-
-@pytest.fixture(autouse=True)
-def measurement_hold_served(monkeypatch) -> measurement_hold.MeasurementHold:
-    """jasper-control's real hold, free unless a test takes it, served where
-    `read_measurement_hold` asks: a reconcile write that raises consults it."""
-    hold = measurement_hold.MeasurementHold()
-    monkeypatch.setattr(
-        "jasper.platform.control_client.get_measurement", lambda **_: hold.snapshot(),
-    )
-    return hold
 
 
 # ---------- maybe_reconcile_camilla ------------------------------------------
