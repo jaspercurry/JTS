@@ -201,7 +201,7 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
         charge_db=charge or 0.0) for capture in clearing), default=0.0)
 
     def graph(capture: Any) -> tuple[Any, ...]:
-        return capture.spec.graph_scope, candidate_identity(capture.stop.candidate_id), capture.spec.cleared_layers
+        return capture.spec.graph_scope, capture.stop.candidate_id, capture.spec.cleared_layers
 
     def rear(capture: Any, *, unread: bool) -> bool:
         # The timing graph mutes the rear woofer (#5632); only a branch take, which levels itself, clears it.

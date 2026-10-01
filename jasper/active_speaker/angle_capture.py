@@ -266,21 +266,37 @@ class AngleStop:
         return None
 
 
+def played_layers(stop: AngleStop) -> tuple[str, ...]:
+    """The candidate layers a stop's summed take plays cleared: what its purpose
+    clears on the base or on a candidate it names (ADR-0370)."""
+    return cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime)
+
+
 def level_sets(stops: Sequence[AngleStop]) -> tuple[int | None, ...]:
     """For each take in run order, the index of the take whose level it shares,
     or ``None`` when it plays at its run's fader (ADR-0366 §2). A driver's
     takes share a level within their placement (ADR-0361). A driverless summed
     spot closer than the mark, or a branch take of one pair at any spot, shares
-    one with the next spots at its kind and distance -- its candidates, repeats
-    and lateral poses -- found by the set's first take (ADR-0403)."""
+    one with the next spots at its kind and distance -- its repeats and lateral
+    poses -- found by the set's first take (ADR-0403). A summed set is one
+    candidate graph there (its candidate and ``played_layers``), levelled by
+    that graph's own first take; a branch set's probes play the drivers graph,
+    so its candidates share them (ADR-0406)."""
     def key(stop: AngleStop) -> tuple[object, ...]:
         return (stop.pose.place if stop.pose.driver
                 else (stop.regime, stop.branch_pair, stop.pose.kind, stop.pose.distance_m))
 
     starts: list[int | None] = []
+    firsts: dict[tuple[object, ...], int] = {}
     for index, stop in enumerate(stops):
-        joins = index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)
-        starts.append(None if stop.level is None else starts[-1] if joins else index)
+        if stop.level is None:
+            starts.append(None)
+            continue
+        if not (index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)):
+            firsts = {}
+        summed = stop.regime == REGIME_SUMMED and not stop.pose.driver
+        graph = (stop.candidate_id, played_layers(stop)) if summed else ()
+        starts.append(firsts.setdefault(graph, index))
     return tuple(starts)
 
 
@@ -712,7 +728,7 @@ def stop_specs(
             branch_target_ids=(branch_target_ids_for(stop.branch_pair, roles_bands)
                                if stop.regime == REGIME_BRANCHES else ()),
             stimulus=stop.stimulus,
-            cleared_layers=cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime),
+            cleared_layers=played_layers(stop),
         ))
     return tuple(spec for spec in placed for _ in range(request.repeats))
 
