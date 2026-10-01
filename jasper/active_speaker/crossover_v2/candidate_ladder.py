@@ -236,7 +236,7 @@ def _tables(poses: _Poses) -> list[dict[str, Any]]:
             continue
         tables.append({
             "pose_key": key,
-            "deg": pose["position_deg"],
+            "azimuth_deg": pose["position_deg"],
             "vertical_deg": pose["vertical_deg"],
             "kind": pose["pose_kind"],
             "seat_offset_m": pose["seat_offset_m"],
@@ -284,7 +284,7 @@ def _worst(tables: list[dict[str, Any]]) -> dict[str, Any]:
         "max_abs_delta_window": role.get("window"),
         "max_abs_delta_band_hz": role.get("band_hz"),
         "max_abs_delta_pose_key": table.get("pose_key"),
-        "max_abs_delta_position_deg": table.get("deg"),
+        "max_abs_delta_position_deg": table.get("azimuth_deg"),
         "max_abs_delta_vertical_deg": table.get("vertical_deg"),
     }
 

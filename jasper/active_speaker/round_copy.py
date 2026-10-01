@@ -36,7 +36,7 @@ def pose_name(pose: Mapping[str, Any]) -> str:
                  POSE_KIND_SEAT: "at the seat"}.get(str(pose.get("kind") or ""))
     if placement:
         return placement
-    label = position_label({"position_deg": pose.get("deg", 0), "vertical_deg": pose.get("elevation_deg")})
+    label = position_label({"position_deg": pose.get("azimuth_deg", 0), "vertical_deg": pose.get("elevation_deg")})
     return f"{pose['kind']}: {label}" if pose.get("kind") else label
 
 

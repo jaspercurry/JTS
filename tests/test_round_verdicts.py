@@ -76,7 +76,7 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
     if unit:
         floor = derive_repeat_floor(rounds=[{}, {}], samples={"residual": [0, 99]}, units={"residual": unit})
         (tmp_path / "repeat-floor.json").write_text(json.dumps({**floor, "aggregate_metric": "residual"}))
-    pose = {"kind": "bearing", "deg": 0, "elevation_deg": 0}
+    pose = {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}
     groups = []
     for role, band, level in (
         ("woofer", [150, 4000], gap),
@@ -209,17 +209,17 @@ def test_round_verdict_numbers(tmp_path, live_round, unit, residual, gap, marks)
 
 @pytest.mark.parametrize("change", [
     {"selected": False}, {"phase": "verify"},
-    {"pose": {"kind": "seat", "deg": 0, "elevation_deg": 0}},
-    {"pose": {"kind": "bearing", "deg": 20, "elevation_deg": 0}},
-    {"pose": {"kind": "bearing", "deg": 0, "elevation_deg": 10}},
-    {"pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0, "distance_m": 2}},
+    {"pose": {"kind": "seat", "azimuth_deg": 0, "elevation_deg": 0}},
+    {"pose": {"kind": "bearing", "azimuth_deg": 20, "elevation_deg": 0}},
+    {"pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 10}},
+    {"pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0, "distance_m": 2}},
     {"pose_index": 2}, {"run_id": "returned"}, {"set_id": "other"},
 ])
 def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
     grid = DEFAULT_ENVELOPE_GRID_HZ[49:54]
     curve = {"role": "woofer", "window": "gated", "freqs_hz": grid.tolist(), "magnitude_db": [0] * 5}
     take = {"take_id": "a", "phase": "measure", "selected": True,
-            "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0, "run_id": "held", "curves": [curve]}
+            "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}, "pose_index": 0, "run_id": "held", "curves": [curve]}
     other = {**take, "take_id": "unrelated", "curves": [{**curve, "magnitude_db": [100] * 5}], **change}
     group = {"set_id": "woofer", "capture_basis": {"role": "woofer"}, "takes": [take,
              {**take, "take_id": "b", "curves": [{**curve, "magnitude_db": [100, 3, -4, 0, 100]}]}]}
@@ -242,7 +242,7 @@ def test_mark_pairs_use_only_the_same_driver_set_and_held_pose(change):
 ])
 def test_missing_mark_evidence_is_disclosed(marks, curve_change, band, reason):
     takes = [{"take_id": str(i), "selected": True, "phase": "measure",
-              "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}, "pose_index": 0,
+              "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}, "pose_index": 0,
               "curves": [{"role": "woofer", "window": "gated", "freqs_hz": [500, 1000, 2000], "magnitude_db": [i] * 3,
                           **(curve_change if i == marks - 1 else {})}]} for i in range(marks)]
     fit = {"set_id": "woofer", "role": "woofer", "fit_band_hz": band, "residual_rms_db": 1}
@@ -273,7 +273,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
     packet["verdicts"] = round_verdicts(packet, manifest=manifest, sources=sources, clouds=clouds)
     assert len(packet["verdicts"]) == 3
     ceiling = packet["verdicts"][0]
-    assert ceiling["pose"]["deg"] == 0
+    assert ceiling["pose"]["azimuth_deg"] == 0
     assert ceiling["take_ids"] == ["wired-dd7bfccfb97c6d66_take_0003"] * 2
     assert (ceiling["branch_gap_db"], ceiling["null_ceiling_db"]) == pytest.approx((13.060389458919104, 2.1839927942315023))
     assert ceiling["louder_role"] == "tweeter"
@@ -295,7 +295,7 @@ def test_live_round_verdicts(tmp_path, live_round, band_lo, contains_crossover):
                 "frequencies_hz": pytest.approx(frequencies, abs=0.1), "classification": REASON_TOO_FEW_POSITIONS,
             }
         packet["series"].append({**fit, "selected": True, "stats": {"flatness_rms_db": {"value": 2.4}}})
-    packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
+    packet["series"].append({**packet["series"][0], "pose": {"kind": "seat", "azimuth_deg": 0, "name": "sofa", "seat_offset_m": [0, 0, 0]}})
     index = packet_index(packet, tmp_path, manifest)
     assert any(line.startswith("series tweeter: pose sofa;") for line in index.splitlines())
     for fit, token in zip((f for f in packet["fits"] if f["role"] == "tweeter"), ("0°", "-20°", "+20°")):

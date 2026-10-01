@@ -49,7 +49,7 @@ def round_alignment(
     pairs = latest_measure_takes(
         ((group, take) for group in manifest.get("sets", ()) for take in SetTakes.from_row(group).takes),
         key=lambda group, take: (*capture_identity(group["capture_basis"], set_id=group["set_id"]),
-                                tuple(take["pose"].get(key) for key in ("kind", "deg", "elevation_deg", "distance_m")),
+                                tuple(take["pose"].get(key) for key in ("kind", "azimuth_deg", "elevation_deg", "distance_m")),
                                 tuple(sorted((take.get("analysis") or {})["trim_db"])))
         if (take.get("analysis") or {}).get("trim_db") else None,
     )
@@ -70,5 +70,5 @@ def round_alignment(
 
 def commissioning_alignment(rows: Sequence[Mapping[str, Any]], candidate_id: str | None = None) -> Mapping[str, Any] | None:
     return max((row for row in rows if (candidate_id is None or row["base"] or row["candidate_id"] in (None, candidate_id))
-                and row["pose"].get("deg") == 0 and row["pose"].get("elevation_deg") == 0),
+                and row["pose"].get("azimuth_deg") == 0 and row["pose"].get("elevation_deg") == 0),
                key=take_order, default=None)

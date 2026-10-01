@@ -364,7 +364,7 @@ class RunManifest:
     def to_dict(self) -> dict[str, Any]:
         chosen = set(self._chosen.values())
         return {
-            "kind": RUN_MANIFEST_KIND, "schema_version": 4, "run_id": self.run_id,
+            "kind": RUN_MANIFEST_KIND, "schema_version": 5, "run_id": self.run_id,
             "preset": self.preset, "layout": self.layout, "request_fingerprint": self.request_fingerprint,
             "asked": self.asked, "calibration": dict(self.calibration), "incumbent": dict(self.incumbent),
             "level": self.level,

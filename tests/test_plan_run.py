@@ -27,7 +27,8 @@ from jasper.active_speaker.measurement_programs import (
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
-from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, with_records
+from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, round_inputs, with_records
+from jasper.active_speaker.crossover_v2.round_views.directivity import _pose as directivity_pose
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
@@ -48,7 +49,9 @@ from jasper.active_speaker.run_manifest import (
     RunManifest, RUN_MANIFEST_KIND, TAKE_INCOMPLETE, TAKE_MEASURED, kept_measurements, view_sets,
 )
 from jasper.active_speaker.round_packet import RoundPacket, write_round_packet
-from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, round_lines
+from jasper.active_speaker.alignment_evidence import commissioning_alignment
+from jasper.active_speaker.round_copy import PLACE_MICROPHONE, coverage_lines, pose_name, round_lines
+from jasper.active_speaker.round_packet_report import _pose_token
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.audio_measurement.calibration import MicSensitivity
@@ -206,11 +209,22 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
     doc = json.loads(json.dumps(result.joined()))
     assert len(doc["sets"]) == len(set(candidates))
     for group in doc["sets"]:
-        assert [(t["pose"]["deg"], t["repeat"], t["selected"]) for t in group["takes"]] == [
+        assert [(t["pose"]["azimuth_deg"], t["repeat"], t["selected"]) for t in group["takes"]] == [
             (angle, repeat, True) for angle in angles for repeat in range(1, repeats + 1)]
     assert len({t["take_id"] for t in _takes(doc)}) == len(captures)
     assert (doc["not_measured"], doc["honoured"]["takes_refused"]) == ([], 0)
     assert all(row["budget"]["by_household"] == row["budget"]["by_speaker"] == 0 for row in gate.progress)
+
+
+@pytest.mark.parametrize("read", [
+    pose_name, _pose_token, lambda pose: directivity_pose({"pose": pose}),
+    lambda pose: SetTakes("set", {}, ({"selected": True, "pose": pose},)).on_axis,
+    lambda pose: commissioning_alignment([{"pose": pose, "base": True, "candidate_id": None}]),
+], ids=["round_lines", "packet_index", "directivity", "mark_takes", "alignment"])
+def test_each_reader_of_a_banked_pose_tells_the_azimuth_the_executor_wrote(read):
+    banked = {degrees: plan_run._pose(SimpleNamespace(pose=Pose(degrees, 0))) for degrees in (0, 20)}
+    assert banked[20]["azimuth_deg"] == 20
+    assert read(banked[0]) != read(banked[20])
 
 
 def test_ungated_run_needs_no_placement():
@@ -625,20 +639,20 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
               "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
-            manifest.begin({"index": index, "repeat": 1, "pose": {"deg": degrees}}, attempt=1, pose_index=index - 1)
+            manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
             await manifest.append({**record, "take_id": manifest.allocate_take_id(), **(changed if index == 2 else {})}, f"record-{index}",
                                   TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
     groups = manifest.to_dict()["sets"]
     split = bool(set(changed) - {"pose_kind", "gating_applied"})
     assert len(groups) == (2 if split else 1)
-    poses = {take["take_id"]: take["pose"]["deg"] for take in manifest.takes}
+    poses = {take["take_id"]: take["pose"]["azimuth_deg"] for take in manifest.takes}
     assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if split else {0, 10, 20})
 
 
 def test_manifest_names_emitted_role_levels():
     manifest = RunManifest("run", _Store(FakeSeams().records))
-    manifest.begin({"index": 1, "repeat": 1, "pose": {"deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "repeat": 1, "pose": {"azimuth_deg": 0}}, attempt=1, pose_index=0)
     program = build_measure_program({"woofer": -18.0, "tweeter": -24.0}, [
         RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))])
     record = {"take_id": manifest.allocate_take_id(), "stimulus_dbfs": -12, "program": program.to_dict(),
@@ -2067,7 +2081,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     assert screens[0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
 
     manifest = RunManifest("pilot", _Store(FakeSeams().records), preset=purpose)
-    manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
     await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
                           complete=True, level_observation={})
     root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")
@@ -2156,7 +2170,7 @@ async def test_manifest_stamps_watch_levels_and_uses_accepted_medians():
              (0, -15, "b", "", 55, True, None), (0, -15, "b", "", 58, True, 3), (0, -15, "a", "", 73, True, 1),
              (0, -15, "a", "fp-cut", 64, True, None), (0, -15, "a", "fp-cut", 65, True, 1)]
     for index, (pose, gain, program, candidate, observed, accepted, delta) in enumerate(cases):
-        manifest.begin({"index": index, "pose": {"kind": "bearing", "deg": pose}, "candidate_id": candidate},
+        manifest.begin({"index": index, "pose": {"kind": "bearing", "azimuth_deg": pose}, "candidate_id": candidate},
                        attempt=1, pose_index=index)
         record = {"take_id": str(index), "level_db": -99, "provenance": {"session_volume_db": gain}, "phase": "measure", "stimulus_id": program,
                   "capture_integrity": {"spl": {"loudest_half_second_db_spl": observed, "max_window_db_spl": 99}}}
@@ -2284,7 +2298,7 @@ async def test_a_ladder_ends_on_the_counts_its_banked_manifest_prints(monkeypatc
     ``wait`` reprints once banked, so the two "Measured" lines agree."""
     joined = {"status": "complete", "reason": "", "level": {}, "runs": [], "honoured": {"retakes": 0},
               "sets": [{"takes": [{"take_id": "t1", "selected": True}, {"take_id": "t2", "selected": False}]}],
-              "not_measured": [{"pose": {"deg": 0}, "reason": "summed_sweep_heard"}] * 3}
+              "not_measured": [{"pose": {"azimuth_deg": 0}, "reason": "summed_sweep_heard"}] * 3}
     packet = SimpleNamespace(runs={}, to_dict=lambda: joined, finish=AsyncMock(), update_schedule=AsyncMock())
     monkeypatch.setattr(correction_run_host, "RoundPacket", lambda *_args: packet)
     gate = AnsweredGate()

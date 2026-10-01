@@ -177,7 +177,7 @@ def test_cli_frequency_writes_the_shared_web_contract(tmp_path):
 
     assert rc == 0
     payload = json.loads((round_dir / "frequency_view.json").read_text())
-    assert payload["schema"] == "jts_frequency_view/4"
+    assert payload["schema"] == "jts_frequency_view/5"
     assert payload["runs"][0]["series"][0]["kind"] == "measurement"
 
 

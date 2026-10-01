@@ -54,7 +54,7 @@ def _pose_token(pose: Mapping[str, Any]) -> str:
         return str(pose.get("name") or pose.get("id") or f"seat{tuple(pose.get('seat_offset_m') or ())}")
     if pose.get("kind") in (POSE_KIND_BEHIND, POSE_KIND_CLOSE):
         return pose_name(pose)
-    return position_label({"position_deg": pose.get("deg"),
+    return position_label({"position_deg": pose.get("azimuth_deg"),
                            "vertical_deg": pose.get("elevation_deg")})
 
 

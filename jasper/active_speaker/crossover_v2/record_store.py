@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 #: plain dict, so its discriminator is spelled here.
 CHECK_EVIDENCE_KIND = "jts_crossover_v2_check_evidence"
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 #: The keys the STORE owns on an enveloped record. A record that arrives
 #: carrying one is refused rather than overwritten.
 _ENVELOPE_KEYS = ("schema_version", "capture_session_id")

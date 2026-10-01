@@ -66,7 +66,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
             "mark_distance_m": pose.distance_m,
         }
         position = {
-            "deg": pose.azimuth_deg, "vertical_deg": pose.elevation_deg,
+            "azimuth_deg": pose.azimuth_deg, "vertical_deg": pose.elevation_deg,
             "kind": pose.kind, "seat_offset_m": list(pose.seat_offset_m) if pose.seat_offset_m else None,
             "distance_m": pose.distance_m,
         }
@@ -90,7 +90,7 @@ def test_candidate_rows_keep_each_declared_pose(tmp_path, layout, source):
     assert (document["summary"]["poses"], document["summary"]["pairs"]) == (3, 3)
     assert (document["summary"]["omitted"], document["summary"]["superseded_take_ids"]) == ([], [])
     assert {row["pose_key"] for row in document["tables"]} == set(expected)
-    assert [row["deg"] for row in document["tables"]] == sorted(p.azimuth_deg for p in poses)
+    assert [row["azimuth_deg"] for row in document["tables"]] == sorted(p.azimuth_deg for p in poses)
     for row in document["tables"]:
         position, gap = expected[row["pose_key"]]
         assert {key: row[key] for key in position} == position
@@ -141,6 +141,7 @@ def test_the_ladder_pairs_the_configs_one_pose_played_and_locates_the_gap(tmp_pa
     assert summary["max_abs_delta_between"] == ["cfg-a", "cfg-b"]
     assert summary["max_abs_delta_db"] == pytest.approx(2.0)
     assert summary["max_abs_delta_hz"] == pytest.approx(4000.0)
+    assert summary["max_abs_delta_position_deg"] == 7
     role, = document["tables"][0]["roles"]
     delta, = role["deltas"]
     assert delta["level_offset_db"] == pytest.approx(0.0)
@@ -221,7 +222,7 @@ def test_the_headline_is_the_widest_gap_the_gate_trusts(tmp_path, gate, headline
 
 @pytest.mark.parametrize("fields", [
     {}, {"phase": "lateral", "position": None}, {"phase": "lateral"},
-    {"phase": "lateral", "position": {"deg": 7}}, None,
+    {"phase": "lateral", "position": {"azimuth_deg": 7}}, None,
 ], ids=["no-lateral-series", "null-position", "missing-position", "missing-take-id", "not-a-view"])
 def test_in_record_ladder_survives_a_view_without_pose_takes(tmp_path, fields):
     round_dir = tmp_path / "r1"

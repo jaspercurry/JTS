@@ -144,7 +144,7 @@ def test_frequency_reference_modes_preserve_or_remove_level_differences(tmp_path
     freqs = [25, 35, 45, 55, 70, 100, 150, 300, 1000, 9000]
     curves = tuple(frequency_series(
         series_id=str(offset), label=str(offset), kind="measurement", reference_db=-20,
-        freqs_hz=freqs[::-1], magnitude_db=[-20 + offset] * len(freqs), position={"deg": 0},
+        freqs_hz=freqs[::-1], magnitude_db=[-20 + offset] * len(freqs), position={"azimuth_deg": 0},
     ) for offset in (0, 3))
     source = tmp_path / "source.json"
     source.write_text(json.dumps(neutral_view(FrequencyRun("trial", "speaker_response", curves))))
@@ -174,7 +174,7 @@ def test_image_groups_configurations_by_pose(tmp_path, monkeypatch, candidates, 
     curves = tuple(frequency_series(
         series_id=f"{pose}:{index}", label=candidate, kind="measurement",
         freqs_hz=[20, 100, 1000, 10000, 20000], magnitude_db=[-10] * 5,
-        position={"deg": pose}, candidate_id=candidate, base=candidate == "base",
+        position={"azimuth_deg": pose}, candidate_id=candidate, base=candidate == "base",
     ) for pose in (-20, 20) for index, candidate in enumerate(candidates))
     figures = []
     monkeypatch.setattr(figure.Figure, "savefig", lambda fig, *a, **kw: figures.append(fig))
@@ -183,6 +183,7 @@ def test_image_groups_configurations_by_pose(tmp_path, monkeypatch, candidates, 
         assert ax.get_xscale() == "log"
         assert ax.get_xlim() == (20, 300 if index % 2 else 20000)
         assert ax.get_ylim() == (-20, 20)
+        assert str((-20, 20)[index // 2]) in ax.get_title()
         assert [line.get_linestyle() for line in ax.lines[:2]] == ["--", "-"]
         assert [text.get_text() for text in ax.get_legend().get_texts()] == labels
         assert [tick for tick in ax.get_xticks()] == ([20, 50, 100, 200] if index % 2 else [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000])
@@ -435,6 +436,16 @@ def test_neutral_adapter_uses_one_reference_for_the_whole_direct_run():
     assert len({series.reference_db for series in run.series}) == 1
     assert run.series[0].magnitude_db[0] - run.series[0].reference_db == pytest.approx(0.0)
     assert run.series[1].magnitude_db[0] - run.series[1].reference_db == pytest.approx(-6.0)
+
+
+def test_a_series_names_its_documents_azimuth_and_the_shared_reference_anchors_on_the_axis():
+    run = frequency_run_from_documents(run_id="saved", documents=tuple({
+        "take_id": f"at-{azimuth}", "position_deg": azimuth,
+        "curves": [{"role": "summed", "freqs_hz": [300.0, 1000.0], "magnitude_db": [level, level]}],
+    } for azimuth, level in ((20, -26.0), (0, -20.0))))
+
+    assert [series.details["position"]["azimuth_deg"] for series in run.series] == [20, 0]
+    assert run.series[1].magnitude_db[0] - run.series[1].reference_db == pytest.approx(0.0)
 
 
 def test_neutral_adapter_never_exposes_bins_outside_the_stored_valid_band():

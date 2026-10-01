@@ -378,7 +378,7 @@ def test_single_take_defaults_and_overrides(two_sets, poses, selected, requested
     group = manifest["sets"][0]
     unkept = {"measurement_status": "captured", "verdict": {"ok": False, "fault": "level_off_target", "next": "retake_louder"}}
     group["takes"] = [{**group["takes"][0], "take_id": f"take-{i}", "selected": keep,
-                       "pose": {"kind": "bearing", "deg": deg, "elevation_deg": elevation}, **({} if keep else unkept)}
+                       "pose": {"kind": "bearing", "azimuth_deg": deg, "elevation_deg": elevation}, **({} if keep else unkept)}
                       for i, ((deg, elevation), keep) in enumerate(zip(poses, selected))]
     resolved = resolve_set(round_inputs(root), group["set_id"], manifest=manifest)
     if expected.startswith("round_"):

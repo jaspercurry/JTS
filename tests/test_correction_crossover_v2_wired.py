@@ -1462,7 +1462,7 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     for record in takes:
         pose = record["pose"]
         assert (set(record), record["phase"]) == (_TAKE_RECORD_KEYS, phase)
-        assert set(pose) == {"kind", "deg", "elevation_deg", "distance_m", "seat_offset_m", "driver"}
+        assert set(pose) == {"kind", "azimuth_deg", "elevation_deg", "distance_m", "seat_offset_m", "driver"}
         assert (pose["kind"], pose["distance_m"], pose["seat_offset_m"], pose["driver"]) == (
             record["pose_kind"], record["mark_distance_m"], record["seat_offset_m"], record["pose_driver"])
         assert (record["preset"], record["layout"], record["targets"], pose["kind"], pose["driver"],
@@ -1471,7 +1471,7 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     session, = {path.parent for path in (tmp_path / "sessions").glob("*/info.json")}
     manifests = [json.loads(path.read_text()) for path in session.rglob(RUN_MANIFEST_FILENAME)]
     rows = [take for manifest in manifests for group in manifest["sets"] for take in group["takes"]]
-    assert {manifest["schema_version"] for manifest in manifests} == {4}
+    assert {manifest["schema_version"] for manifest in manifests} == {5}
     assert rows and all(set(take) == {"take_id", "record_id", "selected"} for take in rows)
     # A ladder's first rung probes first; its probe's row is an attempt no view keeps (ADR-0403 §4).
     assert {json.loads(take_artifact_path(session, take["record_id"]).read_text())["take_id"]
@@ -1492,7 +1492,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     consume = Mock(side_effect=AssertionError("drifting take consumed"))
     monkeypatch.setattr(conductor, "check_verdict", consume)
     manifest = RunManifest("drift", _Store(EngineSeams().records))
-    manifest.begin({"index": 1, "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())

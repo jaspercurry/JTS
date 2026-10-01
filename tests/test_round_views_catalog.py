@@ -126,7 +126,7 @@ def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(
 def _one_set(preset: str, role: str) -> dict:
     """A one-set round of ``preset`` whose set measured ``role``: one kept take in front and one behind."""
     return {"preset": preset, "sets": [{"set_id": "s", "capture_basis": {"role": role},
-            "takes": [{"take_id": kind, "selected": True, "pose": {"kind": kind, "deg": 0, "elevation_deg": 0},
+            "takes": [{"take_id": kind, "selected": True, "pose": {"kind": kind, "azimuth_deg": 0, "elevation_deg": 0},
                        "curves": [{"role": role, "window": "gated" if role != "summed" else "ungated"}]}
                       for kind in ("bearing", "behind")]}]}
 

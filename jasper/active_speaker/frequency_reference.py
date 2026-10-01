@@ -84,7 +84,7 @@ def _evaluated_reference_db(series: FrequencySeries) -> float | None:
 
 def _anchor_rank(series: FrequencySeries) -> tuple[int, float]:
     position = series.details.get("position")
-    degrees = position.get("deg") if isinstance(position, Mapping) else None
+    degrees = position.get("azimuth_deg") if isinstance(position, Mapping) else None
     distance = (
         abs(float(degrees))
         if isinstance(degrees, (int, float)) and not isinstance(degrees, bool)

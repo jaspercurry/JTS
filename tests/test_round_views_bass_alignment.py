@@ -72,7 +72,7 @@ def bass_round(root: Path, magnitude_db: list[float]) -> Path:
     curve = {"role": "summed", "window": "ungated", "freqs_hz": FREQS.tolist(), "band_hz": [20.0, 20000.0],
              "magnitude_db": magnitude_db, "trusted_band": asdict(TrustedBand())}
     return _bundle(root, "bass/axis", [{"take_id": "b0", "selected": True, "curves": [curve],
-                                        "pose": {"kind": "bearing", "deg": 0, "elevation_deg": 0}}], {"role": "summed"})
+                                        "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}}], {"role": "summed"})
 
 
 def test_each_driver_fits_at_its_nearest_placement_and_a_curve_that_cannot_place_its_corner_is_a_gap(

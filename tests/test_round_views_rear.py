@@ -274,7 +274,7 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
         group = manifest_set(_banked(store, records), set_id=candidate)
         group["base"] = candidate == BASE_CANDIDATE
         group["takes"] = [dict(take, selected=take["selected"] and take["take_id"] != f"{candidate}-0-{repeats + 1}")
-                          for take in group["takes"] if take["pose"]["deg"] not in unlisted.get(candidate, ())]
+                          for take in group["takes"] if take["pose"]["azimuth_deg"] not in unlisted.get(candidate, ())]
         groups.append(group)
     write_manifest(root, program="rear/express", groups=groups, probe=probe)
     _round_environment(root, applied=_SECTIONS[BASE_CANDIDATE])

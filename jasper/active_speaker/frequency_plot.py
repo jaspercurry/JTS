@@ -77,7 +77,7 @@ def render_frequency_view(
     poses: dict[tuple[str, str], list] = {}
     for run, curve in rows:
         position = curve.get("position") or {}
-        pose = position.get("id") or str(position.get("deg", "unspecified"))
+        pose = position.get("id") or str(position.get("azimuth_deg", "unspecified"))
         plot = curve.get("plot", {})
         if normalize or plot.get("ref_band_hz") != list(ref_band_hz):
             plot = prepare_plot_curve(curve, run.get("metadata"), ref_band_hz=ref_band_hz, normalize=normalize)
@@ -99,7 +99,7 @@ def render_frequency_view(
                                     if sum(other.startswith(candidate[:size]) for other in candidates) == 1), candidate)
                     for candidate in candidates}
         position = curves[0][1].get("position") or {}
-        offset, degrees = position.get("seat_offset_m"), position.get("deg")
+        offset, degrees = position.get("seat_offset_m"), position.get("azimuth_deg")
         title = f"Seat {offset} m (right, forward, up)" if offset is not None else f"Pose {degrees}°" if degrees is not None else "Unspecified pose"
         if role := curves[0][1].get("role"):
             title += f" · {role}"

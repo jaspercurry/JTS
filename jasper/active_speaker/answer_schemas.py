@@ -24,11 +24,11 @@ ANSWER_SCHEMAS = {
     "jasper-round run --dry-run": "jts_round_preflight/2",
     "jasper-round placed": "jts_round_placement/1",
     "jasper-round stop": "jts_round_stop/1",
-    "jasper-round status": "jts_round_status/2",
+    "jasper-round status": "jts_round_status/3",
     "jasper-round wait": "jts_round_wait/1",
     "jasper-round apply": "jts_round_apply/1",
     "jasper-round reset": "jts_round_reset/1",
     "jasper-round list": "jts_round_list/2",
-    "jasper-round show": "jts_round_show/2",
+    "jasper-round show": "jts_round_show/3",
     "jasper-round presets": "jts_round_presets/3",
 }

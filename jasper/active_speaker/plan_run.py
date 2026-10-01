@@ -198,7 +198,7 @@ def _landed_db_spl(verdict: TakeVerdict, rule: PoseLevel, probe: ExcitationProgr
 
 def _pose(stop: Any) -> dict[str, Any]:
     pose = stop.pose
-    return {"kind": pose.kind, "deg": pose.azimuth_deg, "elevation_deg": pose.elevation_deg,
+    return {"kind": pose.kind, "azimuth_deg": pose.azimuth_deg, "elevation_deg": pose.elevation_deg,
             "distance_m": pose.distance_m, "place": pose.place, "seat_offset_m": pose.seat_offset_m,
             **({"driver": pose.driver} if pose.driver else {})}
 
