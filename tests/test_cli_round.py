@@ -1567,7 +1567,7 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
         assert set(arm) == {"exit", "summary"}
         if ending in {"complete", "stopped"}:
             assert arm["exit"] == ("ok" if ending == "complete" else "session_stopped")
-    assert "attest_rig_clear" not in json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)
+    assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["attest_rig_clear"] is True
     worker, = arm_runtime.threads
     assert not worker.daemon and not worker.is_alive()
     worker.join.assert_called_once_with()

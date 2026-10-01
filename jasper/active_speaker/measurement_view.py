@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import Preset, available_presets, offered_here, plan_poses, preset, run_preset
+from .movers import MOVER_ARM
 from .round_copy import round_lines, packet_lines, round_verdict
 from .wizard_client import CAPTURE_CANCEL_PATH, SESSION_PATH
 
@@ -38,9 +39,19 @@ def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture
     return {**result, "capture": None, "pending": {**held, "actions": actions} if live else None, "busy": live}
 
 
+#: What an arm plan asks before it starts; the post then carries ``attest`` as true.
+RIG_CLEAR_CONFIRM = {
+    "title": "Is the arm's path clear?",
+    "message": "The arm turns the microphone through its full sweep. Check that nothing is in its path.",
+    "confirm_label": "The path is clear",
+    "attest": "attest_rig_clear",
+}
+
+
 def run_door(plan: Preset) -> dict[str, Any]:
-    """What a page action posts to run ``plan`` at its layout."""
-    return {"endpoint": SESSION_PATH, "body": {"request": {"program": plan.preset, "layout": plan.layout}}}
+    """What a page action posts to run ``plan`` at its layout; an arm plan asks first."""
+    return {"endpoint": SESSION_PATH, "body": {"request": {"program": plan.preset, "layout": plan.layout}},
+            **({"confirm": dict(RIG_CLEAR_CONFIRM)} if plan.mover == MOVER_ARM else {})}
 
 
 def _choice_id(row: Preset, layout: str) -> str:
@@ -55,6 +66,8 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
         CrossoverV2Refused, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, refusal_copy_for,
     )
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
+    from .arm_walk import ARM_DISCOVERY_REUSE_S, mover_present  # lazy: measurement planning
+    from .preflight import mover_unavailable_issue  # lazy: measurement planning
     from .run_request import RunRequest, resolve_plan  # lazy: measurement planning
 
     from .commissioning_coordinator import load_commissioning_view  # lazy: setup is read only when choosing a default
@@ -87,9 +100,14 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
                 # raisers pass; some carry no code.
                 choice.update(code=exc.code or None, lines=[str(exc)])
             else:
-                captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-                facts = preview_schedule(request, captures, context)
-                choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement", **door})
+                if mover_present(request.mover, reuse_s=ARM_DISCOVERY_REUSE_S):
+                    captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
+                    facts = preview_schedule(request, captures, context)
+                    choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement", **door})
+                else:
+                    issue = mover_unavailable_issue(request.program)
+                    choice.update(code=issue.code, lines=[issue.detail], next_action=issue.next_action,
+                                  evidence=dict(issue.evidence))
         choices.append(choice)
     if refused:
         copy, _ = refusal_copy_for(REASON_MEASUREMENT_PROGRAM_NOT_OFFERED)

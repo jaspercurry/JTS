@@ -3400,6 +3400,44 @@ def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_
     assert refusal_copy_for(exc.value.code)[1]
 
 
+@pytest.mark.parametrize(("arm", "word", "code"), [
+    (True, {}, "walk_rig_clear_not_attested"),
+    (False, {"attest_rig_clear": True}, "walk_mover_unavailable"),
+    (True, {"attest_rig_clear": True}, None),
+], ids=["no word", "no arm", "both"])
+def test_an_arm_plan_opens_only_with_its_arm_and_the_operators_word(monkeypatch, tmp_path, arm, word, code):
+    """The session door reads the arm through the live facts, as the CLI does, and
+    takes the request's word that the arm's path is clear. Without either it
+    refuses before anything plays or moves; with both it plans."""
+    from jasper.active_speaker import arm_walk, preflight_live
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
+    from tests.test_preflight import ready_facts
+
+    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
+    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: arm)
+    monkeypatch.setattr(arm_walk.TurntableMover, "move_to", lambda self, degrees: pytest.fail("the arm moved"))
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(
+        plan, declared_target_ids=tuple(kwargs["context"].role_targets), roles_bands=kwargs["context"].roles_bands,
+        rig_clear_attested=kwargs["rig_clear_attested"], mover_available=kwargs["mover_available"]))
+    context = _inline_context()
+    context = replace(context, topology=mono_output_topology(),
+                      driver_bands={role.role: role.band for role in context.roles_bands})
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: context)
+    v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
+    store, opened = _bundle_store(tmp_path), []
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _: (opened.append(True), (store, store.session_id))[1])
+    body = {"request": {"program": "room/seat", "layout": "room_quick"}, **word}
+
+    if code is None:
+        prepared = v2host.prepare_v2_session(body, status={}, run_async=_bg_run_async, camilla_factory=None)
+        assert prepared.label == v2host.V2_CAPTURE_KIND_SESSION and opened
+        return
+    with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
+        v2host.prepare_v2_session(body, status={}, run_async=_bg_run_async, camilla_factory=None)
+    assert (exc.value.code, exc.value.next_action) == (code, REASON_REGISTRY[code].next_action)
+    assert not opened
+
+
 @pytest.mark.parametrize("prior_capture", [None, {"status": "complete", "kind": "crossover_v2:session"}])
 def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch, tmp_path, prior_capture):
     from jasper.web import correction_capture

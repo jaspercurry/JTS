@@ -53,7 +53,7 @@ def _geometry_unreadable() -> str | None:
 
 def read_preflight_facts(
     plan: AngleCaptureRequest, *, context: Any = None, device: Any = None,
-    rig_clear_attested: bool | None = None, mover_available: bool = True,
+    rig_clear_attested: bool | None = None, mover_available: bool = False,
 ) -> PreflightFacts:
     issues: list[PreflightIssue] = []
     if context is None:

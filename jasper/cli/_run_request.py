@@ -13,23 +13,19 @@ from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
 from jasper.active_speaker.run_request import REQUEST_KEYS, RunRequest, resolve_plan
 from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
-from jasper.active_speaker.movers import MOVER_ARM
+from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.audio_measurement.household_mic import household_mic_path
 from jasper.audio_routes.output_topology_store import load_output_topology, topology_path
 from ._refusal import read_json_source
 
-#: The facts only this CLI can see; the session door re-reads every other one and owns admission.
+#: The arm facts this CLI refuses on before it posts; the session door reads them again and owns admission.
 ARM_FACT_CODES = (REASON_WALK_RIG_CLEAR_NOT_ATTESTED, REASON_WALK_MOVER_UNAVAILABLE)
 
 
 def _facts(request: AngleCaptureRequest, args: argparse.Namespace) -> PreflightFacts:
-    available = True
-    if request.mover == MOVER_ARM:
-        from jasper.active_speaker.arm_walk import TurntableMover  # lazy: arm-only
-        available = TurntableMover().available()
-    return read_preflight_facts(request, mover_available=available,
+    return read_preflight_facts(request, mover_available=mover_present(request.mover),
                                rig_clear_attested=None if args.dry_run else args.attest_rig_clear)
 
 

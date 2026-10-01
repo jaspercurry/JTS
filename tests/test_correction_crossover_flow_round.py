@@ -11,11 +11,13 @@ from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, plan_p
 from jasper.active_speaker.round_copy import pose_line, round_lines
 from jasper.active_speaker.timing_status import timing_status_lines
 
-from jasper.active_speaker import commissioning_coordinator as coordinator, measurement_view, plan_run
+from jasper.active_speaker import arm_walk, commissioning_coordinator as coordinator, measurement_view, plan_run
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
     REASON_MEASUREMENT_TARGETS_MISSING,
+    REASON_REGISTRY,
+    REASON_WALK_MOVER_UNAVAILABLE,
     CrossoverV2Refused,
     refusal_copy_for,
 )
@@ -50,6 +52,42 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
     assert [(c["poses"], c["captures"]) for c in choices] == [(row.mic_move_count, row.capture_count) for row in walked]
     selected = next(c for c in choices if c["id"] == "room/seat@seat_cube")
     assert selected["action"]["body"] == {"request": {"program": "room/seat", "layout": "seat_cube"}}
+
+
+@pytest.mark.parametrize(("selected", "arm", "code", "asks", "reads"), [
+    ("bass/axis", False, REASON_WALK_MOVER_UNAVAILABLE, False, 1),
+    ("bass/axis", True, None, True, 1),
+    ("bass/axis@seat_express", False, None, False, 0),
+], ids=["no arm", "arm", "a person walks it"])
+def test_an_arm_plan_reads_its_arm_and_asks_before_it_starts(monkeypatch, selected, arm, code, asks, reads):
+    """The plan answer reads the arm the way the CLI does, for an arm plan only, and
+    once for the page's repeated asks. With no arm the row refuses with the
+    registry's action and names this program's layouts that need no arm; with one,
+    its start first asks that the arm's path is clear and posts no word of its own;
+    a plan a person walks starts at once."""
+    from tests.test_correction_crossover_v2_endpoints import _inline_context  # lazy: the endpoint suite is heavy
+
+    context = _inline_context()
+    context = replace(context, driver_bands={role.role: role.band for role in context.roles_bands})
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *a, **kw: context)
+    monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: _VIEW)
+    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
+    discoveries = []
+    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: discoveries.append(self.timeout_s) or arm)
+
+    for _ in range(2):
+        choice = next(c for c in measurement_view.round_choices({}, selected) if c["id"] == selected)
+
+    assert len(discoveries) == reads
+    if code:
+        assert (choice["code"], choice["evidence"], choice["next_action"], "action" in choice) == (
+            code, {"layouts_without_arm": ["seat_express", "seat_cloud"]}, REASON_REGISTRY[code].next_action, False)
+        assert choice["lines"]
+    else:
+        start = choice["action"]
+        assert (start["id"], "confirm" in start, "attest_rig_clear" in start["body"]) == ("run_program", asks, False)
+        assert not asks or start["confirm"]["attest"] == "attest_rig_clear"
 
 
 def test_a_branches_row_discloses_its_refusal_beside_a_startable_row(monkeypatch):

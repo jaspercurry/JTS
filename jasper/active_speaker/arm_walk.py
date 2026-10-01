@@ -446,6 +446,27 @@ class TurntableMover:
             return None
 
 
+#: How long one discovery of the adapter answers a page that asks again every
+#: 1.5 s: each discovery is a Python subprocess (ADR-0226).
+ARM_DISCOVERY_REUSE_S = 30.0
+#: Discovery lists the serial devices and never opens the link (``jts_turntable.py detect``).
+ARM_DISCOVERY_TIMEOUT_S = 5.0
+_arm_discovered: list[tuple[float, bool]] = []
+
+
+def mover_present(mover: str | None, *, reuse_s: float = 0.0) -> bool:
+    """Whether a plan's mover is here: for the arm, the adapter's own discovery,
+    run only then and reused for ``reuse_s``; a person always is."""
+    if mover != MOVER_ARM:
+        return True
+    now = time.monotonic()
+    if _arm_discovered and now - _arm_discovered[0][0] < reuse_s:
+        return _arm_discovered[0][1]
+    present = TurntableMover(timeout_s=ARM_DISCOVERY_TIMEOUT_S).available()
+    _arm_discovered[:] = [(now, present)]
+    return present
+
+
 # --------------------------------------------------------------------------- #
 # the correction wizard, as a Session
 # --------------------------------------------------------------------------- #
@@ -1036,6 +1057,7 @@ __all__: Sequence[str] = (
     "Trail",
     "TurntableMover",
     "WalkConfig",
+    "mover_present",
     "parse_power",
     "pending_from_capture",
     "poll_from_status",

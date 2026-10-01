@@ -31,6 +31,7 @@ from .crossover_v2.measure_spec import CANDIDATE_SCOPES, branch_target_ids_for
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
     REASON_WALK_BRANCH_PAIR_UNDECLARED, REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
+    REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED,
 )
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs,
@@ -39,7 +40,7 @@ from .measured_crossover_candidate import (
 from .movers import MOVER_ARM
 from .measurement_programs import (
     BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, UnknownPresetError,
-    candidate_identity, run_purposes,
+    candidate_identity, layouts_without_arm, run_purposes,
 )
 from .profile import DRIVER_ROLES_BY_WAY
 
@@ -69,6 +70,18 @@ class PreflightIssue:
         return cls(code, detail, spec.own_action or {
             "id": "review_plan", "label": "Review measurement settings", "href": "/sound/speaker/crossover/",
         }, blocking)
+
+
+def mover_unavailable_issue(program: str) -> PreflightIssue:
+    """A missing arm's refusal, naming the way on: this program's layouts that need no arm."""
+    try:
+        layouts = layouts_without_arm(program)
+    except UnknownPresetError:
+        layouts = ()
+    copy = REASON_REGISTRY[REASON_WALK_MOVER_UNAVAILABLE].message
+    detail = f"{copy} Or measure at a layout without the arm: {', '.join(layouts)}." if layouts else copy
+    return replace(PreflightIssue.from_code(REASON_WALK_MOVER_UNAVAILABLE, detail),
+                   evidence={"layouts_without_arm": list(layouts)})
 
 
 @dataclass(frozen=True)
@@ -260,10 +273,10 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
         add(getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
         valid_shape = False
     if facts.mover == MOVER_ARM:
-        for allowed, code in ((facts.rig_clear_attested is not False, "walk_rig_clear_not_attested"),
-                              (facts.mover_available, "walk_mover_unavailable")):
-            if not allowed:
-                add(code, REASON_REGISTRY[code].message)
+        if facts.rig_clear_attested is False:
+            add(REASON_WALK_RIG_CLEAR_NOT_ATTESTED, REASON_REGISTRY[REASON_WALK_RIG_CLEAR_NOT_ATTESTED].message)
+        if not facts.mover_available:
+            issues.append(mover_unavailable_issue(plan.program))
     captures = len(plan.stops) * plan.repeats if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")

@@ -617,7 +617,7 @@ def _round_argv(argv: list[str], **wizard: Any) -> Callable[[pytest.FixtureReque
         monkeypatch = request.getfixturevalue("monkeypatch")
         monkeypatch.setattr(_run_request, "read_preflight_facts", ready_facts)
         for name, payload in wizard.items():
-            monkeypatch.setattr(WizardClient, name, lambda *args, payload=payload: (200, payload))
+            monkeypatch.setattr(WizardClient, name, lambda *args, payload=payload, **_kwargs: (200, payload))
         for module, name, value in (
             (round_cli, "wait_for_round", lambda *args, **kwargs: {"status": "terminal", "result": "complete"}),
             (round_cli, "_round_session_dir", lambda run: str(root)),

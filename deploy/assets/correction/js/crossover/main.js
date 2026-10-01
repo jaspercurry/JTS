@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { jtsConfirm } from '/assets/shared/js/dialog.js';
 import { getJSON, postJSON } from '/assets/shared/js/http.js';
 import { positionDiagram, positionCaption } from './position-diagram.js';
 import { UNIT_IMPERIAL, UNIT_METRIC, currentUnits, formatDistances, setUnits } from './units.js';
@@ -482,6 +483,13 @@ async function stopCapture() {
 
 async function runAction(action, button) {
   if (busy || !action.endpoint) return;
+  let body = action.body || {};
+  // An arm plan starts only on the operator's word that the arm's path is clear; a cancel posts nothing.
+  if (action.confirm) {
+    const {title, message, confirm_label: confirmLabel, attest} = action.confirm;
+    if (!await jtsConfirm(message, {title, confirmLabel}) || busy) return;
+    body = {...body, [attest]: true};
+  }
   busy = true;
   // An older envelope fetch may already be in flight. Invalidate its render;
   // the serialized refresh queued after this mutation is the new authority.
@@ -490,7 +498,7 @@ async function runAction(action, button) {
   setStatus('Working…');
   let captureStarted = false;
   try {
-    const response = await postJSON(action.endpoint, action.body || {});
+    const response = await postJSON(action.endpoint, body);
     captureStarted = CAPTURE_STOPPABLE.has(response?.capture?.status);
     if (captureStarted) {
       if (els.roundChoice) els.roundChoice.hidden = true;
