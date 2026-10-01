@@ -319,8 +319,9 @@ class VolumeCoordinator:
             # Make camilla consistent with the boot mode. Idle and
             # AirPlay use camilla as the remembered/audible volume;
             # Spotify and Bluetooth carry listening_level on their own
-            # protocol surfaces. Push-mode 0% is the exception: still
-            # assert Camilla main_mute as the content/music mute guarantee.
+            # protocol surfaces. Push-mode 0% is the exception: assert
+            # Camilla main_mute as the content/music mute guarantee (while a
+            # hold defers this write, the observer's first reading does).
             # A held fader is the run's: the reconciler restores a
             # camilla-master level by its own rule. See ADR-0368.
             hold = await read_fader_hold()

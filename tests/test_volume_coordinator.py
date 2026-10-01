@@ -662,9 +662,9 @@ async def test_a_boot_restore_writes_no_fader_while_a_measurement_holds_it(
     tmp_path, monkeypatch, caplog, measurement_hold_served,
     hold_state, active, source,
 ):
-    """A voice restart inside a run must not move the fader the run owns, in
-    either carrier mode. The hold is read the way the reconciler reads it
-    before a raise, so an unreadable hold waits too (ADR-0368)."""
+    """The boot restore writes no fader while a run may own it, in either
+    carrier mode. The hold is read the way the reconciler reads it before a
+    raise, so an unreadable hold waits too (ADR-0368)."""
     caplog.set_level(logging.INFO, logger="jasper")
     coord, cam, persistence = _coord(
         tmp_path, active=active, db=-40.0, level=70, mark_user_change=True,
