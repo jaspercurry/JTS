@@ -26,7 +26,7 @@ from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
 from jasper.active_speaker.measurement_emit import compile_tuning_graph, room_layer_charge_db
-from jasper.active_speaker.measurement_programs import Pose, preset, run_preset
+from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
 from jasper.active_speaker.preflight import (
     PreflightFacts, PreflightIssue, bass_lift_db, preflight, rise_without_room_db,
 )
@@ -166,6 +166,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
                         lambda *a: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
+    monkeypatch.setattr(preflight_live, "program_charge_db", lambda _: 0.0)
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     facts = preflight_live.read_preflight_facts(plan)
     assert facts.declared_target_ids == tuple(role_targets)
@@ -546,8 +547,8 @@ def test_a_take_clearing_the_room_layer_the_probe_plays_adds_its_rise():
 
 @pytest.mark.parametrize("state,room", [({}, ()), ({"status": "applied"}, None)])
 def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatch, state, room):
-    """No applied profile plays no room layer; an applied one whose candidate
-    cannot be read has an unknown one (ADR-0370)."""
+    """No applied profile plays no room layer and no charge; an applied one whose
+    candidate cannot be read has unknown ones (ADR-0370, ADR-0385)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass"),))
     ready = ready_facts(plan)
 
@@ -562,7 +563,74 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    assert (facts.applied_room_peqs, facts.applied_room_charge_db) == (room, None)
+    assert (facts.applied_room_peqs, facts.applied_room_charge_db, facts.applied_program_charge_db) == (
+        room, None, None if room is None else 0.0)
+
+
+@pytest.mark.parametrize(("program", "layout", "candidates", "charge_db"), [
+    ("speaker", "speaker_mark", ("base", "trial"), 6.0), ("speaker", "speaker_mark", (), 0.0),
+    ("room", "seat_express", ("base", "trial"), 0.0), ("speaker", "speaker_mark", ("base", "trial"), None),
+    ("room", "seat_express", ("base", "trial"), None)],
+    ids=["over the timing take", "only drivers after it", "probe on the candidate", "unread over the timing take",
+         "unread, probe on the candidate"])
+def test_a_timing_probe_adds_the_charge_its_graph_folds_out(tuning_profile, program, layout, candidates, charge_db):
+    """The timing take's graph folds the applied program charge into its trims
+    and drops the layers it boosts, which the candidates' own graphs play back,
+    so a run probed on it adds that charge to its margin when a later take plays
+    a candidate's graph. A probe on a candidate's own graph adds none. A charge
+    that could not be read refuses only a plan that needs it (ADR-0403 §4, ADR-0385)."""
+    plan = request_for_preset(run_preset(program, layout), candidates=candidates)
+    report = preflight(plan, ready_facts(plan, candidates={"trial": _room_candidate(tuning_profile)},
+                                         applied_program_charge_db=charge_db))
+    needed = program == "speaker" and bool(candidates)
+    assert report.blocking is (charge_db is None and needed)
+    if not report.blocking:
+        assert report.rung_admission["timing_charge_db"] == (charge_db if needed else 0.0)
+        assert report.rung_admission["run_margin_db"] == pytest.approx(report.rung_admission["timing_charge_db"])
+
+
+def _unprobed_plans():
+    """The review's two plans whose take at the run's fader would play before any
+    probe: a driver run's spot at the mark with no summed take, and a rear run
+    whose CHECK at the mark comes before its first summed take, at 20°."""
+    return {"no summed take": AngleCaptureRequest(
+                (AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker"),), program="drivers/each"),
+            "check before the probe": AngleCaptureRequest(
+                (AngleStop(Pose(20, 0), REGIME_SUMMED, purpose="rear"),
+                 AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker")), program="rear/express")}
+
+
+@pytest.mark.parametrize("shape", ["no summed take", "check before the probe"])
+@pytest.mark.parametrize("finds_fader", [True, False], ids=["finds its fader", "plays a stated level"])
+def test_a_plan_whose_take_at_the_run_fader_plays_before_its_probe_is_refused(shape, finds_fader):
+    """A run that finds its fader with a probe plays a take that does not level
+    itself only after that probe, so preflight refuses a plan where such a take
+    would come first, or that has no probe. A ladder's later rung plays at the
+    level stated to it and probes nothing (ADR-0403 §4)."""
+    plan = _unprobed_plans()[shape]
+    report = preflight(plan, ready_facts(plan), finds_fader=finds_fader)
+    assert [issue.code for issue in report.issues if issue.blocking] == (
+        ["walk_level_policy_invalid"] if finds_fader else [])
+
+
+def test_every_shipped_preset_plans_its_probe_before_the_takes_at_its_fader(tuning_profile):
+    """Every shipped preset at every layout it offers, with the applied tune and
+    with an A/B trial, plays its run's probe before any take at the run's fader
+    (ADR-0403 §4)."""
+    roles = (RoleBand("woofer", 0, FrequencyBand(20, 4000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000)))
+    trial = _room_candidate(tuning_profile)
+    for name in available_presets():
+        for layout in preset(name).layouts:
+            selected = run_preset(name, layout)
+            if selected.regime == REGIME_BRANCHES:
+                trials = ((trial.fingerprint,),)
+            else:
+                trials = ((),) if any(pose.driver for pose in selected.poses) else ((), ("base", trial.fingerprint))
+            for candidates in trials:
+                plan = request_for_preset(selected, mover=selected.mover or "human", targets=("woofer", "tweeter"),
+                                          candidates=candidates)
+                report = preflight(plan, ready_facts(plan, roles_bands=roles, candidates={trial.fingerprint: trial}))
+                assert not report.blocking, (name, layout, candidates, report.issues)
 
 
 def test_unreadable_bass_descriptor_blocks_the_margin():
@@ -578,7 +646,10 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
     anchor = ready_facts(plan).anchor
-    applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {})
+    # A lone room boost gives the applied tune a program charge.
+    applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {}, room_correction=_room_correction(
+        sides={"mono": [{"freq": 120.0, "q": 2.0, "gain": 6.0}]}, boost_db_total=6.0, level_cost_db=6.0,
+        basis={**_room_correction()["basis"], "admitted_boosts_hz": [120.0]}))
     state = {"status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint}}
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state if descriptor is not None else {})
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda name: {applied.fingerprint: SimpleNamespace(candidate=applied)}[name])
@@ -592,6 +663,8 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
+    assert candidate_parts.program_charge_db(applied) > 0.0
+    assert facts.applied_program_charge_db == (candidate_parts.program_charge_db(applied) if descriptor is not None else 0.0)
     report = preflight(plan, facts)
     assert not report.blocking
     assert report.rung_admission["run_margin_db"] == 0.0

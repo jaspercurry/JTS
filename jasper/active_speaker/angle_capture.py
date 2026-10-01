@@ -473,13 +473,13 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
         if self.levels is not None:
             if not isinstance(self.levels, (tuple, list)) or not self.levels or None in self.levels:
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be a nonempty sequence")
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, LADDER_STEPS_DETAIL)
             # LevelPolicy owns the fader range check for each requested level.
             for value in self.levels:
                 replace(self.level, level_db=value)
             levels = tuple(float(value) for value in self.levels)
             if len(set(levels)) != len(levels):
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "levels must be distinct")
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, LADDER_STEPS_DETAIL)
             if len(levels) == 1:
                 object.__setattr__(self, "level", replace(self.level, level_db=levels[0]))
             object.__setattr__(self, "levels", levels if len(levels) > 1 else None)
@@ -915,6 +915,11 @@ WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
 WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
+
+#: A ladder's levels are steps, not faders: the loudest plays at the level the first rung's probe finds
+#: (ADR-0403 §4).
+LADDER_STEPS_DETAIL = ("levels are distinct steps in dB: the loudest plays at the level the first rung's probe "
+                       "finds, and each other one as far under it as it is under the loudest")
 
 SUMMED_TRIALS_PLAY_THEIR_OWN_GRAPH = "Summed trials use the selected graph's own trims and alignment."
 

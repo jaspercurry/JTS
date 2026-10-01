@@ -70,7 +70,7 @@ from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFailure, open_session
 from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
-from tests.test_preflight import ready_facts
+from tests.test_preflight import _unprobed_plans, ready_facts
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
 
@@ -1268,11 +1268,12 @@ class _RunChain:
     """A fake chain: each stimulus reads its peak at the output plus the chain at
     its spot, over a 35 dB room. A probe reads each burst until the first over
     the 76 dB ramp bound, which stops it (ADR-0365). A scope's gains over the
-    level reference graph back its summed takes off, as composition does."""
+    level reference graph back its summed takes off, as composition does, and a
+    graph (scope, candidate) in ``graph_db`` plays that much louder."""
 
-    def __init__(self, manifest, play, caps, chain_db, scope_gains=None):
+    def __init__(self, manifest, play, caps, chain_db, scope_gains=None, graph_db=None):
         self.manifest, self.play, self.caps, self.chain_db = manifest, play, caps, chain_db
-        self.scope_gains = scope_gains or {}
+        self.scope_gains, self.graph_db = scope_gains or {}, graph_db or {}
 
     async def bank(self, record):
         record = self.manifest.capture_record(record)
@@ -1282,8 +1283,8 @@ class _RunChain:
         spec = self.play.calls[-1]["spec"]
         program = program_for_spec(replace(spec, scope_gains_db=self.scope_gains.get(spec.graph_scope)), excitation,
                                    _RUN_GAINS, record.get("stimulus_dbfs"), safety_profile={}, role_targets={})
-        heard = [(segment.gain_db, segment.gain_db + record["level_db"] + self.chain_db[record["pose_kind"]])
-                 for segment in program.stimulus_segments()]
+        chain = self.chain_db[record["pose_kind"]] + self.graph_db.get((spec.graph_scope, spec.candidate_id), 0.0)
+        heard = [(segment.gain_db, segment.gain_db + record["level_db"] + chain) for segment in program.stimulus_segments()]
         heard = (heard[:max(1, len(list(takewhile(lambda burst: burst[1] <= 76.0, heard))))] if is_level_probe(program)
                  else [max(heard, key=lambda burst: burst[1])])
         record.update(program=program.to_dict(), levels=[
@@ -1312,15 +1313,9 @@ class _PlacementLog(AnsweredGate):
             self.events.append("placement")
 
 
-async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals=None, events=None, assessor=None,
-                     scope_gains=None, margin_db=0.0):
-    """A run through a door that finds its fader, on a fake chain; each take that
-    does not level itself is accepted. Answers the result, the plays and the
-    fader of each level window, in order. ``events`` logs each fader a window
-    sets and the household level (None) it leaves when it closes."""
-    windows = []
-    events = [] if events is None else events
-
+def _found_door(monkeypatch, windows, events):
+    """Patch each level window to log the fader it sets in ``windows`` and ``events``,
+    and the household level (None) it leaves when it closes."""
     @asynccontextmanager
     async def window(level_db, *, hold, spl_monitor):
         windows.append(level_db)
@@ -1331,18 +1326,55 @@ async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals
             events.append(None)
 
     monkeypatch.setattr(plan_run, "level_window", window)
+
+
+def _chain_door(fakes, manifest, caps, chain_db, scope_gains=None, graph_db=None, margin_db=0.0, finds=True):
+    chain = _RunChain(manifest, fakes.play, caps, chain_db, scope_gains, graph_db)
+    return plan_run.RunDoor(nullcontext(SimpleNamespace()), lambda opened, allocate: TuningSession(
+        "run", replace(fakes, records=chain).seams(), opened.measurement_volume_db, allocate),
+        _MIC, SimpleNamespace(model_key="minidsp_umik2"), 85.0, caps_dbfs=caps if finds else None, margin_db=margin_db)
+
+
+def _accept_unlevelled(analysis, **kw):
+    return TakeVerdict(True, next="accept") if kw["pose_level"] is None else capture_dispatch.assess(analysis, **kw)
+
+
+async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals=None, events=None, assessor=None,
+                     scope_gains=None, margin_db=0.0, graph_db=None):
+    """A run through a door that finds its fader, on a fake chain; each take that
+    does not level itself is accepted. Answers the result, the plays and the
+    fader of each level window, in order. ``events`` logs each fader a window
+    sets and the household level (None) it leaves when it closes."""
+    windows: list = []
+    _found_door(monkeypatch, windows, [] if events is None else events)
     fakes = FakeSeams(volume=_Fader())
     manifest = RunManifest("run", _Store(fakes.records))
-    chain = _RunChain(manifest, fakes.play, caps, chain_db, scope_gains)
-    door = plan_run.RunDoor(nullcontext(SimpleNamespace()), lambda opened, allocate: TuningSession(
-        "run", replace(fakes, records=chain).seams(), opened.measurement_volume_db, allocate),
-        _MIC, SimpleNamespace(model_key="minidsp_umik2"), 85.0, caps_dbfs=caps, margin_db=margin_db)
+    door = _chain_door(fakes, manifest, caps, chain_db, scope_gains, graph_db, margin_db)
     result = await plan_run.run_plan(
         request, door=door, manifest=manifest, analyze=_run_chain_analysis, gate=gate or AnsweredGate(),
         aborts=_ABORTS, signals=signals, captures=plan_run.prepare_plan_captures(request),
-        assessor=assessor or (lambda analysis, **kw: (TakeVerdict(True, next="accept") if kw["pose_level"] is None
-                                                      else capture_dispatch.assess(analysis, **kw))))
+        assessor=assessor or _accept_unlevelled)
     return result, fakes.play.calls, windows
+
+
+async def _ladder_found(monkeypatch, request, *, caps, chain_db):
+    """A ladder on a fake chain whose first rung finds its level through a door
+    that states caps; the other rungs play at the level stated to them. Answers
+    the ladder's signals, its rungs' results and plays, and each level window."""
+    windows: list = []
+    _found_door(monkeypatch, windows, [])
+    fakes, signals = FakeSeams(volume=_Fader()), plan_run.RunSignals()
+    ladder = preflight_levels(request, ready_facts(request))
+    assert not ladder.blocking
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(fakes.play.calls)}", _Store(fakes.records))
+        door = _chain_door(fakes, manifest, caps, chain_db, finds=plan.level.level_db is None)
+        return LevelRun(manifest, door, _run_chain_analysis, _accept_unlevelled, prepare_level_captures(plan))
+
+    results = await run_levels(ladder, hold=nullcontext(SimpleNamespace()), prepare=prepare, gate=AnsweredGate(),
+                               aborts=_ABORTS, signals=signals)
+    return signals, results, fakes.play.calls, windows
 
 
 @pytest.mark.parametrize("tweeter_cap", [-6.0, -20.0], ids=["under the cap", "held by the tweeter cap"])
@@ -1437,6 +1469,17 @@ def test_the_run_fader_comes_down_by_what_its_margins_pass_the_stop_by(
     assert read == {key: pytest.approx(timing_db if key[0] == "timing" else pair_db, abs=0.02) for key in read}
 
 
+@pytest.mark.parametrize("shape", ["no summed take", "check before the probe"])
+def test_a_take_at_the_run_fader_before_its_probe_refuses_the_run_before_anything_plays(monkeypatch, shape):
+    """A run that finds its fader plays a take that does not level itself only
+    after the probe that found that fader, so a run where such a take would play
+    first, or with no probe at all, is refused before any take plays (ADR-0403 §4)."""
+    result, plays, windows = asyncio.run(_run_found(
+        monkeypatch, _unprobed_plans()[shape], caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0}))
+
+    assert (result.reason, plays, windows) == (ac.WALK_LEVEL_POLICY_INVALID, [], [])
+
+
 def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(monkeypatch):
     """A plan whose first spot levels itself (a close set behind the cabinet)
     plays it at the probe fader, where it finds its own level. Its later spot,
@@ -1461,6 +1504,90 @@ def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(mo
     assert mark["capture_integrity"]["spl"]["max_window_db_spl"] == pytest.approx(79.0)
     assert {key: result.level["run"][key] for key in ("level_db", "probe_fader_db", "source")} == {
         "level_db": -9.0, "probe_fader_db": 0.0, "source": "probe"}
+
+
+_CLOSE_SET = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
+_DRIVER_POSE = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3, "driver": "woofer"}
+_MARK = {"azimuth_deg": 0, "elevation_deg": 0}
+
+
+def _ladder_plans():
+    """Ladders of two steps. The two whose first pose levels every take itself are
+    the review's; a later pose of drivers alone has no summed take of its own."""
+    def stepped(program, poses):
+        return ac.request_for_preset(run_preset(program, poses=poses), targets=("woofer", "tweeter"), levels=(-20.0, -25.0))
+
+    return {"mark first": stepped("rear/express", [_MARK, _CLOSE_SET]),
+            "drivers alone at a later pose": ac.AngleCaptureRequest(
+                (ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="rear"),
+                 ac.AngleStop(Pose(20, 0), ac.REGIME_PER_DRIVER, purpose="speaker")),
+                program="rear/express", levels=(-20.0, -25.0)),
+            "close set first": stepped("rear/express", [_CLOSE_SET, _MARK]),
+            "driver pose first": stepped("speaker/mark", [_DRIVER_POSE, _MARK])}
+
+
+@pytest.mark.parametrize(("shape", "rungs"), [
+    ("mark first", 4), ("drivers alone at a later pose", 4), ("close set first", 1), ("driver pose first", 1)])
+def test_a_ladder_plays_only_under_the_level_its_first_rung_found(monkeypatch, shape, rungs):
+    """A ladder's first rung at its first pose finds the level its rungs step
+    under, and every later rung plays its step under that level, at a pose with
+    no summed take too. A first pose where every take levels itself finds none,
+    so the ladder ends there: no later pose plays at a level no probe found
+    (ADR-0403 §4)."""
+    signals, results, _, windows = asyncio.run(_ladder_found(
+        monkeypatch, _ladder_plans()[shape], caps={"woofer": 0.0, "tweeter": -6.0},
+        chain_db={"bearing": 100.0, "close": 110.0}))
+
+    summed = [take["capture_integrity"]["spl"]["max_window_db_spl"] for result in results
+              for take in _takes(result.joined())
+              if take["selected"] and take["pose_kind"] == "bearing" and take["phase"] in ("timing", "lateral")]
+    found = rungs == 4
+    assert (len(results), signals.stop.is_set() and signals.stop_reason) == (rungs, not found and REASON_LEVEL_UNSOLVED)
+    assert windows == ([0.0, -9.0, -14.0, -9.0, -14.0] if found else [0.0])
+    assert summed == pytest.approx([79.0, 74.0] if found else [], abs=0.02)
+
+
+def test_a_first_seat_spot_reads_at_most_76_db_over_a_lift(monkeypatch):
+    """A run probed at its first seat spot comes down by what its margins pass
+    76 dB by, not the 85 dB stop, so an A/B trial whose dynamic bass may lift
+    6 dB over the probe's graph reads at most 76 dB there (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
+
+    result, _, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
+        graph_db={("candidate", "trial"): 6.0}, margin_db=6.0))
+
+    seat1 = [take for take in _takes(result.joined()) if take["selected"] and take["seat_offset_m"] == request.stops[0].pose.seat_offset_m]
+    read = {take["candidate_id"]: take["capture_integrity"]["spl"]["max_window_db_spl"] for take in seat1}
+    assert windows == [0.0, pytest.approx(-14.0, abs=0.02)] and result.status == "complete"
+    assert read == {"banked-base": pytest.approx(68.0, abs=0.02), "trial": pytest.approx(74.0, abs=0.02)}
+
+
+@pytest.mark.parametrize(("program", "layout", "chain_db", "bound_db", "charge_db"), [
+    ("speaker", "speaker_mark", {"bearing": 100.0}, 85.0, 6.0), ("room", "seat_express", {"seat": 94.0}, 76.0, 0.0)],
+    ids=["timing probe at the mark", "candidate probe at a seat"])
+def test_an_ab_trial_over_a_room_boost_lands_under_its_bound(monkeypatch, tuning_profile, program, layout, chain_db,
+                                                             bound_db, charge_db):
+    """The timing take's graph folds the applied tune's program charge into its
+    trims and drops the room layer, so an A/B trial's takes on the candidates' own
+    graphs play over it by a 6 dB room boost. Preflight's margin counts that
+    charge, and the run comes down so the pair reads under the 85 dB stop. A run
+    probed on a candidate's own graph plays that boost in its probe, so it adds
+    no charge, and its first seat spot reads under 76 dB (ADR-0403 §4, ADR-0385)."""
+    request = ac.request_for_preset(run_preset(program, layout), candidates=("base", "trial"))
+    report = preflight_levels(request, ready_facts(request, candidates={"trial": _room_candidate(tuning_profile)},
+                                                   applied_program_charge_db=6.0))
+    assert not report.blocking and report.rung_admission["timing_charge_db"] == charge_db
+
+    result, _, _ = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db=chain_db,
+        graph_db=dict.fromkeys((("candidate", "banked-base"), ("candidate", "trial")), 6.0),
+        margin_db=report.rung_admission["run_margin_db"]))
+
+    read = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in _takes(result.joined())
+            if take["selected"] and take["phase"] in ("timing", "lateral")]
+    assert result.status == "complete" and len(read) == len(request.stops) + (program == "speaker")
+    assert max(read) < bound_db
 
 
 @pytest.mark.parametrize(("chain_db", "kept", "reason"), [(50.0, False, REASON_SNR_FLOOR),
@@ -1745,8 +1872,7 @@ def _ladder_run(fakes, manifest, door, verdict, captures):
         return await bank(record)
 
     manifest.bank = probe_bank
-    probed = TakeVerdict(False, next="retake_quieter", next_gain_db=-18.0,
-                         evidence={"level_db_spl": 76.0, "level_target_db_spl": 80.0})
+    probed = TakeVerdict(False, next="retake_quieter", next_gain_db=-18.0, evidence={"level_db_spl": 76.0})
     return LevelRun(manifest, door, _analysis,
                     lambda *_args, **kwargs: probed if kwargs["pose_level"] is not None else verdict, captures)
 

@@ -21,6 +21,7 @@ from .crossover_v2.capture_plan import position_screen_keys
 from .crossover_v2.door import IsolationHold
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.position_gate import PositionGate
+from .crossover_v2.refusal_copy import REASON_LEVEL_UNSOLVED
 from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
 from .run_manifest import RunManifest
@@ -86,9 +87,11 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
 
 
 def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
-    """A stated ladder keeps its steps under its loudest rung, which the run's probe finds (ADR-0403 §4)."""
+    """A stated ladder keeps its steps under its loudest rung, which the run's probe finds (ADR-0403 §4).
+    Only its first rung at its first pose probes, so that rung's own door checks the probe's order."""
     top = max(float(plan.level.level_db or 0.0) for plan in plans)
-    return LevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=float(plan.level.level_db or 0.0) - top)), facts)
+    return LevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=float(plan.level.level_db or 0.0) - top)),
+                                       facts, finds_fader=False)
                              for plan in sorted(plans, key=lambda plan: -(plan.level.level_db or 0.0))), facts)
 
 
@@ -148,7 +151,7 @@ async def run_levels(
                     step = planned.plan.level.level_db or 0.0
                     request = replace(planned.plan, stops=stops, level=replace(
                         planned.plan.level, level_db=None if found is None else found + step))
-                    report = preflight(request, ladder.facts)
+                    report = preflight(request, ladder.facts, finds_fader=found is None)
                     request = report.plan
                     observations: list[dict[str, Any]] = []
                     admission = {"pose_index": pose_index, "level_index": level_index + 1, "step_db": step,
@@ -186,12 +189,12 @@ async def run_levels(
                     )
                     results.append(result)
                     if found is None:
-                        found = admission["level_db"] = result.level.get("run", {}).get("level_db")
+                        found = admission["level_db"] = result.level.get("run", {}).get("probe_level_db")
                     if save_ladder:
                         await save_ladder(ladder.to_dict())
                     if found is None or result.cancelled or result.stopped_at or any(
                             take.get("next") == "stop" for take in result.takes):
-                        signals.request_stop(result.reason or "take_stopped")
+                        signals.request_stop(result.reason or REASON_LEVEL_UNSOLVED)
                     if signals.complete.is_set() or signals.stop.is_set():
                         return tuple(results)
         return tuple(results)

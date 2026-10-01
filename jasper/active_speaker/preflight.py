@@ -16,11 +16,14 @@ from jasper.platform.biquad import PeqFilter, peaking_cascade_response_db
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.json_fields import finite_float
 
-from .capture_schedule import prepare_plan_captures, walk_price
+from .capture_schedule import (
+    UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures, run_probe_index, run_takes, unprobed_take_at_fader,
+    walk_price,
+)
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
     AngleCaptureRequest, LateralWalkRefused, WALK_LEVEL_POLICY_INVALID,
-    REGIME_BRANCHES, level_sets,
+    REGIME_BRANCHES,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.measure_spec import CANDIDATE_SCOPES, branch_target_ids_for
@@ -81,6 +84,9 @@ class PreflightFacts:
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
     #: What that layer adds to the applied program charge (ADR-0385); ``None`` when unknown.
     applied_room_charge_db: float | None = None
+    #: The applied tune's program charge, which the timing take's graph folds into its
+    #: trims (ADR-0385); ``None`` when an applied profile could not be read.
+    applied_program_charge_db: float | None = 0.0
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
@@ -151,26 +157,29 @@ def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, f
     return max(0.0, charge_db - min(peaking_cascade_response_db(room_peqs, *band_hz)[1]))
 
 
-def run_margins(plan: AngleCaptureRequest, facts: PreflightFacts,
+def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
                 bass_extensions: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
     """How much louder than the take a run probes its other takes at the run's
     fader may play: the largest bass lift and the largest rise of a take that
-    clears the room layer, each against the graph the probe plays (ADR-0403 §4,
-    ADR-0370, ADR-0385). Empty when no take plays at the run's fader. Raises
-    ``ValueError`` when a take clears a room layer the probe plays and that layer
-    or its charge could not be read."""
-    captures = prepare_plan_captures(plan, roles_bands=facts.roles_bands)
-    at_fader = [capture for capture, start in zip(captures, level_sets([capture.stop for capture in captures]))
-                if capture.spec.graph_scope in CANDIDATE_SCOPES and start is None]
-    if not at_fader:
+    clears the room layer, each against the graph the probe plays, and over a
+    timing take the applied program charge its graph folds into its trims, which
+    the candidates' own graphs play back (ADR-0403 §4, ADR-0370, ADR-0385). Empty
+    when no take plays at the run's fader. Raises ``ValueError`` when a take
+    clears a room layer the probe plays and that layer or its charge could not be
+    read, or plays over a timing take and the applied charge could not be read."""
+    takes = [(scope, levelled) for scope, levelled, _ in run_takes(captures)]
+    probed = run_probe_index(takes)
+    if probed is None:
         return {}
+    at_fader = [capture for capture, (scope, levelled) in zip(captures, takes)
+                if scope in CANDIDATE_SCOPES and not levelled]
 
     def bass(capture: Any) -> Mapping[str, Any]:
         # The timing graph plays no bass extension (#5632); a take may clear its own.
         cleared = capture.spec.graph_scope == "timing" or "bass_extension" in capture.spec.cleared_layers
         return {} if cleared else bass_extensions.get(candidate_identity(capture.stop.candidate_id), {})
 
-    probe = at_fader[0]
+    probe = captures[probed]
     lift = max(bass_lift_db(bass(capture), bass(probe)) for capture in at_fader)
     clearing = ([] if probe.spec.graph_scope == "timing" or "room_correction" in probe.spec.cleared_layers else
                 [capture for capture in at_fader if "room_correction" in capture.spec.cleared_layers])
@@ -180,10 +189,19 @@ def run_margins(plan: AngleCaptureRequest, facts: PreflightFacts,
     rise = max((rise_without_room_db(room_peqs or (), (
         ROOM_FLOOR_HZ, float((capture.stop.stimulus or {}).get("ceiling_hz") or MEASURE_SWEEP_F_HI_HZ)),
         charge_db=charge or 0.0) for capture in clearing), default=0.0)
-    return {"lift_bound_db": lift, "room_off_rise_db": rise, "run_margin_db": lift + rise}
+    over_timing = probe.spec.graph_scope == "timing" and any(
+        capture.spec.graph_scope != "timing" for capture in at_fader)
+    if over_timing and facts.applied_program_charge_db is None:
+        raise ValueError("the applied program charge could not be read, so a take over the timing take has no known rise")
+    folded = max(0.0, facts.applied_program_charge_db or 0.0) if over_timing else 0.0
+    return {"lift_bound_db": lift, "room_off_rise_db": rise, "timing_charge_db": folded,
+            "run_margin_db": lift + rise + folded}
 
 
-def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightReport:
+def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: bool = True) -> PreflightReport:
+    """Whether ``plan`` may run here, its schedule and price, and its run's margins.
+    A run that ``finds_fader`` with a probe (its door states driver caps) is
+    refused when a take at its fader would play before that probe (ADR-0403 §4)."""
     issues = list(facts.issues)
     # Remove when measurement owns an explicit household-authorized unmute.
     if facts.output_volume.get("muted") is True:
@@ -309,9 +327,13 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
     priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
                                     for stop in plan.stops)
     price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
-    if priceable and bass_extensions:
+    prepared = prepare_plan_captures(plan, roles_bands=facts.roles_bands) if priceable else ()
+    if finds_fader and unprobed_take_at_fader(run_takes(prepared)):
+        admission.update(status="blocked")
+        add(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
+    elif priceable and bass_extensions:
         try:
-            admission.update(run_margins(plan, facts, bass_extensions))
+            admission.update(run_margins(prepared, facts, bass_extensions))
         except (TypeError, ValueError) as exc:
             admission.update(status="blocked")
             add(WALK_LEVEL_POLICY_INVALID, str(exc))

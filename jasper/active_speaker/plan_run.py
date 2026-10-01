@@ -33,7 +33,10 @@ from .angle_capture import (
     AngleCaptureRequest, LateralWalkRefused,
     level_sets, resolve_request,
 )
-from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index
+from .capture_schedule import (
+    UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index,
+    unprobed_take_at_fader,
+)
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
@@ -52,7 +55,7 @@ from .crossover_v2.refusal_copy import (
 from .crossover_v2.session import TuningSession
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
-from .measurement_programs import BASE_CANDIDATE, PoseLevel, run_level
+from .measurement_programs import BASE_CANDIDATE, POSE_KIND_SEAT, PoseLevel, run_level
 from .crossover_v2.programs import predictive_program_for_spec, probe_backoff_db, probe_fader_db, run_fader_db
 from .run_manifest import RunManifest, driver_level_mismatches
 from .round_copy import PLACE_MICROPHONE, take_counts
@@ -478,12 +481,14 @@ async def _run(
     unlevelled: set[int] = set()
     # A run finds its fader with a probe of its first summed take that plays at the run's
     # fader, before the first take of that take's placement, banked as that take's attempts.
-    # Until then it plays at the probe fader, where every take levels itself. The fader held
-    # is the probe's, turned down by what its margins pass the stop by, never above the level
-    # the plan states (ADR-0403 §4).
+    # Until then only takes that level themselves play, at the probe fader: a run where a take
+    # at its fader would play first is refused. The fader held is the probe's, turned down by
+    # what its margins pass the stop by, never above the level the plan states (ADR-0403 §4).
     caps, cap = (door.caps_dbfs if door is not None else None), level
     probe_at = probe_start = None
     other_graphs = False
+    unprobed = bool(caps) and unprobed_take_at_fader(
+        [(item.spec.graph_scope, item.level_set is not None, item.pose_index) for item in work])
 
     def hold_fader(found: float, source: str) -> float:
         held = found if cap is None else min(found, cap)
@@ -528,6 +533,8 @@ async def _run(
         if door is not None:
             if door.ceiling_db_spl is None:
                 raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
+            if unprobed:
+                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
             hold = door.isolation = await stack.enter_async_context(door.hold)
             await stack.enter_async_context(window)
         while offset < len(work):
@@ -722,8 +729,12 @@ async def _run(
                         probe = ExcitationProgram.from_dict(next(
                             record["program"] for record, _ in records if record.get("program")))
                         rise = door.margin_db + (probe_backoff_db(probe, caps) if other_graphs else 0.0)
+                        bound = door.ceiling_db_spl
+                        if item.stop["pose"]["kind"] == POSE_KIND_SEAT:
+                            # The first seat spot reads at most 76 dB, 9 dB under the stop (ADR-0403 §4).
+                            bound = min(bound, item.pose_level.target_db_spl + item.pose_level.tolerance_db)
                         solved = run_fader_db(probe, verdict.next_gain_db, caps, cut_db=max(0.0, _landed_db_spl(
-                            verdict, item.pose_level, probe) + item.pose_level.tolerance_db + rise - door.ceiling_db_spl))
+                            verdict, item.pose_level, probe) + item.pose_level.tolerance_db + rise - bound))
                         level = hold_fader(solved, "probe")
                         manifest.level["run"]["probe_level_db"] = solved
                         await window.aclose()

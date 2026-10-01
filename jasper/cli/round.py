@@ -408,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help="state that the arm's full sweep path is clear for this run")
     run_args.add_argument("--wait", action="store_true", help="wait for completion and bank the round with its packet")
     run_args.add_argument("--candidates", help="comma-separated fingerprints (or base); supplied means trial")
-    run_args.add_argument("--level-db", type=float, help="one absolute run fader level in dB; overrides the program's level default")
+    run_args.add_argument("--level-db", type=float, help="the most the run's fader may be, in dB; the run still finds its own level with a probe")
     poses = run_args.add_mutually_exclusive_group()
     poses.add_argument("--poses", help="comma-separated bearings in degrees, or a JSON list of poses")
     poses.add_argument("--layout", help="a named layout the preset offers")
