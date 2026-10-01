@@ -271,14 +271,12 @@ class VolumeRoutes(ControlHandlerMixin):
             )
             return
         # A live measurement OWNS the fader: it drives camilla's main_volume
-        # directly (audio_measurement.ramp) and never writes the persistence
-        # file, so the persisted household level says nothing about where the
-        # fader actually sits. A write of ANY size can therefore land a level
-        # far above the ramp's — the writer war seat-level hit on jts3
-        # (journal: `event=volume.reconciled source=idle drift_db=+9.35`, once
-        # a second) and a driver taken above its declared cap for the playing
-        # stimulus. So every level write is refused for the life of the hold,
-        # and MUTE stays open as the emergency door.
+        # directly and never writes the persistence file, so the persisted
+        # household level says nothing about where the fader actually sits. A
+        # write of ANY size can therefore land a level far above the run's and
+        # take a driver above its declared cap for the playing stimulus. So
+        # every level write is refused for the life of the hold, and MUTE
+        # stays open as the emergency door.
         # The two answers differ by contract, not by policy: a SOURCE-OBSERVED
         # write gets the ESTABLISHED `observation_applied: false` 200 that the
         # USB bridge already understands and retries against, while an
