@@ -59,7 +59,7 @@ from jasper.platform.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
 from jasper.platform.json_fields import finite_float
 from jasper.platform.log_event import log_event
-from jasper.platform.volume_latch import GetMainVolumeDb, SetMainVolumeDb, read_fader_db, set_and_confirm_volume
+from jasper.platform.volume_latch import GetMainVolumeDb
 
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB, hold_fader_at
 
@@ -274,8 +274,8 @@ class VolumeDoor(Protocol):
 
     Opening ESTABLISHES a measurement level nothing may be admitted against
     until it is confirmed; draining RESTORES the snapshotted household level.
-    Naming them apart lets one binding write through a ranked claim and another
-    straight at the fader without the plan learning which it got.
+    Naming them apart lets a binding take a ranked claim to open and only
+    declare the household level to drain, without the plan learning how.
 
     **Both verbs answer the fader's question**: *is the fader confirmed at this
     level?* — not *did a write go out*. Anything softer would let
@@ -303,36 +303,6 @@ class VolumeDoor(Protocol):
         higher-ranked claim releases, so the ladder stops rather than searching.
         """
         raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class FaderVolumeDoor:
-    """The direct door: set-and-confirm straight at the fader.
-
-    Both verbs land on the same
-    :func:`~jasper.platform.volume_latch.set_and_confirm_volume` — at this
-    door they are one act. Callers that arbitrate through
-    :class:`~jasper.audio_resources.volume_owner.VolumeOwner` bind a door that does; a process
-    with no owner to arbitrate through binds this one.
-    """
-
-    set_main_volume_db: SetMainVolumeDb
-    get_main_volume_db: GetMainVolumeDb
-
-    async def read_household_level_db(self) -> float | None:
-        return await read_fader_db(self.get_main_volume_db)
-
-    async def establish_measurement_level_db(self, level_db: float) -> bool:
-        return await set_and_confirm_volume(
-            level_db, self.set_main_volume_db, self.get_main_volume_db
-        )
-
-    async def restore_household_level_db(self, level_db: float) -> RestoreOutcome:
-        """Never defers: this door writes the fader itself."""
-        confirmed = await set_and_confirm_volume(
-            level_db, self.set_main_volume_db, self.get_main_volume_db
-        )
-        return RestoreOutcome.LANDED if confirmed else RestoreOutcome.FAILED
 
 
 class SessionVolumePlan:

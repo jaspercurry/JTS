@@ -341,6 +341,16 @@ def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
     )
 
 
+def owner_door(set_fader_db, get_fader_db):
+    """The session's ``VolumeDoor`` over one (set, get) fader pair: its own owner,
+    a real measurement claim and a PHYSICAL read, as production binds it."""
+    from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor  # lazy: conftest loads for every test
+    from jasper.audio_resources.volume_owner import VolumeOwner  # lazy: conftest loads for every test
+
+    owner = VolumeOwner(set_fader_db=set_fader_db, get_fader_db=get_fader_db)
+    return OwnerVolumeDoor(owner, read_fader=get_fader_db, claim=MeasurementVolumeClaim(owner))
+
+
 @pytest.fixture
 def a_process_with_a_volume_owner(monkeypatch):
     """Stand up the precondition every crossover-v2 session has in production.

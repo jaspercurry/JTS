@@ -40,7 +40,7 @@ from jasper.web import (
 )
 from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER
 from tests._log_events import event_field_maps, event_fields, event_records
-from tests.conftest import bare_root_logger, seat_process_volume_owner
+from tests.conftest import bare_root_logger, owner_door, seat_process_volume_owner
 from tests.test_web_wizard_cli import (
     wizard_harness_fixture as _wizard_harness_fixture,
 )
@@ -818,7 +818,7 @@ def test_service_start_restores_the_fader_a_killed_run_left(
 
     def crash_a_run_at_minus_20_db():
         run = volume_plan.SessionVolumePlan(state_path=state)
-        door = volume_plan.FaderVolumeDoor(set_fader, get_fader)
+        door = owner_door(set_fader, get_fader)
         assert asyncio.run(run.open(-20.0, door)) is volume_plan.SessionVolumeOpenResult.OPENED
         writes.clear()
 

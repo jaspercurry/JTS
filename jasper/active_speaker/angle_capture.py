@@ -385,8 +385,8 @@ _EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_targe
 
 @dataclass(frozen=True)
 class LevelPolicy:
-    """The fader every take of a run holds: the one stated, or, with none, the
-    one the run's probe finds (ADR-0403 §4)."""
+    """The fader every take of a run holds: the one its probe finds, capped at a
+    stated ``level_db``; a run with no probe holds the stated level (ADR-0403 §4)."""
 
     level_db: float | None = None
 
