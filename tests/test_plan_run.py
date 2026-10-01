@@ -30,7 +30,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, with_records
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
-from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE, POSITION_AXIS_VERTICAL
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
@@ -141,12 +141,22 @@ class _Store:
         return await self.records.bank(record)
 
 
+def _summed_captures(request):
+    """A plan's summed takes, as the executor's own tests play them: its stops' specs, with no
+    preparation phase and no probe."""
+    specs = ac.stop_specs(request, prompts=tuple(stop.prompt for stop in ac.resolve_request(request)),
+                          baseline_id=ac.BASE_CANDIDATE)
+    rows = [(stop, repeat) for stop in request.stops for repeat in range(1, request.repeats + 1)]
+    return tuple(plan_run.PlanCapture(stop, spec, repeat) for (stop, repeat), spec in zip(rows, specs) if spec is not None)
+
+
 async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None, **kwargs):
     fakes = seams or FakeSeams()
     manifest = RunManifest("run", _Store(fakes.records))
     async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
         result = await plan_run.run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                         gate=gate, aborts=_ABORTS, signals=signals, captures=captures, **kwargs)
+                                         gate=gate, aborts=_ABORTS, signals=signals, **kwargs,
+                                         captures=_summed_captures(request) if captures is None else captures)
     return result, fakes
 
 
@@ -201,18 +211,6 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
     assert all(row["budget"]["by_household"] == row["budget"]["by_speaker"] == 0 for row in gate.progress)
 
 
-def test_skipped_per_driver_work_is_disclosed_without_an_extra_grant():
-    request = ac.AngleCaptureRequest(candidates=("fp-a", "base", "fp-b"), stops=(
-        ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),
-        ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id="fp-b", purpose="speaker")))
-    gate = AnsweredGate()
-    result, _ = asyncio.run(_run_gated(request, gate=gate))
-    assert result.status == "partial"
-    assert (len(result.planned), result.takes_measured, len(result.not_measured)) == (3, 2, 1)
-    assert gate.grants == [(1, 1)]
-    assert result.not_measured[0]["reason"] == ac.WALK_NOTHING_PLAYABLE
-
-
 def test_ungated_run_needs_no_placement():
     result, _ = asyncio.run(_run_gated(_walk([0], ("fp-a", "fp-b"))))
     assert (result.status, result.mic_moves, result.takes_measured) == ("complete", 0, 2)
@@ -239,19 +237,6 @@ def test_interruption_keeps_records_and_names_unmeasured_work(banked):
     assert result.stopped_at == {"pose_index": banked // 2, "index": banked + 1}
     assert len(result.not_measured) == 4 - banked
     assert fakes.graph.restores == fakes.volume.releases == 1
-
-
-@pytest.mark.parametrize("plan", [
-    ac.AngleCaptureRequest(candidates=("fp-a",), stops=(ac.AngleStop(Pose(20, 0), ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker"),),
-        template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, position_axis=POSITION_AXIS_VERTICAL)),
-    ac.per_driver_at([0]),
-])
-def test_unplayable_plan_records_each_missing_stop(plan):
-    result, fakes = asyncio.run(_run_gated(plan))
-    assert result.status == "partial"
-    assert result.reason in {ac.WALK_STIMULUS_NOT_ACCEPTED, ac.WALK_NOTHING_PLAYABLE}
-    assert len(result.not_measured) == len(plan.stops)
-    assert fakes.play.calls == []
 
 
 @pytest.mark.parametrize(("ok", "next_action", "gain"), [
@@ -433,7 +418,8 @@ def test_timing_excludes_placement_and_all_exits_publish_terminal_state(monkeypa
     async def run():
         async with open_session(replace(fakes, records=manifest), allocate_take_id=manifest.allocate_take_id) as (session, _):
             return await plan_run.run_plan(_walk([0]), session=session, manifest=manifest, analyze=_analysis,
-                                           gate=gate, aborts=_ABORTS, clock=lambda: now)
+                                           gate=gate, aborts=_ABORTS, clock=lambda: now,
+                                           captures=_summed_captures(_walk([0])))
     if failure is RuntimeError:
         with pytest.raises(RuntimeError):
             asyncio.run(run())
@@ -521,7 +507,8 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
                 return await session.measure(spec)
 
     result = asyncio.run(plan_run.run_plan(_walk([0, 20]), session=FreshEngine(), manifest=manifest,
-                         analyze=_analysis, gate=AnsweredGate(), aborts=_ABORTS))
+                         analyze=_analysis, gate=AnsweredGate(), aborts=_ABORTS,
+                         captures=_summed_captures(_walk([0, 20]))))
     root = Path(info["bundle_dir"]) / "evidence/v1/artifacts"
     document = json.loads((root / result.path).read_text())
     records = [json.loads((root / take["record_id"]).read_text()) for take in _takes(document)]
@@ -661,14 +648,6 @@ def test_manifest_names_emitted_role_levels():
     assert manifest.takes_measured == 1
 
 
-def test_interrupted_spec_keeps_its_planned_index_after_a_skipped_stop():
-    request = ac.AngleCaptureRequest(candidates=("base", "fp-a"), stops=(
-        ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"), ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, candidate_id="fp-a", purpose="speaker")))
-    result, _ = asyncio.run(_run_gated(request, seams=FakeSeams(graph=_StoppingGraph(stop_after=1))))
-    assert result.stopped_at["index"] == 2
-    assert result.specs[result.stopped_at["index"]].candidate_id == "fp-a"
-
-
 @pytest.mark.parametrize("available", [True, False])
 @pytest.mark.parametrize("prepared", [True, False])
 def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepared):
@@ -725,7 +704,7 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
     )
     result = await plan_run.run_plan(replace(_walk([0]), level=ac.LevelPolicy(resolved=ac.ResolvedLevel(75, -14, "1234"))),
                                       door=door, manifest=manifest, analyze=_analysis,
-                                      aborts=_ABORTS)
+                                      aborts=_ABORTS, captures=_summed_captures(_walk([0])))
     assert (result.status, result.reason, result.takes_measured) == ("partial", reason, 0)
     build.assert_not_called()
     assert not graph.installs
@@ -1710,7 +1689,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
         verdict = (TakeVerdict(False, fault=REASON_SPL_CEILING_EXCEEDED, next="stop") if partial == "stop" else
                    TakeVerdict(False, fault=REASON_CLIPPED, next="fix_and_retake")
                    if partial and (partial == "all" or len(manifests) == (6 if partial == "last" else 1)) else TakeVerdict(True))
-        return LevelRun(manifest, door, _analysis, lambda *_args, **_kwargs: verdict)
+        return LevelRun(manifest, door, _analysis, lambda *_args, **_kwargs: verdict, _summed_captures(plan))
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     signals = plan_run.RunSignals()
@@ -1806,7 +1785,7 @@ async def test_ladder_caps_from_previous_measured_window(tmp_path, box, rung_spl
     def prepare(plan):
         manifest = RunManifest(f"run-{len(packet.runs)}", packet)
         return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
-                        lambda *_args, **_kwargs: TakeVerdict(True))
+                        lambda *_args, **_kwargs: TakeVerdict(True), prepare_level_captures(plan))
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     results = await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS,
@@ -1849,7 +1828,7 @@ async def test_opener_cap_survives_plan_serialization_at_each_pose(tmp_path, box
     def prepare(plan):
         manifest = RunManifest(f"run-{len(packet.runs)}", packet)
         return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
-                        lambda *_args, **_kwargs: TakeVerdict(True))
+                        lambda *_args, **_kwargs: TakeVerdict(True), prepare_level_captures(plan))
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS, save_ladder=packet.update_schedule)
@@ -1879,7 +1858,7 @@ async def test_unmeasured_rung_holds_or_persists_its_missing_level(tmp_path, box
     def prepare(plan):
         manifest = RunManifest(f"run-{len(packet.runs)}", packet)
         return LevelRun(manifest, _run_door(tmp_path, box, fakes, manifest), _analysis,
-                        lambda *_args, **_kwargs: TakeVerdict(True))
+                        lambda *_args, **_kwargs: TakeVerdict(True), prepare_level_captures(plan))
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     run = run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS, save_ladder=packet.update_schedule)
@@ -1948,7 +1927,7 @@ async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_
     try:
         result = await plan_run.run_plan(
             request, door=door, manifest=manifest, analyze=_analysis,
-            aborts=_ABORTS, measure=measure,
+            aborts=_ABORTS, measure=measure, captures=_summed_captures(request),
         )
         assert (result.reason, result.status, result.takes_measured) == ("internal_error", "partial", 1)
         assert fakes.play.bearings == [0, 20]
@@ -2150,7 +2129,8 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
             monkeypatch.setattr(fakes.play, "run", AsyncMock(side_effect=failure))
         door = _run_door(tmp_path, box, fakes, manifest)
         request = replace(_walk([0, 20]), level=ac.LevelPolicy(resolved=ac.ResolvedLevel(75, -20, "1234")))
-        run = plan_run.run_plan(request, door=door, manifest=manifest, analyze=_analysis, gate=gate, aborts=_ABORTS)
+        run = plan_run.run_plan(request, door=door, manifest=manifest, analyze=_analysis, gate=gate, aborts=_ABORTS,
+                                captures=_summed_captures(request))
         if site == "executor":
             with pytest.raises(ProgramPlaybackRefused):
                 await run

@@ -28,10 +28,9 @@ from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.runtime.measurement_window import MeasurementWindowError
 
 from .angle_capture import (
-    WALK_COMMISSIONING_STOP_UNSET, WALK_NOTHING_PLAYABLE,
-    WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
+    WALK_COMMISSIONING_STOP_UNSET, WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, LateralWalkRefused,
-    level_sets, resolve_request, stop_specs,
+    level_sets, resolve_request,
 )
 from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures
 from .commission_wiring import commissioning_spl_ceiling_db
@@ -293,7 +292,7 @@ async def run_plan(
     signals: RunSignals | None = None, spl_monitor: str = "",
     clock: Callable[[], float] = time.monotonic,
     gain_ceiling_db: Mapping[str, float] | None = None,
-    captures: Sequence[PlanCapture] | None = None,
+    captures: Sequence[PlanCapture],
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
@@ -312,37 +311,23 @@ async def run_plan(
     manifest.planned = [_planned_row(index * request.repeats + repeat, repeat, stop)
                         for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
     try:
-        resolved = resolve_request(request)
+        resolve_request(request)
         try:
-            needs_base = (any(stop.plays_summed and not stop.candidate_id for stop in request.stops)
-                          if captures is None else any(capture.spec.candidate_id == BASE_CANDIDATE for capture in captures))
-            baseline_id = baseline_candidate_id() if needs_base else ""
-            if captures is None:
-                specs = stop_specs(request, prompts=tuple(stop.prompt for stop in resolved), baseline_id=baseline_id)
-            else:
-                specs = tuple(replace(capture.spec, candidate_id=baseline_id)
-                              if capture.spec.candidate_id == BASE_CANDIDATE else capture.spec for capture in captures)
+            baseline_id = (baseline_candidate_id()
+                           if any(capture.spec.candidate_id == BASE_CANDIDATE for capture in captures) else "")
         except ValueError as exc:
             raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
-        playable = [(offset, spec) for offset, spec in enumerate(specs) if spec is not None]
-        for offset, spec in enumerate(specs):
-            if spec is None:
-                manifest.planned[offset]["reason"] = WALK_NOTHING_PLAYABLE
-        if not playable and captures is None:
-            raise LateralWalkRefused(WALK_NOTHING_PLAYABLE, "No composed per-driver spec was supplied")
     except LateralWalkRefused as exc:
         manifest.reason, manifest.detail, manifest.finalized = exc.reason, exc.detail, True
         await manifest.persist()
         return manifest
 
-    if captures is not None:
-        stops = [capture.resolved(request) for capture in captures]
-        manifest.planned = [_planned_row(index, capture.repeat, capture.stop)
-                            for index, capture in enumerate(captures, 1)]
-        angle_stops = [capture.stop for capture in captures]
-    else:
-        stops = [resolved[offset // request.repeats] for offset in range(len(specs))]
-        angle_stops = [request.stops[offset // request.repeats] for offset in range(len(specs))]
+    # Every take is a prepared capture, so each take that levels itself is marked to probe (ADR-0405).
+    specs = tuple(replace(capture.spec, candidate_id=baseline_id)
+                  if capture.spec.candidate_id == BASE_CANDIDATE else capture.spec for capture in captures)
+    stops = [capture.resolved(request) for capture in captures]
+    manifest.planned = [_planned_row(index, capture.repeat, capture.stop) for index, capture in enumerate(captures, 1)]
+    angle_stops = [capture.stop for capture in captures]
     places = [stop.pose.place for stop in angle_stops]
     level_starts = level_sets(angle_stops)
     anchor = request.level.resolved

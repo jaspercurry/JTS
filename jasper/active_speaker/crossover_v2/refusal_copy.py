@@ -144,7 +144,6 @@ REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
 REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupported_for_per_driver_programs"
-REASON_WALK_NOTHING_PLAYABLE = "walk_nothing_playable"
 
 # Any OTHER host-side fault the session runner's catch-all cleanup arm caught.
 # The seams raise open-endedly (CamillaUnavailable is a bare Exception,
@@ -1278,13 +1277,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP, 0, "",
         'This layout declares three driver roles: woofer, mid and tweeter. '
         'The measurement programs are not built for it yet.',
-    ),
-    REASON_WALK_NOTHING_PLAYABLE: ReasonSpec(
-        REASON_WALK_NOTHING_PLAYABLE, TEMPLATE_HARD_STOP, 0, "",
-        'This plan contains only separate driver measurements, which this runner cannot play. Run '
-        'it through the guided speaker measurement.',
-        next_action={"id": 'guided_measurement', "label": 'Open guided measurement',
-                     "href": '/sound/speaker/crossover/'},
     ),
     # End measurement graph and walk refusals.
     REASON_SPL_CEILING_EXCEEDED: ReasonSpec(

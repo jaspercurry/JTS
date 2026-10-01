@@ -594,7 +594,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     request = replace(request or _walk([0, 20]), level=LevelPolicy(resolved=ResolvedLevel(75, -20, "1234")))
     captures = tuple(PlanCapture(stop, MeasureSpec(kind="verify", graph_scope="candidate",
         candidate_id=stop.candidate_id, positions=(stop.pose.azimuth_deg,), program_phase=phase))
-        for stop in request.stops) if phase else None
+        for stop in request.stops) if phase else plan_run.prepare_plan_captures(request)
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door,
         signals=control, ceiling_s=30,
