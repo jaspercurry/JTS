@@ -61,6 +61,10 @@ def reconcile_i2s_hat_boot(run: Pass, logger: logging.Logger) -> None:
         log_event(logger, name, fields=fields)
     if durability_failed:
         run.i2s_hat_apply_error = True
+    run.i2s_hat_blocked_by_collision = (
+        hat_collision is not None
+        and hat_collision.managed_overlay not in hat_collision.colliding_overlays
+    )
     run.i2s_hat_desired_profile = desired_profile or ""
     if state.board_topology == "unsupported":
         run.log(
@@ -96,7 +100,10 @@ def sync_i2s_hat_reboot_marker(run: Pass) -> None:
     if desired and desired in children:
         observed = desired
     marker = Path(run.i2s_hat_reboot_required_path)
-    if observed == desired:
+    # A hand-written line naming another overlay kept the managed line out of
+    # the boot config, so a reboot boots that overlay again: the conflict
+    # event names the next step, not a restart.
+    if observed == desired or run.i2s_hat_blocked_by_collision:
         marker.unlink(missing_ok=True)
         return
     # No HAT desired: whatever DAC is attached is not a pending boot
