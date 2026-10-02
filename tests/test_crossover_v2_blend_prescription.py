@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -37,7 +36,6 @@ import pytest
 from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.crossover_v2.blend_correction import (
-    BLEND_FILTER_Q,
     BLEND_MAX_FILTER_CUT_DB,
     BLEND_MAX_FILTERS,
     blend_filters_from_mapping,
@@ -47,20 +45,16 @@ from jasper.active_speaker.crossover_v2.blend_prescription import (
     BLEND_CANDIDATE_FIELD,
     BLEND_PRESCRIPTION_REFUSAL_REASONS,
     PRESCRIPTION_KIND,
-    PRESCRIPTION_MAX_BOOST_Q,
     PRESCRIPTION_MAX_BYTES,
-    PRESCRIPTION_MAX_FILTER_BOOST_DB,
-    PRESCRIPTION_MAX_TOTAL_BOOST_DB,
+    PRESCRIPTION_MAX_GAIN_DB,
     PRESCRIPTION_SCHEMA_VERSION,
     BlendPrescriptionRefused,
     blend_prescription_to_candidate_fields,
-    max_q_for_gain,
     prescription_response_format,
     read_blend_prescription,
     read_prescription_bytes,
 )
 from jasper.active_speaker.crossover_v2 import position_cycle
-from jasper.platform.biquad import EVALUABLE_Q_MAX
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     PACKET_SCHEMA_VERSION,
     CrossoverEvidencePacketError,
@@ -778,7 +772,6 @@ def test_the_rationale_changes_no_refusal_on_a_failing_prescription(packet):
 def test_a_well_formed_cut_is_accepted_and_classified(packet):
     accepted = _gate(packet, _document([_cut(-1.5)], packet))
     assert accepted.prescription_class == "cut"
-    assert accepted.is_boost is False
     assert accepted.band_hz == BAND
     assert accepted.prescriber_model == "claude-opus-5"
     assert accepted.packet_fingerprint == packet["packet_fingerprint"]
@@ -800,10 +793,6 @@ def test_a_document_that_is_not_a_prescription_is_refused(packet, document, reas
 
 
 @pytest.mark.parametrize("filters,reason", [
-    pytest.param(
-        [_cut(gain=PRESCRIPTION_MAX_FILTER_BOOST_DB + 0.1)], "filter_boost_too_high",
-        id="boost-past-ceiling",
-    ),
     pytest.param([_cut(freq=100.0)], "filter_outside_region", id="below-region"),
     pytest.param([_cut(freq=9000.0)], "filter_outside_region", id="above-region"),
     pytest.param([_cut(q=0.0)], "filter_malformed", id="q-not-positive"),
@@ -930,47 +919,6 @@ def test_a_cut_is_admitted_at_any_depth_width_and_composition(packet):
     assert [f["gain"] for f in accepted.filters] == [-6.0, -2.5]
 
 
-def test_the_composed_boost_cap_is_evaluated_the_same_way(packet):
-    wide = [_cut(gain=3.0, freq=1000.0, q=0.5), _cut(gain=3.0, freq=1050.0, q=0.5)]
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(wide, packet))
-    assert excinfo.value.reason == "composed_boost_exceeded"
-
-
-#: An 8-bin log axis across the region. Its bins are ~1/4 octave apart, so a
-#: Q=2.0 filter sitting at a log midpoint is sampled only on its shoulders.
-_SPARSE_GRID = [
-    824.35, 1004.89, 1224.98, 1493.27, 1820.31, 2218.99, 2704.97, 3297.4,
-]
-
-
-def test_the_composed_cap_is_read_on_a_dense_sweep(packet):
-    """N1: a coarse axis can step over a narrow filter's peak.
-
-    Measured on this exact case: two Q=2.0 boosts at 2986.53 Hz read
-    **3.9955 dB** on an 8-bin axis — inside the 4.0 dB ceiling — and
-    **4.6599 dB** on a 512-point sweep of the same region.
-
-    The frequencies and gains are literals: deriving them at run time would let
-    the case drift off the peak it was chosen to sit on.
-    """
-    straddling = [
-        _cut(gain=2.33, freq=2986.5332, q=2.0),
-        _cut(gain=2.33, freq=2986.5332, q=2.0),
-    ]
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document(straddling, packet))
-    assert excinfo.value.reason == "composed_boost_exceeded"
-    assert excinfo.value.evidence["composed_boost_db"] == pytest.approx(4.66, abs=0.05)
-
-
-@pytest.mark.parametrize("supplied, dense", [(_SPARSE_GRID, False), ([800.0 + 3.0 * i for i in range(900)], True)])
-def test_the_composed_grid_is_the_denser_of_the_supplied_axis_and_the_sweep(supplied, dense):
-    in_band = [f for f in supplied if BAND[0] <= f <= BAND[1]]
-    grid = bp.composed_grid(BAND, supplied)
-    assert list(grid) == (pytest.approx(in_band) if dense else pytest.approx(list(np.geomspace(*BAND, 512))))
-
-
 def test_no_region_refuses_rather_than_inventing_a_band(packet):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut()], packet), band_hz=None)
@@ -1052,21 +1000,27 @@ def test_an_arbitrary_precision_int_is_refused_on_every_numeric_field(packet, fi
 
 
 # --------------------------------------------------------------------------- #
-# the boost class
+# boosts
 # --------------------------------------------------------------------------- #
 
 
-def test_a_boost_is_a_distinct_class_and_the_receipt_says_so(packet):
-    """Attribution: a later comparison must keep the two classes separable."""
+@pytest.mark.parametrize("filters,position", [
+    pytest.param([_cut(gain=0.1)], 0, id="just-past-the-bound"),
+    pytest.param([_cut(gain=3.5)], 0, id="a-3.5-dB-boost"),
+    pytest.param([_cut(gain=1.5, q=9.0)], 0, id="a-narrow-boost"),
+    pytest.param([_cut(gain=3.0, q=0.5), _cut(gain=3.0, freq=1050.0, q=0.5)], 0, id="two-overlapping-boosts"),
+    pytest.param([_cut(gain=2.0, freq=100.0)], 0, id="a-boost-outside-the-region"),
+    pytest.param([_cut(gain=20000.0)], 0, id="a-boost-past-f64-overflow"),
+    pytest.param([_cut(), _cut(gain=0.5, freq=1200.0)], 1, id="a-boost-in-the-second-filter"),
+])
+def test_a_positive_gain_refuses_once_naming_the_field_and_the_bound(packet, filters, position):
+    """A blend filter may only cut: every boost gets the one code, whatever else
+    is wrong with it. The bound is a literal, so widening it fails here."""
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=2.0)], packet))
-    assert excinfo.value.reason == "boost_route_unavailable"
-    # And it says the bars were cleared, which is the evidence an owner needs.
-    assert excinfo.value.evidence["bars_cleared"] is True
-    assert set(excinfo.value.evidence["blocked_by"]) == {
-        "blend_stage_is_not_a_headroom_term",
-        "per_driver_seam_needs_a_banked_defect_boostable_verdict",
-    }
+        _gate(packet, _document(filters, packet))
+    assert (excinfo.value.reason, excinfo.value.evidence) == ("boost_route_unavailable", {
+        "field": f"filters[{position}].gain", "gain_db": filters[position]["gain"], "max_gain_db": 0.0,
+    })
 
 
 # --------------------------------------------------------------------------- #
@@ -1090,21 +1044,6 @@ def test_every_cut_this_gate_accepts_the_shipped_reader_also_vouches_for(packet,
     assert [dict(f) for f in vouched] == [dict(f) for f in accepted.filters]
 
 
-def test_the_gate_cannot_accept_what_the_shipped_reader_refuses(packet):
-    """The belt-and-braces arm, reached by construction.
-
-    A boost is the one thing the shipped reader refuses that this gate's
-    per-field checks would let through, and it is caught by the route. Prove
-    the braces exist independently: a boost never reaches the strict-reader
-    check, so ``blend_filters_from_mapping`` refusing it is what the route is
-    standing in for.
-    """
-    assert blend_filters_from_mapping([_cut(gain=0.1)]) is None
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=0.1)], packet))
-    assert excinfo.value.reason == "boost_route_unavailable"
-
-
 # --------------------------------------------------------------------------- #
 # the response format and the round trip
 # --------------------------------------------------------------------------- #
@@ -1115,31 +1054,12 @@ def test_the_bounds_are_the_numbers_the_ruling_and_the_evidence_earned():
 
     Deliberately not written as ``assert X == X``: a test that builds its
     hostile input out of the constant it is checking moves with the constant
-    and proves nothing. A mutation battery caught exactly that on the first
-    cut of this suite — the size cap, the per-filter boost cap and the Q
-    ceiling all escaped because their cases said ``CONSTANT + 0.1``. The
-    literals below are what makes the cases beneath them load-bearing.
+    and proves nothing: a case that says ``CONSTANT + 0.1`` lets the constant
+    move. The literals below are what makes the cases beneath them
+    load-bearing.
     """
     assert BLEND_MAX_FILTERS == 2
-    # The boost Q ceiling stays the solver's — a boost is a headroom risk on
-    # a sampled grid. The cut arm is unbounded (ADR-0207).
-    assert PRESCRIPTION_MAX_BOOST_Q == 2.0
-    assert PRESCRIPTION_MAX_BOOST_Q is BLEND_FILTER_Q, (
-        "the BOOST Q ceiling must stay the solver's"
-    )
-    # Opened by owner ruling 2026-08-18; deliberately separate constants from
-    # the solver's own cut ceilings they happen to equal.
-    assert PRESCRIPTION_MAX_FILTER_BOOST_DB == 3.0
-    assert PRESCRIPTION_MAX_TOTAL_BOOST_DB == 4.0
     assert PRESCRIPTION_MAX_BYTES == 65536
-
-
-@pytest.mark.parametrize("gain", [3.1, 4.0, 12.0, 30.0])
-def test_a_boost_past_the_opening_bar_is_refused_at_a_literal_ceiling(packet, gain):
-    """Literal gains, so widening PRESCRIPTION_MAX_FILTER_BOOST_DB fails here."""
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=gain)], packet))
-    assert excinfo.value.reason == "filter_boost_too_high"
 
 
 @pytest.mark.parametrize("gain", [-3.1, -6.0, -12.0, -30.0])
@@ -1177,20 +1097,6 @@ def test_the_filter_q_the_round_18_gate_actually_refused_is_now_accepted(packet)
     assert accepted.filters[0]["q"] == 3.6
 
 
-@pytest.mark.parametrize("q", [2.1, 3.6, 8.0, 12.0])
-def test_a_boost_keeps_the_narrower_ceiling_the_cut_class_left_behind(packet, q):
-    """The sign split, from the side that did NOT move.
-
-    Literal Q values that a CUT is now allowed (2.1-8.0) and a boost is not.
-    Refused at the Q gate specifically, before the route, so this cannot pass
-    for the wrong reason once a boost route exists.
-    """
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_cut(gain=1.5, q=q)], packet))
-    assert excinfo.value.reason == "filter_q_out_of_range"
-    assert excinfo.value.evidence["q_max"] == 2.0
-
-
 @pytest.mark.parametrize("q", [0.4, 0.1, 0.01])
 def test_a_cut_wider_than_the_retired_floor_is_admitted(packet, q):
     """ADR-0207: a broad cut is a legitimate reversible experiment."""
@@ -1198,41 +1104,8 @@ def test_a_cut_wider_than_the_retired_floor_is_admitted(packet, q):
     assert accepted.filters[0]["q"] == q
 
 
-def test_the_q_refusal_names_the_ceiling_that_actually_applied(packet):
-    """A prescriber refused at a stale range cannot correct itself: the
-    message and the machine-readable evidence both carry the boost arm's own
-    ceiling. A cut has no Q refusal left to name (ADR-0207)."""
-    with pytest.raises(BlendPrescriptionRefused) as boost_refusal:
-        _gate(packet, _document([_cut(gain=1.5, q=9.0)], packet))
-    assert "past 2 for a boost" in str(boost_refusal.value)
-    assert boost_refusal.value.evidence["q_max"] == PRESCRIPTION_MAX_BOOST_Q
-
-
-@pytest.mark.parametrize("gain,expected", [
-    (-3.0, EVALUABLE_Q_MAX), (-0.5, EVALUABLE_Q_MAX), (0.0, EVALUABLE_Q_MAX),
-    (-0.0, EVALUABLE_Q_MAX), (0.5, 2.0), (3.0, 2.0),
-])
-def test_the_q_ceiling_splits_on_the_same_predicate_the_class_receipt_does(
-    gain, expected,
-):
-    """``gain > 0`` decides both, so no filter is a cut for one and a boost for
-    the other. Zero is inert and takes the cut arm, matching ``_check_bounds``.
-    The cut arm is pinned to the IMPORTED constant here, so the wiring to
-    ``jasper.sound.profile`` is what this proves; the literal below is what
-    stops that constant itself from drifting silently.
-    """
-    assert max_q_for_gain(gain) == expected
-
-
-def test_the_cut_q_ceiling_is_pinned_at_a_literal_value():
-    """``EVALUABLE_Q_MAX`` could drift without failing the test above, which
-    only checks the door reads the constant it imports. This literal is what
-    makes a change to the constant's own value visible here."""
-    assert max_q_for_gain(-1.0) == 1e6
-
-
 def test_a_zero_gain_filter_takes_the_cut_ceiling_and_the_cut_class(packet):
-    """The predicate agreement above, exercised end to end rather than asserted."""
+    """Zero gain sits on the bound (gain <= 0), so it is a cut."""
     accepted = _gate(packet, _document([_cut(gain=0.0, q=7.0)], packet))
     assert accepted.prescription_class == "cut"
     assert accepted.filters[0]["q"] == 7.0
@@ -1324,8 +1197,7 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     """One owner: instructions a prescriber gets and the gate it faces."""
     fmt = prescription_response_format()
     assert fmt["bounds"]["max_filters"] == BLEND_MAX_FILTERS
-    assert fmt["bounds"]["max_filter_boost_db"] == PRESCRIPTION_MAX_FILTER_BOOST_DB
-    assert fmt["bounds"]["q_max_boost"] == PRESCRIPTION_MAX_BOOST_Q
+    assert fmt["bounds"]["max_gain_db"] == PRESCRIPTION_MAX_GAIN_DB
     # The retired cut bounds are gone from the contract entirely, and the
     # freedom is stated in their place (ADR-0207).
     for retired_key in ("max_filter_cut_db", "max_composed_cut_db", "q_min",
@@ -1437,26 +1309,6 @@ def test_a_prescribed_correction_cannot_be_edited_out_after_the_fact(packet):
     with pytest.raises(MeasuredCrossoverCandidateError) as excinfo:
         MeasuredCrossoverCandidate.from_mapping(persisted)
     assert excinfo.value.code == "candidate_tampered"
-
-
-def test_a_boost_can_never_populate_the_blend_field_whatever_the_caller_did(packet):
-    """S3(a): the docstring's promise, made true of the function.
-
-    ``read_blend_prescription`` routes before returning, so today nothing
-    boost-class reaches here — but a :class:`BlendPrescription` can be built
-    directly, which does not route. The seam is the last thing before a
-    fingerprinted candidate field, so it asks the one owner of the rule
-    itself.
-    """
-    accepted = _gate(packet, _document([_cut(-1.5)], packet))
-    boost = replace(
-        accepted,
-        prescription_class="boost",
-        filters=({"biquad_type": "Peaking", "freq": 1000.0, "q": 2.0, "gain": 2.0},),
-    )
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        blend_prescription_to_candidate_fields(boost)
-    assert excinfo.value.reason == "boost_route_unavailable"
 
 
 # --------------------------------------------------------------------------- #

@@ -16,7 +16,9 @@ from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.room_limits import boost_cap_db, cut_floor_db, spatial_support
 from jasper.audio_measurement.seat_figures import spread_rms_db
 
-from .blend_prescription import composed_grid
+#: Points in a composed check's own log sweep, when it is the denser axis.
+_COMPOSED_GRID_POINTS = 512
+
 
 @dataclass(frozen=True, eq=False)
 class RoomMedian:
@@ -108,6 +110,22 @@ def _residual_summary(median: RoomMedian, residual: Mapping[str, np.ndarray]) ->
                        "under_seat_spread": None if rms is None or spread is None else rms < spread}
     return {"band_hz": band_hz, "spatial_support": spatial_support(median.n_positions),
             "seat_spread_rms_db": spread, "sides": sides}
+
+
+def composed_grid(band_hz: tuple[float, float], freqs_hz: Sequence[float] | np.ndarray) -> np.ndarray:
+    """The axis a composed cascade is read on.
+
+    The DENSER of the supplied grid inside the band and a log sweep over it,
+    never whichever happens to be supplied — a coarse axis steps over a
+    narrow filter's peak (measured: up to 0.43 dB under-read at the eight-bin
+    floor), which would make a composed bound a property of the evidence
+    document rather than of the filters.
+    """
+    lo, hi = band_hz
+    sweep = np.geomspace(lo, hi, _COMPOSED_GRID_POINTS)
+    supplied = np.asarray(freqs_hz, dtype=np.float64)
+    inside = supplied[(supplied >= lo) & (supplied <= hi)]
+    return inside if inside.size > sweep.size else sweep
 
 
 def room_composition(sides: Mapping[str, Sequence[Mapping[str, Any]]], median: RoomMedian,

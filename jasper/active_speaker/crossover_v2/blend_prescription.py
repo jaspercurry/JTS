@@ -10,11 +10,8 @@ returns a validated :class:`BlendPrescription` or a refusal naming which gate
 said no, by slug from :data:`BLEND_PRESCRIPTION_REFUSAL_REASONS` and never by
 prose. Refusals raise and are never clamped to the boundary.
 
-
-Cuts and boosts are different classes and the receipt says which. A boost's
-physics is why: a minimum-phase shortfall can be filled, an interference null
-swallows whatever you feed it. :func:`prescription_route` refuses the boost
-class outright today.
+A prescription is cuts only: :func:`_check_bounds` refuses every positive
+gain, and :data:`BOOST_ROUTE_UNAVAILABLE` says why.
 """
 
 from __future__ import annotations
@@ -30,17 +27,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
-
 # Leaf of the crossover_v2 DAG: no session, no flow, no web. Bounds are
 # imported from the ONE biquad evaluator and from the deterministic solver
 # rather than restated, so a door's ceiling and the arithmetic it protects
 # cannot drift apart.
-from jasper.active_speaker.branch_chain import chain_response
 from jasper.platform.biquad import EVALUABLE_Q_MAX, EVALUABLE_Q_MIN
 
 from .blend_correction import (
-    BLEND_FILTER_Q,
     BLEND_MAX_FILTERS,
     blend_filters_from_mapping,
 )
@@ -51,20 +44,15 @@ __all__ = [
     "BLEND_PRESCRIPTION_REFUSAL_REASONS",
     "BOOST_ROUTE_UNAVAILABLE",
     "PRESCRIPTION_KIND",
-    "PRESCRIPTION_MAX_BOOST_Q",
     "PRESCRIPTION_MAX_BYTES",
-    "PRESCRIPTION_MAX_FILTER_BOOST_DB",
-    "PRESCRIPTION_MAX_TOTAL_BOOST_DB",
+    "PRESCRIPTION_MAX_GAIN_DB",
     "PRESCRIPTION_SCHEMA_VERSION",
     "PROHIBITED_PRESCRIPTION_KEYS",
     "BlendPrescription",
     "BlendPrescriptionRefused",
     "blend_prescription_to_candidate_fields",
-    "composed_grid",
     "find_prohibited_keys",
-    "max_q_for_gain",
     "prescription_response_format",
-    "prescription_route",
     "prescription_sha256",
     "read_blend_prescription",
     "read_prescription_bytes",
@@ -102,43 +90,12 @@ PRESCRIPTION_MAX_BYTES = 64 * 1024
 # measured verify with auto-restore is the net. The deterministic solver keeps
 # its own caps in `blend_correction` — the envelope bounds the algorithm, never
 # the prescriber. What else bounds a cut here is the region
-# (`FILTER_OUTSIDE_REGION`), `BLEND_MAX_FILTERS`' slots, and `max_q_for_gain`.
+# (`FILTER_OUTSIDE_REGION`), `BLEND_MAX_FILTERS`' slots, and the evaluable Q
+# range (`EVALUABLE_Q_MIN`, `EVALUABLE_Q_MAX`).
 
-#: Widest Q one prescribed BOOST may use — the deterministic solver's own
-#: emitted Q, imported. A narrow boost is a headroom risk rather than a quality
-#: one: boost is charged on a SAMPLED grid, and no fixed resolution bounds an
-#: arbitrarily narrow boost's between-bin peak, so this ceiling is what keeps
-#: the composed-boost reading a valid upper bound. The per-driver class
-#: deliberately does NOT share it (:data:`~.driver_prescription.DRIVER_MAX_BOOST_Q`
-#: is 8.0).
-PRESCRIPTION_MAX_BOOST_Q = BLEND_FILTER_Q
-
-
-def max_q_for_gain(gain_db: float) -> float:
-    """The widest Q one prescribed filter may use, by the SIGN of its gain.
-
-    A boost gets :data:`PRESCRIPTION_MAX_BOOST_Q`, a POLICY ceiling; everything
-    else — ``0.0`` included — gets
-    :data:`~jasper.platform.biquad.EVALUABLE_Q_MAX`, an INSTRUMENT-fidelity one
-    (past it the f64 biquad cascade stops evaluating the filter asked for:
-    measured +6.99 dB realized from a requested Q 8e14 on an admitted -3.0 dB
-    cut). Same predicate :func:`_check_bounds` derives
-    :attr:`BlendPrescription.prescription_class` from, so a filter cannot be a
-    cut for the receipt and a boost for its Q bound.
-    """
-    return PRESCRIPTION_MAX_BOOST_Q if gain_db > 0.0 else EVALUABLE_Q_MAX
-
-
-#: Per-filter boost ceiling in dB for the blend stage.
-PRESCRIPTION_MAX_FILTER_BOOST_DB = 3.0
-
-#: Ceiling on the COMPOSED boost's peak over the region, dB — enforced on the
-#: evaluated cascade rather than a sum of gains, because two boosts whose
-#: skirts overlap deliver more than either alone. The FIRST of two independent
-#: bounds: the emitter re-charges the composed graph at the graph boundary and
-#: refuses there too. This class's alone, pinned against the driver class's own
-#: ceiling as an inequality.
-PRESCRIPTION_MAX_TOTAL_BOOST_DB = 4.0
+#: The highest gain one prescribed filter may carry, dB: cuts only
+#: (:data:`BOOST_ROUTE_UNAVAILABLE`).
+PRESCRIPTION_MAX_GAIN_DB = 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -157,15 +114,17 @@ FILTER_MALFORMED = "filter_malformed"
 FILTER_COUNT_EXCEEDED = "filter_count_exceeded"
 FILTER_OUTSIDE_REGION = "filter_outside_region"
 FILTER_Q_OUT_OF_RANGE = "filter_q_out_of_range"
+#: The room door raises these two from this shared vocabulary; this door
+#: refuses every boost as :data:`BOOST_ROUTE_UNAVAILABLE` instead.
 FILTER_BOOST_TOO_HIGH = "filter_boost_too_high"
 COMPOSED_BOOST_EXCEEDED = "composed_boost_exceeded"
 REGION_UNAVAILABLE = "region_unavailable"
 STRICT_READER_DISAGREEMENT = "strict_reader_disagreement"
 
-#: A boost that cleared every bar above and still has nowhere to go — a
-#: statement about the SEAM, not the proposal, and deliberately the LAST gate:
-#: a prescriber learns whether its boost would have qualified before it learns
-#: no route carries one. See :func:`prescription_route`.
+#: Any positive gain. The blend stage is cuts only (the emitter refuses a
+#: positive gain, ``camilla_yaml.filters.MAX_BLEND_CORRECTION_GAIN_DB``), and a
+#: summed packet cannot say which driver a region's deficit belongs to, so a
+#: boost is a driver-section proposal.
 BOOST_ROUTE_UNAVAILABLE = "boost_route_unavailable"
 
 BLEND_PRESCRIPTION_REFUSAL_REASONS = frozenset({
@@ -177,8 +136,6 @@ BLEND_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_COUNT_EXCEEDED,
     FILTER_OUTSIDE_REGION,
     FILTER_Q_OUT_OF_RANGE,
-    FILTER_BOOST_TOO_HIGH,
-    COMPOSED_BOOST_EXCEEDED,
     REGION_UNAVAILABLE,
     STRICT_READER_DISAGREEMENT,
     BOOST_ROUTE_UNAVAILABLE,
@@ -252,9 +209,8 @@ class BlendPrescription:
     #: The prescribed biquads, in emission order, normalized to the reduced
     #: record the emitter reads.
     filters: tuple[dict[str, Any], ...]
-    #: ``"cut"`` when every gain is non-positive, ``"boost"`` when any gain is
-    #: positive. The receipt's attribution key: the two classes are graded the
-    #: same way and must stay separable when the series is read back.
+    #: Always ``"cut"``: the gate refuses every boost. The receipt's attribution
+    #: key, spelled as the driver and room classes are.
     prescription_class: str
     packet_fingerprint: str
     prescriber_model: str
@@ -268,10 +224,6 @@ class BlendPrescription:
     #: :data:`RATIONALE_MAX_CHARS`.
     rationale_dropped_chars: int = 0
     answers_packet: bool | None = None
-
-    @property
-    def is_boost(self) -> bool:
-        return self.prescription_class == "boost"
 
     def to_dict(self) -> dict[str, Any]:
         """The receipt's view: what was prescribed, and what justifies it."""
@@ -337,7 +289,7 @@ def prescription_response_format() -> dict[str, Any]:
         "bounds": {
             "max_filters": BLEND_MAX_FILTERS,
             "biquad_type": "Peaking",
-            "q_max_boost": PRESCRIPTION_MAX_BOOST_Q,
+            "max_gain_db": PRESCRIPTION_MAX_GAIN_DB,
             "cuts_are_free": (
                 "a cut (gain <= 0) carries no depth ceiling and no composed "
                 "ceiling: any depth the arithmetic can evaluate is "
@@ -345,19 +297,9 @@ def prescription_response_format() -> dict[str, Any]:
                 "auto-restore is the net. Its Q must sit in "
                 f"[{EVALUABLE_Q_MIN:g}, {EVALUABLE_Q_MAX:g}] (ADR-0207) — "
                 "not a policy ceiling but the range this system's evaluator "
-                "and emitter realize faithfully. A boost (gain > 0) is "
-                f"capped at Q {PRESCRIPTION_MAX_BOOST_Q:g} — its composed "
-                "SPL spend is read on a sampled grid, and no fixed grid can "
-                "bound an arbitrarily narrow boost's between-bin peak"
+                "and emitter realize faithfully"
             ),
             "freq_must_be_inside": "the blend contract's bounds.band_hz",
-            "max_filter_boost_db": PRESCRIPTION_MAX_FILTER_BOOST_DB,
-            "max_composed_boost_db": PRESCRIPTION_MAX_TOTAL_BOOST_DB,
-            "composed_caps_are_evaluated": (
-                "the composed boost cap is checked on the evaluated biquad "
-                "cascade over the region, not on a sum of gains: two filters "
-                "whose skirts overlap deliver more than either alone"
-            ),
         },
         "refusal_reasons": sorted(BLEND_PRESCRIPTION_REFUSAL_REASONS),
         "prohibited_keys": sorted(PROHIBITED_PRESCRIPTION_KEYS),
@@ -461,14 +403,25 @@ def _parse_filters(raw: Any) -> tuple[dict[str, Any], ...]:
 
 def _check_bounds(
     filters: tuple[dict[str, Any], ...], band_hz: tuple[float, float]
-) -> str:
-    """Every per-filter bound, and the class the gains add up to."""
+) -> None:
+    """Every per-filter bound."""
     lo, hi = band_hz
-    boosts = 0
     for position, entry in enumerate(filters):
         freq = float(entry["freq"])
         q = float(entry["q"])
         gain = float(entry["gain"])
+        # First: a boost is refused as one whatever its other bounds say, and
+        # before the underflow probe below, which OVERFLOWS above ~+12330 dB.
+        if gain > PRESCRIPTION_MAX_GAIN_DB:
+            refuse(
+                BOOST_ROUTE_UNAVAILABLE,
+                f"filter {position} boosts {gain:g} dB, and a blend filter may "
+                f"only cut (gain <= {PRESCRIPTION_MAX_GAIN_DB:g} dB). Propose a "
+                "boost in the driver section, when the contract offers it",
+                field=f"filters[{position}].gain",
+                gain_db=gain,
+                max_gain_db=PRESCRIPTION_MAX_GAIN_DB,
+            )
         if not lo <= freq <= hi:
             refuse(
                 FILTER_OUTSIDE_REGION,
@@ -487,14 +440,12 @@ def _check_bounds(
                 "spelled 'q: 0.0000' by the emitter and clamped by the "
                 "evaluator, not a shape this system can realize",
             )
-        q_max = max_q_for_gain(gain)
-        if q > q_max:
+        if q > EVALUABLE_Q_MAX:
             refuse(
                 FILTER_Q_OUT_OF_RANGE,
-                f"filter {position} Q {q:g} is past {q_max:g} for a "
-                f"{'boost' if gain > 0.0 else 'cut'}",
+                f"filter {position} Q {q:g} is past {EVALUABLE_Q_MAX:g}",
                 q=q,
-                q_max=q_max,
+                q_max=EVALUABLE_Q_MAX,
             )
         # 10**(gain/40) is exactly 0.0 below ~-12960 dB, and `biquad_coeffs`
         # divides by it — an uncaught ZeroDivisionError at evaluation time.
@@ -504,66 +455,6 @@ def _check_bounds(
                 f"filter {position} gain {gain:g} dB underflows 64-bit "
                 "arithmetic and cannot be evaluated or emitted",
             )
-        if gain > PRESCRIPTION_MAX_FILTER_BOOST_DB:
-            refuse(
-                FILTER_BOOST_TOO_HIGH,
-                f"filter {position} boosts {gain:.2f} dB, past the "
-                f"{PRESCRIPTION_MAX_FILTER_BOOST_DB:g} dB per-filter ceiling",
-                gain_db=gain,
-                max_boost_db=PRESCRIPTION_MAX_FILTER_BOOST_DB,
-            )
-        if gain > 0.0:
-            boosts += 1
-    return "boost" if boosts else "cut"
-
-
-#: Points in a composed check's own log sweep, when it is the denser axis.
-_COMPOSED_GRID_POINTS = 512
-
-
-def composed_grid(
-    band_hz: tuple[float, float], freqs_hz: Sequence[float] | np.ndarray | None
-) -> np.ndarray:
-    """The axis a composed cascade is read on.
-
-    The DENSER of the supplied grid inside the band and a log sweep over it,
-    never whichever happens to be supplied — a coarse axis steps over a
-    narrow filter's peak (measured: up to 0.43 dB under-read at the eight-bin
-    floor), which would make a composed bound a property of the evidence
-    document rather than of the filters.
-    """
-    lo, hi = band_hz
-    sweep = np.geomspace(lo, hi, _COMPOSED_GRID_POINTS)
-    if freqs_hz is None or len(freqs_hz) == 0:
-        return sweep
-    supplied = np.asarray(freqs_hz, dtype=np.float64)
-    inside = supplied[(supplied >= lo) & (supplied <= hi)]
-    return inside if inside.size > sweep.size else sweep
-
-
-def _check_composed(filters: tuple[dict[str, Any], ...], band_hz: tuple[float, float]) -> None:
-    """The composed BOOST cap, on the EVALUATED cascade, not a sum of gains.
-
-    Two filters whose skirts overlap deliver more than either alone. Through
-    ``chain_response``, the ONE biquad evaluator here, so this gate and the
-    emitter's headroom charge cannot disagree about what CamillaDSP realizes.
-    There is no composed CUT arm (ADR-0207): a cut spends no headroom.
-    """
-    if not filters:
-        return
-    grid = composed_grid(band_hz, None)
-    composed = 20.0 * np.log10(
-        np.maximum(np.abs(np.asarray(chain_response(filters, grid))), 1e-12)
-    )
-    peak_boost = float(np.max(composed))
-    if peak_boost > PRESCRIPTION_MAX_TOTAL_BOOST_DB:
-        refuse(
-            COMPOSED_BOOST_EXCEEDED,
-            f"the composed cascade boosts {peak_boost:.2f} dB at its peak over "
-            f"the region, past the {PRESCRIPTION_MAX_TOTAL_BOOST_DB:g} dB ceiling",
-            composed_boost_db=peak_boost,
-            max_composed_boost_db=PRESCRIPTION_MAX_TOTAL_BOOST_DB,
-        )
 
 
 def _parse_prescription(
@@ -645,10 +536,10 @@ def read_blend_prescription(
     the only inputs a prescriber willing to lie cannot forge, so a caller that
     forgot one would lose the evidence's opinion and never know.
 
-    Order is deliberate — shape, identity, region, per-filter bounds, composed
-    cascade, the route, and last the shipped strict reader — because each
-    stage sends a prescriber somewhere different. The bounds are INCLUSIVE, so
-    a round's legality does not turn on float noise.
+    Order is deliberate — shape, identity, region, per-filter bounds, and last
+    the shipped strict reader — because each stage sends a prescriber
+    somewhere different. The bounds are INCLUSIVE, so a round's legality does
+    not turn on float noise.
     """
     if raw is None:
         return None
@@ -664,12 +555,11 @@ def read_blend_prescription(
         )
     band = band_hz
 
-    prescription_class = _check_bounds(filters, band)
-    _check_composed(filters, band)
+    _check_bounds(filters, band)
 
     prescription = BlendPrescription(
         filters=filters,
-        prescription_class=prescription_class,
+        prescription_class="cut",
         packet_fingerprint=packet_fingerprint,
         answers_packet=fingerprint == packet_fingerprint if PACKET_FINGERPRINT_FIELD in raw else None,
         prescriber_model=model,
@@ -678,14 +568,11 @@ def read_blend_prescription(
         rationale=rationale,
         rationale_dropped_chars=rationale_dropped,
     )
-    prescription_route(prescription)
 
     # The authority on whether a cut list is acceptable stays
     # `blend_filters_from_mapping`; everything above is the diagnostic layer
     # that says WHY. Asked LAST, so this module can never accept a cut the
-    # shipped reader would refuse, however its own bounds drift. `prescription`
-    # is a cut by construction here: the route above has already refused
-    # every boost.
+    # shipped reader would refuse, however its own bounds drift.
     vouched = blend_filters_from_mapping([dict(f) for f in filters])
     if vouched is None or [dict(f) for f in vouched] != [dict(f) for f in filters]:
         refuse(
@@ -694,47 +581,6 @@ def read_blend_prescription(
             "this filter list, so it is not one this system can persist",
         )
     return prescription
-
-
-def prescription_route(prescription: BlendPrescription) -> str:
-    """Which candidate field this prescription lands in, or a refusal.
-
-    A cut routes to :data:`BLEND_CANDIDATE_FIELD`, byte-shaped like a solved
-    one. A boost does not, on two independent structural facts:
-
-    1. The blend stage is deliberately NOT a term in
-       ``camilla_yaml.total_headroom_db`` — a cuts-only stage needs no
-       absorption — so a boost there would be un-absorbed and would spend the
-       room layer's allocation. Adding that term is a gain-structure change.
-    2. The one seam that DOES carry a positive gain, ``linearization``, is
-       per-ROLE and admits a prescribed boost only against a banked
-       ``defect-boostable`` verdict for the named driver. A SUMMED packet
-       cannot say which driver a region's deficit belongs to, so writing one
-       into a fingerprinted field would persist an attribution nothing
-       measured.
-
-    The per-filter and composed-cascade bars still run first, so a boost that
-    also fails one of those is refused with THAT more specific reason instead
-    of this one.
-    """
-    if not prescription.is_boost:
-        return BLEND_CANDIDATE_FIELD
-    refuse(
-        BOOST_ROUTE_UNAVAILABLE,
-        "this boost clears every shape and evidence bar, and there is still no "
-        "seam THIS class can carry it on: the summed blend stage refuses a "
-        "positive gain and is not a headroom term (opening it is a "
-        "gain-structure change). The per-driver linearization seam does carry "
-        "one, and admits it only against a banked defect-boostable verdict for "
-        "the named driver — evidence a summed packet cannot supply, because it "
-        "cannot say which driver a region's deficit belongs to. Propose it as "
-        "a per-driver prescription against a round that banked one",
-        blocked_by=[
-            "blend_stage_is_not_a_headroom_term",
-            "per_driver_seam_needs_a_banked_defect_boostable_verdict",
-        ],
-        bars_cleared=True,
-    )
 
 
 def blend_prescription_to_candidate_fields(
@@ -747,17 +593,10 @@ def blend_prescription_to_candidate_fields(
     prescription applied after construction is either invisible to the
     fingerprint or refused as ``candidate_tampered``. ``{}`` for ``None``, so a
     caller can splat it unconditionally.
-
-    It RE-ASKS :func:`prescription_route` rather than trusting its input was
-    gated — a :class:`BlendPrescription` can be built directly, which does not
-    route — which makes "a boost can never populate ``blend_correction``" true
-    of this function rather than of the current call graph.
     """
     if prescription is None:
         return {}
-    return {
-        prescription_route(prescription): [dict(f) for f in prescription.filters]
-    }
+    return {BLEND_CANDIDATE_FIELD: [dict(f) for f in prescription.filters]}
 
 
 def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
