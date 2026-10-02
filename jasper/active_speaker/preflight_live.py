@@ -49,7 +49,7 @@ def _draft_floor_db(topology: Any) -> Mapping[str, float] | None:
 
 def _driver_peaks_db(profile: Any, candidate: MeasuredCrossoverCandidate) -> dict[str, float] | None:
     """The loudest ``candidate``'s own graph plays each driver, dB re unity, by
-    measurement target; ``None`` when that graph cannot be built (ADR-0407)."""
+    measurement target; ``None`` when that graph cannot be built."""
     try:
         peaks = output_peaks_db(yaml.safe_load(compile_tuning_graph(profile, candidate)), charged=True)
         found: dict[str, float] = {}
@@ -125,7 +125,7 @@ def read_preflight_facts(
         except candidate_bank.CandidateBankRefusal as exc:
             candidates[name] = PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}")
     # A summed take at the run's fader plays its candidate's own graph; with no applied tune
-    # the base is the draft, read as unity (ADR-0407).
+    # the base is the draft, read as unity (ADR-0385).
     summed = {candidate_identity(stop.candidate_id) for stop in plan.stops
               if stop.regime == REGIME_SUMMED and not stop.pose.driver}
     played = {name: candidate for name, candidate in ((BASE_CANDIDATE, applied), *candidates.items())

@@ -113,7 +113,7 @@ class PreflightFacts:
     applied_rear_plays: bool | None = False
     #: The loudest each candidate's graph plays each driver, dB re unity, by candidate
     #: name (the run's base as ``base``) and measurement target; a candidate or driver
-    #: not here counts unity, the most a graph's own charge lets it play (ADR-0407).
+    #: not here counts unity, the most a graph's own charge lets it play (ADR-0385).
     driver_peaks_db: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
@@ -198,7 +198,7 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     graph plays it, with that graph's rear woofer in phase on the front woofer's
     band (unity for a driver it was not read for), over the least the timing graph
     plays it: its floor under the applied charge that graph folds into its trims
-    (ADR-0403 §4, ADR-0370, ADR-0385, ADR-0407). Empty when no take plays at the
+    (ADR-0403 §4, ADR-0370, ADR-0385). Empty when no take plays at the
     run's fader. Raises
     ``ValueError`` when a take clears a room layer the probe plays and that layer
     or its charge could not be read, or plays over a timing take and the applied

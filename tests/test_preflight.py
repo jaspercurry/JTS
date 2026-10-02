@@ -591,7 +591,7 @@ def test_a_trial_counts_each_drivers_real_gap_over_the_timing_take(monkeypatch, 
     """Over a timing take each front driver counts how far a later graph really
     plays it over the timing graph: the live facts read each summed take's own
     graph. A trial that keeps the base's tweeter trim plays it no louder, so the
-    run's margin, and so its fader, is the plain run's (ADR-0407)."""
+    run's margin, and so its fader, is the plain run's (ADR-0385)."""
     base = _trial_candidate(tuning_profile, trim=-25.2)
     trial = _trial_candidate(tuning_profile, trim=trial_trim_db, gain=-1.0)
     plan = request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", trial.fingerprint))
@@ -619,7 +619,7 @@ def test_a_later_graph_counts_its_rear_in_phase_and_unity_where_unread(trial_pea
     front woofer's level adds their coherent sum, 6.02 dB, to the woofer's band,
     though its drivers otherwise play no louder than the base's. A trial whose
     graph was not read counts unity for each driver, so the tweeter's deep trim
-    sets the margin (ADR-0403 §4, ADR-0407)."""
+    sets the margin (ADR-0403 §4, ADR-0385)."""
     plan = request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", "trial"))
     front = {"woofer": 0.0, "tweeter": -25.2}
     report = preflight(plan, ready_facts(

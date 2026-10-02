@@ -103,7 +103,7 @@ def program_peak(graph: Mapping[str, Any], *, charged: bool = False) -> ProgramP
 
 def output_peaks_db(graph: Mapping[str, Any], *, charged: bool = False) -> dict[int, float]:
     """The loudest worst-case program each output of ``graph`` plays, dB re unity,
-    by output index; ``-inf`` for an output that plays nothing (ADR-0407).
+    by output index; ``-inf`` for an output that plays nothing.
 
     Raises :class:`~.graph_transfer.GraphTransferError` when the graph has no
     exactly modelled transfer.
