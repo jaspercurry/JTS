@@ -67,7 +67,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "reason_message",
     ),
     "capture_dispatch": (
-        "_gate_window_ms",
         "_pilot_transfer_by_role",
         "_sweep_schedule_diag_fields",
         "_sweep_schedule_ok",

@@ -20,7 +20,9 @@ from jasper.audio_measurement.program_analysis.model import (
     DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB,
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
-from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
+from jasper.audio_measurement.program_analysis.summary import (
+    driver_alignment_snr_verdict, driver_snr_verdict, gate_window_ms,
+)
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
@@ -348,7 +350,7 @@ def _assess_recording(
         return refuse(code)
     if phase == "check" and not capabilities["level_solve"]:
         return quiet(reasons.REASON_SNR_FLOOR)
-    verify_gate = _gate_window_ms(analysis.summed_response)
+    verify_gate = gate_window_ms(analysis.summed_response)
     # A shorter VERIFY gate manufactures overlay differences (§5.2).
     if (phase == "verify" and measure_gate_window_ms is not None and verify_gate is not None
             and verify_gate + 1e-6 < measure_gate_window_ms):
@@ -442,13 +444,6 @@ def _sweep_schedule_diag_fields(
     residual_ms_worst = worst.residual_samples / sample_rate_hz * 1000.0
     confidence_min = min(loc.confidence for loc in sweeps)
     return residual_ms_worst, confidence_min
-
-
-def _gate_window_ms(response: Any) -> float | None:
-    if response is None:
-        return None
-    window = response.gating.get("window_ms") if response.gating else None
-    return float(window) if isinstance(window, (int, float)) else None
 
 
 def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
