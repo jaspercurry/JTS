@@ -631,17 +631,17 @@ _SEAT_PROBE = {-60.0: 53.2, -54.0: 59.2, -48.0: 65.2, -42.0: 71.2}
 _SEAT_PROBE_GAINS = (-60.0, -54.0, -48.0, -42.0, -36.0, -30.0, -25.21)
 
 
-def _seat_probe_verdict(heard, stopped_in=None):
+def _seat_probe_verdict(heard, stopped_in=None, at=0.25):
     program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(30, 18000)), _SEAT_PROBE_GAINS,
                                         sweep_band_hz=(30.0, 18000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
     analysis = {}
     if stopped_in is not None:
-        # The capture runs its post-roll past a stop a quarter into that burst.
+        # The capture runs its post-roll past a stop ``at`` of the way into that burst.
         bursts = [segment for segment in program.segments if segment.kind == KIND_SWEEP]
         cut = next(burst for burst in bursts if burst.gain_db == stopped_in)
         analysis = {"locations": tuple(replace(_loc(burst.segment_id), scheduled_start=burst.start_sample)
                                        for burst in bursts),
-                    "frame_ledger": FrameLedger(cut.start_sample + cut.n_samples // 4
+                    "frame_ledger": FrameLedger(cut.start_sample + int(cut.n_samples * at)
                                                 + int(WIRED_POST_ROLL_S * program.sample_rate_hz))}
     levels = tuple(LevelReading(g, spl - 106.0, 46.7 - 106.0) for g, spl in heard.items())
     spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, "stopped_at_db_spl": 76.0}
@@ -670,17 +670,19 @@ def test_a_probe_solves_from_its_highest_step_never_a_step_over_its_loudest(hear
     assert verdict.evidence.get("level_bound_gain_db") == bound
 
 
-@pytest.mark.parametrize("heard,stopped_in,read", [
+@pytest.mark.parametrize("heard,stopped_in,at,read", [
     # The stop cut the -36 burst before it read: the full -42 burst stays and solves.
-    (_SEAT_PROBE, -36.0, 71.2),
+    (_SEAT_PROBE, -36.0, 0.25, 71.2),
     # A room sound in the -54 burst then moves nothing.
-    ({**_SEAT_PROBE, -54.0: 65.98}, -36.0, 71.2),
+    ({**_SEAT_PROBE, -54.0: 65.98}, -36.0, 0.25, 71.2),
     # A burst the stop cut after it read is left out.
-    (_SEAT_PROBE, -42.0, 65.2),
+    (_SEAT_PROBE, -42.0, 0.25, 65.2),
+    # Late in a burst, the post-roll runs past the next burst's start: the cut burst still goes.
+    (_SEAT_PROBE, -42.0, 0.9, 65.2),
 ])
-def test_a_stopped_probe_leaves_out_only_the_burst_its_stop_cut(heard, stopped_in, read):
+def test_a_stopped_probe_leaves_out_only_the_burst_its_stop_cut(heard, stopped_in, at, read):
     """Only the burst playing as the stop fired may have been cut short (ADR-0411)."""
-    verdict = _seat_probe_verdict(heard, stopped_in)
+    verdict = _seat_probe_verdict(heard, stopped_in, at)
     assert verdict.evidence["level_db_spl"] == pytest.approx(read)
     assert verdict.next_gain_db == pytest.approx(-40.2)
 
