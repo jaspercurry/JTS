@@ -21,7 +21,7 @@ from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
-from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, ROOM_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, ROOM_NOT_BANKED, SET_REQUIRED
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX, spatial_support
@@ -366,6 +366,16 @@ def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by, 
         ROOM_NOT_BANKED, "room", "measure_room")
 
 
+def test_a_multi_set_round_that_banks_no_room_is_not_asked_for_a_set(tmp_path, capsys):
+    """A speaker round's sets bank no room view, so there is none to name."""
+    round_dir = bank_seat_round(tmp_path)
+    write_manifest(round_dir, program="speaker", groups=[manifest_set([], set_id=f"set-{i}") for i in range(2)])
+    (round_dir / "packet.json").write_text(json.dumps({"schema": ROUND_PACKET_SCHEMA, "room": []}))
+    assert cli.main(["contract", "--round", str(round_dir), "--section", "room"]) == 0
+    served = json.loads(capsys.readouterr().out)["sections"]["room"]
+    assert (served["status"], served["reason"]) == ("unavailable", ROOM_NOT_BANKED)
+
+
 def _bank_room_round(tmp_path: Path, *, split: int | None = None) -> Path:
     """A room round banked for real, so each view is filed as the bank files it. With ``split``, its seat
     takes are two sets: the first ``split`` takes, and the rest."""
@@ -413,11 +423,13 @@ def test_a_one_set_room_round_is_served_by_its_set_whether_it_is_named_or_not(tm
             code, answer = _prescribe(tmp_path, capsys, bank, [*argv, *flags], sha)
             assert code == 0, answer
             assert answer["subject"]["set_id"] == set_id
+            if "--preview" not in argv:
+                assert answer["packet_contracts"]["contract_current"] is True
     assert round_views.main(["room-grade", str(bank), "--set", set_id]) == 0
     assert json.loads(capsys.readouterr().out)["set_id"] == set_id
 
 
-def test_a_two_set_room_round_is_served_by_each_sets_own_view(tmp_path, capsys):
+def test_a_two_set_room_round_is_served_by_the_set_named_and_asks_for_one_when_none_is(tmp_path, capsys):
     bank = _bank_room_round(tmp_path, split=3)
     shas = {set_id: json.loads(view.read_text())["room_median_sha256"]
             for set_id, view in _banked_room_views(bank).items()}
@@ -427,7 +439,15 @@ def test_a_two_set_room_round_is_served_by_each_sets_own_view(tmp_path, capsys):
         code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--preview", "--set", set_id], sha)
         assert code == 0, answer
         served[set_id] = answer["preview"]["room_median_sha256"]
+        assert cli.main(["contract", "--round", str(bank), "--section", "room", "--set", set_id]) == 0
+        assert json.loads(capsys.readouterr().out)["sections"]["room"]["status"] == "available"
     assert served == shas
+    assert cli.main(["contract", "--round", str(bank), "--section", "room"]) == 0
+    served_room = json.loads(capsys.readouterr().out)["sections"]["room"]
+    assert (served_room["status"], served_room["reason"]) == ("unavailable", SET_REQUIRED)
+    code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--set", next(iter(shas))], next(iter(shas.values())))
+    assert code == 0, answer
+    assert answer["packet_contracts"]["contract_current"] is True
 
 
 @pytest.mark.parametrize("filters,code", [

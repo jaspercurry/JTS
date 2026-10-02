@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from jasper.platform.json_fields import finite_float, parse_utc_iso
-from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
+from jasper.audio_measurement.evidence_reasons import (
+    CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, SET_REQUIRED, unavailable,
+)
 from jasper.active_speaker.measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose,
+    POSE_KIND_BEARING, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose, run_purposes,
 )
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -354,9 +356,9 @@ def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path
 
 
 def files_by_set(sets: Sequence[Mapping[str, Any]]) -> bool:
-    """Whether the bank runs a per-set view once for each of a round's view sets (``sets`` is :func:`view_sets`)
-    and files it under that set's name, as a round of several does. A round of one runs it once, for the round,
-    and files it under none."""
+    """Whether a round names its sets (``sets`` is :func:`view_sets`): a round of several does. A call must then
+    name one (:func:`resolve_set`), and the bank runs each per-set view once for each set and files it under that
+    set's name. A round of one runs each view once, for the round, and files it under none."""
     return len(sets) > 1
 
 
@@ -393,6 +395,14 @@ def _banked_room(rows: list[Any], sets: Sequence[Mapping[str, Any]], set_id: str
     return next((row for row in rows if wanted and isinstance(row, dict) and row.get("set_id") == wanted), {})
 
 
+def _banks_room(manifest: Mapping[str, Any] | None) -> bool:
+    """Whether the round's bank runs a room view for each of its sets: its preset's purposes include room."""
+    try:
+        return PURPOSE_ROOM in run_purposes(str((manifest or {}).get("preset") or ""))
+    except ValueError:
+        return False
+
+
 def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
     inputs = round_ if isinstance(round_, RoundInputs) else round_inputs(round_)
     artifact_dir, reason = round_artifact_dir(inputs.session_dir)
@@ -405,7 +415,9 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     room = (_banked_room(banked_rooms, sets, set_id) if isinstance(banked_rooms, list)
             else _read_json_mapping(set_view_path(inputs, ROOM_ARTIFACT, set_id, sets)) or {})
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
-        room = {"median": {"code": ROOM_NOT_BANKED}}
+        # Each set of a room round banks a room view, so a call that names none has no one view to serve.
+        ambiguous = set_id is None and files_by_set(sets) and _banks_room(manifest)
+        room = {"median": {"code": SET_REQUIRED if ambiguous else ROOM_NOT_BANKED}}
     path = artifact_dir / "candidate.json"
     # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
     # so each refuses it by this code. Only a round that banked none has no base.
@@ -575,8 +587,8 @@ def resolve_set(
     Its takes are the manifest's rows, as given; a reader of a take's facts
     joins them (:meth:`SetTakes.with_records`, ADR-0395)."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
-    if set_id is None and len(sets) > 1:
-        raise RoundSetRefused("set_required", sets=[
+    if set_id is None and files_by_set(sets):
+        raise RoundSetRefused(SET_REQUIRED, sets=[
             {"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
              "role": group.role, "take_count": len(group.selected_ids)}
             for group in map(SetTakes.from_row, sets)
