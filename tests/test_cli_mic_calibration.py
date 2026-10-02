@@ -323,7 +323,7 @@ def test_show_refuses_a_record_this_user_cannot_read(store: Path, tmp_path, caps
         store.chmod(0o644)
 
     assert code == _refusal.EXIT_REFUSED
-    assert document["reason"] == "local_state_unreadable"
+    assert (document["code"], document["detail"]["evidence"]) == ("local_state_unreadable", {"path": str(store)})
 
 
 def test_show_separates_no_record_from_a_record_whose_calibration_is_gone(

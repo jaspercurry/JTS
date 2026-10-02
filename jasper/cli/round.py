@@ -36,7 +36,7 @@ from jasper.platform.logging_setup import configure_logging
 
 from ._refusal import (
     EXIT_OK as EXIT_OK,
-    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, answered, envelope, failed,
+    EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, answered, envelope, failed, refuse_unreadable_paths,
 )
 
 PROG = "jasper-round"
@@ -475,21 +475,11 @@ def refuse_unreadable_state(command: str, no_state: Collection[str] = ()) -> int
     """The refusal exit code when this user cannot read the speaker's local state, else ``None``.
 
     The tuning CLIs call it at entry with their verb. A verb in ``no_state`` reads none of that state and is
-    never refused. Shared loaders suppress read faults, so a non-root run would otherwise answer from a speaker
-    that seems to hold nothing; drop this when they expose them.
+    never refused.
     """
     if command in no_state:
         return None
-    for resolve in LOCAL_STATE_PATHS:
-        try:
-            with resolve().open("rb"):
-                pass
-        except PermissionError as exc:
-            return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
-                          code="local_state_unreadable")
-        except OSError:
-            pass
-    return None
+    return refuse_unreadable_paths(resolve() for resolve in LOCAL_STATE_PATHS)
 
 
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
