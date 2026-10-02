@@ -238,6 +238,7 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
     templates = set()
     monkeypatch.setattr(arm_walk, "_arm_discovered", [])
     monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: True)
+    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
     for row in mp.PROGRAM_ROWS:
         handoff = th.build_tuning_handoff(commissioning_view=view, design_draft=draft, program_id=row.purpose)
         binding, prompt = handoff["binding"], handoff["prompt"]
