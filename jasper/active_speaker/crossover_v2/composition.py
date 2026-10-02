@@ -207,7 +207,7 @@ def bind_program_composer(
 ) -> Compose:
     """Render each take once and bind admission, locked graph proof and playback.
 
-    ``graph_yaml`` supplies the installed graph, including any driver overlays.
+    ``graph_yaml`` supplies the installed graph.
     ``before_play`` runs after its live proof, inside the same writer lock.
     """
     from jasper.audio_measurement.program import write_program_wav  # lazy: test_crossover_v2_measurement_volume_drift patches write_program_wav

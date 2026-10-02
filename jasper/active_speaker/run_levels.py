@@ -82,8 +82,8 @@ class LevelLadder:
 
 
 def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadder:
-    """Each rung its step under the level the run's probe finds (ADR-0403 §4). Only the first
-    rung at the first pose probes, so that rung's preflight checks the probe's order."""
+    """Each rung plays its step under the level the run's probe finds (ADR-0403 §4). Only the
+    first rung at the first pose probes, so that rung's preflight checks the probe's order."""
     return LevelLadder(tuple(preflight(replace(plan, levels=None, level=replace(plan.level, level_db=offset)),
                                        facts, finds_fader=False)
                              for offset in LEVEL_OFFSETS_DB), facts)

@@ -1725,7 +1725,46 @@ def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(mo
 
 
 _CLOSE_SET = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
+_DRIVER_POSE = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3, "driver": "woofer"}
 _MARK = {"azimuth_deg": 0, "elevation_deg": 0}
+
+
+def _ladder_plans():
+    """Plans for a ladder. The two whose first pose levels every take itself are
+    the review's; a later pose of drivers alone has no summed take of its own."""
+    def placed(program, poses):
+        return ac.request_for_preset(run_preset(program, poses=poses), targets=("woofer", "tweeter"))
+
+    return {"mark first": placed("rear/express", [_MARK, _CLOSE_SET]),
+            "drivers alone at a later pose": ac.AngleCaptureRequest(
+                (ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="rear"),
+                 ac.AngleStop(Pose(20, 0), ac.REGIME_PER_DRIVER, purpose="speaker")),
+                program="rear/express"),
+            "close set first": placed("rear/express", [_CLOSE_SET, _MARK]),
+            "driver pose first": placed("speaker/mark", [_DRIVER_POSE, _MARK])}
+
+
+@pytest.mark.parametrize(("shape", "found"), [
+    ("mark first", True), ("drivers alone at a later pose", True), ("close set first", False),
+    ("driver pose first", False)])
+def test_a_ladder_plays_only_under_the_level_its_first_rung_found(monkeypatch, shape, found):
+    """A ladder's first rung at its first pose finds the level its rungs step
+    under, and every later rung plays its step under that level, at a pose with
+    no summed take too. A first pose where every take levels itself finds none,
+    so the ladder ends there: no later pose plays at a level no probe found
+    (ADR-0403 §4)."""
+    signals, results, _, windows = asyncio.run(_ladder_found(
+        monkeypatch, _ladder_plans()[shape], caps={"woofer": 0.0, "tweeter": -6.0},
+        chain_db={"bearing": 100.0, "close": 110.0}))
+
+    summed = [take["capture_integrity"]["spl"]["max_window_db_spl"] for result in results
+              for take in _takes(result.joined())
+              if take["selected"] and take["pose_kind"] == "bearing" and take["phase"] in ("timing", "lateral")]
+    rungs = [-9.0 + step for step in LEVEL_OFFSETS_DB]
+    assert (len(results), signals.stop.is_set() and signals.stop_reason) == (
+        (2 * len(rungs), False) if found else (1, REASON_LEVEL_UNSOLVED))
+    assert windows == ([0.0, *rungs, *rungs] if found else [0.0])
+    assert summed == pytest.approx([79.0 + step for step in LEVEL_OFFSETS_DB] if found else [], abs=0.02)
 
 
 @pytest.mark.parametrize(("levels", "rungs"), [("auto", len(LEVEL_OFFSETS_DB)), (None, 1)],
