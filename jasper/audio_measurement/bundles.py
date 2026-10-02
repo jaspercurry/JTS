@@ -208,12 +208,6 @@ def _is_positive_int(value: object) -> bool:
     return type(value) is int and value > 0
 
 
-def _is_exact_version(value: object, expected: int) -> bool:
-    """Whether ``value`` is the exact positive-integer version expected."""
-
-    return _is_positive_int(value) and value == expected
-
-
 def _resolve_bundle_schema_version(
     bundle_dir: Path,
     explicit: int | None,
