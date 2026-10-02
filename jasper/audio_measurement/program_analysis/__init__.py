@@ -20,7 +20,6 @@ through the submodule that defines it.
 
 from __future__ import annotations
 
-from jasper.audio_measurement.alignment import parabolic_peak
 from .model import (
     ALIGNMENT_OK,
     AppliedAlignment,
@@ -59,7 +58,6 @@ __all__ = [
     "analyze_program_capture",
     "deconvolve_window",
     "half_period_us",
-    "parabolic_peak",
     "polarity_label",
     "solve_branch_trims",
 ]

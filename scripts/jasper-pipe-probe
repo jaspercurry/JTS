@@ -173,7 +173,7 @@ except ModuleNotFoundError as exc:
     from scripts._pi_target import LibTargetError, resolve_pi_target
 
 from jasper.audio_measurement.gating import analytic_signal
-from jasper.audio_measurement.program_analysis import parabolic_peak
+from jasper.audio_measurement.alignment import parabolic_peak
 from jasper.route_latency.click_track import SAMPLE_RATE_HZ as CLICK_TRACK_RATE_HZ
 from jasper.route_latency.click_track import click_samples
 from jasper.route_latency.ref9891_pcap import BYTES_PER_FRAME as TAP_BYTES_PER_FRAME
