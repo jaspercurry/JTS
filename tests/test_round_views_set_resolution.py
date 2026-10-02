@@ -385,6 +385,17 @@ def test_a_take_two_sets_hold_needs_the_set_named_among_those_that_hold_it(two_s
     assert [row["set_id"] for row in refused.value.detail["sets"]] == [first["set_id"], second["set_id"]]
 
 
+def test_a_take_no_set_holds_is_unknown_and_the_refusal_lists_the_kept_takes(two_sets):
+    root, manifest = two_sets
+
+    with pytest.raises(RoundSetRefused) as refused:
+        resolve_set(round_inputs(root), take="no-such-take")
+
+    assert refused.value.reason == "round_take_unknown"
+    assert refused.value.detail["take_ids"] == tuple(
+        take["take_id"] for group in manifest["sets"] for take in group["takes"] if take["selected"])
+
+
 @pytest.mark.parametrize("poses,selected,requested,expected", [
     ([(0, 0), (15, 0)], [True, True], None, "take-0"),
     ([(15, 0), (0, 0)], [True, True], None, "take-1"),

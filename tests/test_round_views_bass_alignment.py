@@ -12,7 +12,6 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.bass_fit import bass_alignment
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.round_view_artifacts import PROG
 from jasper.audio_measurement.trusted_band import TrustedBand
 from jasper.cli import round_views
@@ -165,5 +164,5 @@ def test_a_take_that_no_named_set_holds_refuses_by_name(tmp_path, monkeypatch, c
     assert round_views.main(["bass-alignment", str(bundle), *argv]) == round_views.EXIT_REFUSED
 
     answer = json.loads(capsys.readouterr().out)
-    assert answer["status"] == "refused" and answer["reason"] in REASON_REGISTRY
+    assert (answer["status"], answer["reason"]) == ("refused", "round_take_unknown")
     assert not list(tmp_path.rglob("*bass_alignment*.json"))

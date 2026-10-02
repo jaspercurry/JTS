@@ -600,10 +600,14 @@ def resolve_set(
     Its takes are the manifest's rows, as given; a reader of a take's facts
     joins them (:meth:`SetTakes.with_records`, ADR-0395). With no ``set_id``, a
     ``take`` names the set that holds it; a take two sets hold (one per role it
-    recorded) still needs the set named."""
+    recorded) still needs the set named, and a take no set holds is unknown."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
     if set_id is None and take is not None:
-        sets = [row for row in sets if any(held["take_id"] == take for held in row["takes"])] or sets
+        held = [row for row in sets if any(one["take_id"] == take for one in row["takes"])]
+        if not held:
+            raise RoundSetRefused("round_take_unknown", take_id=take, take_ids=tuple(dict.fromkeys(
+                kept for row in sets for kept in SetTakes.from_row(row).selected_ids)))
+        sets = held
     if set_id is None and files_by_set(sets):
         raise RoundSetRefused(SET_REQUIRED, sets=set_choices(sets))
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
