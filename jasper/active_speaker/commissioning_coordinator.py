@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
-from jasper.platform.json_fields import finite_float, parse_utc_iso
 from .driver_safety import driver_floor_issues
 from .applied_identity import applied_identity
 from .calibration_level import load_calibration_level_state
@@ -33,32 +32,27 @@ _MEASURE_LABELS = {row.purpose: row.measure_label for row in PROGRAM_ROWS}
 
 def next_program_action(
     profile: Mapping[str, Any] | None,
-    identity: Mapping[str, Any],
     recent_rounds: Mapping[str, Mapping[str, Any]],
     *,
     programs: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Choose from applied layers and the latest rounds for this identity."""
+    """Choose from applied layers and each program's latest round, current or stale."""
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
     # Decision d18 / ADR-0301: the trial verifies an apply; a new baseline round is not required.
     layers = applied_layers(profile)
-    room_at = finite_float((recent_rounds.get(PURPOSE_ROOM) or {}).get("started_at"))
-    room_stale = room_at is not None and any(
-        (finite_float((recent_rounds.get(name) or {}).get("started_at")) or 0) > room_at
-        for name in programs if name != PURPOSE_ROOM
-    )
+    # The applied room was fitted through a layer under it that has changed since (ADR-0420).
+    upstream_changed = layers[PURPOSE_ROOM] and any(
+        name != PURPOSE_ROOM for name in (recent_rounds.get(PURPOSE_ROOM) or {}).get("stale_by") or ())
     program = next((name for name in programs if not layers[name]
-                    or name == PURPOSE_ROOM and room_stale), None)
+                    or name == PURPOSE_ROOM and upstream_changed), None)
     if program is None:
         return {"id": None, "enabled": False, "program": None, "label": "Tuning complete", "reason_code": "complete"}
     round_ = recent_rounds.get(program) or {}
-    applied_at = parse_utc_iso(str(identity.get("applied_at") or "")) or 0
-    if (not layers[program] and not (program == PURPOSE_ROOM and room_stale)
-            and (finite_float(round_.get("started_at")) or 0) > applied_at):
+    if not layers[program] and round_ and not round_.get("stale"):
         return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
                 "program": program, "round_dir": round_["round_dir"], "reason_code": "round_available"}
-    reason = ("upstream_changed" if program == PURPOSE_ROOM and room_stale else
+    reason = ("upstream_changed" if program == PURPOSE_ROOM and upstream_changed else
               "layer_not_applied" if profile is not None else "never_measured")
     return {"id": "run_program", "enabled": True, "program": program, "label": _MEASURE_LABELS[program], "reason_code": reason}
 
@@ -114,8 +108,7 @@ def build_commissioning_view(
                    "layout" if passive else "profile")
     if profile_applied or (has_layout and passive):
         status = "applied" if profile_applied else VIEW_STATUS_NOT_REQUIRED
-        action = next_program_action(applied_profile, applied, recent_rounds or {},
-                                      programs=programs)
+        action = next_program_action(applied_profile, recent_rounds or {}, programs=programs)
     elif not has_layout:
         status = "needs_layout"
         action = {"id": "declare_speaker", "label": "Declare the speaker", "enabled": True,
@@ -171,7 +164,7 @@ def load_commissioning_view(topology: OutputTopology | None = None) -> dict[str,
         baseline_profile=baseline,
         calibration_level=calibration_level,
         applied_profile=applied,
-        recent_rounds=latest_banked_rounds(applied_identity(applied) or {}, programs=programs),
+        recent_rounds=latest_banked_rounds(applied_identity(applied) or {}, programs=programs, include_stale=True),
         programs=programs,
         applied_profile_verdict=read_applied_profile_verdict(applied),
     )

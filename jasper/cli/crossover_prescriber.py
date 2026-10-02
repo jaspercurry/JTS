@@ -590,9 +590,8 @@ def status_document(
     profile = load_applied_baseline_profile_state(applied_profile_path)
     identity = applied_identity(profile) or {}
     programs = programs_for_topology(load_output_topology())
-    action = next_program_action(profile, identity, latest_banked_rounds(identity, programs=programs),
-                                 programs=programs)
     banked = latest_banked_rounds(identity, programs=programs, include_stale=True)
+    action = next_program_action(profile, banked, programs=programs)
     layers = applied_layer_names(profile)
     sections["applied"].update(
         layers=layers, candidate_fingerprint=identity.get("candidate"),
@@ -614,7 +613,8 @@ def status_document(
         "driver_caps_live": _live_driver_caps(),
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
-        "last_banked": {name: {key: banked[name][key] for key in ("round_id", "round_dir", "banked_at", "status", "stale")}
+        "last_banked": {name: {key: banked[name][key]
+                               for key in ("round_id", "round_dir", "banked_at", "status", "stale", "stale_by")}
                         if name in banked else None for name in programs},
         "next": {"program": None if action["reason_code"] == "complete" else action["program"],
                  "reason_code": action["reason_code"]},

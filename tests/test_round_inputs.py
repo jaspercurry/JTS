@@ -9,13 +9,13 @@ from datetime import datetime, timezone
 import pytest
 
 from jasper.active_speaker import bundles
-from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import parse_utc_iso
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, packet_purposes, take_artifact_name
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_purpose
 
 
 def _bank_packet(directory, identity, program, **fields):
@@ -27,30 +27,24 @@ def _bank_packet(directory, identity, program, **fields):
 
 
 @pytest.mark.parametrize("has_room", [False, True])
-@pytest.mark.parametrize("programs,limit,hits,applied_at,wanted", [
-    (RUNNABLE_PROGRAMS, 32, {"speaker": 36, "rear": 37, "bass": 34, "room": 35}, None, None),
-    (("speaker", "bass", "room"), 32, {"speaker": 36, "bass": 37, "room": 35}, None, ("speaker", "bass", "room")),
-    (("speaker",), 32, {"speaker": 37}, None, None),
-    (("speaker",), 32, {"speaker": 37}, None, ("speaker",)),
-    (RUNNABLE_PROGRAMS, 2, {}, None, None),
-    (("speaker",), 32, {"speaker": 39}, "1970-01-01T00:00:37Z", None),
+@pytest.mark.parametrize("programs,limit,hits,wanted", [
+    (RUNNABLE_PROGRAMS, 32, {"speaker": 36, "rear": 37, "bass": 34, "room": 35}, None),
+    (("speaker", "bass", "room"), 32, {"speaker": 36, "bass": 37, "room": 35}, ("speaker", "bass", "room")),
+    (("speaker",), 32, {"speaker": 37}, None),
+    (("speaker",), 32, {"speaker": 37}, ("speaker",)),
+    (RUNNABLE_PROGRAMS, 2, {}, None),
 ])
-def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, applied_at, wanted, has_room):
-    identity = {"candidate": "saved-speaker", "record": "abcdef012345", "applied_at": applied_at}
+def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp_path, programs, limit, hits, wanted, has_room):
+    identity = {"candidate": "saved-speaker", "record": "abcdef012345", "layer_fingerprints": {BASE_LAYER: "base"}}
     alignment = {"saved": {"delay_us": 22}, "verification": {"residual_rms_db": .4, "repeat_noise_db": .2}}
     next_action = {"id": "continue"}
     root = tmp_path / "campaigns"
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
     for index in range(40):
-        directory = root / f"{index:02}"
-        banked_identity = {**identity}
-        if index > 37 and applied_at is None:
-            banked_identity["candidate" if index == 39 else "record"] = "other"
-        _bank_packet(directory, banked_identity, programs[index % len(programs)],
+        layers = {BASE_LAYER: "other"} if index > 37 else identity["layer_fingerprints"]
+        _bank_packet(root / f"{index:02}", {**identity, "layer_fingerprints": layers}, programs[index % len(programs)],
                      alignment_verdict=alignment, next_action=next_action,
                      room=[{"median": {"n_positions": 3}}] if has_room else [])
-        if applied_at is not None:
-            os.utime(directory, (index, index))
     opens = {}
     original_open = Path.open
 
@@ -66,13 +60,53 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime,
-                            "round_id": f"{index:02}", "status": "partial", "stale": False,
+                            "round_id": f"{index:02}", "status": "partial", "stale": False, "stale_by": [],
                             "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
                      for name, index in hits.items()}
     assert opens.get("packet.json", 0) <= limit
     assert opens.get("provenance.json", 0) <= opens.get("packet.json", 0)
+
+
+@pytest.mark.parametrize("preset,cleared,change,stale_by", [
+    ("speaker/mark", (), "corrections", ["speaker"]),
+    ("speaker/mark", (), "rear_calibration", []),
+    ("speaker/mark", (), "bass_extension", []),
+    ("speaker/mark", (), "room_correction", []),
+    ("nearfield/each", (), "corrections", []),
+    ("nearfield/each", (), "rear_calibration", []),
+    ("nearfield/each", (), "bass_extension", []),
+    ("nearfield/each", (), "room_correction", []),
+    ("rear/express", (), "linearization", ["speaker"]),
+    ("rear/express", (), "rear_calibration", ["rear"]),
+    ("rear/pair", ("rear_calibration",), "rear_calibration", []),
+    ("rear/express", (), "bass_extension", []),
+    ("bass/axis", ("room_correction",), "bass_extension", ["bass"]),
+    ("bass/axis", ("room_correction",), "room_correction", []),
+    ("room/seat", (), "rear_calibration", ["rear"]),
+    ("room/seat", (), "bass_extension", ["bass"]),
+    ("room/seat", (), "room_correction", ["room"]),
+    ("room/seat", (), "preference", []),
+])
+def test_a_round_goes_stale_only_when_a_layer_under_it_changes(tmp_path, monkeypatch, preset, cleared, change, stale_by):
+    """A round goes stale when a layer at or under its program changes, unless every kept take played that
+    layer cleared. A near-field round plays no applied layer, and a preference EQ save changes none (ADR-0420)."""
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    before = _applied_anchor(layers=RUNNABLE_PROGRAMS)
+    before["recomposition_snapshot"]["corrections"] = {"woofer": {"gain_db": 0.0}}
+    after = json.loads(json.dumps(before))
+    if change == "preference":
+        after["config"].update(sha256="fedcba987654" * 5 + "fedc", sound_layer={"profile": {"bass_db": 3.0}})
+    else:
+        after["recomposition_snapshot"][change] = {"changed": True}
+    takes = [{"selected": True, "cleared_layers": list(cleared), "pose": {"driver": "woofer" if preset == "nearfield/each" else None}}]
+    _bank_packet(tmp_path / "campaigns" / "round", applied_identity(before), preset, sets=[{"takes": takes}])
+    program = run_purpose(preset)
+
+    found = latest_banked_rounds(applied_identity(after), programs=(program,), include_stale=True)[program]
+
+    assert (found["stale"], found["stale_by"]) == (bool(stale_by), stale_by)
 
 
 @pytest.mark.parametrize("timestamp_source", ["provenance", "finalized_at", "started_at", "session"])
@@ -94,14 +128,14 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
             }))
         os.utime(directory, (timestamp, timestamp))
     before = latest_banked_rounds(identity)
-    action = next_program_action(profile, identity, before, programs=RUNNABLE_PROGRAMS)
+    action = next_program_action(profile, before, programs=RUNNABLE_PROGRAMS)
     assert tuple(before) == ("room", "bass", "rear", "speaker")
     assert before["speaker"]["round_id"] == "speaker"
     assert before["room"]["banked_at"] == before["room"]["started_at"] == base + 5
     assert (action["program"], action["reason_code"]) == (None, "complete")
 
     stale = tmp_path / "campaigns" / "speaker-stale"
-    _bank_packet(stale, {**identity, "candidate": "previous"}, "speaker", finalized_at=base + 6)
+    _bank_packet(stale, {**identity, "layer_fingerprints": {BASE_LAYER: "previous"}}, "speaker", finalized_at=base + 6)
     history = latest_banked_rounds(identity, include_stale=True)
     assert (history["speaker"]["round_id"], history["speaker"]["stale"]) == ("speaker-stale", True)
     assert history["room"]["stale"] is False
@@ -114,7 +148,7 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     after = latest_banked_rounds(identity)
     assert after == before
     assert tuple(after) == tuple(before)
-    assert next_program_action(profile, identity, after, programs=RUNNABLE_PROGRAMS) == action
+    assert next_program_action(profile, after, programs=RUNNABLE_PROGRAMS) == action
 
 
 @pytest.mark.parametrize("drivers,counts", [(("woofer", "tweeter"), False), (("woofer", ""), True)],
@@ -147,11 +181,10 @@ def test_a_round_that_kept_no_take_is_not_available_to_its_program(tmp_path, mon
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
     profile = _applied_anchor(layers=("speaker",))
     identity = applied_identity(profile)
-    _bank_packet(tmp_path / "campaigns" / "expired", identity, "rear", sets=sets,
-                 finalized_at=parse_utc_iso(identity["applied_at"]) + 60)
+    _bank_packet(tmp_path / "campaigns" / "expired", identity, "rear", sets=sets)
     programs = RUNNABLE_PROGRAMS
 
-    action = next_program_action(profile, identity, latest_banked_rounds(identity, programs=programs), programs=programs)
+    action = next_program_action(profile, latest_banked_rounds(identity, programs=programs), programs=programs)
 
     assert (action["id"], action["reason_code"], action["program"]) == (*expected, "rear")
 

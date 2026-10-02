@@ -21,8 +21,10 @@ from jasper.platform.json_fields import finite_float, parse_utc_iso
 from jasper.audio_measurement.evidence_reasons import (
     CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, SET_REQUIRED, unavailable,
 )
+from jasper.active_speaker.applied_identity import BASE_LAYER
 from jasper.active_speaker.measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose, run_purposes,
+    CANDIDATE_LAYERS, POSE_KIND_BEARING, PROGRAM_ROWS, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER,
+    RUNNABLE_PROGRAMS, run_purpose, run_purposes,
 )
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -294,28 +296,43 @@ def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
 
 
+#: Each applied layer and the program that owns it, in stack order: the base and the speaker's own
+#: layer lie under every program, and each program's own layer under the programs after it (ADR-0420).
+_LAYER_OWNERS = ((BASE_LAYER, PURPOSE_SPEAKER), *((row.candidate_fields[0].name, row.purpose) for row in PROGRAM_ROWS))
+
+
+def _stale_by(packet: Mapping[str, Any], identity: Mapping[str, Any], purpose: str) -> list[str]:
+    """The programs whose applied layer changed under a round of ``purpose`` since it was banked. A layer
+    above its program, or one every kept take played cleared, does not count; a purpose outside the
+    stack plays no applied layer (ADR-0420)."""
+    under = RUNNABLE_PROGRAMS[:RUNNABLE_PROGRAMS.index(purpose) + 1] if purpose in RUNNABLE_PROGRAMS else ()
+    banked = (packet.get("applied") or {}).get("layer_fingerprints") or {}
+    current = identity.get("layer_fingerprints") or {}
+    cleared = set(CANDIDATE_LAYERS).intersection(*(
+        take.get("cleared_layers") or () for group in packet.get("sets") or ()
+        for take in group.get("takes") or () if take.get("selected")))
+    return list(dict.fromkeys(owner for layer, owner in _LAYER_OWNERS if owner in under
+                              and layer not in cleared and banked.get(layer) != current.get(layer)))
+
+
 def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
     programs: tuple[str, ...] = RUNNABLE_PROGRAMS, include_stale: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Latest packet per program within a bounded window; current identity by default."""
-    applied_at = parse_utc_iso(str(identity.get("applied_at") or ""))
+    """Latest packet per program within a bounded window; by default only a round no layer it played
+    has changed under since it was banked. ``stale_by`` names the programs whose layer did."""
     found: dict[str, dict[str, Any]] = {}
     for directory, packet, banked_at in banked_rounds(session_dir, limit=limit):
-        applied = packet.get("applied") or {}
-        stale = any(applied.get(key) != identity.get(key) for key in ("candidate", "record"))
-        stale = stale or (applied_at is not None and banked_at <= applied_at)
-        if stale and not include_stale:
-            continue
-        record = {"round_dir": str(directory), "started_at": banked_at, "round_id": directory.name,
-                  "banked_at": banked_at, "status": packet.get("result"), "stale": stale}
-        for name in packet_purposes(packet):
+        for name in (name for name in packet_purposes(packet) if name in programs):
+            stale_by = _stale_by(packet, identity, name)
             prior = found.get(name)
-            if name in programs and (prior is None or (banked_at, str(directory)) >
-                                     (prior["started_at"], prior["round_dir"])):
-                found[name] = {**record, **({"alignment_verdict": packet.get("alignment_verdict"),
-                                            "next_action": packet.get("next_action")}
-                                           if name == PURPOSE_SPEAKER else {})}
+            if (include_stale or not stale_by) and (prior is None or (banked_at, str(directory)) >
+                                                    (prior["started_at"], prior["round_dir"])):
+                found[name] = {"round_dir": str(directory), "started_at": banked_at, "round_id": directory.name,
+                               "banked_at": banked_at, "status": packet.get("result"),
+                               "stale": bool(stale_by), "stale_by": stale_by,
+                               **({"alignment_verdict": packet.get("alignment_verdict"),
+                                   "next_action": packet.get("next_action")} if name == PURPOSE_SPEAKER else {})}
     return dict(sorted(found.items(), key=lambda item: (item[1]["started_at"], item[1]["round_dir"]), reverse=True))
 
 

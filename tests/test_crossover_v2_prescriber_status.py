@@ -634,17 +634,16 @@ def test_bare_status_leaves_evidence_unselected_when_history_is_empty(capsys):
     assert payload["next_commands"] == []
 
 
-@pytest.mark.parametrize("stale_kind", [None, "candidate", "record", "applied_at"])
+@pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("rear,layers,rounds,expected", [
     (False, (), {}, ("speaker", "layer_not_applied")),
     (True, ("speaker",), {"speaker": 1}, ("rear", "layer_not_applied")),
-    (False, ("speaker", "bass", "room"), {"speaker": 1, "room": 2, "bass": 3}, ("room", "upstream_changed")),
     (False, ("speaker", "bass", "room"), {"speaker": 1, "bass": 2, "room": 3}, (None, "complete")),
     (False, ("speaker", "bass", "room"), {}, (None, "complete")),
     (True, ("speaker", "rear", "bass", "room"), {}, (None, "complete")),
     (False, (), {"speaker": 1}, ("speaker", "round_available")),
 ])
-def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected, stale_kind):
+def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, capsys, rear, layers, rounds, expected, stale):
     topology = mono_output_topology()
     if rear:
         group, = topology.speaker_groups
@@ -657,19 +656,21 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
                                "kind": baseline_profile.BASELINE_PROFILE_KIND}))
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(path))
     programs = ("speaker", "rear", "bass", "room") if rear else ("speaker", "bass", "room")
-    if stale_kind:
+    if stale:
         missing = next((name for name in programs if name not in layers), None)
-        expected = (missing, "layer_not_applied" if missing else "complete")
+        expected = ((missing, "layer_not_applied") if missing else
+                    ("room", "upstream_changed") if "room" in rounds else (None, "complete"))
     recent = {}
     for name, age in rounds.items():
         directory = tmp_path / "campaigns" / name
         identity = applied_identity(profile)
-        if stale_kind in {"candidate", "record"}:
-            identity[stale_kind] = "previous"
+        if stale:
+            identity["layer_fingerprints"] = {**identity["layer_fingerprints"], "base": "previous"}
         _bank_packet(directory, identity, name)
-        timestamp = parse_utc_iso(profile["applied_at"]) + (age - 100 if stale_kind == "applied_at" else age)
+        timestamp = parse_utc_iso(profile["applied_at"]) + age
         os.utime(directory, (timestamp, timestamp))
-        recent[name] = {"round_dir": str(directory), "started_at": timestamp}
+        recent[name] = {"round_dir": str(directory), "started_at": timestamp, "stale": stale,
+                        "stale_by": ["speaker"] if stale else []}
     packet_builder = []
     monkeypatch.setattr(cli, "round_evidence", lambda *a, **kw: packet_builder.append(kw))
     before = _tree(tmp_path)
@@ -683,12 +684,11 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     assert payload["applied"]["summary"] == "applied layers: " + (", ".join(names) or "none")
     assert payload["applied"]["candidate_fingerprint"] == "saved-speaker"
     assert payload["last_banked"] == {name: {"round_id": name, "round_dir": recent[name]["round_dir"],
-                                            "banked_at": recent[name]["started_at"],
-                                            "status": "partial", "stale": bool(stale_kind)}
+                                            "banked_at": recent[name]["started_at"], "status": "partial",
+                                            "stale": stale, "stale_by": recent[name]["stale_by"]}
                                       if name in rounds else None for name in programs}
     assert payload["next"] == dict(zip(("program", "reason_code"), expected))
-    web_action = build_commissioning_view(topology, applied_profile=profile,
-                                          recent_rounds={} if stale_kind else recent)["next_action"]
+    web_action = build_commissioning_view(topology, applied_profile=profile, recent_rounds=recent)["next_action"]
     assert web_action["program"] == expected[0]
     assert web_action["reason_code"] == expected[1]
     assert web_action["id"] == (None if expected[0] is None else "copy_prompt" if expected[1] == "round_available" else "run_program")
