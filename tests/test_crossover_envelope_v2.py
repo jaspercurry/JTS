@@ -20,7 +20,6 @@ from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
-    REASON_VERIFY_INCONCLUSIVE,
     reason_message,
 )
 from jasper.active_speaker.round_copy import RUN_ENDED, RUN_UNDER_WAY, round_lines
@@ -323,15 +322,13 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     assert env["screen"] == "awaiting_plan"
 
 
-@pytest.mark.parametrize("code", [REASON_LOCATE_FAILED, REASON_VERIFY_INCONCLUSIVE])
-def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record(code):
+def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record():
     """A state file from an older build may still carry the retired evidence keys."""
     env = build_crossover_envelope_v2(_status(
-        failure={"code": code, "pilot_heard": True},
-        verify={"gate": {"reflection_measured": True}},
+        failure={"code": REASON_LOCATE_FAILED, "pilot_heard": True},
     ))
 
-    assert env["verdict_text"] == REASON_REGISTRY[code].message
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_LOCATE_FAILED].message
 
 
 def test_no_registry_sentence_names_undo():

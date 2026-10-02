@@ -22,9 +22,7 @@ from jasper.audio_measurement.program_analysis.model import (
     DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB,
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
-from jasper.audio_measurement.program_analysis.summary import (
-    driver_alignment_snr_verdict, driver_snr_verdict, gate_window_ms,
-)
+from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.audio_measurement.ramp import MAX_STEP_DB
@@ -227,7 +225,6 @@ def _assess_recording(
     session_volume_db: float = 0.0,
     spl_stop_db_spl: float | None = None,
     spl: Mapping[str, Any] | None = None,
-    measure_gate_window_ms: float | None = None,
 ) -> TakeVerdict:
     if phase not in {"check", "measure", "verify"}:
         raise ValueError(f"unsupported assessment phase: {phase}")
@@ -377,12 +374,6 @@ def _assess_recording(
         return refuse(code)
     if phase == "check" and not capabilities["level_solve"]:
         return quiet(reasons.REASON_SNR_FLOOR)
-    verify_gate = gate_window_ms(analysis.summed_response)
-    # A shorter VERIFY gate manufactures overlay differences (§5.2).
-    if (phase == "verify" and measure_gate_window_ms is not None and verify_gate is not None
-            and verify_gate + 1e-6 < measure_gate_window_ms):
-        evidence.update(measure_gate_window_ms=measure_gate_window_ms, verify_gate_window_ms=verify_gate)
-        return refuse(reasons.REASON_VERIFY_INCONCLUSIVE, ok=True)
     spl = spl or {}
     peak_spl = finite_float(spl.get("max_window_db_spl"))
     stop = finite_float(spl.get("ceiling_db_spl"))

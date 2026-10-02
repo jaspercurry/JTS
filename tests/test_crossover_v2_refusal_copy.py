@@ -51,7 +51,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "REASON_REGISTRY",
         "REASON_SNR_FLOOR",
         "REASON_USER_STOPPED",
-        "REASON_VERIFY_INCONCLUSIVE",
         "REASON_VOLUME_UNRESOLVED",
         "ReasonSpec",
         "RetryableReasonCopy",

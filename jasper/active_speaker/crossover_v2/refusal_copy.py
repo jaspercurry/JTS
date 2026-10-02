@@ -149,10 +149,6 @@ REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupporte
 # raises MeasurementWindowError), so an enumerated except list is how failures
 # escape with the volume active and the phone frozen. Terminal.
 REASON_INTERNAL_ERROR = "internal_error"
-# §5.2's "inconclusive — re-verify" verdict: VERIFY's own detected first
-# reflection forced a shorter gate than MEASURE's, so the overlay difference is
-# not evidence about driver alignment.
-REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
 # The apply transaction came back blocked or raised.
 # ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
 # code: an apply failure says nothing about the mic position.
@@ -284,7 +280,7 @@ class ReasonSpec:
     # :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`. Zero means "no extra attempt can
     # help" — a statement about the CONDITION, not a budget — and those codes
     # stop the moment they fire. Any non-zero value says only "retriable"; the
-    # specific 1 vs 2 does not change behaviour. See
+    # specific value does not change behaviour. See
     # :data:`NON_RETRIABLE_CODES`.
     retry_budget: int
     # What a run that ended on this code says: the fix/action copy the
@@ -1257,16 +1253,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "wired_capture_failed": "The microphone could not complete the recording.",
         "program_not_composed": "The speaker could not prepare the test signal.",
     }.items()},
-    REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
-        REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
-        # Names no reflection: a gate window capped at the search ceiling proves
-        # nothing about one (gate_disclosure.describe_gate discloses the gate).
-        RetryableReasonCopy(
-            "The check was inconclusive — this measurement had less usable sound "
-            "to compare than the tuning did.",
-            "Re-verify to try again.",
-        ),
-    ),
     REASON_APPLY_FAILED: _retriable_reason(
         REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
