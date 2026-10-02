@@ -92,36 +92,8 @@ def program_peak(graph: Mapping[str, Any], *, charged: bool = False) -> ProgramP
         return ProgramPeak(0.0, None, math.nan)
     import numpy as np  # lazy: import cost, see the docstring
 
-    grid, program = _output_programs(graph, pipeline)
-    if not np.any(program > 0.0):
-        return ProgramPeak(-math.inf, None, math.nan)
-    output, index = np.unravel_index(int(np.argmax(program)), program.shape)
-    return ProgramPeak(
-        20.0 * math.log10(float(program[output, index])), int(output), float(grid[index]),
-    )
-
-
-def output_peaks_db(graph: Mapping[str, Any], *, charged: bool = False) -> dict[int, float]:
-    """The loudest worst-case program each output of ``graph`` plays, dB re unity,
-    by output index; ``-inf`` for an output that plays nothing.
-
-    Raises :class:`~.graph_transfer.GraphTransferError` when the graph has no
-    exactly modelled transfer.
-    """
-    _, program = _output_programs(graph, _evaluated_pipeline(graph.get("pipeline"), charged=charged))
-    return {output: 20.0 * math.log10(peak) if peak > 0.0 else -math.inf
-            for output, peak in enumerate(float(row.max()) for row in program)}
-
-
-def _output_programs(graph: Mapping[str, Any], pipeline: Any) -> tuple[Any, Any]:
-    """Each output's program over :func:`~.branch_chain.camilla_evaluation_grid`:
-    the sum over capture channels of ``|H(f)|``, one row per output."""
-    import numpy as np  # lazy: import cost, see program_peak
-
     from .branch_chain import camilla_evaluation_grid  # lazy: imports numpy
 
-    filters = graph.get("filters")
-    filters = filters if isinstance(filters, Mapping) else {}
     specs = [
         spec for step in (pipeline if isinstance(pipeline, list) else [])
         if isinstance(step, Mapping) and step.get("type") == "Filter"
@@ -143,7 +115,12 @@ def _output_programs(graph: Mapping[str, Any], pipeline: Any) -> tuple[Any, Any]
             allow_limiter_passthrough=True, dynamic_bass_at_rest=True,
         )
         program += np.abs([transfer[output] for output in outputs])
-    return grid, program
+    if not np.any(program > 0.0):
+        return ProgramPeak(-math.inf, None, math.nan)
+    output, index = np.unravel_index(int(np.argmax(program)), program.shape)
+    return ProgramPeak(
+        20.0 * math.log10(float(program[output, index])), int(output), float(grid[index]),
+    )
 
 
 def charge_db(graph: Mapping[str, Any], *, output_trim_db: float = 0.0) -> float:

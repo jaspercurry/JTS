@@ -24,10 +24,8 @@ from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
-from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs, plays_rear
-from jasper.active_speaker.measurement_emit import (
-    MeasurementGraphProfile, compile_tuning_graph, room_layer_charge_db, timing_floor_db,
-)
+from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, room_layer_charge_db
 from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
 from jasper.active_speaker.preflight import (
     PreflightFacts, PreflightIssue, bass_lift_db, preflight, rise_without_room_db,
@@ -161,10 +159,8 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
                         lambda *a: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
-    monkeypatch.setattr(preflight_live, "program_charge_db", lambda _: 0.0)
     monkeypatch.setattr(preflight_live, "plays_rear", lambda _: False)
     monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda _: None)
-    monkeypatch.setattr(preflight_live, "timing_floor_db", lambda *_: {})
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     facts = preflight_live.read_preflight_facts(plan, mover_available=True)
     assert facts.declared_target_ids == tuple(role_targets)
@@ -473,21 +469,21 @@ def test_an_unreadable_room_layer_refuses_only_a_rise_over_the_probe(purposes, r
 
 
 @pytest.mark.parametrize("program,layout,applied_db,trial_db,lift", [
-    ("speaker", "speaker_mark", 18, None, "applied"), ("room", "seat_express", 18, None, "none"),
+    ("speaker", "speaker_mark", 18, None, "none"), ("room", "seat_express", 18, None, "none"),
     ("room", "seat_express", 6, 18, "trial over applied")])
 def test_the_margins_are_measured_against_the_graph_the_probe_plays(tuning_profile, program, layout, applied_db,
                                                                     trial_db, lift):
     """A run's margin is how much more its takes' dynamic bass may lift than the
-    graph its probe plays: all of the applied lift over a speaker run's timing
-    take, which plays none; none over a take on the same graph; and a trial's
-    lift over the applied one (ADR-0403 §4, ADR-0370)."""
+    graph its probe plays: none over a speaker run's timing take, since each
+    candidate graph there probes itself (ADR-0408); none over a take on the same
+    graph; and a trial's lift over the applied one (ADR-0403 §4, ADR-0370)."""
     applied = _boost(applied_db)
     trial = replace(_room_candidate(tuning_profile), bass_extension=_boost(trial_db)) if trial_db else None
     plan = request_for_preset(run_preset(program, layout), candidates=("base", trial.fingerprint) if trial else ("base",))
     report = preflight(plan, ready_facts(plan, applied_bass_extension=applied,
                                          candidates={trial.fingerprint: trial} if trial else {}))
     assert not report.blocking
-    expected = {"applied": bass_lift_db(applied, {}), "none": 0.0,
+    expected = {"none": 0.0,
                 "trial over applied": bass_lift_db(trial.bass_extension if trial else {}, applied)}[lift]
     assert report.rung_admission["run_margin_db"] == pytest.approx(expected) and expected >= 0.0
     assert (lift == "none") is (expected == 0.0)
@@ -506,9 +502,8 @@ def test_a_take_clearing_the_room_layer_the_probe_plays_adds_its_rise():
 
 @pytest.mark.parametrize("state,room", [({}, ()), ({"status": "applied"}, None)])
 def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatch, state, room):
-    """No applied profile plays no room layer, charge or rear woofer, and the run's
-    base is the declared draft; an applied one whose candidate cannot be read has
-    unknown ones (ADR-0370, ADR-0385)."""
+    """No applied profile plays no room layer or rear woofer; an applied one whose
+    candidate cannot be read has unknown ones (ADR-0370, ADR-0385)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass"),))
     ready = ready_facts(plan)
 
@@ -518,25 +513,15 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile", unreadable)
-    monkeypatch.setattr(preflight_live, "_draft_floor_db", lambda _: {"woofer": -2.0})
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    assert (facts.applied_room_peqs, facts.applied_room_charge_db, facts.applied_program_charge_db,
-            facts.applied_timing_floor_db, facts.applied_rear_plays) == (
-        (room, None, None, None, None) if room is None else (room, None, 0.0, {"woofer": -2.0}, False))
+    assert (facts.applied_room_peqs, facts.applied_room_charge_db, facts.applied_rear_plays) == (
+        (room, None, None) if room is None else (room, None, False))
 
 
-#: The test tune (``_room_candidate``) with a 6 dB room boost at 120 Hz: its trims, and that boost's charge.
-_TUNE_FLOOR_DB, _TUNE_CHARGE_DB = {"woofer": -1.5, "tweeter": -4.25}, 2.821
 _REAR_SUM_DB = 20 * math.log10(2)
-
-
-def _boosted_tune(tuning_profile):
-    return replace(_room_candidate(tuning_profile), room_correction=_room_correction(
-        sides={"mono": [{"freq": 120.0, "q": 2.0, "gain": 6.0}]}, boost_db_total=6.0, level_cost_db=6.0,
-        basis={**_room_correction()["basis"], "admitted_boosts_hz": [120.0]}))
 
 
 def _cardioid_profile():
@@ -552,200 +537,29 @@ def _cardioid_trial(profile=None):
                    rear_calibration=_rear_document())
 
 
-@pytest.mark.parametrize(("program", "layout", "rear", "trial", "excess_db", "rear_sum_db"), [
-    ("speaker", "speaker_mark", False, "plain", _TUNE_CHARGE_DB + 4.25, 0.0),
-    ("speaker", "speaker_mark", True, "plain", _TUNE_CHARGE_DB + 1.5 + _REAR_SUM_DB, _REAR_SUM_DB),
-    ("speaker", "speaker_mark", True, None, 0.0, 0.0),
-    ("room", "seat_express", True, "plain", 0.0, 0.0),
-    ("room", "seat_express", False, "cardioid", _REAR_SUM_DB, _REAR_SUM_DB),
-    ("room", "seat_express", True, "cardioid", 0.0, 0.0),
-    ("room", "seat_express", None, "plain first", _REAR_SUM_DB, _REAR_SUM_DB),
-    ("room", "seat_express", None, "cardioid", _REAR_SUM_DB, _REAR_SUM_DB)],
-    ids=["no rear woofer: the tweeter's trim sets it", "a rear woofer the timing take mutes", "only drivers after it",
-         "probe on the candidate's own graph", "a seat probe that mutes the rear", "a seat probe that plays it too",
+@pytest.mark.parametrize(("program", "layout", "rear", "trial", "rear_sum_db"), [
+    ("speaker", "speaker_mark", False, "cardioid", 0.0),
+    ("room", "seat_express", True, "plain", 0.0),
+    ("room", "seat_express", False, "cardioid", _REAR_SUM_DB),
+    ("room", "seat_express", True, "cardioid", 0.0),
+    ("room", "seat_express", None, "plain first", _REAR_SUM_DB),
+    ("room", "seat_express", None, "cardioid", _REAR_SUM_DB)],
+    ids=["over a timing take each graph probes itself", "probe on the candidate's own graph",
+         "a seat probe that mutes the rear", "a seat probe that plays it too",
          "an unread base after a probe that mutes it", "an unread probe under a trial that plays it"])
-def test_a_drivers_excess_is_its_gap_under_the_probe_and_a_rear_it_mutes(tuning_profile, program, layout, rear,
-                                                                          trial, excess_db, rear_sum_db):
-    """A later take's graph that was not read plays no driver over unity, and the
-    timing take plays each front driver its trim under unity, less the applied
-    charge it folds in: so over a timing take each driver counts that charge plus
-    its own trim's gap, and a deep tweeter trim can set the margin. A rear woofer
-    the probe's graph mutes and a later take plays adds the coherent sum of two
-    woofers, 6.02 dB, to the woofer's band; a speaker with no rear woofer adds none
-    (ADR-0403 §4, ADR-0385)."""
-    candidates = ("trial", "base") if trial == "plain first" else ("base", "trial") if trial else ()
+def test_a_rear_the_probe_mutes_adds_the_woofers_coherent_sum(tuning_profile, program, layout, rear, trial,
+                                                              rear_sum_db):
+    """A rear woofer the probe's graph mutes and a later take at the run's fader
+    plays adds the coherent sum of two woofers, 6.02 dB, to the woofer's band. Over
+    a timing take each candidate graph probes itself, so none plays at the run's
+    fader (ADR-0403 §4, ADR-0408)."""
+    candidates = ("trial", "base") if trial == "plain first" else ("base", "trial")
     plan = request_for_preset(run_preset(program, layout), candidates=candidates)
     report = preflight(plan, ready_facts(
-        plan, applied_program_charge_db=_TUNE_CHARGE_DB, applied_timing_floor_db=_TUNE_FLOOR_DB, applied_rear_plays=rear,
+        plan, applied_rear_plays=rear,
         candidates={"trial": _cardioid_trial() if trial == "cardioid" else _room_candidate(tuning_profile)}))
     assert not report.blocking
-    assert report.rung_admission["driver_excess_db"] == pytest.approx(excess_db)
-    assert report.rung_admission["run_margin_db"] == pytest.approx(excess_db)
-    assert report.rung_admission["rear_sum_db"] == pytest.approx(rear_sum_db)
-
-
-def _live_facts(monkeypatch, profile, plan, base, trial=None):
-    """The live facts of ``plan`` on ``profile``, with ``base`` applied and ``trial`` banked."""
-    state = {"status": "applied", "source": {"measured_candidate_fingerprint": base.fingerprint}}
-    monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
-    monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda _: SimpleNamespace(candidate=base))
-    monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=trial))
-    monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda _: profile)
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready_facts(plan).mic_sensitivity)
-    monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
-    context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
-                              preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    return preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-
-
-@pytest.mark.parametrize(("trial_trim_db", "excess_db"), [(-25.2, 0.0), (-15.0, 10.2)],
-                         ids=["both keep the tweeter's trim", "the trial plays the tweeter 10.2 dB louder"])
-def test_a_trial_counts_each_drivers_real_gap_over_the_timing_take(monkeypatch, tuning_profile, trial_trim_db,
-                                                                   excess_db):
-    """Over a timing take each front driver counts how far a later graph really
-    plays it over the timing graph: the live facts read each summed take's own
-    graph. A trial that keeps the base's tweeter trim plays it no louder, so the
-    run's margin, and so its fader, is the plain run's (ADR-0385)."""
-    base = _trial_candidate(tuning_profile, trim=-25.2)
-    trial = _trial_candidate(tuning_profile, trim=trial_trim_db, gain=-1.0)
-    plan = request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", trial.fingerprint))
-    report = preflight(plan, _live_facts(monkeypatch, tuning_profile, plan, base, trial))
-    assert not report.blocking
-    assert (report.rung_admission["driver_excess_db"], report.rung_admission["run_margin_db"]) == (
-        pytest.approx(excess_db, abs=0.01), pytest.approx(excess_db, abs=0.01))
-
-
-def test_a_take_that_clears_a_layer_counts_unity_over_the_timing_take(monkeypatch, tuning_profile):
-    """A bass take at the mark plays the base with its room and bass layers
-    cleared. With a room boost gone that graph is charged less, so it plays the
-    other drivers louder than the whole graph the live facts read. Over a timing
-    take it counts unity, as main did (ADR-0385; the review of #6154)."""
-    base = replace(_boosted_tune(tuning_profile), role_attenuations_db={"woofer": 0.0, "tweeter": -4.25})
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),
-                                AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass")), program="speaker/mark")
-    facts = _live_facts(monkeypatch, tuning_profile, plan, base)
-    report = preflight(plan, facts)
-    assert not report.blocking and "base" in facts.driver_peaks_db
-    unity = max(facts.applied_program_charge_db - floor
-                for floor in {"woofer": 0.0, **facts.applied_timing_floor_db}.values())
-    assert report.rung_admission["driver_excess_db"] == pytest.approx(unity)
-
-
-@pytest.mark.parametrize(("program", "layout", "candidates", "reads"), [
-    ("room", "seat_express", (), 0), ("bass", "seat_express", ("base", "trial"), 0),
-    ("speaker", "speaker_mark", ("base", "trial"), 2)], ids=["room plain", "bass A/B", "speaker A/B"])
-def test_the_live_facts_read_graphs_only_under_a_timing_take(monkeypatch, tuning_profile, program, layout, candidates,
-                                                             reads):
-    """Only a run a timing take probes counts a later graph's own peaks, so only
-    it builds and reads them: each read is a compile and an evaluation (ADR-0226)."""
-    base = _trial_candidate(tuning_profile, trim=-25.2)
-    plan = request_for_preset(run_preset(program, layout), candidates=candidates)
-    built = []
-    monkeypatch.setattr(preflight_live, "_driver_peaks_db", lambda _profile, candidate: built.append(candidate) or {})
-    _live_facts(monkeypatch, tuning_profile, plan, base, _trial_candidate(tuning_profile))
-    assert len(built) == reads
-
-
-@pytest.mark.parametrize(("trial_peaks", "excess_db"), [
-    ({"woofer": 0.0, "tweeter": -25.2, "woofer:rear": 0.0}, _REAR_SUM_DB), (None, 25.2)],
-    ids=["its rear sums in phase", "a trial graph not read counts unity"])
-def test_a_later_graph_counts_its_rear_in_phase_and_unity_where_unread(trial_peaks, excess_db):
-    """The timing take mutes the rear woofer. A trial whose graph plays it at the
-    front woofer's level adds their coherent sum, 6.02 dB, to the woofer's band,
-    though its drivers otherwise play no louder than the base's. A trial whose
-    graph was not read counts unity for each driver, so the tweeter's deep trim
-    sets the margin (ADR-0403 §4, ADR-0385)."""
-    plan = request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", "trial"))
-    front = {"woofer": 0.0, "tweeter": -25.2}
-    report = preflight(plan, ready_facts(
-        plan, applied_program_charge_db=0.0, applied_timing_floor_db=front, applied_rear_plays=False,
-        candidates={"trial": _cardioid_trial()},
-        driver_peaks_db={"base": front, **({"trial": trial_peaks} if trial_peaks else {})}))
-    assert not report.blocking
-    assert report.rung_admission["driver_excess_db"] == pytest.approx(excess_db)
-    assert report.rung_admission["rear_sum_db"] == pytest.approx(_REAR_SUM_DB)
-
-
-@pytest.mark.parametrize("unread", [{"applied_program_charge_db": None}, {"applied_timing_floor_db": None},
-                                    {"applied_timing_floor_db": {"woofer": -math.inf}}],
-                         ids=["charge", "floor", "a muted front woofer"])
-@pytest.mark.parametrize(("program", "layout", "blocked"), [("speaker", "speaker_mark", True),
-                                                            ("room", "seat_express", False)])
-def test_an_unread_applied_tune_refuses_only_a_take_over_the_timing_take(tuning_profile, unread, program, layout,
-                                                                         blocked):
-    """Over a timing take a later take's rise needs the applied charge and the
-    timing floor, and a timing take that plays no front woofer has none; a run
-    probed on a candidate's own graph needs neither (ADR-0403 §4)."""
-    plan = request_for_preset(run_preset(program, layout), candidates=("base", "trial"))
-    report = preflight(plan, ready_facts(plan, candidates={"trial": _room_candidate(tuning_profile)}, **unread))
-    assert [issue.code for issue in report.issues if issue.blocking] == (["walk_level_policy_invalid"] if blocked else [])
-
-
-def _over_timing_db(profile, candidate):
-    """The most each driver's band of ``candidate``'s graph plays over its timing
-    graph where the timing graph plays it, read from the two compiled graphs; a
-    cardioid's front and rear woofers add in phase."""
-    hz = np.geomspace(20.0, 20000.0, 4001)
-    outputs = {(output.driver_role, output.output_variant): output.index for output in profile.preset.channel_map.outputs}
-
-    def bands(scope):
-        graph = yaml.safe_load(compile_tuning_graph(profile, candidate, scope=scope))
-        played = {index: np.abs(response) for index, response in complex_channel_transfer(
-            graph, hz, input_weights={0: 1.0}, output_channels={index: index for index in outputs.values()},
-            allow_limiter_passthrough=True, dynamic_bass_at_rest=True).items()}
-        return {role: sum(played[index] for (driver, _), index in outputs.items() if driver == role)
-                for role in {driver for driver, _ in outputs}}
-
-    candidate_bands, timing_bands = bands("candidate"), bands("timing")
-    return {role: float(np.max(20 * np.log10(candidate_bands[role][live] / timing[live])))
-            for role, timing in timing_bands.items() if np.any(live := timing > np.max(timing) * 1e-3)}
-
-
-@pytest.mark.parametrize(("front", "woofer_db"), [({}, 0.0), ({"gain_db": -2.0}, -2.0), ({"filters": [
-    {"type": "Biquad", "parameters": {"type": "Lowshelf", "freq": 80.0, "q": 0.7, "gain": -3.0}},
-    {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 300.0, "q": 1.0, "gain": 2.0}},
-    {"type": "Biquad", "parameters": {"type": "Highpass", "freq": 30.0, "q": 0.7}}]}, -3.0), ({"muted": True}, -math.inf)],
-    ids=["flat", "a gain", "a cut, a boost and a high-pass", "muted"])
-def test_the_timing_floor_counts_the_front_chains_lowest_static_response(front, woofer_db):
-    """On a cardioid cabinet the timing take keeps the front chain the rear muted
-    leaves, so the front woofer's floor under unity falls by that chain's gain and
-    each of its cuts; a muted chain plays no front woofer (ADR-0385)."""
-    profile = _cardioid_profile()
-    candidate = replace(_cardioid_trial(profile), rear_calibration=_rear_document(
-        front={**_rear_document()["front"], **front}))
-    floors = timing_floor_db(profile, candidate)
-    trims = candidate.role_attenuations_db
-    assert floors["woofer"] - floors["tweeter"] == pytest.approx(trims["woofer"] - trims["tweeter"] + woofer_db)
-
-
-def _netted_front_boost(profile):
-    """A cardioid tune whose woofer cut nets its front chain's 3 dB boost, which the
-    timing graph, playing no linearization, charges itself (ADR-0385)."""
-    front = {**_rear_document()["front"], "filters": [
-        {"type": "Biquad", "parameters": {"type": "Peaking", "freq": 60.0, "q": 1.0, "gain": 3.0}}]}
-    return replace(_cardioid_trial(profile), blend_correction=(), rear_calibration=_rear_document(rear_muted=True, front=front),
-                   linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": 60.0, "q": 1.0, "gain": -3.0}]}})
-
-
-@pytest.mark.parametrize("cabinet", ["two-way", "cardioid", "a front boost its tune nets"])
-def test_each_drivers_gap_counts_what_its_band_plays_over_the_timing_take(tuning_profile, cabinet):
-    """Read from the compiled graphs, the test tune's woofer plays 3.3 dB over its
-    timing take where a 6 dB room boost meets its trim, and its tweeter 1.6 dB at a
-    linearization boost its −4.25 dB trim keeps out of the charge. Each driver's
-    gap under the timing take counts that, on a cardioid cabinet the woofers'
-    coherent sum counts the rear woofer the timing take mutes, and the gap counts
-    what the timing graph still charges itself (ADR-0385)."""
-    profile = tuning_profile if cabinet == "two-way" else _cardioid_profile()
-    applied = {"two-way": lambda: _boosted_tune(tuning_profile), "cardioid": lambda: _cardioid_trial(profile),
-               "a front boost its tune nets": lambda: _netted_front_boost(profile)}[cabinet]()
-    over = _over_timing_db(profile, applied)
-    if cabinet == "two-way":
-        assert over == {"woofer": pytest.approx(3.32, abs=0.02), "tweeter": pytest.approx(1.61, abs=0.02)}
-    charge, floors = candidate_parts.program_charge_db(applied), timing_floor_db(profile, applied)
-    rear_sum = _REAR_SUM_DB if plays_rear(applied) else 0.0
-    assert plays_rear(applied) is (cabinet == "cardioid") and over
-    for role, read in over.items():
-        assert read <= charge - floors[role] + (rear_sum if role == "woofer" else 0.0) + 0.01, role
+    assert report.rung_admission["rear_sum_db"] == report.rung_admission["run_margin_db"] == pytest.approx(rear_sum_db)
 
 
 def _unprobed_plans():
@@ -793,8 +607,7 @@ def test_every_shipped_preset_plans_its_probe_before_the_takes_at_its_fader(tuni
 
 
 def test_live_facts_read_a_cardioid_base_and_its_rear(monkeypatch):
-    """An applied cardioid tune's rear woofer plays, and its timing floor is read
-    off its own timing graph (ADR-0318, ADR-0385)."""
+    """An applied cardioid tune's rear woofer plays (ADR-0318)."""
     profile = _cardioid_profile()
     applied = _cardioid_trial(profile)
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
@@ -808,7 +621,7 @@ def test_live_facts_read_a_cardioid_base_and_its_rear(monkeypatch):
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
-    assert (facts.applied_rear_plays, facts.applied_timing_floor_db) == (True, timing_floor_db(profile, applied))
+    assert facts.applied_rear_plays is True
 
 
 def test_unreadable_bass_descriptor_blocks_the_margin():
@@ -840,10 +653,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
-    assert candidate_parts.program_charge_db(applied) > 0.0
-    assert facts.applied_program_charge_db == (candidate_parts.program_charge_db(applied) if descriptor is not None else 0.0)
-    if descriptor is not None:
-        assert (facts.applied_timing_floor_db, facts.applied_rear_plays) == (timing_floor_db(tuning_profile, applied), False)
+    assert facts.applied_rear_plays is False
     report = preflight(plan, facts)
     assert not report.blocking
     assert report.rung_admission["run_margin_db"] == 0.0

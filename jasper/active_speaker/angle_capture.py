@@ -54,6 +54,9 @@ from .measurement_programs import (
     REGIME_BRANCHES,
     REGIMES,
     SPOT_LEVEL,
+    UnknownPresetError,
+    preset,
+    run_level,
     validated_branch_pair,
     validated_capture_purpose,
     validated_purposes,
@@ -269,17 +272,30 @@ def played_layers(stop: AngleStop) -> tuple[str, ...]:
     return cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime)
 
 
-def level_sets(stops: Sequence[AngleStop]) -> tuple[int | None, ...]:
-    """For each take in run order, the index of the take whose level it shares,
-    or ``None`` when it plays at its run's fader (ADR-0366 §2). A driver's
-    takes share a level within their placement (ADR-0361). A driverless summed
-    spot closer than the mark shares one with the next spots at its kind and
-    distance -- its repeats and lateral poses -- found by the set's first take
-    (ADR-0403); a branch take of one pair shares one only within its placement,
-    since each placement probes what it plays (ADR-0407). A summed set is one
-    candidate graph there (its candidate and ``played_layers``), levelled by
-    that graph's own first take; a branch set's probes play the drivers graph,
-    so its candidates share them (ADR-0406)."""
+def take_level(stop: AngleStop, *, scope: str, over_timing: bool) -> PoseLevel | None:
+    """The level rule of a take of ``stop`` on graph ``scope``: its stop's own
+    (:attr:`AngleStop.level`). In a run that takes a timing take, a summed take
+    on a candidate graph levels itself too, at its pose's run level, since the
+    timing take's probe reads only the timing graph (ADR-0408)."""
+    if stop.level is None and over_timing and scope == TEMPLATE_SWEEP_SCOPE:
+        return run_level(stop.pose.kind)
+    return stop.level
+
+
+def level_sets(stops: Sequence[AngleStop], scopes: Sequence[str]) -> tuple[int | None, ...]:
+    """For each take in run order, given its graph scope, the index of the take
+    whose level it shares, or ``None`` when it plays at its run's fader (ADR-0366
+    §2). A driver's takes share a level within their placement (ADR-0361). A
+    driverless summed spot closer than the mark shares one with the next spots at
+    its kind and distance -- its repeats and lateral poses -- found by the set's
+    first take (ADR-0403), and so does each candidate graph's summed take at any
+    spot of a run that takes a timing take (ADR-0408); a branch take of one pair
+    shares one only within its placement, since each placement probes what it
+    plays (ADR-0407). A summed set is one candidate graph there (its candidate and
+    ``played_layers``), levelled by that graph's own first take; a branch set's
+    probes play the drivers graph, so its candidates share them (ADR-0406)."""
+    over_timing = "timing" in scopes
+
     def key(stop: AngleStop) -> tuple[object, ...]:
         if stop.pose.driver:
             return stop.pose.place
@@ -289,8 +305,8 @@ def level_sets(stops: Sequence[AngleStop]) -> tuple[int | None, ...]:
 
     starts: list[int | None] = []
     firsts: dict[tuple[object, ...], int] = {}
-    for index, stop in enumerate(stops):
-        if stop.level is None:
+    for index, (stop, scope) in enumerate(zip(stops, scopes, strict=True)):
+        if take_level(stop, scope=scope, over_timing=over_timing) is None:
             starts.append(None)
             continue
         if not (index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)):
@@ -460,6 +476,18 @@ class AngleCaptureRequest:
         self._validate_policy()
         self._refuse_bad_template()
 
+    @property
+    def takes_timing(self) -> bool:
+        """Whether the run takes its preset's timing take: the base's front drivers
+        summed at the mark (ADR-0319), so only with a base stop that plays every
+        driver (ADR-0366). A plan naming no preset takes none."""
+        try:
+            timing = preset(self.program).timing_take
+        except UnknownPresetError:
+            return False
+        return timing and any(
+            candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.pose.driver for stop in self.stops)
+
     def _validate_policy(self) -> None:
         if not isinstance(self.level, LevelPolicy):
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
@@ -566,7 +594,9 @@ class AngleCaptureRequest:
                 f"a walk's template states what each capture is measured at, "
                 f"so it cannot carry {', '.join(stated)}",
             )
-        if self.template.level_ladder_dbfs and any(stop.level is not None for stop in self.stops):
+        if self.template.level_ladder_dbfs and any(take_level(
+                stop, scope=TEMPLATE_SWEEP_SCOPE if stop.plays_summed else "", over_timing=self.takes_timing) is not None
+                for stop in self.stops):
             # A take that levels itself plays its probe first (ADR-0361 §3, ADR-0405).
             raise LateralWalkRefused(
                 WALK_TEMPLATE_NOT_ACCEPTED,

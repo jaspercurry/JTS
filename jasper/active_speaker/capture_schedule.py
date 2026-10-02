@@ -16,10 +16,7 @@ from .angle_capture import (
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
 from .crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec
-from .measurement_programs import (
-    BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER,
-    Pose, UnknownPresetError, candidate_identity, preset,
-)
+from .measurement_programs import BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER, Pose
 
 
 @dataclass(frozen=True)
@@ -48,7 +45,7 @@ def prepare_plan_captures(
             AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
             replace(design_axis_spec(request), program_phase=PHASE_CHECK),
         ))
-    if takes_timing(request):
+    if request.takes_timing:
         base_request = replace(request, stops=(AngleStop(Pose(0, 0), REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
                                candidates=(), repeats=1)
         base_spec, = stop_specs(base_request,
@@ -68,9 +65,9 @@ def prepare_plan_captures(
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
-    # A driver's takes, and the first take of each close driverless set or branch set, find their level
-    # (ADR-0365, ADR-0403).
-    starts = level_sets([capture.stop for capture in captures])
+    # A driver's takes, and the first take of each close driverless set, branch set or, over a timing
+    # take, candidate graph's set, find their level (ADR-0365, ADR-0403, ADR-0408).
+    starts = level_sets([capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])
     return tuple(replace(capture, spec=replace(capture.spec, level_probe=True))
                  if start is not None and (capture.stop.pose.driver or start == index) else capture
                  for index, (capture, start) in enumerate(zip(captures, starts)))
@@ -79,7 +76,7 @@ def prepare_plan_captures(
 def run_takes(captures: Sequence[PlanCapture]) -> list[tuple[str, bool, int]]:
     """Each capture as its run plays it: its graph scope, whether it shares a
     level (``angle_capture.level_sets``), and its placement's index."""
-    starts = level_sets([capture.stop for capture in captures])
+    starts = level_sets([capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])
     placements = [index for index, (_, placed) in enumerate(groupby(captures, key=lambda capture: capture.stop.pose.place))
                   for _ in placed]
     return [(capture.spec.graph_scope, start is not None, placement)
@@ -107,18 +104,6 @@ def unprobed_take_at_fader(takes: Sequence[tuple[str, bool, int]]) -> bool:
     shares a level (``angle_capture.level_sets``), and its placement's index."""
     probe = run_probe_index([(scope, levelled) for scope, levelled, _ in takes])
     return any(not levelled and (probe is None or placement < takes[probe][2]) for _, levelled, placement in takes)
-
-
-def takes_timing(request: AngleCaptureRequest) -> bool:
-    """Whether the run takes its preset's timing take: the base's front drivers
-    summed at the mark (ADR-0319), so only with a base stop that plays every
-    driver (ADR-0366). A plan naming no preset takes none."""
-    try:
-        timing = preset(request.program).timing_take
-    except UnknownPresetError:
-        return False
-    return timing and any(
-        candidate_identity(stop.candidate_id) == BASE_CANDIDATE and not stop.pose.driver for stop in request.stops)
 
 
 def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:

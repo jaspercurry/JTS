@@ -16,7 +16,6 @@ from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
 from jasper.platform.biquad import PeqFilter, peaking_cascade_response_db
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.json_fields import finite_float
-from jasper.platform.speaker_layout import measurement_target_id
 
 from .capture_schedule import (
     UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures, run_probe_index, run_takes, unprobed_take_at_fader,
@@ -103,18 +102,8 @@ class PreflightFacts:
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()
     #: What that layer adds to the applied program charge (ADR-0385); ``None`` when unknown.
     applied_room_charge_db: float | None = None
-    #: The applied tune's program charge, which the timing take's graph folds into its
-    #: trims (ADR-0385); ``None`` when an applied profile could not be read.
-    applied_program_charge_db: float | None = 0.0
-    #: How far under unity, before that charge, the timing take plays each front driver of the
-    #: run's base (``measurement_emit.timing_floor_db``); ``None`` when it could not be read.
-    applied_timing_floor_db: Mapping[str, float] | None = field(default_factory=dict)
     #: Whether the run's base graph plays a rear woofer; ``None`` when it could not be read.
     applied_rear_plays: bool | None = False
-    #: The loudest each candidate's graph plays each driver, dB re unity, by candidate
-    #: name (the run's base as ``base``) and measurement target; a candidate or driver
-    #: not here counts unity, the most a graph's own charge lets it play (ADR-0385).
-    driver_peaks_db: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
@@ -184,26 +173,15 @@ def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, f
     return max(0.0, charge_db - min(peaking_cascade_response_db(room_peqs, *band_hz)[1]))
 
 
-REAR_WOOFER = measurement_target_id("woofer", "rear")
-
-
 def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
                 bass_extensions: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
     """How much louder than the take a run probes its other takes at the run's
     fader may play: the largest bass lift and the largest rise of a take that
-    clears the room layer, each against the graph the probe plays, plus the most
-    any driver may play over the probe's graph. A rear woofer the probe's graph
-    mutes and a later take plays adds the coherent sum of the woofers sharing its
-    band. Over a timing take, each front driver counts the loudest a later take's
-    graph plays it, with that graph's rear woofer in phase on the front woofer's
-    band (unity for a driver it was not read for, and for every driver of a take
-    that clears a layer), over the least the timing graph plays it: its floor
-    under the applied charge that graph folds into its trims (ADR-0403 §4,
-    ADR-0370, ADR-0385). Empty when no take plays at the
-    run's fader. Raises
-    ``ValueError`` when a take clears a room layer the probe plays and that layer
-    or its charge could not be read, or plays over a timing take and the applied
-    tune could not be read or plays no front woofer."""
+    clears the room layer, each against the graph the probe plays, and, for a rear
+    woofer the probe's graph mutes and a later take plays, the coherent sum of the
+    woofers sharing its band (ADR-0403 §4, ADR-0370, ADR-0385). Empty when no take
+    plays at the run's fader. Raises ``ValueError`` when a take clears a room
+    layer the probe plays and that layer or its charge could not be read."""
     takes = [(scope, levelled) for scope, levelled, _ in run_takes(captures)]
     probed = run_probe_index(takes)
     if probed is None:
@@ -212,13 +190,12 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
                 if scope in CANDIDATE_SCOPES and not levelled]
 
     def bass(capture: Any) -> Mapping[str, Any]:
-        # The timing graph plays no bass extension (#5632); a take may clear its own.
-        cleared = capture.spec.graph_scope == "timing" or "bass_extension" in capture.spec.cleared_layers
+        cleared = "bass_extension" in capture.spec.cleared_layers
         return {} if cleared else bass_extensions.get(candidate_identity(capture.stop.candidate_id), {})
 
     probe = captures[probed]
     lift = max(bass_lift_db(bass(capture), bass(probe)) for capture in at_fader)
-    clearing = ([] if probe.spec.graph_scope == "timing" or "room_correction" in probe.spec.cleared_layers else
+    clearing = ([] if "room_correction" in probe.spec.cleared_layers else
                 [capture for capture in at_fader if "room_correction" in capture.spec.cleared_layers])
     room_peqs, charge = facts.applied_room_peqs, facts.applied_room_charge_db
     if clearing and (room_peqs is None or (room_peqs and charge is None)):
@@ -231,9 +208,6 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
         return capture.spec.graph_scope, capture.stop.candidate_id, capture.spec.cleared_layers
 
     def rear(capture: Any, *, unread: bool) -> bool:
-        # The timing graph mutes the rear woofer (#5632); only a branch take, which levels itself, clears it.
-        if capture.spec.graph_scope == "timing":
-            return False
         name = candidate_identity(capture.stop.candidate_id)
         candidate = facts.candidates.get(name)
         known = (plays_rear(candidate) if isinstance(candidate, MeasuredCrossoverCandidate) else
@@ -245,30 +219,7 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     summed = max((20 * math.log10((1 + rear(capture, unread=True)) / (1 + rear(probe, unread=False)))
                   for capture in others), default=0.0)
     summed = max(0.0, summed)
-    excess = summed
-    if probe.spec.graph_scope == "timing" and others:
-        charge, floors = facts.applied_program_charge_db, facts.applied_timing_floor_db
-        if charge is None or floors is None:
-            raise ValueError("the applied tune could not be read, so a take over the timing take has no known rise")
-        floors = {"woofer": 0.0, **floors}
-        if not all(math.isfinite(charge - floor) for floor in floors.values()):
-            raise ValueError("the timing take plays no front woofer, so a take over it has no known rise")
-
-        def loudest(capture: Any, role: str) -> float:
-            # The peaks are of a candidate's whole graph; one with a layer cleared plays another, unread.
-            peaks = {} if capture.spec.cleared_layers else facts.driver_peaks_db.get(
-                candidate_identity(capture.stop.candidate_id), {})
-            if role != "woofer":
-                return peaks.get(role, 0.0)
-            # The graph's own rear peak where it was read; else the rear plays at unity if it may play.
-            rear_db = peaks.get(REAR_WOOFER, 0.0 if rear(capture, unread=True) else -math.inf)
-            total = 10 ** (peaks.get(role, 0.0) / 20) + 10 ** (rear_db / 20)
-            return 20 * math.log10(total) if total > 0.0 else -math.inf
-
-        excess = max(0.0, *(loudest(capture, role) + charge - floor
-                            for capture in others for role, floor in floors.items()))
-    return {"lift_bound_db": lift, "room_off_rise_db": rise, "rear_sum_db": summed, "driver_excess_db": excess,
-            "run_margin_db": lift + rise + excess}
+    return {"lift_bound_db": lift, "room_off_rise_db": rise, "rear_sum_db": summed, "run_margin_db": lift + rise + summed}
 
 
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: bool = True) -> PreflightReport:

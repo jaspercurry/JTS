@@ -1686,16 +1686,20 @@ async def test_a_fresh_cardioid_base_admits_every_take_with_its_muted_rear_parke
 
 _BASS_RESERVE_DB = dynamic_bass_gain_reserve_db(BASS_EXTENSION)
 #: A branch take on a fresh cardioid: its (woofer, tweeter) caps and fader, the level
-#: each branch asks alone, whether its candidate boosts the bass, and where each
-#: branch alone then plays.
+#: each branch asks alone and the sum asks, whether its candidate boosts the bass, and
+#: where each branch alone and the sum then play.
 ALONE_CEILINGS = {
     # The tweeter's tighter cap holds a crossover take's woofer alone.
-    "crossover, fixture caps": ("branches", (0.0, -65.0), -20.0, (-40.0, -50.0), False, (-45.01, -50.0)),
-    "crossover, jts3-like caps": ("branches", (0.0, -25.0), 0.0, (-22.0, -40.0), False, (-25.01, -40.0)),
+    "crossover, fixture caps": ("branches", (0.0, -65.0), -20.0, (-40.0, -50.0), -56.0, False, (-45.01, -50.0), -56.0),
+    "crossover, jts3-like caps": ("branches", (0.0, -25.0), 0.0, (-22.0, -40.0), -46.0, False, (-25.01, -40.0), -46.0),
     # The rear pair shares its limits: the tweeter it does not play holds neither branch.
-    "rear pair": ("rear_pair", (0.0, -65.0), -20.0, (-40.0, -30.0), False, (-40.0, -30.0)),
-    # The bass boost the take's graph keeps on both woofers holds both (ADR-0359).
-    "rear pair, bass boost": ("rear_pair", (-20.0, -25.0), 0.0, (-12.0, -12.0), True, (-20.01 - _BASS_RESERVE_DB,) * 2),
+    "rear pair": ("rear_pair", (0.0, -65.0), -20.0, (-40.0, -30.0), -46.0, False, (-40.0, -30.0), -46.0),
+    # The bass boost the take's graph keeps on both woofers holds both (ADR-0359), and,
+    # where no other cap holds it lower, the sum too (ADR-0408).
+    "rear pair, bass boost": ("rear_pair", (-20.0, -25.0), 0.0, (-12.0, -12.0), -46.0, True,
+                              (-20.01 - _BASS_RESERVE_DB,) * 2, -46.0),
+    "rear pair, bass boost, a high probe": ("rear_pair", (-20.0, -20.0), 0.0, (-12.0, -12.0), -18.0, True,
+                                            (-20.01 - _BASS_RESERVE_DB,) * 2, -20.01 - _BASS_RESERVE_DB),
 }
 
 
@@ -1705,8 +1709,9 @@ async def test_each_branch_alone_plays_under_the_ceiling_admission_holds_its_tak
     """ADR-0407: a branch take composed and admitted the production way plays each
     branch alone at its own level, under the tightest cap of the take's two
     branches less the bass reserve each output keeps. Admission holds every
-    channel of the take to that ceiling."""
-    take, (woofer_cap, tweeter_cap), fader, levels, bass, alone = ALONE_CEILINGS[case]
+    channel of the take to that ceiling, so its sum plays under every driver's cap
+    less that reserve too (ADR-0408)."""
+    take, (woofer_cap, tweeter_cap), fader, levels, sum_dbfs, bass, alone, summed = ALONE_CEILINGS[case]
     topology, safety, context, profile, candidate = _fresh_cardioid(
         monkeypatch, woofer_peak=woofer_cap, tweeter_peak=tweeter_cap)
     if bass:
@@ -1717,12 +1722,13 @@ async def test_each_branch_alone_plays_under_the_ceiling_admission_holds_its_tak
     compose, _paths = _production_composer(tmp_path, fader, (topology, safety, context, candidate),
                                            door.graph_yaml(), door.level_reference_yaml)
 
-    played = await compose(spec=spec, level_db=fader, stimulus_dbfs=-46.0)
+    played = await compose(spec=spec, level_db=fader, stimulus_dbfs=sum_dbfs)
 
     admission = await played.seams["readmit"]()
     assert admission.allowed, admission.to_dict()
     assert {segment.role: segment.gain_db for segment in played.program.stimulus_segments()
             if segment.kind == KIND_SWEEP} == pytest.approx(dict(zip(spec.branch_target_ids, alone)))
+    assert played.program.segment("sweep_verify").gain_db == pytest.approx(summed)
 
 
 def test_a_summed_take_that_feeds_its_muted_rear_still_refuses_and_names_it(tmp_path, monkeypatch):
