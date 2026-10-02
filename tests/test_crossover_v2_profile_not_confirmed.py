@@ -87,19 +87,17 @@ def test_every_reason_renders_household_copy_never_a_bare_code():
     its template copy" — and nothing asserted it. Pin it for the WHOLE registry,
     not just the code this issue was filed about.
 
-    EVERY rendered field is checked independently, not ``message or banner``:
-    that short-circuit meant a spec carrying both (the silent-auto-retry codes)
-    never had its ``banner`` — the string those codes actually SHOW — examined
-    at all, and a mutation that turned a banner into a slug survived this test.
-    Same hole for ``next_action.label``, the copy-carrying field this issue
-    added."""
+    EVERY copy-carrying field is checked independently: a silent auto-retry
+    carries a banner as well as the message a run that ended says, and a
+    mutation that turned either into a slug must fail this test. Same for
+    ``next_action.label``, the copy-carrying field this issue added."""
 
     assert REASON_REGISTRY, "the registry must not be empty"
     for code, spec in REASON_REGISTRY.items():
-        assert spec.message or spec.banner, f"{code} renders no household copy"
+        assert spec.message, f"{code} renders no household copy"
         for field in ("message", "banner"):
             text = getattr(spec, field)
-            if text:  # a decision screen has no banner; a retry has no message
+            if text:  # a decision screen has no banner
                 _assert_household_copy(code, field, text)
         if spec.next_action is None:
             continue
