@@ -192,8 +192,11 @@ def test_take_sweep_uses_the_same_record_and_artifact_bytes(tmp_path, capsys, ta
         assert Path(answer["out"]).read_bytes() == (render_report(expected) + "\n").encode()
 
 
-@pytest.mark.parametrize("override", [False, True])
-def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, capsys, override):
+@pytest.mark.parametrize("named_sets,named_takes", [(True, False), (True, True), (False, True)],
+                         ids=["sets", "sets and takes", "takes alone"])
+def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, capsys, named_sets, named_takes):
+    """However its sides are named, the comparison files under the set its after side resolved
+    to, as the bank files that set's views; so two comparisons never share a file."""
     root = bank_seat_round(tmp_path)
     inputs = round_inputs(root)
     rows = list(measurement_documents(inputs.session_dir))[:4]
@@ -213,13 +216,15 @@ def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, ca
         path.write_text(json.dumps(view))
         views.append(view)
         paths.append(path)
-    ids = [group["takes"][int(override)]["take_id"] for group in groups]
+    ids = [group["takes"][int(named_takes)]["take_id"] for group in groups]
     expected = compare_bass_takes(*(selected_take(view, take_id) for view, take_id in zip(views, ids)), change="diagnostic")
-    flags = ["--before-take", ids[0], "--after-take", ids[1]] if override else []
-    assert main(["bass-compare", str(root), str(root), "--before-set", "bass-0", "--after-set", "bass-1", "--change", "diagnostic", *flags]) == 0
+    flags = [*(["--before-set", "bass-0", "--after-set", "bass-1"] if named_sets else []),
+             *(["--before-take", ids[0], "--after-take", ids[1]] if named_takes else [])]
+    assert main(["bass-compare", str(root), str(root), *flags, "--change", "diagnostic"]) == 0
     answer, actual = artifact_answer(capsys)
     assert actual == {**expected, "comparand": None, "source_views": list(map(str, paths))}
     assert Path(answer["out"]).name == "bass_comparison-bass-1.json"
+    assert not (root / "bass_comparison.json").exists()
 
 
 @pytest.mark.parametrize("rounds,flags,expected", [

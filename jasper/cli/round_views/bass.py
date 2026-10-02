@@ -22,8 +22,8 @@ from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 
 from ._common import (
     ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
-    _write, add_set_argument, answer, calibration_id, default_out, read_run_manifest, resolve_set, resolved_out,
-    round_inputs, set_view_out, subject,
+    _write, add_set_argument, answer, calibration_id, default_out, read_run_manifest, resolve_set, round_inputs,
+    set_view_out, subject,
 )
 
 
@@ -99,7 +99,8 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
         after = side(after_round, args.after_set, args.after_take)
     return ({**compare_bass_takes(before[0], after[0], change=args.change), "comparand": source,
              "source_views": [before[1], after[1]]},
-            resolved_out(after_round, ARTIFACT_BY_VIEW[args.command].artifact, args.after_set), [before[2], after[2]])
+            set_view_out(round_inputs(after_round), ARTIFACT_BY_VIEW[args.command].artifact, after[3].set_id),
+            [before[2], after[2]])
 
 
 def _cmd(args: argparse.Namespace) -> int:
