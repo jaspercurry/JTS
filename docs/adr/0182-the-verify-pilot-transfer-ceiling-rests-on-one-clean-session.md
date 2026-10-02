@@ -1,7 +1,8 @@
 # ADR-0182: The VERIFY pilot-transfer ceiling rests on one clean multi-attempt session
 
 - **Date:** 2026-08-26
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0415](0415-the-verify-pilot-transfer-gate-is-gone.md)
 
 ## Context
 
