@@ -14,7 +14,9 @@ stale rank-1 taker sharing this process makes ``acquire_level`` raise
 from __future__ import annotations
 
 import logging
+from typing import Any, Callable
 
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.platform.log_event import log_event
 from jasper.audio_resources.volume_owner import (
     ClaimKind,
@@ -27,7 +29,21 @@ from jasper.platform.volume_latch import GetMainVolumeDb, fader_matches, read_fa
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MeasurementVolumeClaim", "OwnerVolumeDoor"]
+__all__ = ["MeasurementVolumeClaim", "OwnerVolumeDoor", "camilla_fader_reader"]
+
+
+def camilla_fader_reader(camilla_factory: Callable[[], Any]) -> GetMainVolumeDb:
+    """The PHYSICAL main-volume read, fail-closed: an unreachable CamillaDSP raises
+    ``RuntimeError``, which ``read_fader_db`` turns into "no reading". Reads only:
+    every fader write goes through the ``VolumeOwner``."""
+
+    async def _read() -> float | None:
+        try:
+            return await camilla_factory().get_volume_db(best_effort=False)
+        except CamillaUnavailable as exc:
+            raise RuntimeError("CamillaDSP is unavailable") from exc
+
+    return _read
 
 
 class MeasurementVolumeClaim:

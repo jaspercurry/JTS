@@ -13,7 +13,6 @@ from typing import Any, AsyncIterator, Callable, Mapping, cast
 
 from jasper.platform.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
-from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.dsp_control.dsp_apply import dsp_writer_lock
 from jasper.audio_resources.volume_owner import volume_owner
 from jasper.voice.input_presence import voice_parked_no_mic
@@ -31,7 +30,7 @@ from .measure_spec import CANDIDATE_SCOPES
 from .refusal_copy import REASON_MEASURE_SPL_CALIBRATION_REQUIRED, REASON_VOLUME_RESTORE_DEFERRED
 from .composition import confirm_graph_is_live
 from .session_graph import MeasurementSessionGraph
-from .volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor
+from .volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor, camilla_fader_reader
 
 logger = logging.getLogger(__name__)
 REFUSE_SESSION_LIVE = "measurement_door_session_live"
@@ -237,14 +236,7 @@ def _volume_door(
     The read is the PHYSICAL fader, which is what makes the snapshot every drain
     restores toward a state rather than an intent.
     """
-
-    async def _read_fader() -> float | None:
-        try:
-            return await camilla_factory().get_volume_db(best_effort=False)
-        except CamillaUnavailable as exc:
-            raise RuntimeError("CamillaDSP is unavailable") from exc
-
-    return OwnerVolumeDoor(owner, read_fader=_read_fader, claim=claim)
+    return OwnerVolumeDoor(owner, read_fader=camilla_fader_reader(camilla_factory), claim=claim)
 
 
 def bind_measurement_graph(

@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor, camilla_fader_reader
 
 
 import concurrent.futures
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.platform.log_event import log_event
@@ -55,31 +56,6 @@ def set_volume_plan_for_tests(plan: Any) -> None:
 
 # CamillaDSP set-and-confirm takes a few RPCs; bound each recovery drain.
 _SESSION_VOLUME_DRAIN_TIMEOUT_S = 15.0
-
-
-def _session_volume_read(camilla_factory: Any) -> Callable[[], Any]:
-    """The main-volume READER, fail-closed on CamillaUnavailable.
-
-    **The write half is gone, and its absence is the point of W5-c1.** This
-    factory returned a ``(set, get)`` pair, and that ``_set`` was the one named
-    exception to ``VolumeOwner`` owning this fader — it called
-    ``CamillaController.set_volume_db`` directly, with no coordinator and no
-    arbitration. Every writer that consumed it now goes through the owner, so
-    there is nothing left for it to serve and it is deleted rather than left
-    for the next caller to find.
-
-    Reads never were the exception, and both survivors are reads: the
-    capture-time hold, and :func:`_volume_door`'s physical snapshot.
-    """
-    from jasper.audio_control.camilla import CamillaUnavailable
-
-    async def _get() -> float | None:
-        try:
-            return await camilla_factory().get_volume_db(best_effort=False)
-        except CamillaUnavailable as exc:
-            raise RuntimeError("CamillaDSP is unavailable") from exc
-
-    return _get
 
 
 def _refuse_without_a_volume_owner(where: str) -> "CrossoverV2Refused":
@@ -138,15 +114,12 @@ def _volume_door(
     its question per stimulus against the level the PLAN declares, not against
     a household level.
     """
-    from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
     from jasper.audio_resources.volume_owner import volume_owner
 
     owner = volume_owner()
     if owner is None:
         raise _refuse_without_a_volume_owner(reason)
-    return OwnerVolumeDoor(
-        owner, read_fader=_session_volume_read(camilla_factory), claim=claim,
-    )
+    return OwnerVolumeDoor(owner, read_fader=camilla_fader_reader(camilla_factory), claim=claim)
 
 
 def enforce_session_volume_ceiling_if_stale(
