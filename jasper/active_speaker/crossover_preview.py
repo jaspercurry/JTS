@@ -53,7 +53,7 @@ def _manual_crossover_settings(design_draft: Mapping[str, Any]) -> Mapping[str, 
 def crossover_preview_fingerprint(
     preview: Mapping[str, Any], design_draft: Mapping[str, Any] | None = None,
 ) -> str:
-    """Bind banked driver trims to the normalized declaration they measured."""
+    """The normalized declaration's identity, bound into the baseline source."""
 
     design_fingerprint = None
     if design_draft is not None and design_draft.get("status") not in {"not_saved", "unreadable"}:

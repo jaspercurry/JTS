@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
-import shlex
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +24,6 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 
 import yaml as yaml_lib
 
-from jasper.active_speaker import baseline_apply
 from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker import (
     commission_wiring,
@@ -227,38 +225,6 @@ def test_a_way1_round_compiles_and_writes_a_single_branch_baseline(tmp_path):
     fitted = [name for name in branch if "_linearization_" in name]
     assert fitted
     assert branch.index(fitted[-1]) < branch.index("as_full_range_baseline_gain")
-
-
-def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
-    tmp_path, caplog, monkeypatch
-):
-    """A base trim is a FRAME, so a lone branch has nothing to bank.
-
-    The seam names the TOPOLOGY fact with a standing-bank result, not one of the
-    evidence arms below it, which describe a round that went wrong and send an
-    operator to re-measure for a frame that cannot exist.
-    """
-    import logging
-
-    from jasper.active_speaker import driver_base_trim as dbt
-
-    monkeypatch.setenv(dbt.STATE_PATH_ENV, str(tmp_path / "driver_base_trim.json"))
-    caplog.set_level(logging.INFO, logger=dbt.logger.name)
-
-    baseline_apply.persist_applied_baseline_profile(
-        _way1_ready_to_apply_payload(tmp_path),
-        apply_state={"result": "success"},
-        state_path=tmp_path / "applied_profile.json",
-    )
-
-    events = [
-        dict(token.partition("=")[::2] for token in shlex.split(message))
-        for message in caplog.messages
-        if "event=dsp.baseline_base_trim_banked" in message
-    ]
-    assert [event["result"] for event in events] == ["left_standing"]
-    assert events[0]["reason"] == dbt.REFUSE_NO_FRAME
-    assert dbt.load_base_trim() is None
 
 
 # grading

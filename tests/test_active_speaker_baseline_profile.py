@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -15,7 +14,6 @@ import pytest
 import yaml as yaml_lib
 
 from jasper.active_speaker import baseline_record
-from jasper.active_speaker import driver_base_trim as dbt
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, publish_authored_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, compose_candidate
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
@@ -28,7 +26,6 @@ from jasper.active_speaker.applied_tune import (
     REAR_CALIBRATION_WALL_GAP_MISMATCH,
     rear_calibration_issues,
 )
-from jasper.active_speaker.baseline_profile import baseline_candidate_fingerprint
 from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
 from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
@@ -55,7 +52,6 @@ from tests.active_speaker_fixtures import (
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_measured_crossover_candidate import _rear_document, _room_correction
 from tests.test_rear_output_foundation import _rear_pair
-from tests._log_events import event_field_maps
 
 
 _MEASURE_EVIDENCE = {
@@ -183,28 +179,6 @@ def test_noop_draft_save_preserves_source_identity(tmp_path, changed):
 
 def test_an_applied_profile_without_its_snapshot_refuses_by_that_field():
     assert crossover_snapshot_state({"status": "applied"})["reason"] == "active_applied_profile_snapshot_missing"
-
-
-def test_computed_preview_keeps_existing_banked_trim_identity(monkeypatch):
-    from jasper.active_speaker import driver_base_trim
-    from jasper.active_speaker.commission_wiring import resolve_commission_preset
-    from tests.test_active_speaker_crossover_preview import _draft as preview_draft
-
-    draft = preview_draft()
-    preview = build_crossover_preview(draft)
-    topology = OutputTopology.from_mapping(draft["topology"])
-    source = baseline_record._source_payload(topology, draft, preview)
-    fingerprint = "2e9271be7c09d7ccbff04dfadd80836084052de9b4f406f554b7ba0873a44ea8"
-    assert source["crossover_preview_fingerprint"] == fingerprint
-    monkeypatch.setattr(driver_base_trim, "load_base_trim", lambda **kw: {
-        "declaration_fingerprint": fingerprint,
-        "trims_db": {"woofer": 0.0, "tweeter": -6.0},
-        "speaker_group_ids": ["main"], "trim_source": "strict_measured_candidate",
-    })
-    preset = resolve_commission_preset(topology, crossover_preview=preview)
-    trims, meta = dbt.measured_level_trims(preset, preview, design_draft=draft)
-    assert trims == {"woofer": 0.0, "tweeter": -6.0}
-    assert meta["base_trim"]["status"] == driver_base_trim.STATUS_APPLIED
 
 
 # --- Fail-safe level trim derived from the driver sensitivity gap -------------
@@ -340,20 +314,6 @@ def test_baseline_config_emits_single_net_inversion_not_double():
     mixer = parsed["mixers"][f"split_active_{preset.way_count}way"]
     dest = next(entry for entry in mixer["mapping"] if entry["dest"] == tweeter_index)
     assert all(source["inverted"] is False for source in dest["sources"])
-
-
-# --- Spec-promise guard 1: trim-only apply preserves manual polarity/delay --
-
-
-# --- corrections_provenance block on the candidate/applied payload ---------
-
-
-# --- lifecycle events (lane E, docs/active-crossover-information-design.md
-# "Structured events") -------------------------------------------------------
-
-_BASELINE_LOGGER = "jasper.active_speaker.driver_base_trim"
-
-
 
 
 def _v2_candidate(
@@ -525,281 +485,9 @@ def test_frozen_applied_profile_defaults_linearization_outcome_when_absent():
     assert frozen["linearization_outcome"] == ""
 
 
-
-
-# ---------- the measured base trim replaces the datasheet prefill ------------
-
-
-def _bank_events(caplog) -> list[dict[str, str]]:
-    """The base-trim seam's events as FIELDS, never as prose."""
-    return event_field_maps(caplog, "dsp.baseline_base_trim_banked")
-
-
-
-
-def _applied_with_sources(tmp_path: Path, sources: dict[str, str]) -> dict[str, Any]:
-    topology = _dual_apple_topology()
-    candidate = declared_profile_fixture(
-        topology, design_draft=_draft(topology),
-        config_path=tmp_path / "baseline.yml", write=True,
-    )
-    candidate["corrections_source"] = dict(sources)
-    candidate["level_match"] = {"comparison": "strict_measured_candidate", "groups_total": 1, "groups_measured": 1,
-                                "applied": True, "newest_capture_at": "2026-09-13T00:00:00Z"}
-    candidate["automatic_candidate"] = {"measured_group_ids": ["mono"]}
-    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
-    return candidate
-
-
-@pytest.mark.parametrize(
-    "sources, banked, result, reason",
-    [
-        (
-            {"woofer": "measured", "tweeter": "measured"},
-            True,
-            "ok",
-            None,
-        ),
-        (
-            {"woofer": "measured", "tweeter": "operator_pinned"},
-            True,
-            "left_standing",
-            "partly_measured",
-        ),
-        (
-            {"woofer": "sensitivity", "tweeter": "sensitivity"},
-            False,
-            "cleared",
-            "unmeasured",
-        ),
-    ],
-    ids=["all-measured", "one-operator-pin", "none-measured"],
-)
-def test_a_partly_pinned_profile_neither_banks_nor_clears(
-    tmp_path: Path, caplog, sources, banked, result, reason
-) -> None:
-    """Three answers, not two.
-
-    ``_bank_applied_base_trim`` required EVERY role to be sourced ``measured``
-    while ``crossover_contract._snapshot_owner`` — the predicate the seam's own
-    docstring claims to mirror — needs only ANY. A candidate with one
-    operator-pinned driver therefore read as ``automatic`` to the contract and
-    as unmeasured to the bank, and the apply DESTROYED a good banked record on
-    the strength of a single pin. A pin does not un-measure a speaker: the
-    prior full measurement is still the best evidence anyone has, so the
-    middle arm leaves it alone and says so.
-
-    The third arm is unchanged and deliberately so: a role that fell back to
-    the DATASHEET is weaker evidence, not a pin, and still clears.
-    """
-    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    candidate = _applied_with_sources(tmp_path, sources)
-    # A record from an earlier, fully measured apply is standing before each
-    # arm runs -- the arms differ only in what they do to it.
-    baseline_apply.persist_applied_baseline_profile(
-        _applied_with_sources(
-            tmp_path / "prior", {"woofer": "measured", "tweeter": "measured"}
-        ),
-        apply_state={"result": "success"},
-        state_path=tmp_path / "prior_applied.json",
-    )
-    assert dbt.load_base_trim() is not None
-    caplog.clear()
-
-    baseline_apply.persist_applied_baseline_profile(
-        candidate,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "applied_profile.json",
-    )
-
-    assert (dbt.load_base_trim() is not None) is banked
-    events = _bank_events(caplog)
-    assert [event["result"] for event in events] == [result]
-    if reason is not None:
-        assert events[0]["reason"] == reason
-
-
-@pytest.mark.parametrize(
-    "named_chain",
-    [
-        pytest.param("c" * 64, id="a_candidate_resolved_it"),
-        pytest.param(None, id="no_candidate_named_it"),
-    ],
-)
-def test_the_banked_trim_names_the_chain_it_was_co_fitted_with(
-    tmp_path: Path, named_chain
-) -> None:
-    """#3479: the seam banks the FRAME beside the number.
-
-    A trim is degenerate with the chain it was resolved against, so the apply
-    passes the resolving candidate's own fingerprint — already on the profile's
-    source block — through to the record, and it reaches the level-match ledger
-    every downstream reader looks at. A profile that names no candidate banks
-    no frame, which is a different fact from naming the bare one.
-    """
-    candidate = _applied_with_sources(
-        tmp_path, {"woofer": "measured", "tweeter": "measured"}
-    )
-    source = dict(candidate["source"])
-    if named_chain is None:
-        source.pop("measured_candidate_fingerprint", None)
-    else:
-        source["measured_candidate_fingerprint"] = named_chain
-    candidate["source"] = source
-    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
-
-    baseline_apply.persist_applied_baseline_profile(
-        candidate,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "applied_profile.json",
-    )
-
-    record = dbt.load_base_trim()
-    assert record is not None
-    assert record["chain_fingerprint"] == named_chain
-    _trims, meta = dbt.banked_base_trims(
-        record["declaration_fingerprint"], record["roles"]
-    )
-    assert meta["chain_fingerprint"] == named_chain
-
-
-def test_a_measured_profile_that_cannot_be_banked_drops_the_stale_record(
-    tmp_path: Path, caplog
-) -> None:
-    """Absent beats wrong.
-
-    A refused write left the PREVIOUS apply's record standing, so the box went
-    on levelling a ``--level-matched`` walk by numbers describing a graph it
-    had stopped playing. The resolver's empty answer is conservative; a stale
-    record is not.
-    """
-    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    baseline_apply.persist_applied_baseline_profile(
-        _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
-        apply_state={"result": "success"},
-        state_path=tmp_path / "applied_profile.json",
-    )
-    assert dbt.load_base_trim() is not None
-    caplog.clear()
-
-    doomed = _applied_with_sources(
-        tmp_path / "next", {"woofer": "measured", "tweeter": "measured"}
-    )
-    # The declaration the record would be keyed by is unreadable, so the
-    # writer refuses -- the seam must not leave the prior record behind.
-    doomed["source"] = {**doomed["source"], "crossover_preview_fingerprint": ""}
-    doomed["candidate_fingerprint"] = baseline_candidate_fingerprint(doomed)
-    baseline_apply.persist_applied_baseline_profile(
-        doomed,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "next_applied.json",
-    )
-
-    assert dbt.load_base_trim() is None
-    results = [event["result"] for event in _bank_events(caplog)]
-    assert results == ["failed", "cleared"]
-    assert _bank_events(caplog)[0]["reason"] == dbt.REFUSE_NO_DECLARATION
-    assert _bank_events(caplog)[1]["reason"] == dbt.BANK_WRITE_REFUSED
-
-
-def test_a_malformed_correction_entry_refuses_instead_of_escaping(
-    tmp_path: Path, caplog
-) -> None:
-    """The seam promises never to fail a successful apply, and broke it.
-
-    ``float((entry or {}).get("gain_db"))`` raises AttributeError on a
-    correction entry that is not a Mapping, and AttributeError was not in the
-    seam's except tuple -- so a malformed entry propagated out of
-    ``persist_applied_baseline_profile`` and turned an apply whose graph was
-    already live and read back into a failure.
-    """
-    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    candidate = _applied_with_sources(
-        tmp_path, {"woofer": "measured", "tweeter": "measured"}
-    )
-    candidate["corrections"] = {**candidate["corrections"], "tweeter": "-12.0"}
-    candidate["candidate_fingerprint"] = baseline_candidate_fingerprint(candidate)
-
-    payload = baseline_apply.persist_applied_baseline_profile(
-        candidate,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "applied_profile.json",
-    )
-
-    assert payload["status"] == "applied"
-    events = _bank_events(caplog)
-    assert [event["result"] for event in events] == ["left_standing"]
-    assert events[0]["reason"] == dbt.BANK_CORRECTION_ENTRY_UNREADABLE
-
-
-def test_the_two_unreadable_guards_no_longer_share_one_slug(
-    tmp_path: Path, caplog
-) -> None:
-    """``profile_unreadable`` meant two unrelated things -- a profile naming no
-    corrections at all, and a measured profile whose readiness block was not
-    kept -- so an operator reading the reason could not tell which had
-    happened, and the two arms now behave differently besides."""
-    caplog.set_level(logging.INFO, logger=_BASELINE_LOGGER)
-    base = _applied_with_sources(
-        tmp_path, {"woofer": "measured", "tweeter": "measured"}
-    )
-
-    no_corrections = deepcopy(base)
-    no_corrections["corrections"] = "not-a-mapping"
-    no_corrections["candidate_fingerprint"] = baseline_candidate_fingerprint(
-        no_corrections
-    )
-    baseline_apply.persist_applied_baseline_profile(
-        no_corrections,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "a.json",
-    )
-    no_readiness = deepcopy(base)
-    no_readiness.pop("automatic_candidate", None)
-    no_readiness["candidate_fingerprint"] = baseline_candidate_fingerprint(no_readiness)
-    baseline_apply.persist_applied_baseline_profile(
-        no_readiness,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "b.json",
-    )
-
-    reasons = [event["reason"] for event in _bank_events(caplog)]
-    assert reasons == [
-        dbt.BANK_CORRECTIONS_UNREADABLE,
-        dbt.BANK_READINESS_UNREADABLE,
-    ]
-
-
-def test_a_follower_domain_graph_never_touches_the_solo_base_trim(
-    tmp_path: Path,
-) -> None:
-    baseline_apply.persist_applied_baseline_profile(
-        _applied_with_sources(tmp_path, {"woofer": "measured", "tweeter": "measured"}),
-        apply_state={"result": "success"},
-        state_path=tmp_path / "applied_profile.json",
-    )
-    banked = deepcopy(dbt.load_base_trim())
-    assert banked is not None
-
-    follower = _applied_with_sources(
-        tmp_path / "follower", {"woofer": "sensitivity", "tweeter": "sensitivity"}
-    )
-    follower["recomposition_snapshot"] = {
-        **follower["recomposition_snapshot"], "domain": "driver",
-    }
-    follower["candidate_fingerprint"] = baseline_candidate_fingerprint(follower)
-    baseline_apply.persist_applied_baseline_profile(
-        follower,
-        apply_state={"result": "success"},
-        state_path=tmp_path / "follower_applied.json",
-    )
-
-    assert dbt.load_base_trim() == banked
-
-
 @pytest.mark.parametrize("source", ["measured", "composed", "document", "saved", "cleared", "base"])
 @pytest.mark.parametrize("delay", [-37.5, 22.0])
-def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source, delay):
+def test_timing_record_round_trip_apply_to_priors(tmp_path, source, delay):
     load_applied = baseline_profile_mod.load_applied_baseline_profile_state
     topology = _topology()
     draft = standard_design_draft(topology)
@@ -814,8 +502,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, monkeypatch, source,
     if source == "composed":
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
-    monkeypatch.setattr(baseline_apply, "bank_applied_base_trim", lambda *a: None)
-    prepared = baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
+    prepared =baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"

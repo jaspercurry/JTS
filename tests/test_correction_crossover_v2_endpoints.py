@@ -3334,7 +3334,7 @@ def test_apply_proves_the_snapshot_it_persists(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("measured", [True, False])
 def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, tmp_path, measured):
-    from jasper.active_speaker import baseline_profile, driver_base_trim
+    from jasper.active_speaker import baseline_profile
     from jasper.sound.settings import saved_sound_layers
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -3352,16 +3352,11 @@ def test_apply_record_preserves_domain_and_measured_level_evidence(monkeypatch, 
         load_tuning_declaration(topology), candidate=candidate_from_applied_profile(topology, applied),
         preference_filters=preference_filters, output_trim_db=trim_db)
     assert applied["level_match"]["applied"] is measured
-    record = driver_base_trim.load_base_trim()
     if measured:
-        assert record["trims_db"] == candidate.role_attenuations_db
-        assert record["speaker_group_ids"] == applied["automatic_candidate"]["measured_group_ids"]
+        assert {role: entry["gain_db"] for role, entry in applied["corrections"].items()} == candidate.role_attenuations_db
         assert set(applied["corrections_source"].values()) == {"measured"}
         assert set(applied["gain_provenance"].values()) == {"measured"}
         assert all(set(fields.values()) == {baseline_profile.PROVENANCE_MEASURED} for fields in applied["corrections_provenance"].values())
-        assert record["measured_at"] == applied["level_match"]["newest_capture_at"]
-    else:
-        assert record is None
     assert result["status"] == "applied"
 
 
