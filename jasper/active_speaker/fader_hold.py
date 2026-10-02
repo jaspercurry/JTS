@@ -66,7 +66,7 @@ async def hold_fader_at(
 
     observed = await read_fader_db(get_main_volume_db)
     if observed is not None and fader_matches(
-        observed, target, tolerance_db=READBACK_TOLERANCE_DB
+        observed, target
     ):
         # The liveness half: a healthy run emits no drift lines, so this INFO
         # line is what distinguishes "the hold ran and found the level" from
@@ -98,7 +98,7 @@ async def hold_fader_at(
     # actually took, and this is also the second chance a raced round-trip gets.
     proven = await read_fader_db(get_main_volume_db)
     if proven is None or not fader_matches(
-        proven, target, tolerance_db=READBACK_TOLERANCE_DB
+        proven, target
     ):
         log_event(
             logger,

@@ -88,7 +88,7 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
 
 def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
     """A stated ladder keeps its steps under its loudest rung, which the run's probe finds (ADR-0403 §4).
-    Only its first rung at its first pose probes, so that rung's own door checks the probe's order."""
+    Only its first rung at its first pose probes, so that rung's preflight checks the probe's order."""
     top = max(float(plan.level.level_db or 0.0) for plan in plans)
     return LevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=float(plan.level.level_db or 0.0) - top)),
                                        facts, finds_fader=False)
