@@ -99,9 +99,9 @@ def _arm_turn(wl, *, wake: bool) -> None:
     wl._turns.turn = FakeLiveTurn()
     wl._turns.session_id = 1
     wl._turns.bg_tasks = set()
-    wl._turns.input_ended = False
-    wl._turns.speech.silence_started_at = 0.0
-    wl._turns.started_at_loop = asyncio.get_event_loop().time()
+    wl._turns.input.ended = False
+    wl._turns.input.speech.silence_started_at = 0.0
+    wl._turns.input.started_at = asyncio.get_event_loop().time()
     wl._turn_timeline.anchor_at(time.monotonic() if wake else 0.0)
 
 
@@ -109,9 +109,9 @@ def _timeline_loop(*, wake: bool):
     """A WakeLoop parked mid-turn, configured for `wake`'s endpointer."""
 
     wl = wake_loop_for_tests()
-    wl._turns.user_speech_seen = True
-    wl._turns.manual_endpoint_this_turn = not wake
-    wl._turns.manual_frames = int(not wake)  # a button turn that carried audio
+    wl._turns.input.speech_seen = True
+    wl._turns.input.manual = not wake
+    wl._turns.input.manual_frames = int(not wake)  # a button turn that carried audio
     wl._turns.barge_in_active = False
     _arm_turn(wl, wake=wake)
     return wl
@@ -251,7 +251,7 @@ async def test_push_to_talk_release_stamps_end_of_input(caplog):
     assert await wl.manual_session_end() == "OK"
     await wl._turns.end("test")
 
-    assert wl._turns.input_ended is True
+    assert wl._turns.input.ended is True
     assert wl._turns.turn is None
     assert "end_input_ms" in event_fields(caplog, "turn.timeline")
 

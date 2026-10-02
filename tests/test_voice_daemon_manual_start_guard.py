@@ -648,7 +648,7 @@ async def test_manual_end_is_idempotent_after_input_already_closed():
     wl = _make_wake_loop()
     wl._turns.state = State.SESSION
     wl._turns.turn = object()
-    wl._turns.input_ended = True
+    wl._turns.input.ended = True
 
     result = await wl.manual_session_end()
 

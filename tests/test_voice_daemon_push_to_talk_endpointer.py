@@ -66,11 +66,11 @@ def _session_loop(*, manual: bool, elapsed: float = 1.0, idle_timeout: int = 20)
     wl._turns.turn = _SpyTurn()
     wl._vad = _SilentVad()
     wl._turns.bg_tasks = set()
-    wl._turns.input_ended = False
+    wl._turns.input.ended = False
     wl._turns.barge_in_active = False
-    wl._turns.manual_endpoint_this_turn = manual
+    wl._turns.input.manual = manual
     wl._push_to_talk.active_source = "wiim_remote_2" if manual else None
-    wl._turns.started_at_loop = asyncio.get_event_loop().time() - elapsed
+    wl._turns.input.started_at = asyncio.get_event_loop().time() - elapsed
     return wl
 
 
@@ -83,17 +83,17 @@ async def test_mid_hold_silence_does_not_end_input_on_a_button_turn():
     """User spoke, then paused mid-hold for longer than
     END_OF_UTTERANCE_SILENCE_SEC. The button is still down, so nothing
     may call end_input()."""
-    from jasper.voice_daemon import END_OF_UTTERANCE_SILENCE_SEC
+    from jasper.voice.speech_activity import END_OF_UTTERANCE_SILENCE_SEC
 
     wl = _session_loop(manual=True)
     now = asyncio.get_event_loop().time()
-    wl._turns.user_speech_seen = True
-    wl._turns.speech.silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
+    wl._turns.input.speech_seen = True
+    wl._turns.input.speech.silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
 
     await wl._handle_session_frame(silent_frame())
 
     assert wl._turns.turn.end_input_calls == 0
-    assert wl._turns.input_ended is False
+    assert wl._turns.input.ended is False
     # The frame still reaches the provider — bypassing the endpointer is
     # not the same as dropping audio.
     assert wl._turns.turn.send_audio_calls == 1
@@ -106,17 +106,17 @@ async def test_mid_hold_silence_DOES_end_input_without_the_bypass():
     """Mutation of the guard above: the identical frame with
     `_manual_endpoint_this_turn` cleared reproduces the reported defect,
     which is what makes the assertion above load-bearing."""
-    from jasper.voice_daemon import END_OF_UTTERANCE_SILENCE_SEC
+    from jasper.voice.speech_activity import END_OF_UTTERANCE_SILENCE_SEC
 
     wl = _session_loop(manual=False)
     now = asyncio.get_event_loop().time()
-    wl._turns.user_speech_seen = True
-    wl._turns.speech.silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
+    wl._turns.input.speech_seen = True
+    wl._turns.input.speech.silence_started_at = now - (END_OF_UTTERANCE_SILENCE_SEC + 0.5)
 
     await wl._handle_session_frame(silent_frame())
 
     assert wl._turns.turn.end_input_calls == 1
-    assert wl._turns.input_ended is True
+    assert wl._turns.input.ended is True
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,7 @@ async def test_mid_hold_silence_DOES_end_input_without_the_bypass():
 async def test_no_speech_abort_does_not_fire_on_a_button_turn():
     """Held button, nothing said yet, past NO_SPEECH_ABORT_SEC. There was
     no wake to be false, so there is nothing to abort."""
-    from jasper.voice_daemon import NO_SPEECH_ABORT_SEC
+    from jasper.voice.conversation import NO_SPEECH_ABORT_SEC
 
     wl = _session_loop(manual=True, elapsed=NO_SPEECH_ABORT_SEC + 1.0)
     ended: list[bool] = []
@@ -145,7 +145,7 @@ async def test_no_speech_abort_does_not_fire_on_a_button_turn():
 
 async def test_no_speech_abort_DOES_fire_without_the_bypass():
     """Mutation of the guard above."""
-    from jasper.voice_daemon import NO_SPEECH_ABORT_SEC
+    from jasper.voice.conversation import NO_SPEECH_ABORT_SEC
 
     wl = _session_loop(manual=False, elapsed=NO_SPEECH_ABORT_SEC + 1.0)
     ended: list[bool] = []
@@ -170,12 +170,12 @@ async def test_hold_cap_closes_input_on_a_button_turn(caplog):
     must still get the user an answer to what was said so far."""
     wl = _session_loop(manual=True)
     cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
-    wl._turns.started_at_loop = asyncio.get_event_loop().time() - (cap + 0.5)
+    wl._turns.input.started_at = asyncio.get_event_loop().time() - (cap + 0.5)
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
         await wl._handle_session_frame(silent_frame())
 
-    assert wl._turns.input_ended is True
+    assert wl._turns.input.ended is True
     assert wl._turns.turn.end_input_calls == 1
     # Audio for this frame is NOT forwarded — same shape as the Silero
     # path's cap, which returns after end_input.
@@ -189,11 +189,11 @@ async def test_hold_cap_does_not_fire_early_on_a_button_turn():
     """Just under the cap the turn is still the user's."""
     wl = _session_loop(manual=True)
     cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
-    wl._turns.started_at_loop = asyncio.get_event_loop().time() - (cap - 1.0)
+    wl._turns.input.started_at = asyncio.get_event_loop().time() - (cap - 1.0)
 
     await wl._handle_session_frame(silent_frame())
 
-    assert wl._turns.input_ended is False
+    assert wl._turns.input.ended is False
     assert wl._turns.turn.end_input_calls == 0
     assert wl._turns.turn.send_audio_calls == 1
 
@@ -201,24 +201,24 @@ async def test_hold_cap_does_not_fire_early_on_a_button_turn():
 async def test_delayed_acquire_preserves_audio_captured_before_hold_cap():
     wl = _session_loop(manual=True)
     cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
-    wl._turns.started_at_loop = asyncio.get_running_loop().time() - (cap + 1.0)
+    wl._turns.input.started_at = asyncio.get_running_loop().time() - (cap + 1.0)
     for elapsed in (0.08, 0.16, cap - 0.08):
-        wl._acquire_buffer.append(silent_frame(), wl._turns.started_at_loop + elapsed)
+        wl._acquire_buffer.append(silent_frame(), wl._turns.input.started_at + elapsed)
 
     await wl._drain_acquire_audio()
 
     assert wl._turns.turn.send_audio_calls == 3
     assert wl._turns.turn.end_input_calls == 0
-    assert not wl._turns.input_ended
+    assert not wl._turns.input.ended
 
     for elapsed in (cap, cap + 0.08):
         await wl._handle_session_frame(
-            silent_frame(), captured_at=wl._turns.started_at_loop + elapsed,
+            silent_frame(), captured_at=wl._turns.input.started_at + elapsed,
         )
 
     assert wl._turns.turn.send_audio_calls == 3
     assert wl._turns.turn.end_input_calls == 1
-    assert wl._turns.input_ended
+    assert wl._turns.input.ended
 
 
 async def test_hold_cap_fires_once_then_frames_are_dropped():
@@ -226,7 +226,7 @@ async def test_hold_cap_fires_once_then_frames_are_dropped():
     does not re-send end_input on every frame."""
     wl = _session_loop(manual=True)
     cap = wl._push_to_talk.input_cap_sec(wl._cfg.idle_timeout_sec)
-    wl._turns.started_at_loop = asyncio.get_event_loop().time() - (cap + 0.5)
+    wl._turns.input.started_at = asyncio.get_event_loop().time() - (cap + 0.5)
 
     for _ in range(5):
         await wl._handle_session_frame(silent_frame())
@@ -246,10 +246,10 @@ def test_endpointer_label_prefers_push_to_talk():
 
     wl = wake_loop_for_tests()
 
-    wl._turns.manual_endpoint_this_turn = False
+    wl._turns.input.manual = False
     assert wl._turns.endpointer_label() == "silero_aec"
 
-    wl._turns.manual_endpoint_this_turn = True
+    wl._turns.input.manual = True
     assert wl._turns.endpointer_label() == "push_to_talk"
 
 
@@ -257,7 +257,7 @@ def test_session_status_reports_the_endpointer():
     """The daemon's own decision, on its own STATUS surface."""
 
     wl = wake_loop_for_tests()
-    wl._turns.manual_endpoint_this_turn = True
+    wl._turns.input.manual = True
 
     assert wl.session_status()["endpointer"] == "push_to_talk"
 
@@ -288,16 +288,16 @@ async def test_begin_turn_decides_the_endpointer_from_the_active_source(
     wl._content_activity.refresh_now = _noop
     wl._tts.pause_content_meter = _noop
     wl._push_to_talk.active_source = "wiim_remote_2" if manual else None
-    wl._turns.manual_endpoint_this_turn = not manual  # stale value from before
-    wl._turns.manual_frames = 5
+    wl._turns.input.manual = not manual  # stale value from before
+    wl._turns.input.manual_frames = 5
 
     # `match=` stands: the stub raises a bare AssertionError, which carries
     # no code or structured attribute naming which stub it came from.
     with pytest.raises(AssertionError, match="acquire_turn stub"):
         await wl._begin_turn()
 
-    assert wl._turns.manual_endpoint_this_turn is manual
-    assert wl._turns.manual_frames == 0
+    assert wl._turns.input.manual is manual
+    assert wl._turns.input.manual_frames == 0
 
 
 # ---------------------------------------------------------------------------
@@ -314,12 +314,12 @@ async def test_acquire_drain_skips_the_vad_pass_on_a_button_turn():
     wl = wake_loop_for_tests()
     wl._turns.turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._turns.started_at_loop = asyncio.get_running_loop().time() - 1.0
+    wl._turns.input.started_at = asyncio.get_running_loop().time() - 1.0
     for index in range(4):
         wl._acquire_buffer.append(
-            silent_frame(), wl._turns.started_at_loop + (index + 1) * 0.08,
+            silent_frame(), wl._turns.input.started_at + (index + 1) * 0.08,
         )
-    wl._turns.manual_endpoint_this_turn = True
+    wl._turns.input.manual = True
 
     drained, speech = await wl._drain_acquire_audio()
 
@@ -334,12 +334,12 @@ async def test_acquire_drain_still_scores_on_a_wake_turn():
     wl = wake_loop_for_tests()
     wl._turns.turn = _SpyTurn()
     wl._vad = _SilentVad(score=1.0)
-    wl._turns.started_at_loop = asyncio.get_running_loop().time() - 1.0
+    wl._turns.input.started_at = asyncio.get_running_loop().time() - 1.0
     for index in range(4):
         wl._acquire_buffer.append(
-            silent_frame(), wl._turns.started_at_loop + (index + 1) * 0.08,
+            silent_frame(), wl._turns.input.started_at + (index + 1) * 0.08,
         )
-    wl._turns.manual_endpoint_this_turn = False
+    wl._turns.input.manual = False
 
     drained, speech = await wl._drain_acquire_audio()
 
@@ -360,11 +360,11 @@ def test_corpus_label_never_records_a_button_turn_as_a_no_speech_abort():
 
     wl = wake_loop_for_tests()
 
-    wl._turns.manual_endpoint_this_turn = True
+    wl._turns.input.manual = True
     assert wl._turns.corpus_endpointer_label(user_speech_seen=False) == "push_to_talk"
 
     # Mutation: the same "no speech seen" on a Silero turn IS an abort.
-    wl._turns.manual_endpoint_this_turn = False
+    wl._turns.input.manual = False
     assert wl._turns.corpus_endpointer_label(user_speech_seen=False) == "no_speech_abort"
     assert wl._turns.corpus_endpointer_label(user_speech_seen=True) == "silero_aec"
 
@@ -480,12 +480,12 @@ async def _torn_down_mid_hold(
     wl._turns.bg_tasks = set()
     wl._wake_telemetry.store = None
     wl._turns.session_id = "sess-teardown"
-    wl._turns.input_ended = input_ended
-    wl._turns.user_speech_seen = user_speech
-    wl._turns.manual_endpoint_this_turn = manual
+    wl._turns.input.ended = input_ended
+    wl._turns.input.speech_seen = user_speech
+    wl._turns.input.manual = manual
     # Audio the provider took came from delivered frames; a test overrides
     # this to model frames the provider refused.
-    wl._turns.manual_frames = int(bytes_sent > 0) if frames is None else frames
+    wl._turns.input.manual_frames = int(bytes_sent > 0) if frames is None else frames
 
     await wl._turns._end_turn_inner(reason)
     # The teardown must have completed, or "end_input was called" would be
@@ -670,8 +670,8 @@ async def test_a_release_that_carried_no_audio_fails_at_once_and_the_next_press_
     wl._turns.playback_report = PlaybackReport()
     wl._turns.bg_tasks = set()
     wl._turns.session_id = "sess-release"
-    wl._turns.manual_endpoint_this_turn = True
-    wl._turns.started_at_loop = asyncio.get_event_loop().time()
+    wl._turns.input.manual = True
+    wl._turns.input.started_at = asyncio.get_event_loop().time()
     wl._push_to_talk.active_source = "wiim_remote_2"
 
     with caplog.at_level(logging.INFO, logger="jasper.voice_daemon"):
@@ -894,7 +894,7 @@ def test_barge_in_refused_on_a_button_turn_and_says_why(
     wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True  # would otherwise enable
-    wl._turns.manual_endpoint_this_turn = True
+    wl._turns.input.manual = True
     wl._push_to_talk.active_source = "wiim_remote_2"
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
@@ -922,7 +922,7 @@ def test_barge_in_still_enabled_on_a_wake_turn(monkeypatch, tmp_path):
     wl = wake_loop_for_tests()
     wl._cfg.voice_provider = "gemini"
     wl._barge_in_reference_available = True
-    wl._turns.manual_endpoint_this_turn = False
+    wl._turns.input.manual = False
 
     wl._turns._resolve_barge_in_for_turn()
 
@@ -946,10 +946,10 @@ def test_push_to_talk_refusal_does_not_consume_the_no_reference_warning(
     wl._barge_in_reference_available = False
 
     with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
-        wl._turns.manual_endpoint_this_turn = True
+        wl._turns.input.manual = True
         wl._turns._resolve_barge_in_for_turn()
         # Now a wake turn on the same daemon.
-        wl._turns.manual_endpoint_this_turn = False
+        wl._turns.input.manual = False
         wl._turns._resolve_barge_in_for_turn()
 
     assert len(event_records(caplog, "barge.disabled_push_to_talk")) == 1
@@ -1143,14 +1143,14 @@ async def test_a_button_turn_begins_on_a_daemon_that_never_built_silero():
     await _drive_begin_turn(wl)
 
     assert wl._vad is None
-    assert wl._turns.manual_endpoint_this_turn is True
+    assert wl._turns.input.manual is True
 
 
 @pytest.mark.parametrize("capture_timestamp", [False, True])
 async def test_silence_window_includes_the_first_silent_frame(monkeypatch, capture_timestamp):
     wl = _session_loop(manual=False)
-    wl._turns.started_at_loop = 100.0
-    wl._turns.user_speech_seen = True
+    wl._turns.input.started_at = 100.0
+    wl._turns.input.speech_seen = True
     now = 100.08
     monkeypatch.setattr("jasper.voice_daemon.time", SimpleNamespace(monotonic=lambda: now))
 

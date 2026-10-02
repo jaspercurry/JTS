@@ -207,7 +207,7 @@ def test_goaway_defer_threshold_covers_hard_recording_cap():
     that here rather than discovering it on a live 15-min session. (The
     overrun is itself fail-safe — the WS drops and we reconnect — but the
     threshold should still reflect the real bound it claims to cover.)"""
-    from jasper.voice_daemon import HARD_RECORDING_CAP_SEC
+    from jasper.voice.push_to_talk import HARD_RECORDING_CAP_SEC
 
     assert GOAWAY_DEFER_MIN_TIME_LEFT_SEC >= HARD_RECORDING_CAP_SEC
 

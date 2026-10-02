@@ -36,7 +36,7 @@ def answered_loop(tts=None):
     loop._turns.state = State.SESSION
     loop._turns.turn = FakeLiveTurn(chunks_received=1)
     loop._turns.session_id = 7
-    loop._turns.user_speech_seen = True
+    loop._turns.input.speech_seen = True
     loop._turns.playback_report.accepted_audio = True
     return loop
 
@@ -111,8 +111,8 @@ async def test_speech_at_the_followup_deadline_gets_time_to_qualify(monkeypatch,
     loop = answered_loop()
     turn = loop._turns.turn
     turn.continuous_input = turn.owns_interruption = True
-    loop._turns.input_ended = True
-    loop._turns.speech = SpeechActivity(started_at=89.0, last_at=90.0)
+    loop._turns.input.ended = True
+    loop._turns.input.speech = SpeechActivity(started_at=89.0, last_at=90.0)
     report = PlaybackReport(last_accepted_at=99.5, audible_drain_at=100.0)
     loop._tts.expected_drain_at = lambda: 100.0
     score = 0.0
@@ -135,13 +135,13 @@ async def test_speech_at_the_followup_deadline_gets_time_to_qualify(monkeypatch,
     monkeypatch.setattr(conversation, "asyncio", SimpleNamespace(sleep=tick))
     reason = await continuous_watchdog(
         turn, loop._tts, followup_seconds=2, stall_seconds=120,
-        speech=loop._turns.speech, playback=report,
+        speech=loop._turns.input.speech, playback=report,
     )
     assert reason == "followup_timeout"
     assert now == expected
     assert turn.send_audio_calls > 0
     if speech_kind == "confirmed":
-        assert loop._turns.speech.started_at == 101.84
+        assert loop._turns.input.speech.started_at == 101.84
 
 
 @pytest.mark.parametrize("padding", [False, True])
@@ -218,7 +218,7 @@ async def test_the_hang_up_chirp_is_written_ahead_of_the_teardown_behind_it(inpu
     loop = answered_loop(tts=tts)
     loop._turns.turn = FakeLiveTurn(bytes_sent=3200)
     loop._turns.playback_report.accepted_audio = False
-    loop._turns.input_ended = input_ended
+    loop._turns.input.ended = input_ended
     loop._turns._play_cue = AsyncMock()
     loop._peering.session_ended = teardown
     loop._turns.turn.release = release

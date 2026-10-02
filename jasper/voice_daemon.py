@@ -34,9 +34,8 @@ from .voice.session import LiveConnection
 from .voice.content_activity import ContentActivityTracker
 from .voice.conversation_capture import ConversationCapture
 from .voice.catalog import InterruptReconcile, resolve_interrupt_reconcile
-from .voice.conversation import NO_SPEECH_ABORT_SEC
 from .voice.speech_activity import (
-    END_OF_UTTERANCE_SILENCE_SEC, END_OF_UTTERANCE_SPEECH_THRESHOLD, SPEECH_RUN_PEAK_MIN,
+    END_OF_UTTERANCE_SPEECH_THRESHOLD,
 )
 from .voice._base import SESSION_CLOSE_TIMEOUT_SEC
 from .voice._tasks import cancel_tracked_tasks, capture_cleanup_error, track_task
@@ -56,7 +55,6 @@ from .voice.turn_lifecycle import (
     TurnLifecycle,
 )
 from .voice.push_to_talk import (
-    HARD_RECORDING_CAP_SEC,
     PTT_KEEPALIVE_INTERVAL_SEC,
     ManualMicRuntime,
     PushToTalk,
@@ -728,8 +726,7 @@ class WakeLoop:
     def _reset_session_input(self) -> None:
         if self._vad is not None:
             self._vad.reset()
-        self._turns.speech.reset_run()
-        self._turns.speech.silence_started_at = 0.0
+        self._turns.input.reset_gap()
 
     def _reset_turn_input(self) -> None:
         """Both VADs. The mid-session resets re-arm the primary leg only."""
@@ -1028,15 +1025,10 @@ class WakeLoop:
         # rather than being silently swallowed here.
         speech_prob = self._vad.predict(frame)
         now = time.monotonic() if captured_at is None else captured_at
-        armed = self._turns.speech.update(
-            speech_prob, self._cfg.vad_barge_in_threshold, now,
-            peak_min=0.0,
-        )
-        if not armed or self._turns.speech.signalled:
+        if not self._turns.input.playback_frame(speech_prob, self._cfg.vad_barge_in_threshold, now):
             return
-        self._turns.speech.signalled = True
         self._signal_barge_in(
-            silero=self._turns.speech.peak, sustained=now - self._turns.speech.run_started_at,
+            silero=self._turns.input.speech.peak, sustained=now - self._turns.input.speech.run_started_at,
         )
 
     def _signal_barge_in(self, *, silero: float, sustained: float) -> None:
@@ -1092,8 +1084,7 @@ class WakeLoop:
         ``end_input`` is attributable to end-of-utterance, the hard cap,
         or the push-to-talk cap without a stack trace.
         """
-        self._turns.input_ended = True
-        self._turns.speech.reset_run()
+        self._turns.input.close()
         self._turn_timeline.stamp("end_input")
         try:
             await self._turns.turn.end_input()
@@ -1104,16 +1095,16 @@ class WakeLoop:
             await self._turns.end()
 
     async def _handle_manual_session_frame(self, frame, *, captured_at: float | None = None) -> None:
-        self._turns.manual_frames += 1
         now = time.monotonic() if captured_at is None else captured_at
-        if self._push_to_talk.hold_cap_exceeded(
-            now - self._turns.started_at_loop, self._cfg.idle_timeout_sec,
-        ):
+        capped = self._push_to_talk.hold_cap_exceeded(
+            now - self._turns.input.started_at, self._cfg.idle_timeout_sec,
+        )
+        self._turns.input.manual_frame(
+            now, continuous=not capped and self._turns.turn is not None and self._turns.turn.continuous_input,
+        )
+        if capped:
             await self._end_session_input("push-to-talk hold cap")
             return
-        if self._turns.turn is not None and self._turns.turn.continuous_input:
-            self._turns.speech.confirm(now)
-            self._turns.user_speech_seen = True
         await self._send_session_audio(frame)
 
     async def _handle_session_frame(self, frame, *, captured_at: float | None = None) -> None:
@@ -1125,45 +1116,34 @@ class WakeLoop:
             await self._turns.finish_response(reason)
             return
         assert self._turns.turn is not None
-        if self._turns.turn.continuous_input and not self._turns.manual_endpoint_this_turn:
+        if self._turns.turn.continuous_input and not self._turns.input.manual:
             await self._handle_continuous_frame(frame, captured_at=captured_at)
             return
-        if self._turns.input_ended:
+        if self._turns.input.ended:
             if self._turns.barge_in_active:
                 await self._handle_playback_frame(frame, captured_at=captured_at)
             return
-        if self._turns.manual_endpoint_this_turn:
+        if self._turns.input.manual:
             await self._handle_manual_session_frame(frame, captured_at=captured_at)
             return
 
         speech_prob = self._vad.predict(frame)
-        self._turns.max_silero_aec = max(self._turns.max_silero_aec, speech_prob)
         now = time.monotonic() if captured_at is None else captured_at
-        elapsed = now - self._turns.started_at_loop
-        if not self._turns.user_speech_seen and elapsed >= NO_SPEECH_ABORT_SEC:
-            log_event(logger, "voice.no_speech", max_silero=self._turns.max_silero_aec)
+        event = self._turns.input.endpointed_frame(
+            speech_prob, now,
+            frame_seconds=MicCapture.OUTPUT_FRAME_SAMPLES / MicCapture.OUTPUT_RATE,
+        )
+        if event == "no_speech":
+            log_event(logger, "voice.no_speech", max_silero=self._turns.input.max_silero_aec)
             await self._turns.end()
             return
-        if elapsed >= HARD_RECORDING_CAP_SEC:
-            await self._end_session_input("cap")
+        if event in {"cap", "end-of-utterance"}:
+            await self._end_session_input(event)
             return
-
-        armed = self._turns.speech.update(speech_prob, END_OF_UTTERANCE_SPEECH_THRESHOLD, now)
-        if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
-            if armed and not self._turns.user_speech_seen:
-                self._turns.user_speech_seen = True
-                self._turns.silero_aec_armed_at_ms = int(elapsed * 1000)
-                await self._wake_telemetry.stage("speech_detected")
-            self._turns.speech.silence_started_at = 0.0
-        elif self._turns.user_speech_seen:
-            if self._turns.speech.silence_started_at == 0.0:
-                self._turns.speech.silence_started_at = (
-                    now - MicCapture.OUTPUT_FRAME_SAMPLES / MicCapture.OUTPUT_RATE
-                )
-                self._turn_timeline.stamp("speech_end", first=False)
-            elif now - self._turns.speech.silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
-                await self._end_session_input("end-of-utterance")
-                return
+        if event == "speech_detected":
+            await self._wake_telemetry.stage(event)
+        elif event == "speech_end":
+            self._turn_timeline.stamp(event, first=False)
         await self._send_session_audio(frame)
 
     async def _handle_continuous_frame(self, frame, *, captured_at: float | None = None) -> None:
@@ -1181,22 +1161,17 @@ class WakeLoop:
             return
         score = self._vad.predict(frame)
         threshold = self._cfg.vad_barge_in_threshold if speaking else END_OF_UTTERANCE_SPEECH_THRESHOLD
-        self._turns.max_silero_aec = max(self._turns.max_silero_aec, score)
-        speech = self._turns.speech
-        if speech.update(score, threshold, now):
-            new_utterance = speech.confirm(now)
-            if new_utterance and speaking and self._turns.barge_in_active:
-                self._signal_barge_in(silero=speech.peak, sustained=now - speech.run_started_at)
-            self._turns.user_speech_seen = True
-            self._turns.input_ended = False
-        elif (score < threshold and self._turns.user_speech_seen and not self._turns.input_ended
-                and now - speech.last_at >= END_OF_UTTERANCE_SILENCE_SEC):
+        event = self._turns.input.continuous_frame(score, threshold, now)
+        if event == "utterance" and speaking and self._turns.barge_in_active:
+            speech = self._turns.input.speech
+            self._signal_barge_in(silero=speech.peak, sustained=now - speech.run_started_at)
+        elif event == "pause":
             await self._end_session_input("continuous speech pause")
         await self._send_session_audio(frame)
 
     async def _drain_acquire_audio(self) -> tuple[int, bool]:
         count = 0
-        while self._turns.turn is not None and not self._turns.input_ended:
+        while self._turns.turn is not None and not self._turns.input.ended:
             if self._mic_muted or self._measurement_active.is_set():
                 break
             frame = self._acquire_buffer.pop()
@@ -1215,7 +1190,7 @@ class WakeLoop:
         if self._acquire_buffer:
             self._reset_session_input()
         self._acquire_buffer.clear()
-        return count, self._turns.user_speech_seen
+        return count, self._turns.input.speech_seen
 
     async def _await_connection(self, timeout_sec: float) -> bool:
         """Nudge a paused connection and wait a bounded time for it.
@@ -1385,13 +1360,13 @@ class WakeLoop:
         """
         if self._turns.state is not State.SESSION or self._turns.turn is None:
             return "NO_SESSION"
-        if self._turns.input_ended:
+        if self._turns.input.ended:
             return "OK"
-        if self._turns.manual_endpoint_this_turn and not self._turns.manual_frames:
+        if self._turns.input.manual and not self._turns.input.manual_frames:
             # The remote delivered nothing. Close input against late frames
             # and end the turn off this reply, whose caller times out at 5 s;
             # the teardown names the failure and cues it.
-            self._turns.input_ended = True
+            self._turns.input.close()
             self._create_fire_and_forget_task(
                 self._turns.end(), name="manual-hold-no-frames",
             )
@@ -1425,7 +1400,7 @@ class WakeLoop:
         mic_feeding = not (self._mic_muted or self._measurement_active.is_set())
         return {
             "state": self._turns.state.name,
-            "input_ended": self._turns.input_ended,
+            "input_ended": self._turns.input.ended,
             "input_audio": {
                 "last_age_ms": self._input_last_age_ms,
                 "max_age_ms": self._input_max_age_ms,
@@ -1526,20 +1501,12 @@ class WakeLoop:
         Pure telemetry — records what raw-stream Silero sees during the
         session but makes no endpointing decisions. The active endpointer
         (AEC-stream Silero) is unaffected."""
-        if self._vad_off is None or self._turns.input_ended:
+        if self._vad_off is None or self._turns.input.ended:
             return
         try:
             speech_prob = self._vad_off.predict(frame)
-            if speech_prob > self._turns.max_silero_raw:
-                self._turns.max_silero_raw = speech_prob
-            if (
-                self._turns.silero_raw_armed_at_ms is None
-                and speech_prob >= SPEECH_RUN_PEAK_MIN
-            ):
-                elapsed_ms = int(
-                    (asyncio.get_event_loop().time() - self._turns.started_at_loop) * 1000
-                )
-                self._turns.silero_raw_armed_at_ms = elapsed_ms
+            elapsed_ms = self._turns.input.shadow_frame(speech_prob, asyncio.get_event_loop().time())
+            if elapsed_ms is not None:
                 log_event(
                     logger,
                     "shadow_vad.raw_armed",

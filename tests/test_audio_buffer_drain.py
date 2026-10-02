@@ -134,12 +134,12 @@ async def test_delayed_acquire_freezes_prefix_and_drains_concurrent_input(monkey
 async def test_endpoint_is_independent_of_acquire_split(split):
     wl = wake_loop_for_tests()
     wl._turns.state = State.SESSION
-    wl._turns.started_at_loop = time.monotonic() - 2.0
+    wl._turns.input.started_at = time.monotonic() - 2.0
     wl._turns.turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._vad.predict = lambda frame: float(frame[0])
     frames = [1] * 4 + [0] * 12
     for index, score in enumerate(frames):
-        at = wl._turns.started_at_loop + (index + 1) * 0.081
+        at = wl._turns.input.started_at + (index + 1) * 0.081
         if index < split:
             wl._acquire_buffer.append(_frame(score), at)
         else:
@@ -148,8 +148,8 @@ async def test_endpoint_is_independent_of_acquire_split(split):
             await wl._handle_session_frame(_frame(score), captured_at=at)
     if split == len(frames):
         await wl._drain_acquire_audio()
-    assert wl._turns.user_speech_seen
-    assert wl._turns.input_ended
+    assert wl._turns.input.speech_seen
+    assert wl._turns.input.ended
     assert wl._turns.turn.end_input.await_count == 1
     assert wl._turns.turn.send_audio.await_count == 13
 
@@ -159,20 +159,20 @@ async def test_acquire_gap_resets_speech_and_silence_runs(armed):
     wl = wake_loop_for_tests()
     wl._turns.state = State.SESSION
     wl._turns.turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
-    wl._turns.started_at_loop = time.monotonic() - 2.0
-    wl._turns.user_speech_seen = armed
-    wl._turns.speech.run_started_at = wl._turns.speech.silence_started_at = time.monotonic() - 1.0
-    wl._turns.speech.peak = 1.0
+    wl._turns.input.started_at = time.monotonic() - 2.0
+    wl._turns.input.speech_seen = armed
+    wl._turns.input.speech.run_started_at = wl._turns.input.speech.silence_started_at = time.monotonic() - 1.0
+    wl._turns.input.speech.peak = 1.0
     reset = []
     wl._vad.reset = lambda: reset.append(True)
     wl._vad.predict = lambda frame: float(frame[0])
     at = time.monotonic()
     wl._acquire_buffer.append(_frame(0 if armed else 1), at, discontinuity=True)
     await wl._drain_acquire_audio()
-    assert wl._turns.user_speech_seen is armed
-    assert not wl._turns.input_ended
+    assert wl._turns.input.speech_seen is armed
+    assert not wl._turns.input.ended
     assert reset == [True]
-    assert wl._turns.speech.run_started_at == (0.0 if armed else at)
+    assert wl._turns.input.speech.run_started_at == (0.0 if armed else at)
 
 
 async def test_no_speech_abort_then_fresh_command(monkeypatch):
@@ -193,15 +193,15 @@ async def test_no_speech_abort_then_fresh_command(monkeypatch):
     wl._turns.end = end
     wl._vad.predict = lambda frame: float(frame[0])
     await wl._turns.begin_inner(pre_roll=False)
-    await wl._handle_session_frame(_frame(0), captured_at=wl._turns.started_at_loop + 5.1)
+    await wl._handle_session_frame(_frame(0), captured_at=wl._turns.input.started_at + 5.1)
     assert wl._turns.state is State.WAKE
     await wl._turns.begin_inner(pre_roll=False)
     try:
         for index, score in enumerate([1] * 4 + [0] * 12):
             await wl._handle_session_frame(
-                _frame(score), captured_at=wl._turns.started_at_loop + (index + 1) * 0.081,
+                _frame(score), captured_at=wl._turns.input.started_at + (index + 1) * 0.081,
             )
-        assert wl._turns.input_ended
+        assert wl._turns.input.ended
         assert turns[0].send_audio.await_count == 0
         assert turns[1].end_input.await_count == 1
         assert wl._assistant_output.prepare_loudness.await_count == 2
@@ -213,15 +213,15 @@ async def test_endpoint_discarded_tail_does_not_keep_pre_gap_vad_state():
     wl = wake_loop_for_tests()
     wl._turns.state = State.SESSION
     wl._turns.turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
-    wl._turns.started_at_loop = time.monotonic() - 2.0
-    wl._turns.user_speech_seen = True
-    wl._turns.speech.silence_started_at = time.monotonic() - 1.0
+    wl._turns.input.started_at = time.monotonic() - 2.0
+    wl._turns.input.speech_seen = True
+    wl._turns.input.speech.silence_started_at = time.monotonic() - 1.0
     reset = []
     wl._vad.reset = lambda: reset.append(True)
     wl._acquire_buffer.append(_frame(0))
     wl._acquire_buffer.append(_frame(1), discontinuity=True)
     await wl._drain_acquire_audio()
-    assert wl._turns.input_ended
+    assert wl._turns.input.ended
     assert len(wl._acquire_buffer) == 0
     assert reset == [True]
 
@@ -292,18 +292,18 @@ async def test_input_pause_during_acquire_never_uploads_frozen_prefix(
 async def test_endpoint_preserves_sustained_speech_and_peak_rules(buffered, scores, armed):
     wl = wake_loop_for_tests()
     wl._turns.state = State.SESSION
-    wl._turns.started_at_loop = time.monotonic() - 3.0
+    wl._turns.input.started_at = time.monotonic() - 3.0
     wl._turns.turn = _stub_turn(send_audio=AsyncMock(), end_input=AsyncMock())
     wl._vad.predict = lambda frame: float(frame[0]) / 100
     for index, score in enumerate(scores + [0.0] * 12):
         frame = _frame(round(score * 100))
-        at = wl._turns.started_at_loop + (index + 1) * 0.081
+        at = wl._turns.input.started_at + (index + 1) * 0.081
         if buffered:
             wl._acquire_buffer.append(frame, at)
         else:
             await wl._handle_session_frame(frame, captured_at=at)
     if buffered:
         await wl._drain_acquire_audio()
-    assert wl._turns.user_speech_seen is armed
-    assert wl._turns.input_ended is armed
+    assert wl._turns.input.speech_seen is armed
+    assert wl._turns.input.ended is armed
     assert wl._turns.turn.end_input.await_count == int(armed)
