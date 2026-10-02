@@ -21,6 +21,8 @@ Two concerns:
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import re
 import socket
 import threading
@@ -189,7 +191,7 @@ def test_render_banner_mirrors_flash_severity():
 def live_server(tmp_path, monkeypatch):
     """Run /assistant/weather/ on a random port against tmp state; suppress
     systemctl. Mirrors the other web fixture shapes."""
-    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
+    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: RestartResult(RestartOutcome.RAN))
     state_path = str(tmp_path / "weather.env")
     transit_path = str(tmp_path / "transit.env")
 
@@ -257,7 +259,7 @@ def test_post_clear_redirects(live_server):
 def test_post_clear_describes_the_restart_it_actually_got(
     live_server, monkeypatch, outcome,
 ):
-    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: outcome)
+    monkeypatch.setattr(weather_setup, "restart_voice_daemon", lambda: RestartResult(outcome))
     jar = post_with_csrf(live_server["url"], "/clear", {}, expect_status=303)
     flash = next(
         urllib.parse.unquote(c.value) for c in jar if c.name == "jts_flash"

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from enum import Enum
 
 from jasper.local_sources.markers import local_sources_allowed
@@ -33,12 +34,21 @@ def bonded_follower_active() -> bool:
     return not local_sources_allowed()[0]
 
 
-def restart_voice_daemon() -> RestartOutcome:
+@dataclass(frozen=True)
+class RestartResult:
+    outcome: RestartOutcome
+    reason: str | None = None
+
+
+def voice_restart_skip_reason() -> str | None:
     if not read_active_provider():
-        logger.info("not starting jasper-voice: JASPER_VOICE_PROVIDER is unset")
-        return RestartOutcome.SKIPPED
-    if bonded_follower_active():
-        logger.info("not restarting jasper-voice: parked (bonded follower) — saved config applies on unbond")
-        return RestartOutcome.SKIPPED
+        return "provider_unset"
+    return "bonded_follower" if bonded_follower_active() else None
+
+
+def restart_voice_daemon() -> RestartResult:
+    if reason := voice_restart_skip_reason():
+        logger.info("not restarting jasper-voice: %s", reason)
+        return RestartResult(RestartOutcome.SKIPPED, reason)
     # Boot enable/disable belongs to aec-reconcile; see deploy/polkit/49-jasper-control.rules.
-    return restart_systemd_units(JASPER_VOICE_SERVICE)
+    return RestartResult(restart_systemd_units(JASPER_VOICE_SERVICE))

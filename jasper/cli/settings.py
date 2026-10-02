@@ -27,7 +27,6 @@ from jasper.voice.provider_state import (
     keys_set,
     offered_models,
     read_active_model_from_env_files,
-    read_active_provider,
     read_active_provider_state,
     select_voice,
     resolve_barge_in_enabled,
@@ -134,17 +133,14 @@ def _answer(view: Callable[[], dict[str, Any]]) -> int:
 
 
 def _restart(saved: dict[str, Any]) -> int:
-    outcome = restart_voice_daemon()
-    if outcome is RestartOutcome.REFUSED:
+    result = restart_voice_daemon()
+    if result.outcome is RestartOutcome.REFUSED:
         return refused(
             "restart_refused", {**saved, "saved": True}, exit_code=EXIT_REFUSED,
         )
-    document = {**saved, "restart": outcome.value}
-    if outcome is RestartOutcome.SKIPPED:
-        # restart_voice_daemon's two gates, in its order.
-        document["restart_reason"] = (
-            "bonded_follower" if read_active_provider() else "provider_unset"
-        )
+    document = {**saved, "restart": result.outcome.value}
+    if result.reason is not None:
+        document["restart_reason"] = result.reason
     return answered(document)
 
 

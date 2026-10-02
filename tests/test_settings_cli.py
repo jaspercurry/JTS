@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import json
 import logging
 import os
@@ -166,7 +168,7 @@ def test_settings_cli(case: Case, tmp_path, monkeypatch, capsys, caplog):
     monkeypatch.setattr(model_discovery, "DEFAULT_CACHE_PATH", str(tmp_path / "discovery.json"))
     monkeypatch.setattr(wake_models, "is_available", lambda entry: entry.bundled)
     restarts: list[int] = []
-    monkeypatch.setattr(settings, "restart_voice_daemon", lambda: restarts.append(1) or case.restart)
+    monkeypatch.setattr(settings, "restart_voice_daemon", lambda: RestartResult(restarts.append(1) or case.restart, case.fields.get("restart_reason")))
     monkeypatch.setattr(os, "geteuid", lambda: case.euid)
     before = _snapshot(paths)
 

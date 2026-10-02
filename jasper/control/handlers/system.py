@@ -723,7 +723,7 @@ class SystemRoutes(ControlHandlerMixin):
             units = [JASPER_VOICE_SERVICE]
             action = "restart-voice"
             log_event(logger, "system.action", action=action, units=",".join(units), client=self.address_string())
-            outcome = restart_voice_daemon()
+            outcome = restart_voice_daemon().outcome
             if outcome is RestartOutcome.REFUSED:
                 self._send_refused(error="The restart could not be scheduled.", code="system_restart_failed",
                     action=action, units=units, failed_verb="restart", accepted_units=[], skipped_units=[],

@@ -507,7 +507,7 @@ def _post_save(
     # No station/stop/dock IDs in the log — those reveal the
     # household's home location. Record only that a save landed.
     log_event(logger, "transit.save", client=handler.address_string())
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     send_see_other(handler, "./", flash=f"Saved.{clause}")
 
 
@@ -533,7 +533,7 @@ def _post_cities(
         cities=new.get(transit.TRANSIT_CITIES_ENV, ""),
         client=handler.address_string(),
     )
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     send_see_other(handler, "./", flash=f"Saved cities.{clause}")
 
 
@@ -554,7 +554,7 @@ def _post_clear(
         flash_error(handler, "Could not save", e)
         return
     log_event(logger, "transit.clear", client=handler.address_string())
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     send_see_other(
         handler, "./", flash=f"Cleared transit settings.{clause}",
     )

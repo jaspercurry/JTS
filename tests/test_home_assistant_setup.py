@@ -24,6 +24,8 @@ is patched so we don't shell out to systemctl.
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import json
 import threading
 import urllib.error
@@ -251,7 +253,7 @@ def wizard_server(tmp_path, monkeypatch):
     restarts: list[None] = []
     monkeypatch.setattr(
         ha_setup, "restart_voice_daemon",
-        lambda: restarts.append(None) or RestartOutcome.RAN,
+        lambda: RestartResult(restarts.append(None) or RestartOutcome.RAN),
     )
     # Default verify mock: success. Individual tests override.
     monkeypatch.setattr(
@@ -576,7 +578,7 @@ def test_disconnect_describes_the_restart_it_actually_got(
     _post(f"{base_url}/save", {
         "url": "homeassistant.local", "token": "valid-token", "agent_id": "",
     })
-    monkeypatch.setattr(ha_setup, "restart_voice_daemon", lambda: outcome)
+    monkeypatch.setattr(ha_setup, "restart_voice_daemon", lambda: RestartResult(outcome))
     status, _, loc = _post(f"{base_url}/disconnect", {})
     assert status == 303
     flash = urllib.parse.unquote((loc or "").split("#", 1)[-1])

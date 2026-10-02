@@ -1181,7 +1181,7 @@ def _handle_playlist_add(
         send_see_other(handler, "./", flash="Account not found")
         return
     registry.save()
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     send_see_other(
         handler, "./", flash=f"Added {name} to {account_name}.{clause}",
     )
@@ -1198,7 +1198,7 @@ def _handle_playlist_remove(
     registry = Registry.load(cfg["registry_path"])
     if registry.remove_playlist(account_name, uri):
         registry.save()
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         send_see_other(
             handler, "./",
             flash=f"Removed playlist from {account_name}.{clause}",

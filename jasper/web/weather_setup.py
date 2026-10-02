@@ -415,7 +415,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write weather.env")
             send_rejected_form(handler, page, flash=f"Could not save: {e}")
             return
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         # No coords in the log — they're the household's home location.
         log_event(logger, "weather.save", client=handler.address_string())
         send_see_other(handler, "./", flash=f"Saved.{clause}")
@@ -446,7 +446,7 @@ def _make_handler(cfg: dict[str, str]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not clear weather.env")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         log_event(logger, "weather.clear", client=handler.address_string())
         send_see_other(
             handler, "./",

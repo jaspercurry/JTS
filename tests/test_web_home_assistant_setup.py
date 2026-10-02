@@ -5,6 +5,8 @@
 """Home Assistant wizard rendering, request guards, and state transitions."""
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import http
 import json
 import shutil
@@ -334,7 +336,7 @@ def test_post_save_persistence(branch, recent, verify_ssl, write_fails, tmp_path
     failure = OSError(f"disk unavailable: {ha.ENV_TOKEN}={llat}")
     writer = Mock(wraps=ha.write_env_file, side_effect=failure if write_fails else None)
     verifier = Mock(return_value={"ok": branch != "rejected", "instance_name": "Home", "version": "2026.5"})
-    restart = Mock(return_value=RestartOutcome.RAN)
+    restart = Mock(return_value=RestartResult(RestartOutcome.RAN))
     monkeypatch.setattr(ha, "write_env_file", writer)
     monkeypatch.setattr(ha, "verify_sync", verifier)
     monkeypatch.setattr(ha, "restart_voice_daemon", restart)
@@ -388,7 +390,7 @@ def test_post_disconnect_clears_and_restarts(monkeypatch):
     )
     monkeypatch.setattr(
         ha, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN,
+        lambda: RestartResult(restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN),
     )
 
     body = b"csrf_token=" + token.encode()

@@ -44,8 +44,7 @@ URL surface (after nginx strips /assistant/tools/):
   POST /apply        restart jasper-voice once to apply staged changes
 """
 from __future__ import annotations
-from jasper.control.service_restart import restart_voice_daemon
-from jasper.voice.provider_state import read_active_provider
+from jasper.control.service_restart import restart_voice_daemon, voice_restart_skip_reason
 
 import functools
 import logging
@@ -71,7 +70,6 @@ from ._common import (
     RestartOutcome,
     RouteTable,
     begin_request,
-    bonded_follower_active,
     dispatch_get,
     dispatch_post,
     json_body,
@@ -626,31 +624,15 @@ def _post_prompt_reset(cfg: dict[str, Any], handler: Any, body: dict[str, Any]) 
 
 
 def _post_apply(cfg: dict[str, Any], handler: Any) -> None:
-    # Mirror restart_voice_daemon's skip conditions so the response is
-    # HONEST about whether a restart will actually happen — never an
-    # ok-banner promising an effect the server knowingly won't deliver.
-    if not read_active_provider():
+    if skip_reason := voice_restart_skip_reason():
+        reason, message = {
+            "provider_unset": ("no_provider", "Saved. Choose a voice provider at "
+                               "/assistant/voice/ to start the assistant."),
+            "bonded_follower": ("bonded", "Saved. Changes apply when this speaker "
+                                "leaves the stereo pair."),
+        }[skip_reason]
         send_json_response(
-            handler,
-            {
-                "restarted": False,
-                "reason": "no_provider",
-                "message": "Saved. Choose a voice provider at "
-                "/assistant/voice/ to start the assistant.",
-            },
-            status=200,
-        )
-        return
-    if bonded_follower_active():
-        send_json_response(
-            handler,
-            {
-                "restarted": False,
-                "reason": "bonded",
-                "message": "Saved. Changes apply when this speaker "
-                "leaves the stereo pair.",
-            },
-            status=200,
+            handler, {"restarted": False, "reason": reason, "message": message}, status=200,
         )
         return
     now = time.time()
@@ -678,7 +660,7 @@ def _post_apply(cfg: dict[str, Any], handler: Any) -> None:
     log_event(logger, "tools.apply", client=handler.address_string())
     # jasper-voice re-filters the registry against tool_state.env on
     # restart (and re-writes the catalog JSON).
-    outcome = restart_voice_daemon()
+    outcome = restart_voice_daemon().outcome
     if outcome is not RestartOutcome.RAN:
         send_json_response(
             handler,

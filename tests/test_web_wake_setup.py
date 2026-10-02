@@ -19,6 +19,8 @@ request I/O surface stamped onto the instance. Driving the real class
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import io
 import json
 import shutil
@@ -451,7 +453,7 @@ def test_post_save_writes_env_and_restarts(tmp_path, monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
-        lambda *a, **k: restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN,
+        lambda *a, **k: RestartResult(restarted.__setitem__("n", restarted["n"] + 1) or RestartOutcome.RAN),
     )
     entry = _bundled_entry()
     h, cap = _make_request(

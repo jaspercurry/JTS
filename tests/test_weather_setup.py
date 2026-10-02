@@ -5,6 +5,8 @@
 """Tests for the /assistant/weather/ setup wizard."""
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import threading
 import urllib.parse
 import urllib.request
@@ -95,7 +97,7 @@ def test_weather_handler_save_writes_env_and_restarts(monkeypatch, tmp_path):
     restart_calls = []
     monkeypatch.setattr(
         weather_setup, "restart_voice_daemon",
-        lambda: restart_calls.append(1) or RestartOutcome.RAN,
+        lambda: RestartResult(restart_calls.append(1) or RestartOutcome.RAN),
     )
 
     state_path = tmp_path / "weather.env"

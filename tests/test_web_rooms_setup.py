@@ -17,6 +17,8 @@ ListenStream per wizard port in tests/test_web_main_imports.py.
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import ast
 import json
 import logging
@@ -205,7 +207,7 @@ def lan(monkeypatch) -> _Lan:
 def restarts(monkeypatch) -> list[str]:
     seen: list[str] = []
     monkeypatch.setattr(
-        rooms_setup, "restart_voice_daemon", lambda: seen.append("jasper-voice"),
+        rooms_setup, "restart_voice_daemon", lambda: RestartResult(seen.append("jasper-voice")),
     )
     monkeypatch.setattr(
         rooms_setup, "restart_systemd_units", lambda *units: seen.extend(units),
