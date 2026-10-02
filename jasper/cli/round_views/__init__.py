@@ -74,7 +74,7 @@ _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
 NO_STATE_VERBS = ("catalog", "dsp-replay", "dsp-levels")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, resolve_rounds: bool = True) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROG,
         description=(
@@ -121,16 +121,18 @@ def build_parser() -> argparse.ArgumentParser:
         for action in child._actions:
             if "--out" in action.option_strings:
                 action.type = output_path
-            elif action.dest in ROUND_ARGUMENTS:
+            elif resolve_rounds and action.dest in ROUND_ARGUMENTS:
                 action.type = partial(round_ref, action.type if callable(action.type) else str)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    # Resolving a round reads the round store, which faults for a user the
+    # speaker's state is closed to: the guard runs before that parse.
+    args = build_parser(resolve_rounds=False).parse_args(argv)
     if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
         return refused
+    args = build_parser().parse_args(argv)
     try:
         return int(args.func(args))
     except RoundSetRefused as refusal:

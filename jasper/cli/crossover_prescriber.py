@@ -645,10 +645,6 @@ def _cmd_status(args: argparse.Namespace) -> int:
     ))
 
 
-
-#: A round argument takes an id as a view's does; round_ref swaps it for the banked round's directory.
-_ROUND = partial(round_ref, str)
-
 #: The modes no catalog row covers: judge and compose answer no analysis question (ADR-0393), so their
 #: help rows live with the verbs.
 _DOCUMENT_ARGV = ("<document.json>", "--round", TAKES_THIS_ROUND, "--set", "<set-id>")
@@ -672,11 +668,12 @@ _EXITS: dict[str, dict[str, Any]] = {
 }
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, resolve_rounds: bool = True) -> argparse.ArgumentParser:
+    round_type = partial(round_ref, str) if resolve_rounds else str
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     contract = sub.add_parser("contract", help="schemas and bounds evaluated on a round")
-    contract.add_argument("--round", metavar="DIR", type=_ROUND, help=f"evaluate the bounds on this round: {_ROUND_DIR_HELP}")
+    contract.add_argument("--round", metavar="DIR", type=round_type, help=f"evaluate the bounds on this round: {_ROUND_DIR_HELP}")
     add_set_argument(contract)
     contract.add_argument("--section", choices=(*SECTIONS, "all"), default="all",
                           help="the program whose contract to serve, or all (default: %(default)s)")
@@ -688,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
             f'a file, or - for stdin: {{"kind": "{DOCUMENT_KIND}", "schema": 1, "base": "saved" or a banked '
             f'fingerprint, "sections": {{name: {{...}} or null}}, "rationale": text}}; a section left out '
             f'keeps the base\'s, null or {{}} clears it; sections: {", ".join(SECTION_KINDS)}'))
-        command.add_argument("--round", dest="round", metavar="DIR", type=_ROUND,
+        command.add_argument("--round", dest="round", metavar="DIR", type=round_type,
                              help=f"the round the document reads its evidence from: {_ROUND_DIR_HELP}")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
@@ -700,7 +697,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--root", help="candidate bank root")
         command.set_defaults(func=_cmd_document)
     status = sub.add_parser("status", help="read applied layers, last banked rounds and the next program; optionally inspect a round")
-    status.add_argument("session_dir", nargs="?", metavar="DIR", type=_ROUND,
+    status.add_argument("session_dir", nargs="?", metavar="DIR", type=round_type,
                         help=f"read this round's evidence packet: {_ROUND_DIR_HELP}; without one, list the recent rounds")
     for name, help_text in (
         ("state", "with a round, read this flow state file in place of the round's own"),
@@ -719,7 +716,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
+    # Resolving a round reads the round store, which faults for a user the
+    # speaker's state is closed to: the guard runs before that parse.
+    parser = build_parser(resolve_rounds=False)
     args = parser.parse_args(argv)
     if args.command == "judge" and args.vary and (not args.preview or not args.out_dir):
         parser.error("--vary requires --preview and --out-dir")
@@ -727,6 +726,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--out requires --preview without --vary")
     if (refused := refuse_unreadable_state(args.command)) is not None:
         return refused
+    args = build_parser().parse_args(argv)
     if args.command in {"judge", "compose"}:
         args.session_dir = args.round
     result: int = args.func(args)
