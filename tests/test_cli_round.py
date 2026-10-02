@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import io
-import errno
 import json
 import asyncio
 from collections import Counter
@@ -60,7 +59,7 @@ from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
-from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import deny_reading, isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import _RecordingCheckStore, with_rear_target
@@ -622,29 +621,6 @@ def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys)
     assert not opener.requests
 
 
-@pytest.mark.parametrize("path_owner", ["topology_path", "baseline_profile_state_path", "household_mic_path"])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypatch, capsys):
-    path = getattr(_run_request, path_owner)()
-    original_open = Path.open
-
-    def open_state(self, *args, **kwargs):
-        if self == path:
-            raise PermissionError(errno.EACCES, "Permission denied", str(path))
-        return original_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", open_state)
-    facts = Mock(side_effect=AssertionError("preflight must not read missing facts"))
-    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
-    opener = _opener()
-    code, body = _run(["run", "--program", "speaker", *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
-    assert code == cli.EXIT_REFUSED and body["code"] == "local_state_unreadable"
-    assert body["detail"]["evidence"] == {"path": str(path)}
-    assert body["next_action"]["id"] == "run_as_root"
-    facts.assert_not_called()
-    assert not opener.requests
-
-
 _NEAR_FIELD_POSES = json.dumps([{"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": mm / 1000,
                                   "driver": "woofer"} for mm in (12, 24)])
 
@@ -759,6 +735,25 @@ def test_placed_releases_only_confirmed_holds(joining, mover, monkeypatch, capsy
     else:
         assert code == 1 and body["code"] == "walk_mover_mismatch"
         assert not posts
+
+
+@pytest.mark.parametrize("argv,capture,page,posted", [
+    (["stop", "--run", "run-1"], {"status": "running"},
+     (wc.CAPTURE_CANCEL_PATH, '{"capture": {"session_id": "run-1", "status": "stopping"}}'), wc.CAPTURE_CANCEL_PATH),
+    (["status", "--run", "run-1"], {"status": "running"}, None, None),
+    (["placed", "--run", "run-1"], {"status": "running", "position_pending": {"index": 1, "attempt": 1, "mover": "confirmed"}},
+     ("/sound/speaker/crossover/v2/position-ready", '{"ok": true}'), "/sound/speaker/crossover/v2/position-ready"),
+    (["apply", _FINGERPRINT], {}, None, wc.APPLY_PATH),
+])
+def test_a_verb_that_only_calls_the_speaker_runs_for_a_user_who_cannot_read_its_state(
+        argv, capture, page, posted, monkeypatch, capsys):
+    """``stop`` ends a sounding run: no guard stands in front of it."""
+    deny_reading(monkeypatch, *(resolve() for resolve in cli.LOCAL_STATE_PATHS))
+    opener = _run_opener(capture)
+    opener.pages.update([page] if page else [])
+    code, body = _run(argv, opener, monkeypatch, capsys)
+    assert code == cli.EXIT_OK and body.get("code") is None
+    assert bool(opener.posted_to(posted)) if posted else not opener.posts()
 
 
 def test_status_reads_progress_once(monkeypatch, capsys):

@@ -12,18 +12,21 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Collection, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from jasper.net.http_security import is_loopback_name
 
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
+from jasper.audio_measurement.household_mic import household_mic_path
+from jasper.audio_routes.output_topology_store import topology_path
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, available_presets,
 )
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
 from jasper.active_speaker.round_copy import packet_lines, status_lines
+from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST, REASON_RUN_NOT_LIVE,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -126,9 +129,6 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
         report = resolve_run(args)
     except (LayoutNotOfferedError, PosesNameALayoutError, DriverNotOfferedError) as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail, code=exc.reason)
-    except PermissionError as exc:
-        return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
-                      code="local_state_unreadable")
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
     if report.plan.mover == MOVER_ARM and not args.wait and not args.dry_run:
@@ -463,6 +463,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The speaker's local state the tuning CLIs read, each resolved at call time.
+LOCAL_STATE_PATHS = (topology_path, baseline_profile_state_path, household_mic_path)
+
+#: The verbs that read none of it: each only calls the speaker's web service. ``stop`` ends a sounding run,
+#: so the guard never stands in front of it.
+NO_STATE_VERBS = ("placed", "stop", "status", "apply")
+
+
+def refuse_unreadable_state(command: str, no_state: Collection[str] = ()) -> int | None:
+    """The refusal exit code when this user cannot read the speaker's local state, else ``None``.
+
+    The tuning CLIs call it at entry with their verb. A verb in ``no_state`` reads none of that state and is
+    never refused. Shared loaders suppress read faults, so a non-root run would otherwise answer from a speaker
+    that seems to hold nothing; drop this when they expose them.
+    """
+    if command in no_state:
+        return None
+    for resolve in LOCAL_STATE_PATHS:
+        try:
+            with resolve().open("rb"):
+                pass
+        except PermissionError as exc:
+            return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
+                          code="local_state_unreadable")
+        except OSError:
+            pass
+    return None
+
+
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -471,6 +500,8 @@ def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int
     if args.command in ("run", "trial") and args.dry_run and not is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
+    if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
+        return refused
     if args.command in ("list", "show", "presets"):
         return int(args.func(args))
     client = WizardClient(

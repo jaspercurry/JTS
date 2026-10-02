@@ -3,16 +3,25 @@
 
 
 import assert from "node:assert/strict";
-import { crossoverMainModule, element } from "./_dom.mjs";
+import { CROSSOVER_IDS, crossoverMainModule, element } from "./_dom.mjs";
 
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
 let nextEnvelope = null;
 let postResponse = { status: "ok" };
+let getFailures = 0;
 const { elements, render, runAction, stopCapture } = await crossoverMainModule({
+  ids: [...CROSSOVER_IDS, "crossover-round-lines", "crossover-round-choice", "crossover-round-select",
+    "crossover-round-summary", "crossover-round-start"],
   extraStubs: {
-    getJSON: async () => nextEnvelope,
+    getJSON: async () => {
+      if (getFailures > 0) {
+        getFailures -= 1;
+        throw new Error("offline");
+      }
+      return nextEnvelope;
+    },
     postJSON: async () => postResponse,
   },
   exportNames: ["render", "runAction", "stopCapture"],
@@ -209,6 +218,55 @@ check(
   actionRowChildren()[0].disabled === false,
   "(g) click-swallowing: runAction ran to completion and the row re-enabled",
 );
+
+// (h) A start answers awaiting_join with the first placement's release already in it, and the walk renders
+// that release while the start is busy. It is a live button once a refresh lands after the start: the one
+// inside the start, or the retry after a failed one. When both fail, the page keeps the capture it started
+// rather than the Start choice its latest envelope still holds, until a poll lands.
+const release = {
+  id: "position_ready",
+  label: "Microphone is at the seat",
+  endpoint: "/sound/speaker/crossover/v2/position-ready",
+  body: { index: 1, attempt: 1 },
+};
+const joined = {
+  status: "awaiting_join",
+  join: {
+    mover: "human",
+    degrees: 0,
+    vertical_deg: 0,
+    prompt: { progress: "", title: "Put the microphone at the seat.", body: "" },
+    actions: [release],
+  },
+};
+const startChoice = { id: "room", label: "room", default: true, lines: [], action: { ...clickAction } };
+const beforeStart = () => ({
+  verdict_text: "", steps: [], nudges: [], round_lines: [], next_action: null, alternate_actions: [],
+  capture: null, round_choices: [startChoice],
+});
+const afterStart = { ...beforeStart(), capture: joined, round_choices: [] };
+const startsChoice = () => !elements.get("crossover-round-choice").hidden;
+const firstRelease = () => elements.get("crossover-walk-action").children[0];
+for (const [failures, landed] of [[0, true], [1, true], [2, false]]) {
+  render(beforeStart());
+  check(startsChoice(), "(h) the Start choice shows before the start");
+  postResponse = { capture: joined };
+  nextEnvelope = afterStart;
+  getFailures = failures;
+  await runAction(startChoice.action, element("start"));
+  check(!startsChoice(), `(h) ${failures} failed refreshes: the Start choice stays hidden`);
+  if (landed) {
+    check(
+      firstRelease().textContent === release.label && firstRelease().disabled === false,
+      `(h) ${failures} failed refreshes: the first release is live when the start returns`,
+    );
+  }
+  render(afterStart);
+  check(
+    firstRelease().textContent === release.label && firstRelease().disabled === false,
+    `(h) ${failures} failed refreshes: the next poll leaves the first release live`,
+  );
+}
 
 for (const enabled of [false, true]) {
   render({next_action: {...holdPrimaryAction, enabled}});

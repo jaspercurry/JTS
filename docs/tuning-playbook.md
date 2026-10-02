@@ -2,7 +2,7 @@
 
 ## How to read any round
 
-`jasper-crossover-prescriber status` gives the reading order in its
+`sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` gives the reading order in its
 `reading_order` field. The [runbook](tuning-operator-runbook.md) is the command
 reference. The [methodology](tuning-methodology.md) explains the science.
 The [doctrine](measurement-loop-doctrine.md) defines roles and physical limits.
@@ -113,7 +113,7 @@ Settle structure before response. Decide topology and trims in the same document
 The rows come back in `rank` order: `rank` 1 has the smallest `flatness.rms_db`, the forecast's deviation from a flat line over `parameters.rank_band_hz` (ADR-0401).
 A predicted corner makes the shortlist; a trial measures the pick, and the same-round A/B decides.
 
-Read packet `alignment` / `alignment_verdict` (ADR-0319) for timing. Use `delay-landscape` for a prediction, then author candidate variants with the residual delay changes and compare real captures with `jasper-round trial`.
+Read packet `alignment` / `alignment_verdict` (ADR-0319) for timing. Use `delay-landscape` for a prediction, then author candidate variants with the residual delay changes and compare real captures with `sudo /opt/jasper/.venv/bin/jasper-round trial`.
 A 10 dB branch gap limits cancellation to about 3.3 dB relative to the louder branch: `−20·log10(1 − 10^(−Δ/20))` (derivation in `tuning-methodology.md`). That reference differs from shoulder-based null depth.
 
 Cut peaks; leave dips. A broad, low-Q peak can be audible near a quarter dB;
@@ -133,21 +133,21 @@ seconds, supports a speaker claim
 
 ### Document
 
-`jasper-round run --program speaker --layout baseline_express` collects driver
+`sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --layout baseline_express` collects driver
 fits and timing in one round; `baseline_full` adds poses. Room evidence comes
 from a room round (`room/seat`) or a rear seat round (`rear/seat`).
 Write one document with every section the evidence supports.
-`jasper-crossover-prescriber judge --help` shows the document's envelope, and
-`jasper-crossover-prescriber contract --round <dir> --section speaker` prints
+`sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --help` shows the document's envelope, and
+`sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber contract --round <dir> --section speaker` prints
 each section's schema. Normally omit `alignment`: saved timing carries forward. See Timing
 below for when to include it. A refusal names the crossed bound; correct that field.
 
 Trial the whole document with two or three candidates: the fitted totals and
-one or two variants. Use `jasper-round trial <FP> --candidates <FP>,<variant-FP>`;
+one or two variants. Use `sudo /opt/jasper/.venv/bin/jasper-round trial <FP> --candidates <FP>,<variant-FP>`;
 `base` is also allowed. A document that states only speaker sections trials at
 the mark (`speaker/mark`); with a room, bass or rear section it trials that
 program instead ([runbook](tuning-operator-runbook.md#the-loop), step 1).
-Read `jasper-round-views candidates <round-dir>` and
+Read `sudo /opt/jasper/.venv/bin/jasper-round-views candidates <round-dir>` and
 its `candidates.json`: each pose, keyed as the rear views key it, has pairwise
 deltas per role. `window` is present only when reading the frequency view. A
 table is `trusted` only when each curve's own gate windowed it
@@ -230,7 +230,7 @@ beside the feature that differs between positions is noise or the room, not
 the filter. Near the sweep's low edge, where the level is 10–15 dB down, a
 single take can swing ±4 dB.
 
-`jasper-crossover-prescriber judge --preview` answers limits and predicted
+`sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview` answers limits and predicted
 residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews a room section, or a `rear_calibration` section against `--round <pair round>`.
 A room preview's `summary` gives each side's `residual_rms_db`, the
 `seat_spread_rms_db` and `under_seat_spread` over its `band_hz`.
@@ -259,7 +259,7 @@ The boost is the `linkwitz_transform` from the woofers' measured alignment
 (`source_hz`, `source_q`) to the target (`target_hz`, `target_q`). It plays in
 full at every volume
 (`0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md`).
-`jasper-round-views bass-alignment` fits the measured alignment: each woofer's
+`sudo /opt/jasper/.venv/bin/jasper-round-views bass-alignment` fits the measured alignment: each woofer's
 box alone from a near-field round, or with `--take` a bass round's base take
 as played, the room included.
 Overshoot above the corner in the per-band `realized_boost_db`
@@ -281,9 +281,9 @@ every bass band that overlaps `delta_highpass_hz` to `detector_lowpass_hz`
 A bass section with `low_boost_db` or `reference_level_db` refuses, and a box
 whose applied tune has one parks muted after the deploy (ADR-0381): check each
 box before deploying and apply a tune in the form above first. On a parked box,
-`jasper-round apply` a tune `jasper-crossover-prescriber status` lists, or
+`sudo /opt/jasper/.venv/bin/jasper-round apply` a tune `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` lists, or
 compose one with its fingerprint as `base` and a `bass` section in this form,
-then apply that. What reads the saved tune refuses: `jasper-round reset`,
+then apply that. What reads the saved tune refuses: `sudo /opt/jasper/.venv/bin/jasper-round reset`,
 `"base": "saved"`, a round's base stop and the web's re-apply.
 
 `compressor_threshold_dbfs` is where the boost starts to give way, in dBFS
@@ -447,7 +447,7 @@ A low band below the first room mode can carry rumble without hurting
 the model in the cancellation band.
 
 After a preview predicts the wall-ward null, play the candidates:
-`jasper-round run --program rear --layout rear_behind --candidates base,<a>,<b>,<rear-muted>`
+`sudo /opt/jasper/.venv/bin/jasper-round run --program rear --layout rear_behind --candidates base,<a>,<b>,<rear-muted>`
 uses two person-held poses, in front and behind the cabinet. Read the `behind`
 row's `bands[].change_db` only, against rear-muted next to the preview's;
 `late_energy` has no meaning there (no direct arrival behind the cabinet).
@@ -466,7 +466,7 @@ with `rear_muted: true` and `front.filters` (Peaking or Lowshelf, inside
 the +6 dB chain cap) that put its previewed curve on tune A's from 30 to
 350 Hz at the 0° position (`judge --preview`, `figures.predicted`; `--vary`
 the filter gains), `compose` it, and trial both in ONE round:
-`jasper-round trial <A fp> --candidates base,<A fp>,<off fp> --wait`. Keep
+`sudo /opt/jasper/.venv/bin/jasper-round trial <A fp> --candidates base,<A fp>,<off fp> --wait`. Keep
 the pair when `low_bass` and `band_level_db` agree within about 1 dB at the
 repeated bearing.
 
@@ -485,22 +485,22 @@ responses and refit them if needed.
 
 This is the hand loop of record for a cardioid box. Keep the cabinet at its wall.
 
-1. At the mark, run `jasper-round run --program speaker --wait`.
+1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
    Fit, trial and apply the speaker there, then bank the model:
-   `jasper-round run --program rear/pair --layout speaker_mark --wait`.
+   `sudo /opt/jasper/.venv/bin/jasper-round run --program rear/pair --layout speaker_mark --wait`.
 2. Write the rear seed (`contract --section rear` carries one as `seed`) and preview variants from that pair round:
-   `jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
+   `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
    Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
-   `jasper-crossover-prescriber compose <doc> --round <pair-round>`.
+   `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber compose <doc> --round <pair-round>`.
 3. Compare them at the seats:
-   `jasper-round trial <seed-fp> --candidates base,<seed>,<v1>,<v2>,<muted> --wait`.
+   `sudo /opt/jasper/.venv/bin/jasper-round trial <seed-fp> --candidates base,<seed>,<v1>,<v2>,<muted> --wait`.
    These placeholders are composed fingerprints. Read the figures below and choose.
 4. Join the chosen candidate to `packet["sets"]` by `candidate_id`, then to
    `packet["room"]` by `set_id`; it holds a room document per candidate set.
    Write the room fit from that set with the chosen rear stage as its `base` (`<chosen-fp>`):
-   `jasper-crossover-prescriber compose <room-doc> --round <seat-round> --set <chosen-set-id>`.
-5. Measure the composed document: `jasper-round trial <document-fp> --wait`.
-   If its packet supports adoption, run `jasper-round apply <document-fp>`.
+   `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber compose <room-doc> --round <seat-round> --set <chosen-set-id>`.
+5. Measure the composed document: `sudo /opt/jasper/.venv/bin/jasper-round trial <document-fp> --wait`.
+   If its packet supports adoption, run `sudo /opt/jasper/.venv/bin/jasper-round apply <document-fp>`.
 
 Placement budget: **1 + 3 + 3** — the shared mark, the comparison seats, then
 the composed-document seats. Counts come from `measurement_plans.json`'s
@@ -538,7 +538,7 @@ rows, then `across_positions`: per-figure median, worst value and
 
 `room-grade` across this trial's candidate sets is not a candidate comparison:
 rear weight also changes band level. For a plain box, skip the rear pair and
-rear variants; use `jasper-round run --program room --wait`,
+rear variants; use `sudo /opt/jasper/.venv/bin/jasper-round run --program room --wait`,
 then compose the room fit with `--set`, trial it and apply the chosen document.
 
 ## Five rules that hold everywhere

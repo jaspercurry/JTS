@@ -27,7 +27,7 @@ document, which goes through the same judge → compose → apply gates as any o
 
 1. **Capture.** On the speaker, run the near-field preset, each woofer the cabinet declares alone at
    15 and 30 mm ([the runbook's near-field section](../../docs/tuning-operator-runbook.md#near-field)):
-   `jasper-round run --program nearfield/each --wait --timeout 3600`. Each
+   `sudo /opt/jasper/.venv/bin/jasper-round run --program nearfield/each --wait --timeout 3600`. Each
    placement levels itself to 80 dB at the mic under the unchanged 85 dB stop.
 
 2. **Read and pull.** The view divides the fader and the played graph out of each take, and gives
@@ -39,7 +39,7 @@ document, which goes through the same judge → compose → apply gates as any o
    mkdir -p $D && ssh pi@<speaker> "sudo cat <that path>" > $D/nearfield_view.json
    ```
 
-   `jasper-round-views bass-alignment <round>` fits each woofer's sealed-box corner and Q (fc,
+   `sudo /opt/jasper/.venv/bin/jasper-round-views bass-alignment <round>` fits each woofer's sealed-box corner and Q (fc,
    Qtc) from the same curves.
 
 3. **Transfer.** Integrate the solved case to the mic spots on each woofer's axis. Gate 1 (the
@@ -74,8 +74,8 @@ document, which goes through the same judge → compose → apply gates as any o
      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "bearing", "distance_m": 0.5, "driver": "tweeter"},
      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.5, "driver": "woofer"},
      {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.5, "driver": "woofer:rear"}]'
-   jasper-round run --program drivers/each --poses "$poses" --dry-run
-   jasper-round run --program drivers/each --poses "$poses" --wait --timeout 3600
+   sudo /opt/jasper/.venv/bin/jasper-round run --program drivers/each --poses "$poses" --dry-run
+   sudo /opt/jasper/.venv/bin/jasper-round run --program drivers/each --poses "$poses" --wait --timeout 3600
    .venv/bin/python scripts/cabinet-model/predict.py --transfer $D/transfer.npz --nearfield $D/nearfield_view.json \
        --farfield $D/farfield_view.json
    ```

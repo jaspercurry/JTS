@@ -19,6 +19,7 @@ from ._refusal import (
     EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, envelope, failed, help_from_rows,
     read_source_bytes,
 )
+from .round import refuse_unreadable_state
 from .round_views._common import (
     _ROUND_DIR_HELP, RoundSetRefused, add_set_argument, context_artifacts, round_ref,
 )
@@ -724,6 +725,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--vary requires --preview and --out-dir")
     if args.command == "judge" and args.out and (not args.preview or args.vary):
         parser.error("--out requires --preview without --vary")
+    if (refused := refuse_unreadable_state(args.command)) is not None:
+        return refused
     if args.command in {"judge", "compose"}:
         args.session_dir = args.round
     result: int = args.func(args)

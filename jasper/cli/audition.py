@@ -53,6 +53,7 @@ from jasper.active_speaker.audition import (
 )
 from jasper.audio_control.camilla import primary_controller
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
+from jasper.cli.round import refuse_unreadable_state
 from jasper.platform.log_event import log_event
 from jasper.platform.logging_setup import configure_logging
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
@@ -63,6 +64,10 @@ logger = logging.getLogger(__name__)
 #: ``start`` took the door, or the restore did not land. Not one of the engine's
 #: ``END_*`` words: those say why the hold ENDED, this says what is playing.
 NOT_RESTORED = "audition_not_restored"
+
+#: The verbs that read none of the speaker's local state: ``stop`` puts the applied graph back, and ``status``
+#: reads the audition record. Only ``start`` reads the applied profile and the output topology.
+NO_STATE_VERBS = ("stop", "status")
 
 
 def _play_cue(slug: str) -> None:
@@ -269,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     # whose whole job is to leave the speaker exactly as it found it.
     install_env_canonical_target_provider()
     args = build_parser().parse_args(argv)
+    if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
+        return refused
     return int(args.func(args))
 
 

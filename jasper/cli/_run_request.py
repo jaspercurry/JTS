@@ -15,9 +15,7 @@ from jasper.active_speaker.run_request import REQUEST_KEYS, RunRequest, resolve_
 from jasper.active_speaker.preflight import PreflightFacts, PreflightReport
 from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.preflight_live import read_preflight_facts
-from jasper.active_speaker.state_paths import baseline_profile_state_path
-from jasper.audio_measurement.household_mic import household_mic_path
-from jasper.audio_routes.output_topology_store import load_output_topology, topology_path
+from jasper.audio_routes.output_topology_store import load_output_topology
 from ._refusal import read_json_source
 
 #: The arm facts this CLI refuses on before it posts; the session door reads them again and owns admission.
@@ -30,15 +28,6 @@ def _facts(request: AngleCaptureRequest, args: argparse.Namespace) -> PreflightF
 
 
 def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
-    # Shared loaders suppress read faults; keep this CLI check until they expose them.
-    for path in (topology_path(), baseline_profile_state_path(), household_mic_path()):
-        try:
-            with path.open("rb"):
-                pass
-        except PermissionError:
-            raise
-        except OSError:
-            pass
     stated = {key: getattr(args, key) for key in REQUEST_KEYS if getattr(args, key) is not None}
     if stated and (args.plan or args.request):
         raise ValueError("a plan or request document already states its run parameters")

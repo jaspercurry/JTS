@@ -34,6 +34,9 @@ const els = {
 };
 
 let envelope = null;
+// True from the moment a start answers until the next envelope renders: `envelope` then predates the
+// capture it started.
+let envelopeStale = false;
 let busy = false;
 // The status line acknowledges a take ('Measurement started.'): stale once the
 // page waits for a person again or nothing is live (#5632 F9).
@@ -445,6 +448,7 @@ function screenOwnsLiveControl(env) {
 
 function render(env) {
   envelope = env;
+  envelopeStale = false;
   if (takeAcknowledged && (humanHold(env.capture, env.pending) || !sessionBusy(env))) setStatus('');
   els.verdict.textContent = env.verdict_text || '';
   renderRound(env);
@@ -501,6 +505,7 @@ async function runAction(action, button) {
     const response = await postJSON(action.endpoint, body);
     captureStarted = CAPTURE_STOPPABLE.has(response?.capture?.status);
     if (captureStarted) {
+      envelopeStale = true;
       if (els.roundChoice) els.roundChoice.hidden = true;
       renderCapture(response.capture);
       // The response's capture hasn't landed in `envelope` yet (that happens
@@ -534,25 +539,18 @@ async function runAction(action, button) {
     }
   } finally {
     busy = false;
-    if (envelope && !captureStarted) renderRound(envelope);
-    // If capture registration succeeded but refresh failed, keep the old action
-    // hidden. Showing it beside a live phone link would permit a second run.
-    // renderActionRow re-applies the capture gate against the latest known
-    // envelope. The prior version of this block rendered envelope.next_action
-    // directly, without that gate — the 2026-07-16 two-primary-buttons bug.
-    if (!captureStarted) {
+    // render() ran inside the refresh above while `busy` was still true, so the
+    // controls it built carry a baked-in `disabled` that nothing else clears
+    // before the next poll. Rebuild them from the latest envelope, unless it
+    // predates a capture this action started: it would offer a second Start,
+    // which opens a second bundle before the server refuses it.
+    if (envelope && !envelopeStale) {
+      renderRound(envelope);
       renderActionRow(envelope);
-      // Same reason, same latest-known envelope: the walk's release button was
-      // built while busy was still true (render() ran inside the refresh
-      // above), so it carries a baked-in `disabled` that nothing else would
-      // clear until the next poll — a full second and a half in which the
-      // household's next spot looks refused.
-      if (envelope) {
-        renderWalk(envelope.capture, {
-          yielded: screenOwnsLiveControl(envelope),
-          round: envelope.pending,
-        });
-      }
+      renderWalk(envelope.capture, {
+        yielded: screenOwnsLiveControl(envelope),
+        round: envelope.pending,
+      });
     }
   }
 }

@@ -13,6 +13,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused, 
 from dataclasses import replace
 from functools import partial
 import json
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -321,6 +322,18 @@ def test_web_data_offers_a_banked_round_and_graphs_its_curves(tmp_path):
     assert data["selected"]["a"] == entry["id"] != "sess-1"
     [run] = data["view"]["runs"]
     assert [series["magnitude_db"] for series in run["series"]] == [[-1.0, 0.0, 1.0]]
+
+
+def test_web_data_lists_a_banked_rounds_live_bundle_once(tmp_path):
+    """The bank hard-links its live bundle: the round lists, its live twin does not; a bundle no bank holds still does."""
+    _bank_one_round(tmp_path, "banked")
+    campaign_root = _bank_one_round(tmp_path, "unbanked")
+    shutil.rmtree(campaign_root / "unbanked")
+
+    data = correction_measurements.build_data(sessions_dir=tmp_path / "sessions", campaign_root=campaign_root)
+
+    assert sorted((entry["origin"], entry["name"]) for entry in data["catalog"]) == [
+        ("banked", "banked"), ("live", "unbanked")]
 
 
 # Run A is round r. Its base takes find their comparands in o (0°) and e (30°); "later" is banked after r.

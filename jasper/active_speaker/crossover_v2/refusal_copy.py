@@ -656,7 +656,7 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "stop_refused": "The speaker refused to stop the run.",
         "wait_timeout": "The wait ended before the run did.",
     },
-    ("run_as_root", "Run it on the speaker as root"): {
+    ("run_as_root", "Run it on the speaker with sudo"): {
         "dry_run_requires_local_host": "Dry-run reads this machine's facts. Run it on the speaker.",
         "local_state_unreadable": "The speaker's local state cannot be read by this user.",
         "not_root": "This tool runs only as root.",
