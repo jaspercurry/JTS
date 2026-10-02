@@ -22,6 +22,7 @@ from jasper.audio_routes.output_topology import OutputTopology, topology_is_subl
 from jasper.platform.speaker_layout import cardioid_cabinet_channels, measurement_target_id, measurement_target_parts
 
 from .measurement import active_driver_targets
+from .movers import MOVER_ARM
 
 POSE_KIND_BEARING = "bearing"
 POSE_KIND_SEAT = "seat"
@@ -655,6 +656,14 @@ def preset(name: str) -> Preset:
     if found is None:
         raise UnknownPresetError(name, available_presets())
     return found
+
+
+def layouts_without_arm(name: str) -> tuple[str, ...]:
+    """The layouts of this preset that need no arm, in its order, its program's trial layouts first."""
+    row = preset(name)
+    trials = {layout for program in _PROGRAM_SECTIONS for trial, layout in program.trial if trial == row.preset}
+    return tuple(sorted((layout for layout in row.layouts if _LAYOUTS[layout].mover != MOVER_ARM),
+                        key=lambda layout: layout not in trials))
 
 
 def named_layout(name: str) -> Layout:

@@ -19,7 +19,7 @@ from tests.test_plan_run import banked_program_baselines  # noqa: F401
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
-from jasper.active_speaker import angle_capture as ac
+from jasper.active_speaker import angle_capture as ac, arm_walk
 from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
@@ -236,6 +236,7 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
         {"target_id": "mono:woofer:rear", "physical_output_index": 2, **woofer_facts},
     ]
     templates = set()
+    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: True)
     for row in mp.PROGRAM_ROWS:
         handoff = th.build_tuning_handoff(commissioning_view=view, design_draft=draft, program_id=row.purpose)
         binding, prompt = handoff["binding"], handoff["prompt"]
@@ -250,6 +251,20 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
             prompt = prompt.replace(value, blank)
         templates.add(prompt)
     assert len(templates) == 1
+
+
+@pytest.mark.parametrize(("arm", "argv"), [(True, ["--program", "bass"]), (False, ["--program", "bass", "--layout", "seat_express"])])
+def test_the_bass_prompt_runs_a_layout_this_box_can_play(monkeypatch, arm, argv):
+    """The run line names the program's own layout where its arm is here, and the
+    first layout that needs none where it is not; the line is one the round CLI takes."""
+    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
+    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: arm)
+    prompt = th.build_tuning_handoff_prompt({}, "bass", th.run_layout("bass"))
+    run_line, = [line for line in prompt.splitlines() if line.startswith("Run: ")]
+    _sudo, _path, *args = shlex.split(run_line.removeprefix("Run: "))
+    assert args == ["run", *argv]
+    parsed = round_cli.build_parser().parse_args(args)
+    assert mp.run_preset(parsed.program, parsed.layout).mover == ("arm" if arm else "human")
 
 
 def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_preset(monkeypatch):

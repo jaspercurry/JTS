@@ -24,6 +24,7 @@ from jasper.active_speaker import preflight_live
 from typing import Any, Callable, Mapping
 
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, LateralWalkRefused
+from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
@@ -195,7 +196,10 @@ def prepare_v2_session(
         request, levels = resolve_plan(source, targets=lambda: near_field_drivers(context.topology))
     except (ValueError, CrossoverV2FlowError) as exc:
         raise _refused(exc) from exc
-    facts = preflight_live.read_preflight_facts(request, context=context)
+    # An arm plan plays only on the operator's word that the arm's path is clear.
+    facts = preflight_live.read_preflight_facts(request, context=context,
+                                                mover_available=mover_present(request.mover),
+                                                rig_clear_attested=raw.get("attest_rig_clear") is True)
     report = preflight_levels(request, facts, levels)
     issue = next((issue for issue in report.issues if issue.blocking), None)
     if issue is not None:

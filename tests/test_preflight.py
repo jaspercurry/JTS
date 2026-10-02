@@ -166,7 +166,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda _: None)
     monkeypatch.setattr(preflight_live, "timing_floor_db", lambda *_: {})
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
-    facts = preflight_live.read_preflight_facts(plan)
+    facts = preflight_live.read_preflight_facts(plan, mover_available=True)
     assert facts.declared_target_ids == tuple(role_targets)
     missing = tuple(sorted({"woofer", "woofer:rear"} - role_targets.keys())) if name in {"rear", "front_rear"} else ()
     invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
@@ -774,6 +774,16 @@ def test_rig_clear_attestation_is_only_required_when_asked(mover, attested, bloc
     report = preflight(plan, ready_facts(plan, rig_clear_attested=attested))
     assert report.blocking is blocking
     assert [issue.code for issue in report.issues] == (["walk_rig_clear_not_attested"] if blocking else [])
+
+
+@pytest.mark.parametrize(("program", "layouts"), [("room/seat", ["seat_express", "seat_cloud", "seat_cube"]), ("", [])])
+def test_a_missing_arm_names_the_layouts_that_need_none(program, layouts):
+    """The refusal names the way on: the program's layouts that need no arm, its
+    trial layout first, where it has any."""
+    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),), mover="arm", program=program)
+    issue = preflight(plan, ready_facts(plan, mover_available=False)).blocking_issue
+    assert (issue.code, issue.evidence, issue.next_action) == (
+        "walk_mover_unavailable", {"layouts_without_arm": layouts}, REASON_REGISTRY["walk_mover_unavailable"].next_action)
 
 
 @pytest.mark.parametrize("attested,available", [(None, True), (False, False), (True, True)])

@@ -13,7 +13,8 @@ from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQU
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.excitation_safety_plan import _role_sensitivities
 from jasper.active_speaker.measurement_programs import (
-    PROGRAM_ENTRIES, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, offered_here, preset,
+    PROGRAM_ENTRIES, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, layouts_without_arm, offered_here,
+    preset,
 )
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
@@ -114,7 +115,18 @@ def _program_entry(program_id: str) -> dict[str, Any]:
     return entry
 
 
-def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> str:
+def run_layout(program_id: str) -> str | None:
+    """The layout the run line names: none, where the program's own layout plays
+    here; where it moves an arm that is not here, the first layout that needs none."""
+    from jasper.active_speaker.arm_walk import ARM_DISCOVERY_REUSE_S, mover_present  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
+
+    default = preset(program_id)
+    if mover_present(default.mover, reuse_s=ARM_DISCOVERY_REUSE_S):
+        return None
+    return next(iter(layouts_without_arm(default.preset)), None)
+
+
+def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str, layout: str | None = None) -> str:
     entry = _program_entry(program_id)
     hostname = str(binding.get("hostname") or "")
     documents = "\n".join(f"{i}. {item['path']}" for i, item in enumerate(reading_order(), 1))
@@ -151,7 +163,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         "Re-run room after any upstream change.",
         f"Program: {entry['title']}",
         entry["description"],
-        f"Run: sudo {_BIN}/jasper-round run --program {program_id}",
+        f"Run: sudo {_BIN}/jasper-round run --program {program_id}" + (f" --layout {layout}" if layout else ""),
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
         f"Where tuning stands: {status}",
@@ -181,5 +193,5 @@ def build_tuning_handoff(
         "driver_spacing_mm": commissioning_view.get("driver_spacing_mm"),
         "programs": [_program_entry(name) for name in commissioning_view["programs"]],
         "program": program_id,
-        "prompt": build_tuning_handoff_prompt(binding, program_id) if ready else "",
+        "prompt": build_tuning_handoff_prompt(binding, program_id, run_layout(program_id)) if ready else "",
     }

@@ -143,7 +143,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if args.dry_run:
         return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} run --dry-run"], subject=subject,
                       parameters=parameters, line="", **report.to_dict())
-    http, payload = client.open_session(report.plan.to_dict())
+    http, payload = client.open_session(report.plan.to_dict(), attest_rig_clear=args.attest_rig_clear)
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "run_refused", {"http": http}, payload)

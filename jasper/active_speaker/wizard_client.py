@@ -126,8 +126,8 @@ class WizardClient:
             answer["capture"] = dict(capture)
         return status, answer
 
-    def open_session(self, plan: Mapping[str, Any]) -> tuple[int, Any]:
-        return self.post_json(SESSION_PATH, {"plan": dict(plan)})
+    def open_session(self, plan: Mapping[str, Any], *, attest_rig_clear: bool = False) -> tuple[int, Any]:
+        return self.post_json(SESSION_PATH, {"plan": dict(plan), **({"attest_rig_clear": True} if attest_rig_clear else {})})
 
     def run_status(self, run_id: str) -> tuple[int, dict[str, Any]]:
         http, block = self.status_envelope()
