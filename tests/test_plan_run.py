@@ -1016,6 +1016,27 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
         _takes(result.joined()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
 
+@pytest.mark.parametrize("readings, rungs, notices, retakes", [
+    ((66.0, 80.0), [None, -29.0], [None, None], 0),
+    ((66.0, 86.0, 80.0), [None, -29.0, -36.0], [None, None, REASON_LEVEL_OFF_TARGET], 1),
+])
+def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, rungs, notices, retakes):
+    """A driver's probe finds its take's level, and the play after it is the take: no retake
+    notice, no retake counted, none spent. A take that then misses its level is a retake, named
+    by its fault (ADR-0365)."""
+    request = ac.request_for_preset(Preset("nearfield/each", (
+        Pose(0, 0, kind="close", distance_m=0.015, driver="woofer"),), purposes=("reference",), stimulus=NEAR_FIELD))
+
+    result, fakes, _, gate = _run_levelled(request, readings)
+
+    assert fakes.play.rungs == rungs
+    played = {(p["measurement"], p["attempt"]): p for p in gate.progress if "level_step" in p}
+    assert [p["level_step"] for p in played.values()] == ["probe"] + ["levelled"] * (len(rungs) - 1)
+    assert [p.get("retake_reason") for p in played.values()] == notices
+    assert result.to_dict()["honoured"]["retakes"] == gate.progress[-1]["retakes"] == retakes
+    assert gate.progress[-1]["budget"]["by_speaker"] == retakes
+
+
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     """A take its ceiling played under the peak it asked for is kept too quiet:
     a louder retake would replay it until the pose's retries ran out (ADR-0361)."""
@@ -1365,13 +1386,15 @@ def test_a_branch_set_whose_first_take_never_lands_carries_both_branches_level()
     request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
     clipped = TakeVerdict(False, fault=REASON_CLIPPED, next="retake_quieter", charge="speaker", next_gain_db=-30.0)
 
+    retries = MAX_AUTOMATIC_RETAKES_PER_POSITION
+
     result, fakes, _, _ = _run_levelled(
         request, (), ceiling_db=-12.0, chain=_REAR_UP,
-        verdicts=lambda take: clipped if take == 3 else _OVERRUN if 4 <= take <= 7 else None)
+        verdicts=lambda take: clipped if take == 3 else _OVERRUN if 4 <= take <= 3 + retries else None)
 
-    assert fakes.play.rungs == [None, None, -39.0] + [-42.0] * 4 + [-42.0]
+    assert fakes.play.rungs == [None, None, -39.0] + [-42.0] * retries + [-42.0]
     assert [call["spec"].branch_levels_dbfs for call in fakes.play.calls] == [
-        (), (), (-27.0, -33.0), *[(-30.0, -36.0)] * 5]
+        (), (), (-27.0, -33.0), *[(-30.0, -36.0)] * (retries + 1)]
     assert [row["reason"] for row in result.not_measured] == [REASON_CAPTURE_OVERRUN]
 
 
@@ -1388,8 +1411,8 @@ def test_a_close_set_that_finds_no_level_plays_no_more_takes():
 
 
 @pytest.mark.parametrize("readings, verdicts, rungs, reasons", [
-    ((66.0,) + (86.0,) * 6 + (80.0,), None,
-     [None, -29.0, -36.0, -43.0, -50.0, -57.0, -64.0, -71.0], [REASON_LEVEL_OFF_TARGET]),
+    ((66.0,) + (86.0,) * 7 + (80.0,), None,
+     [None, -29.0, -36.0, -43.0, -50.0, -57.0, -64.0, -71.0, -78.0], [REASON_LEVEL_OFF_TARGET]),
     ((60.0,) * 8, lambda take: _UNHEARD, [None] * 4, [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]),
 ], ids=["solved", "unsolved"])
 def test_a_driver_pose_whose_first_take_never_lands_carries_its_level_or_skips(readings, verdicts, rungs, reasons):
@@ -1444,9 +1467,9 @@ def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_le
     for it, never at the take's ceiling (ADR-0403)."""
     request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
 
-    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 6 + (80.0,))
+    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 7 + (80.0,))
 
-    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0, -83.0, -90.0, -97.0]
+    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0, -83.0, -90.0, -97.0, -104.0]
     assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
@@ -1869,6 +1892,7 @@ def test_over_a_timing_take_each_candidate_graph_probes_itself(monkeypatch, box,
     probed = sorted(take["candidate_id"] for take in takes
                     if take["phase"] == "lateral" and is_level_probe(ExcitationProgram.from_dict(take["program"])))
     assert result.status == "complete" and probed == ["banked-base", "trial"]
+    assert result.to_dict()["honoured"]["retakes"] == 0
     assert timing == [pytest.approx(79.0)] and len(pair) == len(request.stops)
     assert all(78.0 <= db <= 82.0 for db in pair), pair
 
@@ -1963,7 +1987,7 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
 
 
 @pytest.mark.parametrize("driver,repeats,retries,redo_first,left,retakes,reason", [
-    (True, 2, 0, True, 0, 1, ""), (True, 2, 0, False, 0, 2, ""), (True, 6, 3, False, 3, 2, ""),
+    (True, 2, 0, True, 0, 0, ""), (True, 2, 0, False, 0, 0, ""), (True, 6, 3, False, 3, 0, ""),
     (False, 2, 0, True, 0, 0, ""), (False, 2, 1, False, 0, 1, ""), (False, 6, 3, False, 2, 1, ""),
     (False, 2, 0, False, 0, 0, REASON_RETRIES_SPENT),
 ])

@@ -619,6 +619,9 @@ async def _run(
                         break
                     playing[offset] = (relevelled.pop(offset) if offset in relevelled
                                        else replace(playing[offset], level_ladder_dbfs=(retry.next_gain_db,)))
+                if retry.charge == "replay":
+                    # A level probe's next play is the take, not a retake (ADR-0365).
+                    retry = None
             spec = playing[offset]
             attempt = attempts[offset] + 1
             before = sweep_offsets[offset] - sweep_offsets[offset - item.config + 1]

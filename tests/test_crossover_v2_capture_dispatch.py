@@ -623,6 +623,9 @@ def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, fl
     verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, pose_level=SPOT_LEVEL)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_shortfall_db") == shortfall
+    # A probe that solved a gain is the take's own level step, no fault, and its next play is free;
+    # one that read nothing it trusts is a real refusal.
+    assert (verdict.fault, verdict.charge) == ((None, "replay") if gain is not None else ("snr_floor", "operator"))
 
 
 # jts3's seat probe at one spot (#6113): each burst reads its gain + 113.2 dB SPL over a

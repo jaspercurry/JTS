@@ -105,12 +105,12 @@ REASON_MEASUREMENT_TARGETS_MISSING = "measurement_targets_missing"
 # A tweeter's cap is declared or derived from declared sensitivities (ADR-0382).
 REASON_DRIVER_SENSITIVITY_UNDECLARED = "driver_sensitivity_undeclared"
 
-# The wired capture kernel stopped a take because the microphone heard the
-# speaker above this session's SPL ceiling
+# The wired capture kernel stopped a take because the microphone heard a sound
+# above this session's SPL ceiling, from the speaker or from the room
 # (``audio_measurement.wired_capture.WiredSplCeilingExceeded``, wrapped as
 # ``crossover_v2.program_transaction.StimulusCaptureStopped``). Its own code,
-# not ``internal_error``: the household can act on this by lowering the level,
-# which is not true of a genuine host fault. Terminal.
+# not ``internal_error``: the household can act on this by waiting for quiet or
+# lowering the level, which is not true of a genuine host fault. Terminal.
 REASON_SPL_CEILING_EXCEEDED = SPL_CEILING_EXCEEDED
 
 REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
@@ -1283,9 +1283,9 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     # End measurement graph and walk refusals.
     REASON_SPL_CEILING_EXCEEDED: ReasonSpec(
         REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
-        "The measurement stopped because the microphone heard the speaker "
-        "louder than the commissioning stop. Lower the level and "
-        "measure again.",
+        "The measurement stopped because the microphone heard a sound over this speaker's level stop. "
+        "The sound may have come from the speaker or from the room. "
+        "Wait for quiet, then measure again. If it stops again, lower the level.",
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(
         REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",
@@ -1297,7 +1297,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The retakes for this position are used up. Start another run to measure it again.",
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
-        REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so this measurement did not play.",
+        REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so no measurement was taken there.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
         "cancelled": "The measurement was stopped before it finished.",
@@ -1440,7 +1440,8 @@ CAPTURE_QUALITY_REFUSAL_CODES = frozenset(
 
 
 TakeNext = Literal["accept", "retake_same", "retake_louder", "retake_quieter", "fix_and_retake", "stop"]
-TakeCharge = Literal["speaker", "operator", "none"]
+#: Who pays for the take that follows. ``replay`` pays no one: a planned play, such as a level probe's next one (#5722).
+TakeCharge = Literal["speaker", "operator", "none", "replay"]
 
 
 @dataclass(frozen=True)

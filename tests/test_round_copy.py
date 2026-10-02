@@ -5,7 +5,10 @@ import re
 
 import pytest
 
-from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_CAPTURE_OVERRUN, REASON_CLIPPED, REASON_LEVEL_UNSOLVED,
+    REASON_RETRIES_SPENT, REASON_SNR_FLOOR, TRANSIENT_AUTO_RETRY_CODES, refusal_copy_for,
+)
 from jasper.active_speaker import round_copy
 from jasper.active_speaker.round_copy import (
     LEVEL_STEP_LINES, PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, status_lines,
@@ -47,8 +50,24 @@ def test_retake_uses_registry_words_without_codes(reason):
     assert refusal_copy_for(reason)[0] in line
     assert "_" not in line
     coverage = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": [{"pose": {"azimuth_deg": 20}, "reason": reason}]})
-    assert refusal_copy_for(reason)[0] in coverage[-1]
+    assert refusal_copy_for(REASON_RETRIES_SPENT if reason in TRANSIENT_AUTO_RETRY_CODES else reason)[0] in coverage[-1]
     assert "_" not in coverage[-1]
+
+
+@pytest.mark.parametrize("reasons, said", [
+    *(([retry, REASON_LEVEL_UNSOLVED], [REASON_LEVEL_UNSOLVED]) for retry in sorted(TRANSIENT_AUTO_RETRY_CODES)),
+    ([REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED], [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]),
+    ([REASON_CLIPPED, REASON_CAPTURE_OVERRUN], [REASON_RETRIES_SPENT]),
+])
+def test_a_not_measured_line_gives_the_reasons_that_still_stand(reasons, said):
+    """A retry's copy says JTS is measuring again, which a round that ended cannot: a pose whose retakes
+    ran out says they did, unless another reason says more. A set that found no level says so alone."""
+    rows = [{"pose": {"azimuth_deg": 20}, "reason": reason} for reason in reasons]
+
+    line = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": rows})[-1]
+
+    assert line.endswith(" ".join(refusal_copy_for(code)[0] for code in said))
+    assert not [code for code in TRANSIENT_AUTO_RETRY_CODES - set(said) if refusal_copy_for(code)[0] in line]
 
 
 def test_manual_redo_and_ended_round_lines():

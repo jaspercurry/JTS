@@ -261,7 +261,12 @@ full at every volume
 (`0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md`).
 `sudo /opt/jasper/.venv/bin/jasper-round-views bass-alignment` fits the measured alignment: each woofer's
 box alone from a near-field round, or with `--take` a bass round's base take
-as played, the room included.
+as played, the room included. The in-box alignment comes from the near-field
+fit. A seat or bass take carries the room's modes, and a peak pulls the fit:
+one seat spot on jts3 fitted 67 Hz at Q 0.38 in one run and 108 Hz at Q 0.98 in
+the next, where its near-field fits were 84–86 Hz at Q about 1.0. Read each
+fit's `band_hz` (the band it read) and `residual_db` (its rms miss against the
+sealed box) before you state `source_hz` and `source_q`.
 Overshoot above the corner in the per-band `realized_boost_db`
 (`bass_table.tables[].levels[]`), beyond repeat spread, means too much boost
 for the box.
