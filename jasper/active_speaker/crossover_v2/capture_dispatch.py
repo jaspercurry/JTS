@@ -25,6 +25,7 @@ from jasper.audio_measurement.program_analysis.summary import (
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
+from jasper.audio_measurement.ramp import MAX_STEP_DB
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.platform.control_client import read_output_volume
@@ -72,9 +73,11 @@ def level_drift_verdict(
 
 
 class _LevelTarget(NamedTuple):
-    """A play's loudest reading in dB SPL against its pose's target, and the peak it played at."""
+    """A play's highest reading in dB SPL and the one under it, against its pose's
+    target, and the peak it played at."""
 
     reading: LevelReading
+    below: LevelReading | None
     target_db_spl: float
     peak_dbfs: float
     rule: PoseLevel
@@ -86,10 +89,10 @@ class _LevelTarget(NamedTuple):
 
 def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
                   program: ExcitationProgram | None, rule: PoseLevel) -> _LevelTarget | None:
-    """The play's loudest located sweep in dB SPL (ADR-0364), held to its pose's
-    target, never above the admission bound under its own stop (ADR-0361). A
-    stopped probe's last burst may have been cut short, so it reads only when no
-    burst before it does (ADR-0365)."""
+    """The play's highest located sweep in dB SPL and the one under it (ADR-0364,
+    ADR-0411), held to its pose's target, never above the admission bound under its
+    own stop (ADR-0361). A stopped probe's last burst may have been cut short, so it
+    reads only when no burst before it does (ADR-0365)."""
     spl = spl or {}
     sens_factor_db = finite_float(spl.get("sens_factor_db"))
     stop = finite_float(spl.get("ceiling_db_spl"))
@@ -97,21 +100,27 @@ def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
     if not analysis.stimulus_levels or sens_factor_db is None or stop is None or program is None or peak is None:
         return None
     to_spl = MicSensitivity(sens_factor_db).db_spl_from_dbfs
-    readings = sorted(analysis.stimulus_levels, key=lambda reading: reading.gain_db)
+    readings = [replace(reading, level_db=to_spl(reading.level_db),
+                        floor_db=None if reading.floor_db is None else to_spl(reading.floor_db))
+                for reading in sorted(analysis.stimulus_levels, key=lambda reading: reading.gain_db)]
     if spl.get("stopped_at_db_spl") is not None and len(readings) > 1:
         readings.pop()
-    heard = max(readings, key=lambda reading: reading.level_db)
-    return _LevelTarget(replace(heard, level_db=to_spl(heard.level_db),
-                                floor_db=None if heard.floor_db is None else to_spl(heard.floor_db)),
+    return _LevelTarget(readings[-1], readings[-2] if len(readings) > 1 else None,
                         min(rule.target_db_spl, spl_raise_bound_db_spl(stop) - rule.tolerance_db),
                         peak, rule)
 
 
 def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
-    """A retake at the gain that lands ``level`` just under its target (ADR-0364). A
-    probe's evidence names how far its take's ceiling holds it under that gain (ADR-0365)."""
-    solved = solve_gain(level.reading, target_db=level.target_db_spl,
-                        tolerance_db=level.rule.tolerance_db, max_raise_db=level.rule.max_raise_db)
+    """A retake at the gain that lands ``level`` just under its target (ADR-0364),
+    never more than one probe step over the gain the step under it solves
+    (ADR-0411). A probe's evidence names how far its take's ceiling holds it under
+    that gain (ADR-0365)."""
+    def solve(reading: LevelReading) -> float:
+        return solve_gain(reading, target_db=level.target_db_spl,
+                          tolerance_db=level.rule.tolerance_db, max_raise_db=level.rule.max_raise_db)
+    solved = solve(level.reading)
+    if level.below is not None:
+        solved = min(solved, solve(level.below) + MAX_STEP_DB)
     shortfall = solved - level.peak_dbfs if probe else 0.0
     return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
                        next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
