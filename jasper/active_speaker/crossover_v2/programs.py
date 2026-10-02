@@ -64,9 +64,7 @@ DRIVER_TAKE_CEILING_DBFS = 0.0
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
-#: The phases whose capture OPENS a session's playback, and so carries the
-#: courtesy prelude (#1677). No env/config switch. :data:`PHASE_TIMING` plays
-#: VERIFY's program, prelude included.
+#: The phases whose take carries the courtesy prelude (#1677). No env/config switch.
 COURTESY_PRELUDE_PHASES = frozenset(
     {PHASE_CHECK, PHASE_VERIFY, PHASE_TIMING}
 )
@@ -83,10 +81,7 @@ def pilot_gains(hi_gain_db: float) -> tuple[float, float]:
 
 
 def courtesy_prelude_for_phase(phase: str) -> bool:
-    """Announce a session, not every take (#1677).
-
-    Capture budgets share this decision so the prelude cannot overrun recording.
-    """
+    """Announce a session, not every take (#1677)."""
     return phase in COURTESY_PRELUDE_PHASES
 
 
@@ -143,15 +138,13 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None,
                          caps_dbfs=_reserved_caps(excitation, spec))
     backoff = _stimulus_backoff_db(spec, stimulus_dbfs)
+    prelude = courtesy_prelude_for_phase(spec.program_phase)
     if spec.stimulus is not None:
         from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
-        program = build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile,
-                                     role_targets=role_targets, extra_backoff_db=backoff,
-                                     courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
-    else:
-        program = excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s)
-    return program
+        return build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile,
+                                  role_targets=role_targets, extra_backoff_db=backoff, courtesy_prelude=prelude)
+    return excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s, courtesy_prelude=prelude)
 
 
 def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, float, int]:
@@ -384,12 +377,11 @@ class SessionExcitation:
         )
 
     def verify_program(
-        self, *, extra_backoff_db: float = 0.0, sweep_s: float | None = None,
-        courtesy_prelude: bool | None = None, leading_pilots: bool = True,
+        self, *, courtesy_prelude: bool, extra_backoff_db: float = 0.0, sweep_s: float | None = None,
+        leading_pilots: bool = True,
     ) -> ExcitationProgram:
-        """The mono summed sweep, bounded by every driven role's cap and duration."""
-        if courtesy_prelude is None:
-            courtesy_prelude = courtesy_prelude_for_phase(PHASE_VERIFY)
+        """The mono summed sweep, bounded by every driven role's cap and duration,
+        announced as the take's own phase says (:func:`courtesy_prelude_for_phase`)."""
         gain = self._summed_gain(extra_backoff_db)
         band = measurement_band_hz(self.roles)
         return build_verify_program(

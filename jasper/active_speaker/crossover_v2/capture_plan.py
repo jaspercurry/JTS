@@ -82,6 +82,7 @@ def build_inline_session_spec(
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
+        prelude = courtesy_prelude_for_phase(phase)
         if solo_target(spec):
             assert excitation is not None
             program = compose_target_program(excitation, spec)  # never played; duration only
@@ -90,17 +91,17 @@ def build_inline_session_spec(
 
             program = build_bass_program(
                 SessionExcitation(tuple(roles_bands), {}, 0.0, fc_hz, {}), spec.stimulus,  # never played; duration only
-                safety_profile=safety_profile or {}, role_targets=role_targets or {},
-                courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
+                safety_profile=safety_profile or {}, role_targets=role_targets or {}, courtesy_prelude=prelude,
             )
         elif phase == PHASE_CHECK:
-            program = build_check_program(roles_bands, courtesy_prelude=True)
+            program = build_check_program(roles_bands, courtesy_prelude=prelude)
         elif phase == PHASE_MEASURE:
-            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
+            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands,
+                                            courtesy_prelude=prelude)
         else:
             program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
                                            sweep_band_hz=spec.sweep_band_hz or None,
-                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
+                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S, courtesy_prelude=prelude)
         if spec.graph_scope == "candidate_branches":
             program = build_branch_program(program, branch_channels_for(spec))
         entries.append(CapturePlanEntry(

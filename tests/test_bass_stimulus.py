@@ -64,7 +64,7 @@ def bass_fixture():
 def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
     return build_bass_program(excitation, preset("bass").stimulus,
-                              safety_profile=safety, role_targets=targets, **kwargs)
+                              safety_profile=safety, role_targets=targets, courtesy_prelude=True, **kwargs)
 
 
 @pytest.mark.parametrize("floor", [20, 30])
@@ -90,7 +90,7 @@ def test_bass_without_a_lowest_main_target_is_refused(bass_fixture, roles):
                                                    for i, role in enumerate(roles)))
     with pytest.raises(BassStimulusRefused) as exc:
         build_bass_program(excitation, preset("bass").stimulus,
-                           safety_profile=bass_fixture[1], role_targets={})
+                           safety_profile=bass_fixture[1], role_targets={}, courtesy_prelude=False)
     assert exc.value.code == "bass_stimulus_targets_missing"
 
 
@@ -232,9 +232,9 @@ def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refu
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph = compile_tuning_graph(MeasurementGraphProfile(preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM),
                                  candidate=candidate_from_applied_profile(topology, applied))
-    programs = [excitation.verify_program(), _bass((topology, safety, targets, excitation))]
+    programs = [excitation.verify_program(courtesy_prelude=True), _bass((topology, safety, targets, excitation))]
     if fault == "duration":
-        programs[-1] = replace(excitation, summed_sweep_band_hz=(20, 1100), sweep_duration_limits_s={}).verify_program(sweep_s=5)
+        programs[-1] = replace(excitation, summed_sweep_band_hz=(20, 1100), sweep_duration_limits_s={}).verify_program(courtesy_prelude=True, sweep_s=5)
     for index, stimulus in enumerate(programs):
         wav = tmp_path / f"program-{index}.wav"
         write_program_wav(wav, stimulus)
@@ -410,7 +410,7 @@ def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, prog
 ])
 def test_verify_repeat_content_is_disclosed_and_discontinuities_are_checked(bass_fixture, passes, fault, check, status):
     excitation = replace(bass_fixture[3], summed_sweep_band_hz=(20, 1100))
-    bass = repeat_summed_program(excitation.verify_program(), passes=passes, quiet_samples=96000, cooldown_s=2)
+    bass = repeat_summed_program(excitation.verify_program(courtesy_prelude=True), passes=passes, quiet_samples=96000, cooldown_s=2)
     rate, delay = bass.sample_rate_hz, 800
     pcm = render_program_pcm(bass)[:, 0].astype(np.float64) * 0.1
     raw = np.pad(pcm, (delay, rate))

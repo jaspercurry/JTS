@@ -63,8 +63,8 @@ def bass_band_hz(
 
 def build_bass_program(
     excitation: SessionExcitation, stimulus: Mapping[str, Any], *,
-    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str],
-    extra_backoff_db: float = 0.0, courtesy_prelude: bool = True,
+    safety_profile: Mapping[str, Any], role_targets: Mapping[str, str], courtesy_prelude: bool,
+    extra_backoff_db: float = 0.0,
 ) -> ExcitationProgram:
     floor, ceiling = bass_band_hz(excitation, stimulus, safety_profile=safety_profile, role_targets=role_targets)
     try:
