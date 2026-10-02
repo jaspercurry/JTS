@@ -1,7 +1,7 @@
 # Measurement-loop doctrine
 
 The tuning toolbox lets an LLM choose experiments from measured evidence.
-`jasper-crossover-prescriber status` gives the reading order in its
+`sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` gives the reading order in its
 `reading_order` field. No document in it is a fixed campaign sequence.
 
 ## 1. The loop

@@ -2,7 +2,7 @@
 
 ## Entry contract
 
-Register the wired microphone with `sudo /opt/jasper/.venv/bin/jasper-mic-calibration` and confirm its serial and calibration. Each run finds its own level at its first spot and holds it. Each take banks its `level_db` and `stimulus_dbfs`, so a DSP change's loudness effect stays visible across rounds. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
+Register the wired microphone with `jasper-mic-calibration` and confirm its serial and calibration. Each run finds its own level at its first spot and holds it. Each take banks its `level_db` and `stimulus_dbfs`, so a DSP change's loudness effect stays visible across rounds. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
 
 ## The loop
 
