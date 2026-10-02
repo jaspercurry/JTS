@@ -32,7 +32,7 @@ from jasper.cli._refusal import STATUS_BY_CODE
 @pytest.fixture(autouse=True)
 def _no_speaker(monkeypatch):
     """No CamillaDSP, no cue daemon, no audition record on this machine."""
-    monkeypatch.setattr(cli, "_camilla_controller", lambda: object())
+    monkeypatch.setattr(cli, "primary_controller", lambda: object())
     monkeypatch.setattr(cli, "read_audition_state", lambda: None)
 
 

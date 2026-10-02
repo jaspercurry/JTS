@@ -51,6 +51,7 @@ from jasper.active_speaker.audition import (
     start_audition,
     stop_audition,
 )
+from jasper.audio_control.camilla import primary_controller
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
 from jasper.platform.log_event import log_event
 from jasper.platform.logging_setup import configure_logging
@@ -62,14 +63,6 @@ logger = logging.getLogger(__name__)
 #: ``start`` took the door, or the restore did not land. Not one of the engine's
 #: ``END_*`` words: those say why the hold ENDED, this says what is playing.
 NOT_RESTORED = "audition_not_restored"
-
-
-def _camilla_controller() -> Any:
-    """A CamillaController on the live websocket — the same graph the daemons see."""
-
-    from jasper.audio_control.camilla import primary_controller
-
-    return primary_controller()
 
 
 def _play_cue(slug: str) -> None:
@@ -117,7 +110,7 @@ def _print_status(payload: dict[str, Any]) -> None:
 
 
 def _cmd_start(args: argparse.Namespace) -> int:
-    cam = _camilla_controller()
+    cam = primary_controller()
 
     async def _run() -> dict[str, Any]:
         state = await start_audition(cam=cam, layer=args.layer, play_cue=_play_cue)
@@ -161,7 +154,7 @@ def _ended(reason: str) -> dict[str, Any]:
 def _cmd_stop(args: argparse.Namespace) -> int:
     try:
         payload = asyncio.run(
-            stop_audition(cam=_camilla_controller(), play_cue=_play_cue)
+            stop_audition(cam=primary_controller(), play_cue=_play_cue)
         )
     except AuditionRefused as exc:
         return _refused(exc)
