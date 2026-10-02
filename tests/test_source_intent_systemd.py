@@ -165,12 +165,6 @@ def test_source_reconcile_timeout_hierarchy_covers_all_owner_waits() -> None:
         "TimeoutStartSec",
         str(int(units.RECONCILE_SYSTEMD_TIMEOUT_SECONDS)),
     ) in set(_directives())
-    installer = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8"
-    )
-    assert (
-        f"--kill-after=5s {int(units.RECONCILE_BROKER_TIMEOUT_SECONDS)}s"
-    ) in installer
 
 
 def test_owned_source_unit_client_bounds_outlast_explicit_systemd_contracts() -> None:

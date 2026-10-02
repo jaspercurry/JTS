@@ -34,24 +34,29 @@ OUTPUTD_FAILURE_PARK_RECORD="/run/jasper-outputd-failure-reconcile.park"
 FANIN_COUPLING_ENTRY_LOCK="/run/jasper-fanin-coupling.lock"
 FANIN_COUPLING_FENCE_DROPIN="/run/systemd/system/jasper-fanin-coupling-auto.service.d/jts-install-window.conf"
 FANIN_COUPLING_PASS_BOUND_SEC=""
+SOURCE_INTENT_PASS_BOUND_SEC=""
 # 1 while descriptor 8 holds the entry lock. A fixed number because macOS bash
 # 3.2 runs these tests without `{var}>` (see jasper-env-file.sh); main()'s step
 # rows own fd 3 and the env-file lock owns fd 9.
 _FANIN_COUPLING_LOCKED=0
 
 # The low-memory park precedes venv installation; use the incoming checkout.
-_load_fanin_coupling_pass_bound() {
-    [[ -z "${FANIN_COUPLING_PASS_BOUND_SEC}" ]] || return 0
-    FANIN_COUPLING_PASS_BOUND_SEC="$(
+_load_reconcile_pass_bounds() {
+    [[ -z "${SOURCE_INTENT_PASS_BOUND_SEC}" ]] || return 0
+    local bounds
+    bounds="$(
         cd "${REPO_DIR}" &&
         PYTHONPATH="${REPO_DIR}" "${JASPER_SYSTEM_PYTHON:-python3}" - <<'PYTHON'
-from jasper.platform.source_intent_units import USB_COUPLING_UNIT, unit_action_timeout_sec
-print(f'{unit_action_timeout_sec(USB_COUPLING_UNIT, "start"):g}')
+from jasper.platform.source_intent_units import (
+    RECONCILE_BROKER_TIMEOUT_SECONDS, USB_COUPLING_UNIT, unit_action_timeout_sec,
+)
+print(f'{unit_action_timeout_sec(USB_COUPLING_UNIT, "start"):g} {RECONCILE_BROKER_TIMEOUT_SECONDS:g}')
 PYTHON
     )" || {
-        echo "  ERROR: could not read the fan-in coupling pass bound" >&2
+        echo "  ERROR: could not read the reconcile pass bounds" >&2
         return 1
     }
+    read -r FANIN_COUPLING_PASS_BOUND_SEC SOURCE_INTENT_PASS_BOUND_SEC <<< "${bounds}"
 }
 
 # Rows use "<mode> <source relative to REPO_DIR> <destination>".
@@ -761,7 +766,7 @@ retire_stale_outputd_park_if_active() {
 # restart re-enters it.
 fence_fanin_coupling() {
     [[ "${_FANIN_COUPLING_LOCKED}" == 0 ]] || return 0
-    _load_fanin_coupling_pass_bound || return 1
+    _load_reconcile_pass_bounds || return 1
     # Removal condition: drop the drop-in once jasper-fanin-coupling-auto no
     # longer Wants= the graph daemons; the entry lock alone then fences it.
     install -d -m 0755 "${FANIN_COUPLING_FENCE_DROPIN%/*}"
@@ -1209,15 +1214,9 @@ enable_streambox_web_sockets() {
 }
 
 reapply_source_intent() {
-    # Re-converge the complete local-source lifecycle after active-only renderer
-    # refreshes. Install never enables or starts an Off source as a temporary
-    # baseline: the coordinator is the only writer of source enablement and the
-    # only path that starts a desired-on source, including Bluetooth RF-kill.
-    # install.sh runs as root and invokes the same reconciler directly. Keep a
-    # process-level bound beyond the unit's 2727-second contract so a
-    # manual/stale lock holder or child regression cannot pin deploy forever.
-    # The reconciler is the single authority for the source allowlist and
-    # runtime ordering. A failed apply WARNs; boot or the next toggle retries.
+    _load_reconcile_pass_bounds || return 1
+    # Only the source coordinator starts desired-on sources after renderer
+    # refreshes. Its owner-derived outer bound covers the unit and lock wait.
     # A short-lived pre-merge build used JASPER_SOURCE_INTENT_BLUETOOTH. That
     # name lives inside an older release's strict owned namespace, so leaving it
     # behind would make a rollback reject the whole intent file. Migrate it to
@@ -1250,11 +1249,11 @@ PY
     fi
     # Remove the old acknowledgement immediately, then again under the
     # coordinator lock. The long lock wait drains any legitimate in-flight
-    # pass (bounded by the unit's 2727 s ceiling); a failed/timeout path removes
+    # pass; a failed/timeout path removes
     # the file once more so no reader can mistake an older generation for this
     # install's.
     rm -f /run/jasper-source-intent/status.json
-    if ! /usr/bin/timeout --foreground --kill-after=5s 2737s \
+    if ! /usr/bin/timeout --foreground --kill-after=5s "${SOURCE_INTENT_PASS_BOUND_SEC}s" \
         /opt/jasper/.venv/bin/jasper-source-intent-reconcile \
             --reason install --invalidate-status-before; then
         rm -f /run/jasper-source-intent/status.json
@@ -1355,7 +1354,7 @@ reconcile_grouping_state() {
 }
 
 resolve_fanin_coupling_default() {
-    _load_fanin_coupling_pass_bound || return 1
+    _load_reconcile_pass_bounds || return 1
     systemctl enable jasper-fanin-coupling-auto.service
     install_run_bounded "${FANIN_COUPLING_PASS_BOUND_SEC}" -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install || {
         echo "  WARN: fan-in coupling default resolution failed. Check logs with: journalctl -u jasper-fanin-coupling-auto -e"
