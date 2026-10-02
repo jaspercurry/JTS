@@ -215,10 +215,9 @@ def _incumbent_block(
     :func:`~jasper.active_speaker.baseline_profile.profile_linearization`,
     which owns WHICH copy of that field is authoritative.
 
-    The applied-profile SSOT answers both halves and the flow state does not:
-    what the flow state records names the graph live BEFORE the last v2 apply,
-    so it is one apply behind after any v2 apply and arbitrarily behind after
-    an apply through a door that never touches v2 state.
+    The applied-profile SSOT answers both halves. The flow state records no
+    applied graph, and an apply through a door that never touches v2 state
+    leaves it arbitrarily behind.
 
     That is load-bearing because a per-driver prescription is a TOTAL for every
     role it names, so a role's incumbent filters are DELETED by any document
@@ -333,9 +332,9 @@ def _incumbent_trim_block(
     """Per role: what is APPLIED now, and what THIS round's own solve wants.
 
     ``applied_db`` reads the applied-profile SSOT's ``corrections`` (never the
-    flow state's Undo stash — one apply behind, same as :func:`_incumbent_block`
-    everywhere else). ``round_resolved_db`` reads the flow state's own
-    ``candidate.trims_db`` — the trim this round's measurement produced —
+    flow state, as in :func:`_incumbent_block`). ``round_resolved_db`` reads
+    the flow state's own ``candidate.trims_db`` — the trim this round's
+    measurement produced —
     except for a role a prescription pinned this round, where that field holds
     the PIN rather than the solve it displaced; the solve is what
     ``candidate.trims_pinned[role].displaced_db`` banks instead

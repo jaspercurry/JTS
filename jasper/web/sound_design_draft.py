@@ -82,8 +82,8 @@ def apply_measured_crossover_geometry(
     write through this function is fsynced before it is visible.
 
     The declaration states a crossover as three fields (corner, filter type,
-    slope) and all three go through this one writer, in one write, one fsync
-    and one Undo leg: ``measurement_emit.require_candidate_speaker_identity``
+    slope) and all three go through this one writer, in one write and one
+    fsync: ``measurement_emit.require_candidate_speaker_identity``
     compares the speaker identity, crossover regions included, and slope compiles into
     ``CrossoverRegion.order``, so a candidate measured at a
     different slope is as unreconcilable with the saved declaration as one
