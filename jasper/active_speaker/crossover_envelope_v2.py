@@ -12,9 +12,9 @@ from .driver_safety import driver_floor_issues
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.platform.json_fields import as_mapping
 from jasper.platform.log_event import log_event
-from .measurement_programs import PURPOSE_SPEAKER, preset
+from .measurement_programs import PROGRAM_ROWS, PURPOSE_SPEAKER, preset, run_purpose
 from .measurement_view import round_capture, run_door
-from .round_copy import CHOOSE_PROGRAM, RUN_ENDED
+from .round_copy import CHOOSE_PROGRAM, RUN_ENDED, RUN_UNDER_WAY
 from .crossover_v2.coordinator import series_position_from_state
 from .crossover_v2.position_gate import RETAKE_ENDPOINT
 from .capture_status import CAPTURE_COMPLETE, CAPTURE_FAILED, SESSION_ENDED_STATUSES
@@ -77,6 +77,9 @@ _PHASE_STEP = {
     PHASE_CLOUD_VERIFY: "verify",
     PHASE_DONE: "verify",
 }
+
+
+_RUN_HEADLINES = {row.purpose: row.run_headline for row in PROGRAM_ROWS}
 
 
 def _retake_action() -> dict[str, Any]:
@@ -359,15 +362,10 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
             status=status,
         )
     elif phase == PHASE_LATERAL:
-        # R16's walk (§4.4). Bespoke copy: must state the return to the mark.
+        # Every program's takes but the speaker's per-driver ones walk in this phase; the run's own program words it.
         env = _envelope(
             screen="measure", active_step=active_step,
-            verdict=(
-                "JTS is measuring from a few spots either side of the mark, "
-                "and then back on it — follow the step below. Moving the "
-                "microphone is what shows how the speaker's drivers hand over "
-                "to each other away from the middle."
-            ),
+            verdict=_RUN_HEADLINES.get(run_purpose(as_mapping(capture.get("run")).get("program")), RUN_UNDER_WAY),
             next_action=None,
             status=status,
         )

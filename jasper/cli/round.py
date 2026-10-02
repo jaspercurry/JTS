@@ -23,7 +23,7 @@ from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, DriverNotOfferedError, LayoutNotOfferedError, PosesNameALayoutError, available_presets,
 )
 from jasper.active_speaker.movers import MOVER_ARM, MOVERS
-from jasper.active_speaker.round_copy import round_lines, packet_lines
+from jasper.active_speaker.round_copy import packet_lines, status_lines
 from jasper.active_speaker.wizard_client import (
     CSRF_PAGE_PATH, STATUS_PATH, REASON_ANSWER_LOST, REASON_RUN_NOT_LIVE,
     WizardClient, apply_by_fingerprint, error_of, wait_for_round,
@@ -216,8 +216,7 @@ def _cmd_status(client: WizardClient, args: argparse.Namespace) -> int:
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "status_unavailable", {"http": http}, payload)
-    for line in (packet_lines(payload["round_dir"]) if payload.get("round_dir") else
-                 round_lines(payload, pending=bool(payload.get("pending")))):
+    for line in status_lines(payload, pending=bool(payload.get("pending"))):
         print(line, file=sys.stderr)
     # The wizard's capture ``status`` is the run's state; ``status`` names a failure (ADR-0237).
     return answer("status", schema=ANSWER_SCHEMAS[f"{PROG} status"], subject={}, parameters={}, line="",
@@ -234,7 +233,7 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
     previous_lines: list[str] = []
     def show_progress(progress):
         nonlocal previous_lines
-        lines = round_lines(progress, pending=bool(progress.get("pending")))
+        lines = status_lines(progress, pending=bool(progress.get("pending")))
         if lines != previous_lines:
             print("\n".join(lines), file=sys.stderr)
             previous_lines = lines
@@ -256,10 +255,12 @@ def _cmd_wait(client: WizardClient, args: argparse.Namespace, *,
         return failed(EXIT_REFUSED if isinstance(error, RoundBankError) else EXIT_WRITE_FAILED,
                       error.reason if isinstance(error, RoundBankError) else "write_failed",
                       {"error": str(error), **arm} if arm else str(error))
+    coverage = packet_lines(str(banked.path))
     return answered(envelope(args.command, schema=ANSWER_SCHEMAS[f"{PROG} wait"], subject={"round_id": banked.path.name},
                              parameters={}, **wait_answer(banked, result, verbose=args.verbose), **_run_links(args.run),
                              **arm),
-                    "\n".join([f"Run banked at {banked.path}", *packet_lines(str(banked.path))]), sort_keys=False)
+                    "\n".join([f"Run banked at {banked.path}", *([] if coverage == previous_lines else coverage)]),
+                    sort_keys=False)
 
 
 def _cmd_apply(client: WizardClient, args: argparse.Namespace) -> int:

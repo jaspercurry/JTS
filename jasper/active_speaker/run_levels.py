@@ -111,6 +111,17 @@ def prepare_level_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[R
     return prepare_plan_captures(plan, roles_bands=roles_bands)
 
 
+def ladder_captures(
+    plan: AngleCaptureRequest, levels: str | None, captures: Sequence[PlanCapture],
+) -> tuple[PlanCapture, ...]:
+    """The captures a run of ``plan`` plays: a ladder plays each placement's captures at every
+    rung before the microphone moves (:func:`run_levels`). ``levels`` is what
+    ``run_request.resolve_plan`` answers with the plan: ``"auto"`` for the preset's whole ladder."""
+    rungs = len(plan.levels) if plan.levels is not None else len(LEVEL_OFFSETS_DB) if levels == "auto" else 1
+    return tuple(capture for _, group in groupby(captures, key=lambda capture: capture.stop.pose.place)
+                 for capture in (*group,) * rungs)
+
+
 @dataclass(frozen=True)
 class LevelRun:
     manifest: RunManifest
@@ -163,7 +174,7 @@ async def run_levels(
                     if report.blocking:
                         issue = report.blocking_issue
                         raise LateralWalkRefused(issue.code, issue.detail)
-                    gate.publish({"status": "running", "pose": pose_index,
+                    gate.publish({"status": "running", "program": request.program, "pose": pose_index,
                                   "level": {"run": {"level_db": request.level.level_db}},
                                   "level_index": level_index + 1, "levels": len(admitted)})
                     bound = prepare(request)

@@ -9,18 +9,12 @@ from typing import Any, Mapping
 from .capture_status import SESSION_ENDED_STATUSES
 from .measurement_programs import Preset, available_presets, offered_here, plan_poses, preset, run_preset
 from .movers import MOVER_ARM
-from .round_copy import round_lines, packet_lines, round_verdict
+from .round_copy import round_lines, round_verdict, status_lines
 from .wizard_client import CAPTURE_CANCEL_PATH, SESSION_PATH
 
 
 def round_status(capture: Mapping[str, Any]) -> list[str]:
-    facts = capture.get("run") or {}
-    if facts.get("round_dir"):
-        lines = packet_lines(facts["round_dir"])
-        if lines:
-            return lines
-        facts = {**facts, "packet_error": "packet_unreadable"}
-    return round_lines(facts, pending=capture.get("position_pending") or capture.get("join") or {})
+    return status_lines(capture.get("run") or {}, pending=capture.get("position_pending") or capture.get("join") or {})
 
 
 def round_capture(capture: Mapping[str, Any], verdict: str, *, advertise_capture: bool = True) -> dict[str, Any]:
@@ -68,6 +62,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
     from .arm_walk import ARM_DISCOVERY_REUSE_S, mover_present  # lazy: measurement planning
     from .preflight import mover_unavailable_issue  # lazy: measurement planning
+    from .run_levels import ladder_captures  # lazy: measurement planning
     from .run_request import RunRequest, resolve_plan  # lazy: measurement planning
 
     from .commissioning_coordinator import load_commissioning_view  # lazy: setup is read only when choosing a default
@@ -90,7 +85,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
             # Posted as the request: the door's preflight states a ladder's rungs (#5737).
             door = run_door(plan)
             try:
-                request, _ = resolve_plan(RunRequest.from_mapping(door["body"]["request"]), targets=lambda: targets)
+                request, levels = resolve_plan(RunRequest.from_mapping(door["body"]["request"]), targets=lambda: targets)
                 context = resolve_conductor_context(status)
             except LateralWalkRefused as exc:
                 choice.update(code=exc.reason, lines=[refusal_copy_for(exc.reason)[0]])
@@ -102,7 +97,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
             else:
                 if mover_present(request.mover, reuse_s=ARM_DISCOVERY_REUSE_S):
                     captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-                    facts = preview_schedule(request, captures, context)
+                    facts = preview_schedule(request, ladder_captures(request, levels, captures), context)
                     choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement", **door})
                 else:
                     issue = mover_unavailable_issue(request.program)

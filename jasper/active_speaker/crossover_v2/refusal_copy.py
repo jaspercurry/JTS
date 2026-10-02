@@ -385,7 +385,6 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "round_capture_unreadable": "A take's banked record, recording or impulse cannot be read.",
         "round_no_captures": "The round banked no take record this view can read.",
         "round_radiated_band_missing": "A take banked no curve, so the band its driver radiates is unknown.",
-        "round_role_not_recorded": "A take banked no impulse for the driver this view reads.",
         "trim_not_finite": "A fitted trim term is not a finite number, so no trim is resolved.",
     },
     ("measure_repeats", "Measure repeat takes at the mark"): {
@@ -509,7 +508,6 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "room_capture_not_found": "No room take matches the named take id.",
         "room_capture_selection_required": "The round holds more than one room set, so a take id must choose one.",
         "round_take_not_kept": "Select a kept take, in this set or another; a refused attempt or level probe is banked, never read.",
-        "round_take_selection_required": "Select a retained take from this set with the take selector.",
         "round_take_unknown": "Select a retained take from this set.",
     },
     ("measure_room", "Measure a new room round"): {
@@ -710,7 +708,16 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
     },
     ("name_set", "Name a set this round banked"): {
         "round_set_unknown": "Select a set listed in the run manifest.",
+    },
+    # No page control answers these three, so each label names the CLI flag (and round kind) that does.
+    ("name_set", "Name a set with --set"): {
         "set_required": "Name --set with one of the listed set ids.",
+    },
+    ("name_take", "Name a take with --take"): {
+        "round_take_selection_required": "Select a retained take from this set with the take selector.",
+    },
+    ("name_take", "Name another take with --take, or measure a branches/express round"): {
+        "round_role_not_recorded": "A take banked no impulse for the driver this view reads.",
     },
     ("add_api_key", "Add the provider's API key on the voice page", "/assistant/voice/"): {
         "key_unset": "The voice provider has no API key set.",

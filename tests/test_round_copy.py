@@ -6,8 +6,10 @@ import re
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import CAPTURE_QUALITY_REFUSAL_CODES, refusal_copy_for
+from jasper.active_speaker import round_copy
 from jasper.active_speaker.round_copy import (
-    LEVEL_STEP_LINES, PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, take_counts,
+    LEVEL_STEP_LINES, PLACE_MICROPHONE, RUN_ENDED, round_lines, coverage_lines, pose_name, round_verdict, status_lines,
+    take_counts,
 )
 from jasper.active_speaker.measurement_programs import plan_poses, run_preset
 from jasper.active_speaker.measurement_view import round_status
@@ -67,6 +69,18 @@ def test_pre_round_lines_count_the_supplied_schedule():
     lines = round_lines(facts)
     assert re.findall(r"\d+", lines[1]) == ["8", "8"]
     assert round_status({"run": facts, "join": {"mover": "human"}}) == round_lines(facts) + [PLACE_MICROPHONE]
+
+
+def test_a_runs_status_is_its_banked_rounds_coverage_once_it_has_one(monkeypatch):
+    """A refused round's live facts count no unmeasured measurement. The page and the console list the
+    spots its banked packet names, and an unreadable packet says so."""
+    facts = {"status": "complete", "takes": 0, "not_measured": 0}
+    banked = {**facts, "round_dir": "round-1"}
+    monkeypatch.setattr(round_copy, "packet_lines", lambda directory: ["covered spot"])
+    assert status_lines(banked) == round_status({"run": banked}) == ["covered spot"]
+    assert status_lines(facts) == round_lines(facts)
+    monkeypatch.setattr(round_copy, "packet_lines", lambda directory: [])
+    assert status_lines(banked) == round_lines({**banked, "packet_error": "packet_unreadable"}) != round_lines(facts)
 
 
 def test_post_round_coverage_keeps_packet_words():
