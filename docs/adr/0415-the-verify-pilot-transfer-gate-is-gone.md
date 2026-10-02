@@ -12,9 +12,10 @@
   sibling refusal `verify_inconclusive`. That refusal never fires for the same reason. This is the
   deletion pass on [#5925](https://github.com/jaspercurry/JTS/issues/5925) (batch N1).
 - **Decision:** No take is refused as `verify_level_shift` or `verify_inconclusive`. The gate (the
-  `pilot_transfer_prior` branch of `capture_dispatch.py`), its 0.35 dB ceiling, its helper and its
-  `pilot_transfer_step_db` evidence key are deleted. So are the sibling's `measure_gate_window_ms`
-  branch and the two registry rows.
+  `pilot_transfer_prior` branch of `capture_dispatch.py`), its 0.35 dB ceiling, its helper, its
+  `pilot_transfer_step_db` evidence key and its raw material `PilotObservation.programmed_hi_gain_db`
+  are deleted. So are the sibling's `measure_gate_window_ms` branch, the two registry rows and
+  `TEMPLATE_VERIFY_FAIL`, the template only those rows used.
 - **Consequences:** The evidence that ADR-0182 quotes stays in that ADR: the 0.75 to 0.82 dB step of
   the 2026-07-22 session against the 0.05 dB step of the one clean session. A future recorder-drift
   check starts from it.

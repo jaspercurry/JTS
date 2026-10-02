@@ -48,7 +48,6 @@ __all__ = [
     "POSITION_AXIS_VERTICAL",
     "REFERENCE_MARK_DESIGN_AXIS",
     "ResponseCurve",
-    "VERIFY_TOLERANCE_DB",
 ]
 
 SCHEMA_VERSION = 3
@@ -277,12 +276,6 @@ class CandidateAcousticContext(FingerprintedRecord):
 #: sibling of ``"fitted"`` rather than that value, which would claim a
 #: committed trim pair for a speaker that solved none.
 LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
-
-
-# VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
-# measured against the notch-excluded max
-# (`program_analysis.model.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
-VERIFY_TOLERANCE_DB = 1.5
 
 #: The spot CHECK asks the household to stand the microphone on. An identity,
 #: not a coordinate: nothing measures where the mark physically is.

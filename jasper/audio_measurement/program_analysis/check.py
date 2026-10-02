@@ -350,7 +350,6 @@ def _pilot_observations(
             snr_db=lo_snr_db,
             channel_map_target_rise_db=channel_target_rise_db,
             channel_map_cross_rise_db=channel_cross_rise_db,
-            programmed_hi_gain_db=hi_seg.gain_db,
             delta_implausible=delta_implausible,
         ))
     return out

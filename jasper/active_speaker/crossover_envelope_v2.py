@@ -24,7 +24,6 @@ from .crossover_v2.refusal_copy import (
     TEMPLATE_HARD_STOP,
     TEMPLATE_SESSION_RESTART,
     TEMPLATE_SILENT_AUTO_RETRY,
-    TEMPLATE_VERIFY_FAIL,
     reason_message,
 )
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
@@ -180,7 +179,7 @@ def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
             }
         elif spec.template == TEMPLATE_SESSION_RESTART:
             action = {**_reset_action(), "id": "restart_session"}
-        elif spec.template in {TEMPLATE_FIX_AND_RETRY, TEMPLATE_VERIFY_FAIL} and code not in NON_RETRIABLE_CODES:
+        elif spec.template == TEMPLATE_FIX_AND_RETRY and code not in NON_RETRIABLE_CODES:
             action = _retake_action() if live else None
     if live and action:
         action = {**action, "show_during_capture": True}

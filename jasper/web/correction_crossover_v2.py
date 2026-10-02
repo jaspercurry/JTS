@@ -287,7 +287,6 @@ def prepare_v2_session(
             lateral_prompts=lateral_prompts,
             measure_specs_by_index=engine_measure_specs,
             measurement_protection_sections_by_role=protection_sections,
-            sound_design_revision=context.sound_design_revision,
         )
         v2state.persist_conductor_state(conductor, failure_code=None, evidence=refs)
         manifest = RunManifest(session_id, v2evidence._record_store(evidence_store, session_id),

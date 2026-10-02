@@ -32,8 +32,7 @@ TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
 TEMPLATE_FIX_AND_RETRY = "fix_and_retry"
 TEMPLATE_HARD_STOP = "hard_stop"
 TEMPLATE_SESSION_RESTART = "session_restart"
-# Two special screens (§5.2), not among the four generic templates.
-TEMPLATE_VERIFY_FAIL = "verify_fail"
+# A special screen (§5.2), not among the four generic templates.
 TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
 
 # Reason codes (internal — never a bare code reaches the household; the envelope
@@ -150,8 +149,6 @@ REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupporte
 # escape with the volume active and the phone frozen. Terminal.
 REASON_INTERNAL_ERROR = "internal_error"
 # The apply transaction came back blocked or raised.
-# ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
-# code: an apply failure says nothing about the mic position.
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
 # transport death — see the catch-all's exception classification in
@@ -266,7 +263,6 @@ _TEMPLATE_ACTIONS: dict[str, Mapping[str, Any]] = {
     TEMPLATE_HARD_STOP: {"id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/"},
     TEMPLATE_SESSION_RESTART: {"id": "restart_session", "label": "Start over", "href": "/sound/speaker/crossover/"},
     TEMPLATE_FIX_AND_RETRY: _RETAKE,
-    TEMPLATE_VERIFY_FAIL: _RETAKE,
 }
 
 
@@ -301,7 +297,7 @@ class ReasonSpec:
         """What a CLI prints for this reason: the row's own action, else its template's (ADR-0300)."""
         template = self.template
         # A retry that no extra attempt can clear stops the run, as a restart does.
-        if template in (TEMPLATE_FIX_AND_RETRY, TEMPLATE_VERIFY_FAIL) and not self.retry_budget:
+        if template == TEMPLATE_FIX_AND_RETRY and not self.retry_budget:
             template = TEMPLATE_SESSION_RESTART
         return self.own_action or _TEMPLATE_ACTIONS.get(template)
 

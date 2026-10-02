@@ -58,7 +58,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "TEMPLATE_HARD_STOP",
         "TEMPLATE_SESSION_RESTART",
         "TEMPLATE_SILENT_AUTO_RETRY",
-        "TEMPLATE_VERIFY_FAIL",
         "TEMPLATE_VOLUME_RECOVERY",
         "_retriable_reason",
         "reason_message",

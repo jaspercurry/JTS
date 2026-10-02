@@ -103,9 +103,8 @@ def advice_deferral(probe: Any | None) -> str:
 # --------------------------------------------------------------------------- #
 
 # Max |realized − commanded| tolerated below DELTA_PROBE_HF_SPLIT_HZ.
-# Matches crossover_v2.contracts.VERIFY_TOLERANCE_DB, and must stay below 1.70 dB:
-# the shelf-Q realization error this probe exists to catch peaked
-# there (0.2 dB margin — the exceedance-WIDTH rule carries the rest).
+# Must stay below 1.70 dB: the shelf-Q realization error this probe exists to
+# catch peaked there (0.2 dB margin — the exceedance-WIDTH rule carries the rest).
 DELTA_PROBE_TOLERANCE_LOW_DB: float = 1.5
 
 # Max |realized − commanded| tolerated at/above DELTA_PROBE_HF_SPLIT_HZ.
