@@ -165,5 +165,5 @@ def test_a_take_that_no_named_set_holds_refuses_by_name(tmp_path, monkeypatch, c
     assert round_views.main(["bass-alignment", str(bundle), *argv]) == round_views.EXIT_REFUSED
 
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["status"], answer["reason"] in REASON_REGISTRY) == ("refused", True)
-    assert not list(tmp_path.glob("bass_alignment*.json")) and not list(bundle.glob("bass_alignment*.json"))
+    assert answer["status"] == "refused" and answer["reason"] in REASON_REGISTRY
+    assert not list(tmp_path.rglob("*bass_alignment*.json"))
