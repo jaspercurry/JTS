@@ -68,7 +68,7 @@ def _state(status: str, provider: str = "", raw: str = ""):
     from jasper.voice.provider_state import ActiveProviderState
 
     return ActiveProviderState(
-        provider, None, status, "/tmp/voice_provider.env", raw_provider=raw,
+        provider, status, "/tmp/voice_provider.env", raw_provider=raw,
     )
 
 

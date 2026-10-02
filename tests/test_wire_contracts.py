@@ -778,7 +778,7 @@ async def test_state_opens_no_secret_compartment(monkeypatch, tmp_path):
     monkeypatch.setattr(
         provider_state, "read_active_provider_state",
         lambda *a, **k: provider_state.ActiveProviderState(
-            provider="openai", model="gpt-4o", status="configured",
+            provider="openai", status="configured",
             path="/var/lib/jasper/voice_provider.env",
         ),
     )

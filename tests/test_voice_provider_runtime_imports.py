@@ -166,7 +166,7 @@ def test_every_provider_declares_at_least_its_adapter(entry: ProviderCatalogEntr
 
 def _state(status: str, provider: str = "") -> ActiveProviderState:
     return ActiveProviderState(
-        provider, None, status, "/var/lib/jasper/voice_provider.env",
+        provider, status, "/var/lib/jasper/voice_provider.env",
     )
 
 

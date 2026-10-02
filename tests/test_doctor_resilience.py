@@ -321,7 +321,7 @@ def test_check_accessory_bridges_reports_each_registered_mics_readiness(
 def _stub_provider_state(monkeypatch, status: str) -> None:
     """Stub the SSOT provider reader at the doctor's own call site."""
     state = ActiveProviderState(
-        "gemini" if status == "configured" else "", None, status,
+        "gemini" if status == "configured" else "", status,
         "/var/lib/jasper/voice_provider.env",
     )
     monkeypatch.setattr(

@@ -32,7 +32,7 @@ def _write(tmp_path, body: str) -> str:
     return str(p)
 
 
-def test_reads_configured_provider_and_model(tmp_path):
+def test_reads_configured_provider(tmp_path):
     path = _write(
         tmp_path,
         """
@@ -45,7 +45,6 @@ def test_reads_configured_provider_and_model(tmp_path):
     assert state.configured
     assert state.status == "configured"
     assert state.provider == "openai"
-    assert state.model == "gpt-realtime-2"
 
 
 def test_unset_provider_has_no_default(tmp_path):
@@ -53,7 +52,7 @@ def test_unset_provider_has_no_default(tmp_path):
     path = _write(tmp_path, "# nothing configured yet\n")
     assert read_active_provider(path) == ""
     state = read_active_provider_state(path)
-    assert (state.provider, state.model) == ("", None)
+    assert state.provider == ""
     assert state.status == "unset"
 
 
@@ -61,7 +60,7 @@ def test_invalid_provider_value_rejected(tmp_path):
     path = _write(tmp_path, "JASPER_VOICE_PROVIDER=bogus\n")
     assert read_active_provider(path) == ""
     state = read_active_provider_state(path)
-    assert (state.provider, state.model) == ("", None)
+    assert state.provider == ""
     assert state.status == "invalid"
     assert state.raw_provider == "bogus"
 
@@ -70,7 +69,7 @@ def test_missing_file_is_unconfigured(tmp_path):
     path = str(tmp_path / "does-not-exist.env")
     assert read_active_provider(path) == ""
     state = read_active_provider_state(path)
-    assert (state.provider, state.model) == ("", None)
+    assert state.provider == ""
     assert state.status == "missing"
 
 
@@ -87,17 +86,7 @@ def test_unreadable_file_is_not_reported_as_plain_unset(monkeypatch, tmp_path):
     state = read_active_provider_state(str(path))
     assert state.status == "unreadable"
     assert state.provider == ""
-    assert state.model is None
     assert state.detail == "PermissionError: blocked"
-
-
-def test_model_falls_back_to_catalog_default(tmp_path):
-    # Provider set but model not pinned → catalog default for that
-    # provider (matches what jasper-voice resolves).
-    path = _write(tmp_path, "JASPER_VOICE_PROVIDER=gemini\n")
-    state = read_active_provider_state(path)
-    assert state.provider == "gemini"
-    assert state.model == default_model_id("gemini")
 
 
 # --- Model resolution from the merged env files (issue #3133) ----------
