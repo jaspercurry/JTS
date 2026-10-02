@@ -267,6 +267,16 @@ one seat spot on jts3 fitted 67 Hz at Q 0.38 in one run and 108 Hz at Q 0.98 in
 the next, where the woofer's near-field fit was 84–86 Hz at Q about 1.0. Read each
 fit's `band_hz` (the band it read) and `residual_db` (its rms miss against the
 sealed box) before you state `source_hz` and `source_q`.
+
+**Cabinet model.** If this machine has the CAD repo with a solved Boundary Lab
+case for this cabinet, `scripts/cabinet-model` can seed this program. It gives
+the woofer pair's response with no room, so the alignment comes from the box
+and not from one seat (the runbook's
+[Cabinet model section](tuning-operator-runbook.md#cabinet-model-optional-laptop-side)).
+Its answer reaches the speaker only as a prescription document that you judge
+and trial like any other. Until the model's far-field check passes (#5926),
+use it as a starting point, not as proof (ADR-0353).
+
 Overshoot above the corner in the per-band `realized_boost_db`
 (`bass_table.tables[].levels[]`), beyond repeat spread, means too much boost
 for the box.
@@ -332,6 +342,14 @@ that band it adds in-phase bass and the wall is part of the speaker. The
 `rear_calibration` section sets both (fields:
 `rear-calibration-tuning-fields.md`; decisions: ADR-0318, ADR-0322,
 ADR-0324, ADR-0325, ADR-0326, ADR-0327).
+
+**Cabinet model.** If this machine has the CAD repo with a solved Boundary Lab
+case for this cabinet, `scripts/cabinet-model` can seed this program:
+`rear-design.py` fits the rear stage for the seat, with the wall behind the
+speaker included (the runbook's
+[Cabinet model section](tuning-operator-runbook.md#cabinet-model-optional-laptop-side)).
+The same limits apply: a prescription document, judged and trialled at the
+seat, and a starting point until the model's far-field check passes (#5926).
 
 The goal is less reflected energy and a filled wall trough at the listening
 positions, with the band above the rear stage unchanged. A front-side sweep
