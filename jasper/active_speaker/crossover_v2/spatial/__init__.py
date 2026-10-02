@@ -9,13 +9,11 @@ No ``jasper.web`` import and nothing from :mod:`..crossover_v2_flow`.
 
 from jasper.audio_measurement.evidence_grid import (
     LATERAL_EVIDENCE_BAND_HZ as LATERAL_EVIDENCE_BAND_HZ,
-    LATERAL_EVIDENCE_POINTS_PER_OCTAVE as LATERAL_EVIDENCE_POINTS_PER_OCTAVE,
     lateral_evidence_grid_hz as lateral_evidence_grid_hz,
 )
 
 from ...measurement_programs import MARK_DISTANCE_M as MARK_DISTANCE_M
 from ..contracts import (
-    POSITION_AXES as POSITION_AXES,
     POSITION_AXIS_HORIZONTAL as POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL as POSITION_AXIS_VERTICAL,
 )
@@ -30,16 +28,13 @@ from .records import (
     POSITION_ROLE_XOVR as POSITION_ROLE_XOVR,
     PositionGeometry as PositionGeometry,
     _primary_sweep_bands as _primary_sweep_bands,
-    _summed_sweep_band_hz as _summed_sweep_band_hz,
     analysis_curve_records as analysis_curve_records,
     phase_composition as phase_composition,
 )
 
 __all__ = [
     "LATERAL_EVIDENCE_BAND_HZ",
-    "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "MARK_DISTANCE_M",
-    "POSITION_AXES",
     "POSITION_AXIS_HORIZONTAL",
     "POSITION_AXIS_VERTICAL",
     "POSITION_ROLES",

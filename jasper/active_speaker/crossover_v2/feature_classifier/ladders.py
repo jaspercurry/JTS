@@ -249,7 +249,7 @@ def _subsample_delay_us(
 
 
 #: Fewest samples needed to read an extremum on the lateral walk's grid
-#: (``spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave).
+#: (``evidence_grid.LATERAL_EVIDENCE_POINTS_PER_OCTAVE`` = 12/octave).
 _POSE_MIN_CENTRE_SAMPLES = 3
 
 

@@ -29,17 +29,21 @@ import yaml
 
 import jasper.active_speaker.commission_load as commission_load_mod
 import jasper.active_speaker.startup_load as startup_load_mod
-from jasper.active_speaker import (
-    ActiveSpeakerPreset,
-    audible_outputs_for_role,
-    driver_commission_audible_evidence,
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
     emit_active_speaker_commissioning_config,
-    load_commission_load_state,
+)
+from jasper.active_speaker.camilla_yaml.topology import audible_outputs_for_role
+from jasper.active_speaker.commission_load import (
     load_driver_commissioning_config,
-    parse_camilla_statefile_config_path,
     rollback_driver_commissioning_config,
+)
+from jasper.active_speaker.environment import parse_camilla_statefile_config_path
+from jasper.active_speaker.graph_evidence import (
+    driver_commission_audible_evidence,
     running_commission_evidence,
 )
+from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.startup_load import load_commission_load_state
 from jasper.active_speaker.staging import running_graph_matches_staged_anchor
 
 # Reuse the canonical mono DAC8x topology + passing-validation stub + path-safety

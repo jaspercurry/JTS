@@ -8,7 +8,7 @@ import json
 from importlib.resources import files
 from pathlib import Path
 
-from jasper.active_speaker import ActiveSpeakerPreset
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.cli.active_speaker import main as active_speaker_main
 
 

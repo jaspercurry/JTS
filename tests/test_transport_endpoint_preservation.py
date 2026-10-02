@@ -29,7 +29,8 @@ from jasper.dsp_control.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
     parse_camilla_devices_config,
 )
-from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
+from jasper.active_speaker.camilla_yaml.topology import audible_outputs_for_role
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
 from jasper.dsp_control.fanin_coupling import (
     DEFAULT_PLAYBACK_FORMAT,

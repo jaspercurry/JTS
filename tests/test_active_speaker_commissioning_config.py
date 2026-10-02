@@ -18,12 +18,11 @@ import stat
 import pytest
 import yaml as yaml_lib
 
-from jasper.active_speaker import (
-    ActiveSpeakerConfigError,
-    ActiveSpeakerPreset,
-    audible_outputs_for_role,
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
     emit_active_speaker_commissioning_config,
 )
+from jasper.active_speaker.camilla_yaml.topology import audible_outputs_for_role
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.environment import classify_camilla_config_text
 from jasper.active_speaker.camilla_yaml import APPLIED_RESPONSE_FILTER_MODE
 from jasper.audio_routes.camilla_emit import MONO_SUM_GAIN_DB

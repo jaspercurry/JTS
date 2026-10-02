@@ -7,10 +7,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
-from jasper.active_speaker import (
+from jasper.active_speaker.crossover_preview import build_crossover_preview
+from jasper.active_speaker.design_draft import (
     DESIGN_DRAFT_PATH_ENV,
     DRIVER_RESEARCH_KIND,
-    build_crossover_preview,
     save_design_draft,
 )
 from jasper.active_speaker import crossover_preview, design_draft

@@ -38,14 +38,13 @@ from typing import Callable
 import pytest
 import yaml
 
-from jasper.active_speaker import (
-    ActiveSpeakerConfigError,
-    ActiveSpeakerPreset,
-    emit_active_speaker_baseline_config,
+from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_program_config,
-    emit_active_speaker_startup_config,
 )
+from jasper.active_speaker.camilla_yaml.emit_program import emit_active_speaker_program_config
+from jasper.active_speaker.camilla_yaml.emit_startup import emit_active_speaker_startup_config
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import decorate_dynamic_bass, emit_baseline, emit_program, pipeline
 import jasper.active_speaker.camilla_yaml as camilla_yaml
 from jasper.active_speaker.camilla_yaml import (

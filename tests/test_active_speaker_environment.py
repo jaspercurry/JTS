@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_program_config
+from jasper.active_speaker.camilla_yaml.emit_program import emit_active_speaker_program_config
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.environment import (
     classify_camilla_config_text,
     parse_aplay_playback_devices,

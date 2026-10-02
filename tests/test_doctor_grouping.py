@@ -230,7 +230,9 @@ def _wired_leader_config_text() -> str:
     """A real File->SNAPFIFO leader bake, satisfying ``playback_is_pipe`` the
     same way ``jasper.active_speaker``'s emitter does (see
     test_active_speaker_program_bake.py)."""
-    from jasper.active_speaker import emit_active_speaker_program_bake_config
+    from jasper.active_speaker.camilla_yaml.emit_program_bake import (
+        emit_active_speaker_program_bake_config,
+    )
     from jasper.sound.profile import SoundProfile
 
     return emit_active_speaker_program_bake_config(SoundProfile(enabled=False))

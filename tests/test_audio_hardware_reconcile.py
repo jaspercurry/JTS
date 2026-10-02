@@ -552,7 +552,7 @@ def _dual_apple_topology(tmp_path: Path, *, active: bool = False) -> Path:
 
 
 def _preset_and_topology(channels: int, *, strict: bool = False):
-    from jasper.active_speaker import ActiveSpeakerPreset
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
     from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
     from tests.active_speaker_fixtures import _active_topology
 
@@ -584,7 +584,7 @@ def _active_graph_env(
     graph naming the retired snd-aloop lane is not a legal active graph, so
     the gate would decline and fall through to the passive branch.
     """
-    from jasper.active_speaker import emit_active_speaker_baseline_config
+    from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
     from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
 
     topology, preset = _preset_and_topology(channels)
@@ -634,7 +634,7 @@ def _active_dual_apple_env(tmp_path: Path, cards=_DUAL_APPLE_CARDS) -> dict[str,
 def _active_leader_graph_env(
     tmp_path: Path, *, channels: int = 2, write_crossover_statefile: bool = True
 ) -> dict[str, str]:
-    from jasper.active_speaker import (
+    from jasper.active_speaker.camilla_yaml.emit_program_bake import (
         emit_active_speaker_program_bake_config,
     )
     from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE

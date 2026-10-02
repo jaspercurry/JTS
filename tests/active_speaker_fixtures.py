@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import emit_active_speaker_baseline_config
+from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
 from jasper.active_speaker.camilla_yaml.decorate_dynamic_bass import _with_dynamic_bass
 from jasper.active_speaker.candidate_bank import bank_candidate
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft

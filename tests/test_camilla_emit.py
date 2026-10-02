@@ -16,7 +16,7 @@ import math
 
 import pytest
 
-from jasper.active_speaker import channel_select_mixer_name
+from jasper.active_speaker.camilla_yaml.pipeline import channel_select_mixer_name
 from jasper.audio_routes.camilla_emit import (
     CHANNEL_SELECT_MIXER,
     MONO_SUM_GAIN_DB,

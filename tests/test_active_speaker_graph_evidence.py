@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import yaml as yaml_lib
 
-from jasper.active_speaker import (
-    ActiveSpeakerPreset,
-    audible_outputs_for_role,
+from jasper.active_speaker import graph_evidence as ge
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
     emit_active_speaker_commissioning_config,
-    graph_evidence as ge,
 )
+from jasper.active_speaker.camilla_yaml.topology import audible_outputs_for_role
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,

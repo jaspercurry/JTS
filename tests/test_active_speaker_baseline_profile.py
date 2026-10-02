@@ -21,9 +21,7 @@ from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.crossover_v2.planning import applied_profile_timing
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 from jasper.active_speaker import baseline_apply
-from jasper.active_speaker import (
-    emit_active_speaker_baseline_config,
-)
+from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
 from jasper.active_speaker.applied_tune import (
     REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING,
     REAR_CALIBRATION_ROOM_BAND_OVERLAP,

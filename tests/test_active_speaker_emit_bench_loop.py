@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import ActiveSpeakerPreset
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.bench import loop
 from jasper.active_speaker.bench.compare import ARRIVAL_PRE_MS, SOFT_CLIP_BUDGET_DB
 from jasper.active_speaker.bench.loop import EmitLoopError, run_emit_loop

@@ -27,21 +27,23 @@ import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
 import jasper.active_speaker.commission_ramp as commission_ramp_mod
-from jasper.active_speaker import (
-    ActiveSpeakerPreset,
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
+    emit_active_speaker_commissioning_config,
+)
+from jasper.active_speaker.camilla_yaml.topology import audible_outputs_for_role
+from jasper.active_speaker.commission_ramp import (
     COMMISSION_RAMP_MAX_LEVEL_DBFS,
     abort_ramp,
-    audible_outputs_for_role,
     build_stage5_ramp_gate,
-    driver_commission_audible_evidence,
-    emit_active_speaker_commissioning_config,
-    load_commission_load_state,
     load_ramp_state,
     next_ramp_gain_db,
-    prepare_driver_commissioning_config,
     ramp_audible_step,
     record_ramp_operator_ack,
 )
+from jasper.active_speaker.graph_evidence import driver_commission_audible_evidence
+from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.staging import prepare_driver_commissioning_config
+from jasper.active_speaker.startup_load import load_commission_load_state
 from jasper.active_speaker.calibration_level import (
     AUDIBLE_RAMP_STEP_DB,
     MIN_TEST_LEVEL_DBFS,
@@ -49,7 +51,7 @@ from jasper.active_speaker.calibration_level import (
 from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.safe_playback import load_safe_playback_state
-from jasper.active_speaker import ActiveSpeakerConfigError
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
 from tests.active_speaker_fixtures import mono_output_topology as _topology
 from tests.test_active_speaker_commission_load import _load

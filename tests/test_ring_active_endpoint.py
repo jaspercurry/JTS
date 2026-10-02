@@ -275,7 +275,7 @@ def _two_way_preset() -> dict:
 
 
 def _mono_two_way_preset():
-    from jasper.active_speaker import ActiveSpeakerPreset
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
 
     return ActiveSpeakerPreset.from_mapping(_two_way_preset())
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from jasper.active_speaker import (
+from jasper.active_speaker.camilla_yaml.emit_program_bake import (
     ACTIVE_PROGRAM_BAKE_SOURCE,
     emit_active_speaker_program_bake_config,
 )
