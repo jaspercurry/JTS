@@ -49,10 +49,10 @@ def _nearfield_fits(inputs: RoundInputs, args: argparse.Namespace) -> tuple[dict
             continue
         raw = placement["raw"]
         freqs = np.asarray(raw["freqs_hz"], dtype=float)
-        trusted = np.logical_and.reduce([qualified_bins(freqs, bands[take_id], "trusted") for take_id in raw["take_ids"]])
+        qualified = np.logical_and.reduce([qualified_bins(freqs, bands[take_id], "trusted") for take_id in raw["take_ids"]])
         fits.append({"role": driver["driver"], "distance_mm": placement["distance_mm"], "kind": placement["kind"],
                      "take_ids": raw["take_ids"], **bass_alignment(freqs, raw["level_db"], args.band_hz,
-                                                                   banked_band(placement["trusted_band"]), trusted)})
+                                                                   banked_band(placement["trusted_band"]), qualified)})
     return subject(inputs, take_ids=[take["take_id"] for take in document["takes"]]), fits
 
 
