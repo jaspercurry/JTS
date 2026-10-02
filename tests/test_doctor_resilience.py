@@ -836,7 +836,7 @@ def _park_check(monkeypatch, tmp_path, *, record: str | None, unit: dict):
     return resilience.check_outputd_failure_reconcile_park()
 
 
-_PARK = "parked_at=1000\nexit_status=78\nreason=recent\n"
+_PARK = "parked_at=1000\nexit_status=78\nreason=config_exit\n"
 _RUNNING = {"active_state": "active", "result": "success"}
 _FAILED = {"active_state": "failed", "result": "exit-code"}
 _ACTIVATING = {"active_state": "activating", "sub_state": "start", "result": "success"}
@@ -871,7 +871,7 @@ def test_outputd_failure_reconcile_park_ok_reports_previous_park(
 ):
     target = tmp_path / "failure-reconcile.park"
     (tmp_path / "failure-reconcile.park.last").write_text(
-        "parked_at=1000\nexit_status=78\nreason=recent\nunparked_at=1200\n"
+        "parked_at=1000\nexit_status=78\nreason=config_exit\nunparked_at=1200\n"
     )
     monkeypatch.setenv("JASPER_OUTPUTD_RECONCILE_PARK_STATE", str(target))
     monkeypatch.setattr(

@@ -20,6 +20,7 @@ from jasper.runtime import outputd_failure_reconcile_state as reader
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
 UNPARK_SCRIPT = ROOT / "deploy" / "bin" / "jasper-unpark"
+RECONCILE_SCRIPT = ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
 UNIT = ROOT / "deploy" / "systemd" / "jasper-outputd.service"
 
 FAILED = {"active_state": "failed", "result": "exit-code"}
@@ -29,7 +30,7 @@ NOT_INSTALLED = {"active_state": "inactive", "load_state": "not-found"}
 ACTIVATING = {"active_state": "activating", "result": "success"}
 
 
-def _record(tmp_path: Path, text: str = "parked_at=1000\nexit_status=78\nreason=recent\n") -> str:
+def _record(tmp_path: Path, text: str = "parked_at=1000\nexit_status=78\nreason=config_exit\n") -> str:
     path = tmp_path / "failure-reconcile.park"
     path.write_text(text)
     return str(path)
@@ -77,7 +78,7 @@ def test_the_record_is_the_park_not_an_inference_from_a_failed_unit(tmp_path):
 def test_a_park_carries_the_writers_own_fields(tmp_path):
     snap = reader.snapshot(FAILED, path=_record(tmp_path))
     assert (snap["parked_at"], snap["exit_status"], snap["park_reason"]) == (
-        1000, "78", "recent",
+        1000, "78", "config_exit",
     )
 
 
@@ -135,6 +136,11 @@ def test_the_record_path_is_the_one_the_script_writes_and_the_unit_removes():
     )
     assert UNIT.name == reader.UNIT
     assert f"ExecStopPost=-/usr/local/sbin/{SCRIPT.name}" in unit
+    # The reconcile pass retries outputd only when it finds the record here.
+    assert (
+        f'OUTPUTD_PARK_RECORD="${{JASPER_OUTPUTD_RECONCILE_PARK_STATE:-{reader.DEFAULT_RECORD_PATH}}}"'
+        in RECONCILE_SCRIPT.read_text()
+    )
 
 
 def test_the_record_lives_outside_the_runtime_directory_systemd_deletes():
@@ -155,12 +161,12 @@ def test_last_park_is_none_with_no_last_sibling(tmp_path):
 def test_last_park_surfaces_the_retired_record_including_unparked_at(tmp_path):
     target = str(tmp_path / "failure-reconcile.park")
     last = Path(f"{target}.last")
-    last.write_text("parked_at=1000\nexit_status=78\nreason=recent\nunparked_at=1200\n")
+    last.write_text("parked_at=1000\nexit_status=78\nreason=config_exit\nunparked_at=1200\n")
     snap = reader.snapshot(RUNNING, path=target)
     assert snap["last_park"] == {
         "parked_at": 1000,
         "exit_status": "78",
-        "park_reason": "recent",
+        "park_reason": "config_exit",
         "unparked_at": 1200,
     }
 

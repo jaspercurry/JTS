@@ -27,11 +27,10 @@ Restart=on-failure
 RestartSec=5
 # CONFIG-validation failures exit 78 (EX_CONFIG) and must stay off the restart
 # ladder: a persistent bad config would otherwise climb the burst into the
-# reboot above. ExecStopPost gives exit 78 one bounded audio-hardware
-# reconcile + explicit retry for transient DAC hotplug shear; a second 78
-# leaves the unit parked on the helper's marker, visible on /state + doctor.
-# See ADR-0141. Recovery after a persistent park: fix the env, reset-failed,
-# retire the park with jasper-unpark, then start jasper-outputd.
+# reboot above. ExecStopPost records the park, visible on /state + doctor;
+# the next audio-hardware reconcile pass retries outputd. See ADR-0409.
+# Recovery after a persistent park: fix the env, reset-failed, retire the
+# park with jasper-unpark, then start jasper-outputd.
 RestartPreventExitStatus=78
 
 # Above Camilla (-900): this owns the DAC write loop.
@@ -95,11 +94,8 @@ EnvironmentFile=-/var/lib/jasper/grouping-outputd.env
 # reset-failed+starts outputd when a recognized DAC role returns. Camilla is
 # not gated here: it writes only to Ring B, never to a DAC.
 ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${JASPER_AUDIO_DAC_CARD:-}"; id="$${JASPER_AUDIO_DAC_ID:-unknown}"; if [ "$$backend" = "fake" ] || [ -z "$$card" ] || [ -e "/proc/asound/$$card" ]; then exit 0; fi; echo "event=outputd.output_device_gate.park reason=missing_dac output_dac_id=$$id output_dac_card=$$card outputd_backend=$$backend" >&2; exit 1'
-# Refresh the output-hardware env before systemd's Restart=on-failure retry.
-# The helper skips normal stops and ExecCondition parks, and reconciles at most
-# once per short window across every failure class so a crash loop cannot spawn
-# a reconciler pass per restart. Its --no-restart keeps that reconciler from
-# controlling jasper-outputd from inside this unit's stop transaction.
+# On exit 78 the helper records the park. It runs no reconcile pass: this
+# unit's sandbox makes /etc read-only (ADR-0409).
 #
 # Keep the producer, reader, native ConditionPathExists=, and READY retirer on
 # the same fixed path. A service condition cannot expand Environment= values.

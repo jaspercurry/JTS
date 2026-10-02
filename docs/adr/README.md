@@ -69,10 +69,11 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0261](0261-the-grouping-and-dac-content-rings-are-128-frame-16-slot-s16-and-governed.md) | The grouping and dac-content rings are 128-frame, 16-slot, S16, and governed | accepted |
 | [0262](0262-the-fifo-leg-and-the-snd-aloop-pairing-gate-retire-without-a-metal-run.md) | The FIFO leg and the snd-aloop pairing gate retire without a metal run | amended by 0273 |
 | [0264](0264-the-camilla-recovery-is-evidence-and-one-bounded-restart.md) | The Camilla recovery is evidence and one bounded restart | accepted |
-| [0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md) | The outputd failure reconciler parks on exit 78 and rate-limits one pass per window | accepted |
+| [0269](0269-the-outputd-failure-reconciler-parks-on-exit-78-and-rate-limits-one-pass-per-window.md) | The outputd failure reconciler parks on exit 78 and rate-limits one pass per window | superseded by 0409 |
 | [0273](0273-a-graph-naming-the-retired-snd-aloop-lane-is-refused-not-preserved.md) | A graph naming the retired snd-aloop lane is refused, not preserved | accepted |
 | [0281](0281-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md) | Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else | accepted |
 | [0282](0282-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
+| [0409](0409-outputds-stop-hook-only-records-the-park.md) | outputd's stop hook only records the park: on exit 78 it writes the park record and runs or starts no reconcile pass (its inline pass could never write `/etc` inside outputd's sandbox) | accepted |
 
 ## Volume & hearing
 

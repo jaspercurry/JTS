@@ -5,8 +5,8 @@
 """Read-only snapshot of the outputd failure-reconcile park.
 
 ``deploy/bin/jasper-outputd-failure-reconcile`` (jasper-outputd.service's
-``ExecStopPost=``) writes the record read here on the branches that leave
-outputd parked; that unit's ``ExecStartPost=`` removes it once outputd is READY
+``ExecStopPost=``) writes the record read here when outputd exits 78, which
+systemd does not retry; that unit's ``ExecStartPost=`` removes it once outputd is READY
 again. Why exit 78 parks lives in the script — the actor that knows.
 
 The reader for jasper-doctor's ``check_outputd_failure_reconcile_park``. The
@@ -58,8 +58,8 @@ def snapshot(
     * ``parked`` — record present; ``parked_at``/``exit_status``/
       ``park_reason`` carry the writer's fields, None where a partial write
       lost them.
-    * ``unit_failed`` — no record, outputd failed: something other than a
-      spent exit-78 window stopped it.
+    * ``unit_failed`` — no record, outputd failed: something other than an
+      exit 78 stopped it.
     * ``unit_unstable`` — no record, outputd stuck ``activating``/
       ``deactivating``: not failed yet, but not settled either.
     * ``park_record_stale`` — record present, outputd running: the removal
