@@ -15,7 +15,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.spatial import analysis_curve_records
-from jasper.web.correction_run_host import compose_plan_program
+from jasper.active_speaker.crossover_v2.composition import compose_plan_program
 from jasper.web import correction_crossover_v2_evidence as v2evidence
 from jasper.web import correction_crossover_v2_state as v2state
 
@@ -838,7 +838,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     programs, play = [], fakes.play.run
 
     async def compose_and_play(**kwargs):
-        programs.append(correction_run_host.compose_plan_program(
+        programs.append(compose_plan_program(
             conductor, kwargs["spec"], kwargs["stimulus_dbfs"], context=plan_context()))
         return await play(**kwargs)
 
@@ -1068,7 +1068,7 @@ def test_executor_anchors_the_first_readable_summed_repeat(responses):
 async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, phase, clipped_take):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.audio_measurement.program import STIMULUS_KINDS
-    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+    from jasper.web.correction_run_host import bind_plan_analysis
     from tests.crossover_v2_fixtures import FakeSeams, _conductor, _check_analysis, _measure_analysis, _verify_analysis
 
     factory = {"check": _check_analysis, "measure": _measure_analysis, "verify": _verify_analysis}[phase]
@@ -1266,7 +1266,6 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
 @pytest.mark.parametrize("target", [None, -48.0, -60.0])
 def test_driver_retry_program_preserves_the_solved_role_levels(target):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-    from jasper.web.correction_run_host import compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
     conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
@@ -1279,7 +1278,6 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
 @pytest.mark.parametrize("gain_plan", [None, {"woofer": -50.0, "tweeter": -57.0}])
 def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan):
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-    from jasper.web.correction_run_host import compose_plan_program
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
@@ -1297,7 +1295,7 @@ async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_pat
     from jasper.active_speaker.angle_capture import LevelPolicy
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.run_manifest import RunManifest
-    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+    from jasper.web.correction_run_host import bind_plan_analysis
     from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
     from tests.engine_twin import FakeSeams
     from tests.test_plan_run import _Store, _walk
@@ -1483,7 +1481,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     from jasper.active_speaker.crossover_v2.capture_dispatch import level_drift_verdict
     from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
     from jasper.active_speaker.run_manifest import RunManifest
-    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+    from jasper.web.correction_run_host import bind_plan_analysis
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
     from tests.test_plan_run import _Store
     from tests.engine_twin import FakeSeams as EngineSeams

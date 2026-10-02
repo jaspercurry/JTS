@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from jasper.active_speaker.crossover_v2.programs import program_for_spec, predictive_program_for_spec
+from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.round_copy import take_counts
 from jasper.active_speaker.round_packet import RoundPacket
@@ -183,14 +183,6 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         return assessed
 
     return analyze, assessor
-
-
-def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
-    gains = conductor.gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
-    program = program_for_spec(spec, conductor.excitation, gains, stimulus_dbfs,
-                               safety_profile=context.safety_profile, role_targets=context.role_targets)
-    conductor.set_program(spec.program_phase, program)
-    return program
 
 
 def bind_run_door(*, host: Any, device: Any, evidence_store: Any,

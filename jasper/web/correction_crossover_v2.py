@@ -34,7 +34,8 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
 from jasper.active_speaker.crossover_v2.programs import excitation_from_context, probe_fader_db
-from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
+from jasper.active_speaker.crossover_v2.composition import bind_engine_seams, compose_plan_program
+from jasper.web.correction_run_host import bind_run_door, publish_round_packet
 from jasper.active_speaker.plan_run import RunSignals, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
 from jasper.active_speaker.bundles import mark_state
@@ -72,8 +73,6 @@ def bind_v2_engine_seams(
     records: Any, volume_claim: Any,
 ) -> Any:
     """Bind the shared take owner to this host's session volume plan."""
-    from jasper.active_speaker.crossover_v2.composition import bind_engine_seams
-
     if volume_claim is None:
         raise v2volume._refuse_without_a_volume_owner("session")
     return bind_engine_seams(

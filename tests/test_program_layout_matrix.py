@@ -26,7 +26,7 @@ from jasper.active_speaker.preflight import preflight
 from jasper.active_speaker.profile import ActiveSpeakerPreset, required_driver_roles
 from jasper.active_speaker.program_admission import readmit_program_from_wav, readmit_summed_program_from_wav
 from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS, RoleBand, write_program_wav
-from jasper.web.correction_run_host import compose_plan_program
+from jasper.active_speaker.crossover_v2.composition import compose_plan_program
 from tests.test_active_speaker_excitation_safety_plan import _profile_and_targets as _three_way_safety
 from tests.test_active_speaker_profile import _three_way_preset
 from tests.test_active_speaker_program_admission import _profile_and_targets

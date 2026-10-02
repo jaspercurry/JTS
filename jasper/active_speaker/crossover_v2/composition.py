@@ -37,6 +37,7 @@ from .session_seams import EngineSeams, RecordStore, VolumeClaim
 from ..commissioning_admission import ActiveCommissioningAdmissionError, running_graph_fingerprint
 from ..program_playback import ProgramPlaybackError
 from .measure_spec import GRAPH_SCOPE_DRIVERS
+from .programs import program_for_spec
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram, RoleBand
@@ -47,6 +48,7 @@ __all__ = [
     "bind_engine_seams",
     "bind_program_playback_seams",
     "bind_program_composer",
+    "compose_plan_program",
     "confirm_graph_is_live",
 ]
 
@@ -241,3 +243,12 @@ def bind_program_composer(
         ))
 
     return compose
+
+
+def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
+    """One take's program as its run plays it: the web's run and the CLI's dry run compose here."""
+    gains = conductor.gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
+    program = program_for_spec(spec, conductor.excitation, gains, stimulus_dbfs,
+                               safety_profile=context.safety_profile, role_targets=context.role_targets)
+    conductor.set_program(spec.program_phase, program)
+    return program

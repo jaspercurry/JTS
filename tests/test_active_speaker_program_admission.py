@@ -31,7 +31,7 @@ from jasper.active_speaker.crossover_v2.programs import (
     SessionExcitation, compose_summed_probe, excitation_from_context, probe_fader_db, program_for_spec,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec, branch_channels_for, branch_probes
-from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+from jasper.active_speaker.crossover_v2.composition import bind_program_composer, compose_plan_program
 from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
 from jasper.active_speaker.crossover_v2.program_transaction import admission_incident
 from jasper.active_speaker.capture_schedule import prepare_plan_captures
@@ -1195,7 +1195,6 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.
     asks for the loudest level its ceiling allows; asking none composes the
     pose's level probe (ADR-0365)."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-    from jasper.web.correction_run_host import compose_plan_program
 
     topology, safety, targets = _profile_and_targets(
         rear=True, woofer_peak=-30, tweeter_peak=-30, woofer_floor=20, woofer_upper=4000,
@@ -1277,7 +1276,6 @@ def test_a_branch_probe_sweeps_its_drivers_whole_band_and_is_admitted(tmp_path, 
     take's probe of one branch sweeps that driver's whole band, from its floor,
     and is admitted against that driver's own caps (ADR-0403 §3)."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_LATERAL
-    from jasper.web.correction_run_host import compose_plan_program
 
     topology, safety, context, _spec, excitation, _take = _cardioid_solo_take(monkeypatch, target)
     take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial",
@@ -1638,8 +1636,6 @@ async def test_a_fresh_cardioid_base_admits_every_take_with_its_muted_rear_parke
     way. A summed take excites the front drivers only; a take that measures the
     rear plays it on its own; no other take feeds the rear. The park moves no
     sound: each take's PCM is byte-identical to what the unparked graphs compose."""
-    from jasper.web.correction_run_host import compose_plan_program  # lazy: the web host imports the engine under test
-
     topology, safety, context, profile, candidate = _fresh_cardioid(monkeypatch)
     shape, excited = FRESH_CARDIOID_TAKES[take]
     spec = _fresh_take(shape, candidate.fingerprint)

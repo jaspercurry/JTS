@@ -40,7 +40,7 @@ from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture, repeat_summed_program, sweep_ambient_id
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
 from jasper.audio_measurement.wired_capture import ZERO_RUN_MIN_SAMPLES, decode_wav_to_mono
-from jasper.web.correction_run_host import compose_plan_program
+from jasper.active_speaker.crossover_v2.composition import compose_plan_program
 from tests.crossover_v2_fixtures import plan_context
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_active_speaker_program_admission import _profile_and_targets, _roles

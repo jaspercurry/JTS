@@ -18,7 +18,8 @@ from jasper.active_speaker.measurement_programs import SPOT_LEVEL
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
-from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
+from jasper.active_speaker.crossover_v2.composition import compose_plan_program
+from jasper.web.correction_run_host import bind_plan_analysis
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.level import LevelReading
