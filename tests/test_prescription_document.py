@@ -403,14 +403,15 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ({"delta_highpass_hz": 10000}, "bass_delta_highpass_hz_invalid"),
     ({"linkwitz_transform": True}, "bass_linkwitz_transform_invalid"),
 ])
-def test_a_malformed_bass_descriptor_refuses_with_its_field_code(base, evidence, bass_packet, change, code):
+@pytest.mark.parametrize("read", [judge_prescription_document, partial(preview_prescription_document, round_dir=None)])
+def test_a_malformed_bass_descriptor_refuses_with_its_field_code(base, evidence, bass_packet, change, code, read):
     section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
     if isinstance(change, dict):
         section.update(change)
     elif change == "missing_field":
         del section["linkwitz_transform"]
     with pytest.raises(PrescriptionDocumentRefused) as refused:
-        judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
+        read(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     answer = refused.value.to_dict()
     assert (answer["section"], answer["code"]) == ("bass", code)
     assert code in DYNAMIC_BASS_REFUSAL_REASONS

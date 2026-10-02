@@ -38,9 +38,9 @@ trial follows, then apply.
    only a median whose takes played both cleared. The judge's joint admission adds bass, so it reads
    only a median whose takes played bass cleared. A take played a layer unless its record lists the
    layer in `cleared_layers`, or it played its run's base and the run manifest's `incumbent` names no
-   such applied layer. A set the manifest does not hold played every layer. Otherwise the read refuses
-   `room_median_played_layer`, which names the sections and the set; its next action is a new room
-   round.
+   such applied layer. A median whose set the run manifest does not hold counts as playing every
+   layer. Such a read refuses `room_median_played_layer`, which names the sections and the set; its
+   next action is a new room round.
 
 ## Consequences
 
