@@ -1604,6 +1604,9 @@ def test_the_parked_emitter_takes_its_queue_from_its_governing_device():
     devices = yaml.safe_load(parked(output_count=2))["devices"]
     assert devices["queuelimit"] == RING_CAMILLA_QUEUELIMIT
     assert devices["enable_rate_adjust"] is False
+    # Clockless, so fan-in's pacer sets the capture rate; a long rate window
+    # keeps CamillaDSP's warn-only rate check out of the journal (#6148).
+    assert devices["rate_measure_interval"] == 3600.0
 
 
 def test_the_ring_geometry_reaches_the_emitted_yaml():

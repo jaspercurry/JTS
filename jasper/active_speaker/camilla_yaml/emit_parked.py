@@ -32,6 +32,12 @@ PARKED_SILENCE_MIXER = "parked_silence"
 # no active outputd lane at all can still park).
 PARKED_SINK_PATH = "/dev/null"
 
+# Nothing clocks the File sink, so fan-in's pacer sets the capture rate, at
+# 4/3 of nominal; CamillaDSP's once-a-second rate check then warns every
+# second. The check only warns here (no rate adjust, no stop on change), so
+# an hour-long window keeps the journal quiet. See #6148.
+PARKED_RATE_MEASURE_INTERVAL_S = 3600.0
+
 
 # The `# Source:` marker the classifier keys on to recognise a parked graph.
 # The emitter owns its own spelling; the runtime verifier re-declares it
@@ -126,6 +132,7 @@ def emit_active_speaker_parked_config(
         capture_channels=2, capture_device=capture_device, capture_format=capture_format,
         playback_channels=output_count, playback_target=PARKED_SINK_PATH,
         playback_format=DEFAULT_PIPE_SINK_FORMAT, file_sink=True,
+        rate_measure_interval_s=PARKED_RATE_MEASURE_INTERVAL_S,
     )
 
     yaml = f"""---
