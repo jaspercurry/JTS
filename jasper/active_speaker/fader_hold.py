@@ -51,7 +51,6 @@ async def hold_fader_at(
     get_main_volume_db: GetMainVolumeDb,
     *,
     context: str = "",
-    tolerance_db: float = READBACK_TOLERANCE_DB,
 ) -> float:
     """Prove the fader is at ``expected_db`` and return it, or refuse.
 
@@ -67,7 +66,7 @@ async def hold_fader_at(
 
     observed = await read_fader_db(get_main_volume_db)
     if observed is not None and fader_matches(
-        observed, target, tolerance_db=tolerance_db
+        observed, target, tolerance_db=READBACK_TOLERANCE_DB
     ):
         # The liveness half: a healthy run emits no drift lines, so this INFO
         # line is what distinguishes "the hold ran and found the level" from
@@ -80,7 +79,7 @@ async def hold_fader_at(
             expected_db=f"{target:.6f}",
             observed_db=f"{observed:.6f}",
             delta_db=f"{observed - target:.6f}",
-            tolerance_db=f"{float(tolerance_db):.6f}",
+            tolerance_db=f"{READBACK_TOLERANCE_DB:.6f}",
         )
         return observed
 
@@ -93,13 +92,13 @@ async def hold_fader_at(
         expected_db=f"{target:.6f}",
         observed_db="" if observed is None else f"{observed:.6f}",
         delta_db="" if observed is None else f"{observed - target:.6f}",
-        tolerance_db=f"{float(tolerance_db):.6f}",
+        tolerance_db=f"{READBACK_TOLERANCE_DB:.6f}",
     )
     # Unconditional: the refusal's ``observed_db`` must be a reading JTS
     # actually took, and this is also the second chance a raced round-trip gets.
     proven = await read_fader_db(get_main_volume_db)
     if proven is None or not fader_matches(
-        proven, target, tolerance_db=tolerance_db
+        proven, target, tolerance_db=READBACK_TOLERANCE_DB
     ):
         log_event(
             logger,
