@@ -59,7 +59,7 @@ __all__ = [
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
-    'default_out', 'view_path', 'files_by_set', 'set_view_path',
+    'default_out', 'view_path', 'files_by_set', 'set_view_path', 'set_view_out', 'set_choices',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
     'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand', 'comparands',
 ]
@@ -421,7 +421,7 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
         # Each set of a room round banks a room view, so a call that names none has no one view to serve.
         ambiguous = set_id is None and files_by_set(sets) and _banks_room(manifest)
-        room = {"median": {"code": SET_REQUIRED if ambiguous else ROOM_NOT_BANKED}}
+        room = {"median": {"code": SET_REQUIRED, "sets": set_choices(sets)} if ambiguous else {"code": ROOM_NOT_BANKED}}
     path = artifact_dir / "candidate.json"
     # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
     # so each refuses it by this code. Only a round that banked none has no base.
@@ -584,6 +584,13 @@ def read_run_manifest(
     return pointer_rows(manifest)
 
 
+def set_choices(sets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The sets a call may name, each with what tells it from the others: the list ``set_required`` carries."""
+    return [{"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
+             "role": group.role, "take_count": len(group.selected_ids)}
+            for group in map(SetTakes.from_row, sets)]
+
+
 def resolve_set(
     inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
 ) -> SetTakes:
@@ -592,11 +599,7 @@ def resolve_set(
     joins them (:meth:`SetTakes.with_records`, ADR-0395)."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
     if set_id is None and files_by_set(sets):
-        raise RoundSetRefused(SET_REQUIRED, sets=[
-            {"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
-             "role": group.role, "take_count": len(group.selected_ids)}
-            for group in map(SetTakes.from_row, sets)
-        ])
+        raise RoundSetRefused(SET_REQUIRED, sets=set_choices(sets))
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
     if len(matches) != 1:
         raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])

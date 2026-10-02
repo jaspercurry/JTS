@@ -374,7 +374,7 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
                             taper_knee_hz=None, spatial_support=None, sides=sides,
                             admit_boost=None)
     if raw.get("code") == SET_REQUIRED:
-        return {**result, **unavailable(SET_REQUIRED)}
+        return {**result, **unavailable(SET_REQUIRED, {"sets": raw["sets"]})}
     try:
         median = room.read_room_median(raw)
     except room.RoomPrescriptionRefused as exc:

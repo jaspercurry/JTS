@@ -20,9 +20,9 @@ Speaker evidence is in `fits`; room and bass evidence is in `packet["room"]`
 and `packet["bass"]`, one entry per set. A room view run after the bank is not
 the round's evidence; the room contract of a round that banked none answers
 `room_not_banked`. On a round of several sets, name one with `--set`; with none
-named, the room contract answers `set_required`. In `status` and `judge`,
-`packet_contracts.contract_current` is false when the contracts served now
-differ from the ones the bank stored.
+named, the room contract answers `set_required` and lists the sets in
+`detail.sets`. In `status` and `judge`, `packet_contracts.contract_current` is
+false when the contracts served now differ from the ones the bank stored.
 Artifact paths remain as fallbacks for failed views. A
 joined bass ladder adds `bass_table`. Read `alignment` per pair. After the
 timing block, read each fit's `verdict` and `crossover_band_spread`,

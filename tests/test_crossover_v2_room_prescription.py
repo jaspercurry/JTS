@@ -455,6 +455,10 @@ def test_a_two_set_room_round_is_filed_and_served_by_the_set_named_and_asks_for_
     assert cli.main(["contract", "--round", str(bank), "--section", "room"]) == 0
     served_room = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert (served_room["status"], served_room["reason"]) == ("unavailable", SET_REQUIRED)
+    code, refused = _prescribe(tmp_path, capsys, bank, ["judge"], next(iter(shas.values())))
+    assert (code, refused["code"]) == (1, SET_REQUIRED)
+    assert served_room["detail"]["sets"] == refused["detail"]["evidence"]["sets"]
+    assert {row["set_id"] for row in served_room["detail"]["sets"]} == set(shas)
     code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--set", next(iter(shas))], next(iter(shas.values())))
     assert code == 0, answer
     assert answer["packet_contracts"]["contract_current"] is True
