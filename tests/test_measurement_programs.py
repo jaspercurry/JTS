@@ -35,7 +35,7 @@ from jasper.cli import crossover_prescriber, round as round_cli, round_views
 
 
 @pytest.mark.parametrize("actual,expected", [
-    pytest.param(pd._JUDGE_ORDER, ("topology", "blend", "alignment", "room", "bass", "rear_calibration", "driver"), id="judge"),
+    pytest.param(pd._JUDGE_ORDER, ("topology", "blend", "alignment", "bass", "room", "rear_calibration", "driver"), id="judge"),
     pytest.param(tuple(pd._PREVIEW_ROWS), ("rear_calibration", "room", "emitted_graph"), id="preview"),
     pytest.param(tuple(pc.prescription_contracts()), ("speaker", "room", "bass", "rear"), id="contracts"),
     pytest.param(tuple(section.name for section in mp.PRESCRIPTION_SECTIONS if section.compose),

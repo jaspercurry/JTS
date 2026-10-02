@@ -59,7 +59,7 @@ from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
-from tests.run_manifest_fixture import manifest_set, write_manifest
+from tests.run_manifest_fixture import IN_ROOM_CLEARED, manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 
@@ -389,15 +389,14 @@ def test_a_multi_set_round_that_banks_no_room_is_not_asked_for_a_set(tmp_path, c
 
 
 def _bank_room_round(tmp_path: Path, *, split: int | None = None) -> Path:
-    """A room round banked for real, so each view is filed as the bank files it. With ``split``, its seat
-    takes are two sets: the first ``split`` takes, and the rest."""
+    """An in-room base round banked for real, so each view is filed as the bank files it. With ``split``,
+    its seat takes are two sets: the first ``split`` takes, and the rest."""
     source = bank_seat_round(tmp_path / "source")
     inputs = round_inputs(source)
-    if split is not None:
-        rows = list(measurement_documents(inputs.session_dir))
-        write_manifest(source, program="room", groups=[
-            manifest_set([(row.path, record) for row, record in members], set_id=f"set-{number}")
-            for number, members in enumerate((rows[:split], rows[split:]))])
+    rows = [(row.path, record) for row, record in measurement_documents(inputs.session_dir)]
+    write_manifest(source, program="room", groups=[
+        manifest_set(members, set_id=None if split is None else f"set-{number}", cleared_layers=IN_ROOM_CLEARED)
+        for number, members in enumerate([rows] if split is None else [rows[:split], rows[split:]])])
     mark_state(inputs.session_dir, "applied")
     absent = {name: tmp_path / "absent" / name for name in (
         "design_draft_path", "applied_profile_path", "repeat_floor_path", "declared_geometry_path", "statefile_path")}
@@ -491,6 +490,7 @@ def test_room_preview_reports_margins_and_residual_without_banking(tmp_path, cap
     round_dir = bank_seat_round(tmp_path)
     median = _room_median()
     median["median_db"] = [db - 30.0 for db in median["median_db"]]
+    median["set_id"] = write_manifest(round_dir, program="room", cleared_layers=IN_ROOM_CLEARED)["sets"][0]["set_id"]
     (round_dir / "room.json").write_text(json.dumps({"median": median}))
     path = tmp_path / "prescription.json"
     path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,

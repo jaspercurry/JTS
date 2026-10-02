@@ -134,7 +134,7 @@ _PROGRAM_SECTIONS = (
         branches_clear_own=True,
     ),
     TuningProgram(
-        PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
+        PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 3),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
         run_headline=("JTS is playing a bass sweep at each spot, in steps from loud to quiet, to see how far the bass "
@@ -143,11 +143,11 @@ _PROGRAM_SECTIONS = (
         clears=("room_correction",), base_clears_own=True,
     ),
     TuningProgram(
-        PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3, envelope=(*_VERSIONED, "rationale")),),
+        PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 4, envelope=(*_VERSIONED, "rationale")),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
         "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
         run_headline="JTS is measuring the sound at each listening spot, to see what the room does to it. Follow the step below.",
-        trial=(("room/seat", "seat_express"), ("room/seat", "room_quick")), preview=(1, "room", ("room",)),
+        trial=(("room/seat", "seat_express"), ("room/seat", "room_quick")), preview=(1, "room", ("bass", "room")),
     ),
 )
 PROGRAM_ROWS = _PROGRAM_SECTIONS

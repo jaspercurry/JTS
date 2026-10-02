@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -27,9 +27,10 @@ from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
+from jasper.bass_extension.dynamic import as_dynamic_bass_descriptor, expected_boost_db
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.audio_routes import output_topology_store as output_topology
-from ._prescription_common import PRESCRIPTION_MALFORMED
+from ._prescription_common import PRESCRIPTION_MALFORMED, refuse
 
 from . import alignment_prescription as alignment
 from . import bass_prescription as bass
@@ -49,7 +50,10 @@ DOCUMENT_KIND = "jts_prescription"
 _SECTIONS = {section.name: section for section in PRESCRIPTION_SECTIONS}
 SECTION_KINDS = {name: section.kind for name, section in _SECTIONS.items()}
 _SECTION_PROGRAMS = {section.name: row.purpose for row in PROGRAM_DOCUMENT_ORDER for section in row.sections}
+_SECTION_LAYERS = {row.sections[0].name: row.candidate_fields[0].name for row in PROGRAM_DOCUMENT_ORDER if len(row.sections) == 1}
 _JUDGE_ORDER = tuple(section.name for section in sorted(PRESCRIPTION_SECTIONS, key=lambda section: section.judge_order))
+#: The seat median's takes played a layer that is added to it (ADR-0421).
+ROOM_MEDIAN_PLAYED_LAYER = "room_median_played_layer"
 
 
 def blamed_section(sections: Mapping[str, Any]) -> str | None:
@@ -166,9 +170,38 @@ def vary_document(
         yield values_by_path, variant
 
 
+def _played_layers(sources: Mapping[str, Any], names: Collection[str]) -> list[str]:
+    """Of ``names``, the sections whose layer the seat median's takes may have played: one a take
+    did not play cleared, unless the take played its run's base and that run's applied tune carried
+    none. A median whose set the run manifest does not hold may have played every one."""
+    manifest = sources.get("manifest") or {}
+    set_id = (sources.get("room_median") or {}).get("set_id")
+    group = next((row for row in manifest.get("sets", ()) if row.get("set_id") == set_id), None)
+    if group is None:
+        return sorted(names)
+    applied = manifest.get("incumbent") if group.get("base") else None
+    takes = [take for take in group["takes"] if take.get("selected")]
+    return sorted(name for name in names if (applied is None or applied.get(_SECTION_PROGRAMS[name]))
+                  and any(_SECTION_LAYERS[name] not in (take.get("cleared_layers") or ()) for take in takes))
+
+
+def _seat_median(evidence: PrescriptionEvidence, bass_layer: Mapping[str, Any] | None,
+                 adds: Collection[str]) -> tuple[room.RoomMedian, list[float] | None]:
+    """The round's seat median with ``bass_layer``'s boost added on its grid, its level reference
+    the measured one, and the boost; refused when its takes played a section in ``adds`` (ADR-0421)."""
+    median = room.read_room_median(evidence.sources.get("room_median", {}))
+    if played := _played_layers(evidence.sources, adds):
+        refuse(ROOM_MEDIAN_PLAYED_LAYER, f"the seat takes played {' and '.join(played)}, which this reading adds",
+               sections=played, set_id=evidence.sources["room_median"].get("set_id"))
+    if not bass_layer:
+        return median, None
+    boost = expected_boost_db(as_dynamic_bass_descriptor(bass_layer), median.freqs_hz)
+    return replace(median, median_db=median.median_db + boost), boost
+
+
 def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
                    contracts: Mapping[str, Any], evidence: PrescriptionEvidence,
-                   fc_hz: float | None) -> tuple[Any, Mapping[str, Any]]:
+                   fc_hz: float | None, bass_layer: Mapping[str, Any] | None = None) -> tuple[Any, Mapping[str, Any]]:
     packet = dict(evidence.packet)
     speaker = contracts.get("speaker", {})
     if name == "driver":
@@ -210,7 +243,7 @@ def _judge_section(name: str, raw: Mapping[str, Any], *, base: BankedCandidate,
         return topology_pin, topology_pin.to_dict()
     if name == "room":
         room_pin = room.read_room_prescription(
-            raw, room_median=room.read_room_median(evidence.sources.get("room_median", {})),
+            raw, room_median=_seat_median(evidence, bass_layer, ("bass",) if bass_layer else ())[0],
             room_median_sha256=evidence.room_median_sha256, round_id=evidence.round_id,
             sides=SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
         )
@@ -251,13 +284,36 @@ def _preview_emitted_graph(document: Mapping[str, Any], *, round_dir: Path,
         raise PrescriptionDocumentRefused(exc.refusal_reason, section, str(exc), evidence=exc.detail) from exc
 
 
+def _preview_in_room(document: Mapping[str, Any], *, base: BankedCandidate,
+                     evidence: PrescriptionEvidence) -> dict[str, Any]:
+    """The seat median with the composed bass boost and room set added; each layer is the
+    document's, cleared, or the base's, as composition resolves it (ADR-0421)."""
+    sections = document["sections"]
+    bass_layer: Mapping[str, Any] = {} if "bass" in sections else base.candidate.bass_extension
+    if sections.get("bass"):
+        try:
+            bass_layer = bass.read_bass_prescription(sections["bass"], evidence=evidence.sources["bass_evidence"]).descriptor
+        except room.RoomPrescriptionRefused as exc:
+            raise PrescriptionDocumentRefused(exc.reason, "bass", exc.detail, evidence=exc.evidence) from exc
+    sides = SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout]
+    inherited = {} if "room" in sections else base.candidate.room_correction
+    section = sections.get("room") or {"sides": inherited.get("sides") or {side: [] for side in sides}}
+    sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
+    contracts = prescription_contracts(programs=contract_programs(sources), **sources)
+    median, boost = _seat_median(evidence, bass_layer, _PREVIEW_ROWS["room"])
+    preview = room.preview_room_prescription(
+        _section_payload("room", section, document["rationale"], contracts), room_median=median,
+        room_median_sha256=evidence.room_median_sha256, round_id=evidence.round_id, sides=sides)
+    resolution = {name: "base" if name not in sections else "document" if sections[name] else "cleared"
+                  for name in sorted(_PREVIEW_ROWS["room"])}
+    return {**preview, "resolution": resolution, "bass_boost_db": boost}
+
+
 _PREVIEW_ROWS = {kind: set(names) for _, kind, names in sorted(row.preview for row in PROGRAM_DOCUMENT_ORDER if row.preview)}
 
 
 def preview_kind(document: Mapping[str, Any]) -> str:
     sections = set(document["sections"])
-    if "bass" in sections:
-        raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, "bass", "bass has no preview model")
     for kind, names in _PREVIEW_ROWS.items():
         if sections & names:
             if sections <= names:
@@ -297,15 +353,8 @@ def preview_prescription_document(
                 raise PrescriptionDocumentRefused(REASON_UNREADABLE, blamed_section(sections),
                                                   "a speaker preview needs --round <diagnostic round>")
             if kind == "room":
-                preview_function = room.preview_room_prescription
-                if not sections[kind]:
-                    raise PrescriptionDocumentRefused(PRESCRIPTION_MALFORMED, kind, "preview requires a room section")
-                sources = {**evidence.sources, "candidate": base.candidate.to_dict()}
-                contracts = prescription_contracts(programs=contract_programs(sources), **sources)
-                payload = _section_payload(kind, sections[kind], document["rationale"], contracts)
-                kwargs = {"room_median": room.read_room_median(evidence.sources.get("room_median", {})),
-                          "room_median_sha256": evidence.room_median_sha256, "round_id": evidence.round_id,
-                          "sides": SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout]}
+                preview_function = _preview_in_room
+                kwargs = {"base": base, "evidence": evidence}
             else:
                 preview_function = _preview_emitted_graph
                 kwargs = {"round_dir": round_dir, "base": base, "evidence": evidence, "capture_id": capture_id}
@@ -385,6 +434,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
         try:
             selected[name], judged[name] = _judge_section(
                 name, section, base=base, contracts=contracts, evidence=evidence, fc_hz=fc_hz,
+                bass_layer=selected.get("bass"),
             )
             if name == "topology":
                 fc_hz = selected[name].fc_hz
