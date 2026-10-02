@@ -1068,10 +1068,9 @@ def test_the_bounds_are_the_numbers_the_ruling_and_the_evidence_earned():
 
     Deliberately not written as ``assert X == X``: a test that builds its
     hostile input out of the constant it is checking moves with the constant
-    and proves nothing. A mutation battery caught exactly that on the first
-    cut of this suite — the size cap, the per-filter boost cap and the Q
-    ceiling all escaped because their cases said ``CONSTANT + 0.1``. The
-    literals below are what makes the cases beneath them load-bearing.
+    and proves nothing: a case that says ``CONSTANT + 0.1`` lets the constant
+    move. The literals below are what makes the cases beneath them
+    load-bearing.
     """
     assert BLEND_MAX_FILTERS == 2
     assert PRESCRIPTION_MAX_BYTES == 65536
