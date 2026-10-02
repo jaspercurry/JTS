@@ -14,28 +14,12 @@ from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
 from jasper.audio_measurement.program_analysis import analysis_diagnostic_summary
 from jasper.audio_measurement.trusted_band import trusted_band
-from jasper.platform.json_fields import finite_float
+from jasper.platform.json_fields import finite_json
 from ..measurement_programs import POSE_KIND_SEAT
 from .measure_spec import CANDIDATE_SCOPES
 from .planning import analysis_json
 from .pose_curve import WINDOW_GATED, WINDOW_UNGATED
 from .spatial import MARK_DISTANCE_M, analysis_curve_records
-
-
-def finite_json(value: Any) -> Any:
-    """``value`` with every non-finite float nulled and every key kept.
-
-    The evidence store refuses a non-finite number, so one unmeasurable
-    diagnostic would cost the whole take; a dropped key would erase the
-    summary's deliberate difference between ``None`` and absent.
-    """
-    if isinstance(value, float):
-        return finite_float(value)
-    if isinstance(value, Mapping):
-        return {key: finite_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [finite_json(item) for item in value]
-    return value
 
 
 def analysis_blocks(

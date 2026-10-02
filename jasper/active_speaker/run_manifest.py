@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from jasper.platform.atomic_io import read_json_mapping
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
-from jasper.platform.json_fields import finite_float
+from jasper.platform.json_fields import finite_float, finite_json
 from jasper.audio_measurement.program import KIND_SWEEP, KIND_SUMMED_SWEEP, ExcitationProgram, is_level_probe
 from jasper.platform.speaker_layout import measurement_target_parts
 
@@ -286,8 +286,6 @@ class RunManifest:
         return {**planned, **record, **context, "stimulus_ordinal": len(self.pending_records)}
 
     async def bank(self, record: Mapping[str, Any]) -> str:
-        from .crossover_v2.capture_provenance import finite_json  # lazy: it loads the analysis stack
-
         payload = self.capture_record(record)
         assert self.judge is not None
         verdict, observed = await self.judge(payload)

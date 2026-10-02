@@ -48,6 +48,23 @@ def finite_float(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def finite_json(value: Any) -> Any:
+    """``value`` with every non-finite float nulled and every key kept.
+
+    The evidence store refuses a non-finite number, so one unmeasurable
+    diagnostic would cost the whole take; a dropped key would erase the
+    summary's deliberate difference between ``None`` and absent.
+    """
+    if isinstance(value, float):
+        return finite_float(value)
+    if isinstance(value, Mapping):
+        return {key: finite_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [finite_json(item) for item in value]
+    return value
+
+
+
 def require_finite(
     value: Any, *, field: str, error: Callable[[str], Exception] = ValueError, positive: bool = False,
 ) -> float:
