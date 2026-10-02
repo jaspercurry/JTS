@@ -41,7 +41,7 @@ def _geometry_unreadable() -> str | None:
 
 
 def read_preflight_facts(
-    plan: AngleCaptureRequest, *, context: Any = None, device: Any = None,
+    plan: AngleCaptureRequest, *, context: Any = None,
     rig_clear_attested: bool | None = None, mover_available: bool = False,
 ) -> PreflightFacts:
     issues: list[PreflightIssue] = []
@@ -50,11 +50,11 @@ def read_preflight_facts(
             context = resolve_conductor_context(conductor_status())
         except CrossoverV2Refused as exc:
             issues.append(PreflightIssue.from_code(exc.code or "measure_box_not_ready", str(exc)))
-    if device is None:
-        try:
-            device = require_wired_mic()
-        except WiredCaptureError:
-            pass
+    device = None
+    try:
+        device = require_wired_mic()
+    except WiredCaptureError:
+        pass
     stop = None
     applied_bass_extension: Mapping[str, Any] = {}
     applied_room_peqs: tuple[PeqFilter, ...] | None = ()

@@ -78,7 +78,8 @@ def test_preflight_output_mute(monkeypatch, caplog, muted):
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     caplog.set_level(logging.INFO)
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     report = preflight(plan, replace(ready, output_volume=facts.output_volume))
     read.assert_called_once_with("/volume", base_url=control_client.DEFAULT_BASE_URL, timeout=control_client.DEFAULT_TIMEOUT)
     assert report.blocking is (muted is True)
@@ -105,7 +106,8 @@ def test_an_unreadable_declared_geometry_refuses_the_run_before_it_plays(monkeyp
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     issue = preflight(plan, replace(ready_facts(plan), geometry_unreadable=facts.geometry_unreadable)).blocking_issue
     assert (issue.code, issue.evidence, issue.next_action["id"]) == (
         DECLARED_GEOMETRY_UNREADABLE, {"field": "front_wall_m"}, "declare_geometry")
@@ -121,7 +123,8 @@ def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), role_targets=targets, safety_profile=safety,
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     assert preflight(plan, replace(ready, driver_caps=facts.driver_caps)).to_dict()["driver_caps"] == {
         "woofer": {"cap_dbfs": 0.0, "cap_source": "class_default"},
         "tweeter": {"cap_dbfs": pytest.approx(-25.2), "cap_source": "sensitivity_delta:class_default"},
@@ -237,7 +240,8 @@ def test_a_near_field_driver_the_view_cannot_read_is_not_offered(
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: {})
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     report = preflight(plan, replace(ready, near_field_drivers=facts.near_field_drivers))
     assert [issue.code for issue in report.issues] == ([] if offered else [REASON_MEASUREMENT_PROGRAM_NOT_OFFERED])
 
@@ -516,7 +520,8 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     assert (facts.applied_room_peqs, facts.applied_room_charge_db, facts.applied_rear_plays) == (
         (room, None, None) if room is None else (room, None, False))
 
@@ -620,7 +625,8 @@ def test_live_facts_read_a_cardioid_base_and_its_rear(monkeypatch):
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     assert facts.applied_rear_plays is True
 
 
@@ -650,7 +656,8 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         driver_caps_dbfs={}, fc_hz=None, driver_sweep_duration_limits_s={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    facts = preflight_live.read_preflight_facts(plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
+    facts = preflight_live.read_preflight_facts(plan, context=context)
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
     assert facts.applied_rear_plays is False
@@ -689,8 +696,9 @@ def test_live_preflight_accepts_facts_without_discovery(monkeypatch, attested, a
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
+    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
     facts = preflight_live.read_preflight_facts(
-        plan, context=context, device=SimpleNamespace(model_key="minidsp_umik2"),
+        plan, context=context,
         rig_clear_attested=attested, mover_available=available,
     )
     assert facts.rig_clear_attested is attested and facts.mover_available is available

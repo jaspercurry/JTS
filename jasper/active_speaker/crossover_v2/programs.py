@@ -93,16 +93,15 @@ def courtesy_prelude_for_phase(phase: str) -> bool:
     return phase in COURTESY_PRELUDE_PHASES
 
 
-def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float,
-                  *, margin_db: float = GAIN_CAP_BACKOFF_DB) -> float:
+def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float) -> float:
     """Clamp a per-driver digital gain so its effective peak stays under the cap.
 
     The effective peak folded through the session volume is
     ``gain_db + session_volume_db``, and admission caps it at the driver's
-    ``cap_dbfs``; ``margin_db`` (≥0.01 dB) is why an at-cap solve stays
-    admissible — see :data:`GAIN_CAP_BACKOFF_DB`.
+    ``cap_dbfs``; :data:`GAIN_CAP_BACKOFF_DB` is why an at-cap solve stays
+    admissible.
     """
-    ceiling = cap_dbfs - session_volume_db - margin_db
+    ceiling = cap_dbfs - session_volume_db - GAIN_CAP_BACKOFF_DB
     return min(float(gain_db), ceiling)
 
 
@@ -530,9 +529,9 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
     return program
 
 
-def excitation_from_context(context: Any, session_volume_db: float = 0.0) -> SessionExcitation:
+def excitation_from_context(context: Any) -> SessionExcitation:
     """The session's declarations as the conductor context resolved them."""
-    return SessionExcitation(context.roles_bands, context.driver_caps_dbfs, session_volume_db, context.fc_hz,
+    return SessionExcitation(context.roles_bands, context.driver_caps_dbfs, 0.0, context.fc_hz,
                              context.driver_sweep_duration_limits_s, target_bands=context.driver_bands)
 
 

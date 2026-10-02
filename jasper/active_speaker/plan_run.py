@@ -33,11 +33,7 @@ from .angle_capture import (
     AngleCaptureRequest, LateralWalkRefused,
     level_sets, resolve_request, take_level,
 )
-from .capture_schedule import (
-    UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index,
-    unprobed_take_at_fader,
-)
-from .commission_wiring import commissioning_spl_ceiling_db
+from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index
 from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
@@ -111,29 +107,15 @@ def spl_monitor_note(ceiling_db_spl: float) -> str:
     return f"ceiling_{float(ceiling_db_spl):g}_db_spl"
 
 
-def spl_watch(
-    *,
-    topology: Any,
-    preset: Any,
-    sensitivity: Any | None,
-    device: Any,
-    resolved_ceiling_db_spl: float | None = None,
-) -> tuple[WiredSplMonitor, str]:
+def spl_watch(*, ceiling_db_spl: float, sensitivity: Any | None, device: Any) -> tuple[WiredSplMonitor, str]:
     """Require a calibrated watch at the commissioning stop."""
-    ceiling = resolved_ceiling_db_spl
-    if ceiling is None:
-        try:
-            stop = commissioning_spl_ceiling_db(topology, preset=preset)
-        except ValueError as exc:
-            raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, str(exc)) from exc
-        ceiling = stop
     if sensitivity is None:
         raise LateralWalkRefused(
             WALK_SPL_CALIBRATION_REQUIRED,
             "an SPL ceiling requires a resolvable microphone sensitivity",
         )
     channel = int(SUPPORTED_MODELS[device.model_key].get("capture_channel", 0))
-    return WiredSplMonitor(sensitivity, ceiling, channel), spl_monitor_note(ceiling)
+    return WiredSplMonitor(sensitivity, ceiling_db_spl, channel), spl_monitor_note(ceiling_db_spl)
 
 
 def request_fingerprint(request: AngleCaptureRequest) -> str:
@@ -502,14 +484,12 @@ async def _run(
     unlevelled: set[int] = set()
     # A run finds its fader with a probe of its first summed take that plays at the run's
     # fader, before the first take of that take's placement, banked as that take's attempts.
-    # Until then only takes that level themselves play, at the probe fader: a run where a take
-    # at its fader would play first is refused. The fader held is the probe's, turned down by
+    # Until then only takes that level themselves play, at the probe fader: preflight refuses a
+    # run where a take at its fader would play first. The fader held is the probe's, turned down by
     # what its margins pass the stop by, never above the level the plan states (ADR-0403 §4).
     caps, cap = (door.caps_dbfs if door is not None else None), level
     probe_at = probe_start = None
     other_graphs = False
-    unprobed = bool(caps) and unprobed_take_at_fader(
-        [(item.spec.graph_scope, item.level_set is not None, item.pose_index) for item in work])
 
     def hold_fader(found: float, source: str) -> float:
         held = found if cap is None else min(found, cap)
@@ -554,8 +534,6 @@ async def _run(
         if door is not None:
             if door.ceiling_db_spl is None:
                 raise LateralWalkRefused(WALK_COMMISSIONING_STOP_UNSET, "Preflight supplied no SPL ceiling")
-            if unprobed:
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
             hold = door.isolation = await stack.enter_async_context(door.hold)
             await stack.enter_async_context(window)
         while offset < len(work):
@@ -678,11 +656,10 @@ async def _run(
                         manifest.mic_moves += 1
                         moved.add(item.pose_index)
                 if session is None:
-                    assert door is not None and hold is not None and level is not None
+                    assert door is not None and door.ceiling_db_spl is not None
+                    assert hold is not None and level is not None
                     monitor, manifest.spl_monitor = spl_watch(
-                        topology=None, preset=None, sensitivity=door.sensitivity, device=door.device,
-                        resolved_ceiling_db_spl=door.ceiling_db_spl,
-                    )
+                        ceiling_db_spl=door.ceiling_db_spl, sensitivity=door.sensitivity, device=door.device)
                     opened = await window.enter_async_context(level_window(level, hold=hold, spl_monitor=monitor))
                     session = door.build_session(opened, manifest.allocate_take_id)
                     door.current = session

@@ -79,7 +79,7 @@ from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFa
 from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import (
-    _REAR_SUM_DB, _cardioid_trial, _unprobed_plans, ready_facts,
+    _REAR_SUM_DB, _cardioid_trial, ready_facts,
 )
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
@@ -1664,17 +1664,6 @@ def test_the_run_fader_comes_down_by_what_its_margins_pass_the_stop_by(
     pair = {("lateral", "banked-base"), ("lateral", "trial")} if pair_db is not None else set()
     assert set(read) == {("timing", "banked-base")} | pair
     assert read == {key: pytest.approx(timing_db if key[0] == "timing" else pair_db, abs=0.02) for key in read}
-
-
-@pytest.mark.parametrize("shape", ["no summed take", "check before the probe"])
-def test_a_take_at_the_run_fader_before_its_probe_refuses_the_run_before_anything_plays(monkeypatch, shape):
-    """A run that finds its fader plays a take that does not level itself only
-    after the probe that found that fader, so a run where such a take would play
-    first, or with no probe at all, is refused before any take plays (ADR-0403 §4)."""
-    result, plays, windows = asyncio.run(_run_found(
-        monkeypatch, _unprobed_plans()[shape], caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0}))
-
-    assert (result.reason, plays, windows) == (ac.WALK_LEVEL_POLICY_INVALID, [], [])
 
 
 def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(monkeypatch):

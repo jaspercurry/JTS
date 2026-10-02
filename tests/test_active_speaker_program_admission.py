@@ -1211,7 +1211,7 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.
     }, topology=topology)
     spec = MeasureSpec(kind="baseline", branch_target_ids=(target,), stimulus=preset("nearfield/each").stimulus,
                        program_phase=PHASE_LATERAL, level_probe=True)
-    excitation = excitation_from_context(context, probe_fader_db(context.driver_caps_dbfs))
+    excitation = replace(excitation_from_context(context), session_volume_db=probe_fader_db(context.driver_caps_dbfs))
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
         spec, stimulus_dbfs, context=context)
@@ -1630,7 +1630,7 @@ def _production_composer(tmp_path, fader, fresh, graph, reference):
     from jasper.web.correction_run_host import compose_plan_program  # lazy: the web host imports the engine under test
 
     topology, safety, context, candidate = fresh
-    host = SimpleNamespace(excitation=excitation_from_context(context, fader),
+    host = SimpleNamespace(excitation=replace(excitation_from_context(context), session_volume_db=fader),
                            gain_plan_db={"woofer": -40.0, "tweeter": -40.0}, set_program=lambda *args: None)
     paths: list = []
     compose = bind_program_composer(
@@ -1737,7 +1737,7 @@ def test_a_summed_take_that_feeds_its_muted_rear_still_refuses_and_names_it(tmp_
     it found muted, under its own incident and action."""
     topology, safety, context, profile, candidate = _fresh_cardioid(monkeypatch)
     graph = compile_tuning_graph(profile, candidate, scope="timing")
-    program = excitation_from_context(context, -30.0).verify_program()
+    program = replace(excitation_from_context(context), session_volume_db=-30.0).verify_program()
     wav = tmp_path / "timing.wav"
     write_program_wav(wav, program)
 
