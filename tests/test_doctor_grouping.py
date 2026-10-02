@@ -296,7 +296,7 @@ def _active_leader_topology(monkeypatch, tmp_path):
     """An ACTIVE-LEADER context: a roleful/protected output topology plus a
     bonded-leader grouping config. Leaves `grouping.run` patchable."""
     import jasper.multiroom.config as mr_config
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(_active_topology("mono", "active_2_way"), path=topology_path)
@@ -327,7 +327,7 @@ def test_check_crossover_unit_skips_when_not_an_active_leader(
 def test_check_crossover_unit_skips_for_a_passive_leader(monkeypatch, tmp_path):
     """A bonded LEADER whose topology has NO roleful/protected outputs runs no
     per-driver crossover, so camilla#2 is n/a."""
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(_topology([]), path=topology_path)

@@ -37,17 +37,12 @@ from jasper.control.transport_eligibility import (
 from jasper.dsp_control.fanin_coupling import OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
 from jasper.audio_routes.output_topology import OutputTopology
 
-from tests.test_active_speaker_runtime_contract import (
-    _active_topology,
-    _full_range_mono,
-    _full_range_stereo,
-    _subwoofer_topology,
-)
+from tests.active_speaker_fixtures import _active_topology, _full_range_mono, _full_range_stereo, _subwoofer_topology
 from tests.test_composite_ring_arm_enabling import (
     _composite_active_2way,
     _composite_topology,
 )
-from tests.test_output_contract import _dual_apple_stereo
+from tests.active_speaker_fixtures import _dual_apple_stereo
 
 #: The ring transport's arming marker, spelled as a LITERAL for the same
 #: reason the issue numbers below are: a case built from the constant it
@@ -64,7 +59,7 @@ def _stereo_plus_subwoofer() -> OutputTopology:
     resolves at 3 — so this reaches class (c)'s site and is stopped only by
     the active-crossover narrowing.
     """
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     return _topology(
         [
@@ -101,7 +96,7 @@ def _stereo_plus_subwoofer() -> OutputTopology:
 def _left_only() -> OutputTopology:
     """A configured layout that is neither stereo nor mono — a half-finished
     commissioning save. No ring geometry of either kind, and no named class."""
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     return _topology(
         [
@@ -125,7 +120,7 @@ def _mono_awaiting_its_output() -> OutputTopology:
     output yet. The class stays defined and stays exercised; what changed is
     which mono boxes trip it.
     """
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     return _topology(
         [
@@ -423,7 +418,7 @@ def test_the_grouped_park_reads_the_key_the_ring_module_owns():
 def test_unconfigured_topology_does_not_park():
     """An undeclared box holds silence through the speaker-setup park
     (#2135); re-reporting it here would double-count one fact."""
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     assert transport_eligibility.snapshot(_topology([]), {})["status"] == "ok"
 

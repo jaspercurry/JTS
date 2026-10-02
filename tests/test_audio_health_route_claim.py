@@ -266,7 +266,7 @@ def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path
         UNCONFIGURED_PARKED_EXIT,
         build_parked_muted_graph,
     )
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     topology = _topology([])
     text, graph = build_parked_muted_graph(topology)
@@ -297,7 +297,7 @@ def test_corrupt_layout_is_not_relabelled_as_unconfigured_silence(
 ) -> None:
     """A safe parked graph does not conceal corrupt persisted intent."""
     from jasper.active_speaker.graph_selector import build_parked_muted_graph
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     text, graph = build_parked_muted_graph(_topology([]))
     assert graph.allowed

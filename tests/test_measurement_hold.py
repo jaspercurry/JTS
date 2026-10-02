@@ -261,7 +261,7 @@ def control_server(monkeypatch, tmp_path):
     """A real jasper-control on a throwaway port. Yields (base_url, fake)."""
     import jasper.control.household_credential as hc
     import jasper.control.server as srv_mod
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "household_secret"))
     topology_path = tmp_path / "output_topology.json"

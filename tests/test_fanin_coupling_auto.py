@@ -355,7 +355,7 @@ def _stub_ring_geometry_heals(monkeypatch):
 
 def _persist_ring_eligible_topology(tmp_path: Path, monkeypatch) -> Path:
     """Save the explicit passive stereo intent required by Ring B."""
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     path = tmp_path / "output_topology.json"
     save_output_topology(_full_range_stereo(), path=path)

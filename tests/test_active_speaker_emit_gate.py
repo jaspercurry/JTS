@@ -64,7 +64,8 @@ from jasper.active_speaker.graph.bass_extension import classify_bass_extension_g
 
 from tests._log_events import event_fields
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
+from tests.test_active_speaker_runtime_contract import _dynamic_bass_descriptor
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_rear_output_foundation import _rear_pair
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 from jasper.sound.camilla_yaml import emit_sound_config

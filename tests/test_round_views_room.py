@@ -42,7 +42,7 @@ from jasper.active_speaker.crossover_v2.room_grade import grade_room_median
 from jasper.audio_measurement import room_limits
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry, boundary_prior
 from tests.test_active_speaker_audition import _applied_profile
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_active_speaker_baseline_profile import _ROOM_CORRECTION
 from tests.test_crossover_v2_room_prescription import _document
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round

@@ -62,12 +62,8 @@ from jasper.sound.profile import (
 )
 from jasper.sound.runtime import materialise_saved_dsp_on_carrier
 from jasper.sound.settings import SoundSettings, save_sound_settings
-from tests.test_active_speaker_runtime_contract import (
-    _active_baseline_yaml,
-    _active_topology,
-    _flat_yaml,
-    _full_range_stereo,
-)
+from tests.test_active_speaker_runtime_contract import _active_baseline_yaml, _flat_yaml
+from tests.active_speaker_fixtures import _active_topology, _full_range_stereo
 from jasper.audio_routes.output_topology_store import save_output_topology
 from jasper.audio_routes.output_topology_store import new_topology_draft
 
@@ -998,7 +994,7 @@ def test_active_baseline_ignores_stereo_only_shm_ring_coupling(tmp_path):
 
 
 def _full_range_mono_topology():
-    from tests.test_active_speaker_runtime_contract import _full_range_mono
+    from tests.active_speaker_fixtures import _full_range_mono
 
     return _full_range_mono()
 

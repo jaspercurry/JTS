@@ -29,9 +29,9 @@ from jasper.audio_routes.output_topology import (
 )
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import (
-    _active_topology, _classify_staged_active, _dynamic_bass_descriptor, _staged_metadata,
-    classify_camilla_graph,
+    _classify_staged_active, _dynamic_bass_descriptor, _staged_metadata, classify_camilla_graph,
 )
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_active_speaker_staging import _crossover_preview
 
 

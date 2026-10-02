@@ -171,7 +171,7 @@ def _flat_streambox(tmp_path: Path, monkeypatch):
     config_dir.mkdir(parents=True, exist_ok=True)
     stale = _stale_sound_current(config_dir)
     statefile = _statefile_at(tmp_path, monkeypatch, stale)
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))

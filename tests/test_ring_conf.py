@@ -379,12 +379,8 @@ def test_render_leaves_the_shipped_conf_byte_identical_for_every_ring_topology()
     import shutil
     import tempfile
 
-    from tests.test_active_speaker_runtime_contract import (
-        _full_range_mono,
-        _full_range_stereo,
-        _topology,
-    )
-    from tests.test_output_contract import _dual_apple_stereo
+    from tests.active_speaker_fixtures import _full_range_mono, _full_range_stereo, _topology
+    from tests.active_speaker_fixtures import _dual_apple_stereo
 
     topologies = {
         "none": None,

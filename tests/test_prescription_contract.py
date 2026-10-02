@@ -61,7 +61,7 @@ from tests.active_speaker_fixtures import bind_role_rows, mono_output_topology
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.crossover_v2_fixtures import _one_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 
 PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 

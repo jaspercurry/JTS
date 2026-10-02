@@ -537,7 +537,7 @@ def _dual_apple_topology(tmp_path: Path, *, active: bool = False) -> Path:
         ],
     }
     if active:
-        from tests.test_active_speaker_runtime_contract import _active_topology
+        from tests.active_speaker_fixtures import _active_topology
 
         payload = _active_topology("stereo", "active_2_way").to_dict()
         payload.update(
@@ -556,7 +556,7 @@ def _dual_apple_topology(tmp_path: Path, *, active: bool = False) -> Path:
 def _preset_and_topology(channels: int, *, strict: bool = False):
     from jasper.active_speaker import ActiveSpeakerPreset
     from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     known = {
         2: ("mono", "active_2_way", _two_way_preset),
@@ -3496,7 +3496,7 @@ def test_ring_render_reports_a_torn_conf_instead_of_inventing_one(
 def test_ring_render_reports_the_wire_and_the_topology_it_resolved(
     tmp_path: Path, declare_slot_floor, capsys, topology_json: str | None, expected: str
 ) -> None:
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     conf = _drifted_ring_conf(tmp_path)
     declare_slot_floor()
@@ -3922,7 +3922,7 @@ def test_an_unrecognized_dac_parks_and_does_not_kick_the_coupling(tmp_path: Path
 
 def test_a_no_change_pass_still_reconciles_topology_coupling(tmp_path: Path):
     """Topology may change while DAC identity and rendered bytes stay stable."""
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     configured = _full_range_stereo()
     unconfigured = configured.to_dict()

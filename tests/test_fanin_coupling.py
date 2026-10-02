@@ -297,14 +297,10 @@ def test_resolve_ring_wire_answers_the_shipped_geometry_with_no_topology():
 def test_resolve_ring_wire_is_the_same_wide_wire_on_every_topology():
     """Only channel geometry varies with topology; the program format is fixed."""
     from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _full_range_mono,
-        _full_range_stereo,
-        _subwoofer_topology,
-        _topology,
+    from tests.active_speaker_fixtures import (
+        _active_topology, _full_range_mono, _full_range_stereo, _subwoofer_topology, _topology,
     )
-    from tests.test_output_contract import _dual_apple_stereo
+    from tests.active_speaker_fixtures import _dual_apple_stereo
 
     for label, topology in (
         ("none", None),
@@ -331,7 +327,7 @@ def test_resolve_ring_wire_reads_ring_b_channels_from_the_topology(monkeypatch):
     """
     import jasper.active_speaker.output_contract as oc
     from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     topology = _full_range_stereo()
     monkeypatch.setattr(oc, "ring_channels_for_topology", lambda _t: 6)
@@ -349,7 +345,7 @@ def test_resolve_ring_wire_falls_back_to_the_shipped_width_for_no_ring_topology(
     # Refusing to ARM is the preflights' job, not the resolver's.
     import jasper.active_speaker.output_contract as oc
     from jasper.dsp_control.fanin_coupling import RING_A_CHANNELS, resolve_ring_wire
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     monkeypatch.setattr(oc, "ring_channels_for_topology", lambda _t: None)
     wire = resolve_ring_wire(_full_range_stereo())

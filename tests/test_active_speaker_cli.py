@@ -899,12 +899,8 @@ def test_runtime_safe_graph_cli_writes_staged_config_for_active_topology(
     monkeypatch,
     explicit_staged_metadata: bool,
 ):
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _active_yaml,
-        _flat_yaml,
-        _staged_metadata,
-    )
+    from tests.test_active_speaker_runtime_contract import _active_yaml, _flat_yaml, _staged_metadata
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     topology_path = tmp_path / "output_topology.json"
@@ -953,10 +949,8 @@ def test_runtime_safe_graph_cli_composes_flat_before_writing_statefile(
     capsys,
     monkeypatch,
 ):
-    from tests.test_active_speaker_runtime_contract import (
-        _flat_yaml,
-        _full_range_stereo,
-    )
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     topology = _full_range_stereo()
     topology_path = tmp_path / "output_topology.json"
@@ -1001,12 +995,9 @@ def test_runtime_safe_graph_cli_prefers_applied_baseline_state(
     capsys,
 ):
     from tests.test_active_speaker_runtime_contract import (
-        _active_baseline_yaml,
-        _active_topology,
-        _active_yaml,
-        _flat_yaml,
-        _staged_metadata,
+        _active_baseline_yaml, _active_yaml, _flat_yaml, _staged_metadata,
     )
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     topology_path = tmp_path / "output_topology.json"
@@ -1076,10 +1067,8 @@ def test_runtime_safe_graph_cli_parks_and_exits_success(
     # exit. A parked box must exit 0 so the deploy completes and the manifest
     # advances, and the transcript must print the two exits, not a blocker wall.
     from jasper.active_speaker.graph_selector import PARKED_MUTED_EXITS
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _flat_yaml,
-    )
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     topology_path = tmp_path / "output_topology.json"
@@ -1128,10 +1117,8 @@ def test_runtime_safe_graph_cli_parks_a_blocker_bearing_draft_and_prints_it(
     from dataclasses import replace
 
     from jasper.active_speaker.graph_selector import PARKED_MUTED_EXITS
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _flat_yaml,
-    )
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     draft = replace(
@@ -1278,12 +1265,8 @@ def test_runtime_safe_graph_cli_still_fails_on_an_unsafe_staged_graph(
     # The other half of the matrix: a staged graph that EXISTS but fails its
     # safety proof keeps exiting nonzero with its blockers. Parking is only for
     # "no staged graph at all".
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _active_yaml,
-        _flat_yaml,
-        _staged_metadata,
-    )
+    from tests.test_active_speaker_runtime_contract import _active_yaml, _flat_yaml, _staged_metadata
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     topology_path = tmp_path / "output_topology.json"

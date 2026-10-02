@@ -27,6 +27,7 @@ from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.web import correction_crossover_v2 as v2host
 
 from tests.run_manifest_fixture import write_manifest
+from tests.program_baseline_fixtures import fake_program_baselines
 
 import hashlib
 import json
@@ -858,8 +859,6 @@ def _jasper_modules_binding(symbol: str, value: Any):
 def _production_host_seams(monkeypatch, tmp_path):
     from jasper.active_speaker import preflight_live
     from tests.test_preflight import ready_facts
-
-    from tests.test_plan_run import fake_program_baselines
 
     fake_program_baselines(monkeypatch)
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kw: ready_facts(plan))

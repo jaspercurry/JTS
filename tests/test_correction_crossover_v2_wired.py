@@ -45,7 +45,7 @@ from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
 from jasper.active_speaker.crossover_v2.program_transaction import ProgramPlaybackTransaction
 from jasper.active_speaker import plan_run
 from tests.test_active_speaker_measurement_door import box as box
-from tests.test_plan_run import banked_program_baselines  # noqa: F401
+from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureAnswer,

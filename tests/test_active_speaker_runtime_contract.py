@@ -86,7 +86,11 @@ from tests._camilla_readback_double import (
     camilla_default_filled,
 )
 from tests._log_events import event_fields, event_records
-from tests.active_speaker_fixtures import driver_domain_graph, mono_output_topology, passive_stereo_output_topology
+from tests.active_speaker_fixtures import (
+    driver_domain_graph, mono_output_topology, passive_stereo_output_topology,
+    _topology, _full_range_stereo, _full_range_mono,
+    _active_topology, _subwoofer_topology, _dual_apple_stereo,
+)
 from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.audio_routes.output_topology_store import (
     read_topology_fingerprint_stamp,
@@ -151,114 +155,6 @@ def _flat_yaml() -> str:
         "  flat:\n"
         "    type: Gain\n"
         "    parameters: { gain: 0.0, mute: false }\n"
-    )
-
-
-def _topology(groups: list[dict], routing: dict | None = None) -> OutputTopology:
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "bench",
-        "name": "Bench speaker",
-        "status": "draft",
-        "hardware": {
-            "device_id": "hifiberry_dac8x",
-            "device_label": "HiFiBerry DAC8x",
-            "physical_output_count": 8,
-            "card_id": "DAC8",
-        },
-        "speaker_groups": groups,
-        "routing": routing or {},
-    })
-
-
-def _full_range_stereo() -> OutputTopology:
-    return _topology(
-        [
-            {
-                "id": "left",
-                "label": "Left speaker",
-                "kind": "left",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            },
-            {
-                "id": "right",
-                "label": "Right speaker",
-                "kind": "right",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 1}],
-            },
-        ],
-        {"main_left_group_id": "left", "main_right_group_id": "right"},
-    )
-
-
-def _full_range_mono() -> OutputTopology:
-    return _topology(
-        [
-            {
-                "id": "mono",
-                "label": "Mono speaker",
-                "kind": "mono",
-                "mode": "full_range_passive",
-                "channels": [{"role": "full_range", "physical_output_index": 0}],
-            }
-        ],
-        {"mono_group_id": "mono"},
-    )
-
-
-def _active_group(kind: str, mode: str, start: int) -> dict:
-    roles = ("woofer", "tweeter") if mode == "active_2_way" else (
-        "woofer",
-        "mid",
-        "tweeter",
-    )
-    channels = []
-    for offset, role in enumerate(roles):
-        channel = {
-            "role": role,
-            "physical_output_index": start + offset,
-            "identity_verified": True,
-        }
-        if role == "tweeter":
-            channel.update({
-                "startup_muted": True,
-                "protection_required": True,
-            })
-        channels.append(channel)
-    return {
-        "id": kind,
-        "label": f"{kind.title()} speaker",
-        "kind": kind,
-        "mode": mode,
-        "channels": channels,
-    }
-
-
-def _active_topology(layout: str, mode: str) -> OutputTopology:
-    if layout == "mono":
-        return _topology([_active_group("mono", mode, 0)], {"mono_group_id": "mono"})
-    step = 2 if mode == "active_2_way" else 3
-    return _topology(
-        [_active_group("left", mode, 0), _active_group("right", mode, step)],
-        {"main_left_group_id": "left", "main_right_group_id": "right"},
-    )
-
-
-def _subwoofer_topology() -> OutputTopology:
-    return _topology(
-        [
-            {
-                "id": "sub",
-                "label": "Subwoofer",
-                "kind": "subwoofer",
-                "mode": "subwoofer",
-                "channels": [{"role": "subwoofer", "physical_output_index": 0}],
-            }
-        ],
-        {"subwoofer_group_ids": ["sub"]},
     )
 
 
@@ -1955,43 +1851,12 @@ def _dual_apple_mono_topology(output_index: int) -> OutputTopology:
     })
 
 
-def _dual_apple_stereo_topology() -> OutputTopology:
-    """Composite (dual-Apple) stereo: L on output 0, R on output 2."""
-    return OutputTopology.from_mapping({
-        "artifact_schema_version": 1,
-        "kind": OUTPUT_TOPOLOGY_KIND,
-        "topology_id": "dual",
-        "name": "Dual Apple",
-        "status": "draft",
-        "hardware": {
-            "device_id": "dual_apple_usb_c_dac_4ch",
-            "device_label": "Dual Apple",
-            "physical_output_count": 4,
-            "child_devices": [
-                {"child_id": "a", "device_id": "apple_usb_c_dongle",
-                 "device_label": "Apple A", "physical_output_indexes": [0, 1]},
-                {"child_id": "b", "device_id": "apple_usb_c_dongle",
-                 "device_label": "Apple B", "physical_output_indexes": [2, 3]},
-            ],
-        },
-        "speaker_groups": [
-            {"id": "left", "label": "Left", "kind": "left",
-             "mode": "full_range_passive",
-             "channels": [{"role": "full_range", "physical_output_index": 0}]},
-            {"id": "right", "label": "Right", "kind": "right",
-             "mode": "full_range_passive",
-             "channels": [{"role": "full_range", "physical_output_index": 2}]},
-        ],
-        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
-    })
-
-
 def test_composite_stereo_is_judged_by_channel_COUNT_not_index() -> None:
     """A working dual-Apple box sits on outputs 0 and 2 because outputd fans the
     stereo program across the child DACs. Channel 1 is not output 1 there, so an
     index-wise refusal would be a false alarm; the count rule is the honest one
     and it passes."""
-    topology = _dual_apple_stereo_topology()
+    topology = _dual_apple_stereo()
 
     graph = classify_camilla_graph(topology=topology, text=_flat_yaml())
 
@@ -2020,7 +1885,7 @@ def test_flat_graph_muted_outputs_declines_where_index_mapping_is_unproven() -> 
     assert flat_graph_muted_outputs(_full_range_mono_on(4), width=2) == frozenset()
     # A composite sink lets outputd choose the mapping — never mute by index.
     assert flat_graph_muted_outputs(
-        _dual_apple_stereo_topology(), width=2
+        _dual_apple_stereo(), width=2
     ) == frozenset()
     # ...and this is the pair that actually PROVES the composite rule. The
     # stereo composite above claims {0, 2}, which is out-of-width, so the

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_active_speaker_audition import _applied_profile
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
 

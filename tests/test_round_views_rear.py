@@ -68,7 +68,7 @@ from tests.crossover_v2_banked_round import (
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_audition import _applied_profile
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle as summed_capture_bundle
 
 #: The declared cabinet, and the wall bounce it predicts (ADR-0317): a rigid

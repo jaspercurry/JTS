@@ -201,7 +201,7 @@ def test_solo_restore_emit_is_lenient_under_protected_tweeter(tmp_path, monkeypa
 
     from jasper.sound.camilla_yaml import emit_sound_config
     from jasper.sound.profile import SoundProfile
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     topo = tmp_path / "output_topology.json"
     topo.write_text(json.dumps(_active_topology("stereo", "active_2_way").to_dict()))
@@ -352,7 +352,7 @@ async def test_un_bonding_a_stereo_box_is_byte_identical_to_today(
 ):
     """A stereo topology declares both outputs: nothing to mute, nothing to
     fold. The plan must change nothing at all here."""
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     _save_topology(tmp_path, monkeypatch, _full_range_stereo())
 

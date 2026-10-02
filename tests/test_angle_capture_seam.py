@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from tests.test_plan_run import banked_program_baselines  # noqa: F401
+from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac

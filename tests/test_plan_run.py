@@ -70,6 +70,7 @@ from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
 from jasper.platform.json_fields import CodedFieldError
 from jasper.web import correction_run_host
+from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F401
 from tests.crossover_v2_fixtures import (
     FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,
 )
@@ -94,16 +95,6 @@ def _walk(angles, candidates=("fp-a",)):
 
 def _analysis(_record):
     return ProgramAnalysis(phase="verify", stimulus_id="test", locations=(_loc("sweep"),))
-
-
-def fake_program_baselines(monkeypatch):
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id",
-                        lambda: "banked-base")
-
-
-@pytest.fixture(autouse=True)
-def banked_program_baselines(monkeypatch):
-    fake_program_baselines(monkeypatch)
 
 
 @dataclass

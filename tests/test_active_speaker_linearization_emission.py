@@ -46,7 +46,8 @@ from jasper.active_speaker.runtime_contract import (
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
+from tests.test_active_speaker_runtime_contract import _dynamic_bass_descriptor
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_rear_output_foundation import _cardioid_baseline, _classify as _classify_rear, _rear_document
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 from jasper.active_speaker.crossover_section import CrossoverSection
