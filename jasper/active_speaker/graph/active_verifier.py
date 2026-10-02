@@ -39,6 +39,7 @@ from ..camilla_names import (
     driver_linearization_shelf_name as _linearization_shelf_name,
     driver_linearization_taper_name as _linearization_taper_name,
     output_commission_mute_name as _commission_mute_name,
+    output_rear_pending_mute_name as _rear_pending_mute_name,
     protective_tweeter_hp_name,
     sub_baseline_gain_name as _sub_baseline_gain_name,
     sub_baseline_limiter_name as _sub_baseline_limiter_name,
@@ -405,15 +406,14 @@ def _post_split_gain_issues(payload: dict[str, Any]) -> list[dict[str, str]]:
 def _safe_commissioning_tail_filter(payload: dict[str, Any], name: str) -> bool:
     runtime_lane = name.startswith("as_commission_")
     output_mute = False
-    suffix = "_rear_pending_mute" if name.endswith("_rear_pending_mute") else "_commission_mute"
-    if name.startswith("as_out") and name.endswith(suffix):
-        index_s = name.removeprefix("as_out").removesuffix(suffix)
+    if name.startswith("as_out"):
+        index_s = name.removeprefix("as_out").partition("_")[0]
         try:
             index = int(index_s)
         except ValueError:
             pass
         else:
-            output_mute = name == f"as_out{index}{suffix}"
+            output_mute = name in (_rear_pending_mute_name(index), _commission_mute_name(index))
     if not runtime_lane and not output_mute:
         return False
     filter_type = _filter_type(payload, name)
@@ -889,7 +889,7 @@ def _commissioning_output_chain(
     delay_name = _driver_delay_name(assignment.role)
     limiter_name = driver_limiter_name(assignment.role)
     expected_tail = (delay_name, limiter_name, mute_name) + (
-        (f"as_out{channel}_rear_pending_mute",) if assignment.output_variant == "rear" else ()
+        (_rear_pending_mute_name(channel),) if assignment.output_variant == "rear" else ()
     )
     delay = _filter_params(payload, delay_name)
     delay_ms = finite_float(delay.get("delay"))
@@ -1223,7 +1223,7 @@ def _rear_output_issues(
         if assignment.output_variant == "rear" and assignment.physical_output_index is not None:
             index = assignment.physical_output_index
             if index in rear_lead or output_terminally_muted(
-                payload, view, index, mute_name=f"as_out{index}_rear_pending_mute",
+                payload, view, index, mute_name=_rear_pending_mute_name(index),
                 mute_gain_db=STARTUP_MUTE_GAIN_DB,
             ):
                 continue

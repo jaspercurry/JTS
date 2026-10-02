@@ -71,6 +71,9 @@ REASON_DELAY_EXCEEDS_SEARCH_WINDOW = "delay_exceeds_search_window"
 REASON_LOCATE_FAILED = "locate_failed"
 REASON_VOLUME_UNRESOLVED = "volume_unresolved"
 REASON_PROGRAM_UNPLAYABLE = "program_unplayable"
+# A take's admission found an output it excites ending in its terminal mute,
+# ``ProgramAdmission.muted_output`` (#6113).
+REASON_PROGRAM_OUTPUT_MUTED = "program_output_muted"
 # #2059: a plan-shape request the household's link/client sent that this build
 # does not recognize -- an unknown tier, or a position count outside its
 # tier's range. Distinct from
@@ -993,6 +996,14 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "program_admission_refused", TEMPLATE_HARD_STOP, 0, "",
         "The speaker's safety limits refused this sweep. Nothing was played for the refused sweep. "
         "Correct the sweep band, level or length before retrying.",
+    ),
+    REASON_PROGRAM_OUTPUT_MUTED: ReasonSpec(
+        REASON_PROGRAM_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0, "",
+        "This sweep would play through the rear woofer output, and that output stays muted until "
+        "cardioid tuning is applied. Nothing was played. On speaker setup, measure the rear woofer with "
+        "Cardioid tuning first.",
+        own_action={"id": "measure_rear_woofer", "label": "Measure the rear woofer with Cardioid tuning",
+                    "href": "/sound/speaker/"},
     ),
     "session_level_not_ready": ReasonSpec(
         "session_level_not_ready", TEMPLATE_SESSION_RESTART, 0, "",

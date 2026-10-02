@@ -27,7 +27,8 @@ from jasper.active_speaker.measured_crossover_candidate import (
     compile_candidate_config,
     prove_candidate_config,
 )
-from jasper.active_speaker.graph_safety import view_from_emitted_text
+from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB, output_rear_pending_mute_name
+from jasper.active_speaker.graph_safety import output_terminally_muted, view_from_emitted_text, view_from_yaml_dict
 from jasper.active_speaker.rear_calibration import front_floor_db
 from jasper.active_speaker.measurement_programs import GRAPH_LAYERS
 from jasper.active_speaker.profile import (
@@ -43,6 +44,7 @@ __all__ = [
     "load_tuning_declaration",
     "emit_measurement_graph",
     "measurement_graph_evidence",
+    "park_muted_outputs",
 ]
 
 TuningGraphScope = Literal["candidate", "candidate_branches", "timing"]
@@ -208,14 +210,34 @@ def compile_tuning_graph(
     )
     prove_candidate_config(candidate, candidate_text)
     if scope == "candidate_branches":
-        prefix, rest = candidate_text.split("\nmixers:\n", 1)
-        mixer_text, pipeline = rest.split("\npipeline:\n", 1)
-        mixers = yaml.safe_load(mixer_text)
+        mixers = yaml.safe_load(candidate_text)["mixers"]
         mixers.update(yaml.safe_load(camilla_yaml._emit_role_routed_mixer(
             candidate.source_preset, branches, apply_region_polarity=False,
         )))
-        return prefix + "\n" + yaml.safe_dump({"mixers": mixers}, sort_keys=False) + "\npipeline:\n" + pipeline
+        return _with_mixers(candidate_text, mixers)
     return candidate_text
+
+
+def _with_mixers(text: str, mixers: Mapping[str, Any]) -> str:
+    """``text`` with its ``mixers`` section replaced, every other line kept as emitted."""
+    prefix, rest = text.split("\nmixers:\n", 1)
+    return (prefix + "\n" + yaml.safe_dump({"mixers": dict(mixers)}, sort_keys=False)
+            + "\npipeline:\n" + rest.split("\npipeline:\n", 1)[1])
+
+
+def park_muted_outputs(text: str) -> str:
+    """``text`` with no split source fed to an output that ends in its pending mute, so a
+    summed take parks that output as a branch take parks a target it does not name;
+    ``text`` itself when it feeds none (#6113)."""
+    graph = yaml.safe_load(text)
+    view = view_from_yaml_dict(graph)
+    fed = [entry for name, mixer in (graph.get("mixers") or {}).items() if name.startswith("split_active_")
+           for entry in mixer["mapping"] if entry.get("sources") and output_terminally_muted(
+               graph, view, entry["dest"], mute_name=output_rear_pending_mute_name(entry["dest"]),
+               mute_gain_db=STARTUP_MUTE_GAIN_DB)]
+    for entry in fed:
+        entry["sources"] = []
+    return _with_mixers(text, graph["mixers"]) if fed else text
 
 
 def timing_floor_db(profile: MeasurementGraphProfile, candidate: MeasuredCrossoverCandidate) -> dict[str, float]:

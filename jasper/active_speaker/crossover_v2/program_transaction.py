@@ -31,7 +31,7 @@ from ..program_playback import (
     play_program,
 )
 from ..session_volume_plan import SessionVolumePlanError
-from .refusal_copy import exception_detail
+from .refusal_copy import REASON_PROGRAM_OUTPUT_MUTED, exception_detail
 from .playback_transaction import (
     STAGE_LOCK,
     STAGE_READY,
@@ -57,6 +57,7 @@ __all__ = [
     "StimulusCapture",
     "StimulusCaptureError",
     "StimulusCaptureStopped",
+    "admission_incident",
 ]
 
 #: The measurement volume was not open/confirmed/fresh, so nothing was played.
@@ -97,6 +98,11 @@ BELOW_READY_INCIDENTS = frozenset({
     STIMULUS_NOT_CAPTURED,
     STIMULUS_NOT_COMPOSED,
 })
+
+
+def admission_incident(refused: ProgramPlaybackRefused) -> str:
+    """The incident a refused re-admission names: an output it found muted has its own copy."""
+    return REASON_PROGRAM_OUTPUT_MUTED if refused.admission.muted_output else STIMULUS_ADMISSION_REFUSED
 
 
 @dataclass(frozen=True)
@@ -253,7 +259,7 @@ class ProgramPlaybackTransaction:
             observation = PlaybackObservation(emission="not_started")
         except ProgramPlaybackRefused as exc:
             evidence = exc.evidence
-            stage, incident = STAGE_READY, STIMULUS_ADMISSION_REFUSED
+            stage, incident = STAGE_READY, admission_incident(exc)
             observation = PlaybackObservation(emission="not_started")
         except StimulusCaptureStopped:
             raise

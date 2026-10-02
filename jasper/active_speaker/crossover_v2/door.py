@@ -23,7 +23,7 @@ from ..design_draft import load_design_draft
 from ..measured_crossover_candidate import MeasuredCrossoverCandidate
 from ..measurement_emit import (
     MeasurementGraphProfile, TuningGraphScope, compile_tuning_graph,
-    emit_measurement_graph,
+    emit_measurement_graph, park_muted_outputs,
 )
 from ..restore_wait import resilient_restore
 from ..session_volume_plan import SessionVolumeRestoreResult
@@ -265,13 +265,14 @@ def bind_measurement_graph(
         if scope in CANDIDATE_SCOPES:
             selected = (reference if reference is not None and candidate_id == reference.fingerprint else
                         candidate if candidate is not None else find_banked_candidate(candidate_id).candidate)
-        return compile_tuning_graph(
+        # A take plays nothing into an output its graph keeps muted for good (#6113).
+        return park_muted_outputs(compile_tuning_graph(
             profile,
             scope=cast(TuningGraphScope, scope),
             candidate=selected,
             branch_channels=branch_channels,
             cleared_layers=cleared_layers,
-        )
+        ))
 
     try:
         if candidate is None:
