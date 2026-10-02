@@ -30,21 +30,36 @@ from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker.crossover_v2.programs import (
     SessionExcitation, compose_summed_probe, excitation_from_context, probe_fader_db, program_for_spec,
 )
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, branch_probes
+from jasper.active_speaker.crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec, branch_channels_for, branch_probes
 from jasper.active_speaker.crossover_v2.composition import bind_program_composer
+from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
+from jasper.active_speaker.crossover_v2.program_transaction import admission_incident
+from jasper.active_speaker.capture_schedule import prepare_plan_captures
+from jasper.active_speaker.angle_capture import request_for_preset
+from jasper.active_speaker.movers import MOVER_HUMAN
 from jasper.active_speaker.crossover_v2.priors import configured_crossover_transfers
 from jasper.active_speaker.crossover_v2.summed_alignment import reference_from_graph
 from jasper.active_speaker.driver_safety import compute_driver_safety_profile
 from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError, ExcitationSafetyPlanRefusal, resolve_driver_excitation_ceilings,
 )
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_DRIVER_SENSITIVITY_UNDECLARED, CrossoverV2Refused
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_DRIVER_SENSITIVITY_UNDECLARED, REASON_PROGRAM_OUTPUT_MUTED, REASON_REGISTRY, CrossoverV2Refused,
+)
 from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence
+from jasper.active_speaker.measurement_emit import (
+    MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence,
+    park_muted_outputs,
+)
 from jasper.active_speaker.measurement_level import scope_gains_db
-from jasper.active_speaker.measurement_programs import Pose, preset
+from jasper.active_speaker.measurement_programs import (
+    Pose, available_presets, offered_here, preset, programs_for_topology, run_preset,
+)
+from jasper.active_speaker.graph_safety import view_from_emitted_text
+from jasper.active_speaker.program_headroom import charge_db, graph_headroom_db
+from jasper.active_speaker.program_playback import ProgramPlaybackRefused
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.program_admission import (
@@ -54,7 +69,9 @@ from jasper.active_speaker.program_admission import (
     readmit_program_from_wav,
     readmit_summed_program_from_wav,
 )
-from jasper.active_speaker.graph.bass_extension import classify_bass_extension_graph
+from jasper.active_speaker.graph.bass_extension import (
+    classify_bass_extension_graph, desired_graph_approved, prove_desired_graph,
+)
 from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_gain_reserve_db
 from jasper.audio_routes.camilla_emit import emit_gain_filter, emit_linkwitz_riley
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
@@ -1543,6 +1560,202 @@ def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
         excited_target_ids=frozenset(CARDIOID_TAKE),
     )
     assert {issue["code"] for issue in result.issues} == {"active_graph_program_shape_unproven"}
+
+
+def _fresh_cardioid(monkeypatch, *, rear_calibration=None):
+    """A cardioid declared afresh, as after "Reset speaker setup": with no rear
+    tune, its rear output ends in the pending mute (ADR-0316, #6113)."""
+    topology, safety, targets = _profile_and_targets(
+        rear=True, woofer_peak=-30, tweeter_peak=-30, woofer_floor=20, woofer_highpass=20, woofer_upper=4000,
+        max_sweep_duration_s=8)
+    cardioid = _rear_pair("mono")[0]
+    monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: {"driver_safety_profile": safety})
+    monkeypatch.setattr(conductor_context, "ensure_crossover_preview_ready", lambda draft: None)
+    monkeypatch.setattr(commission_wiring, "resolve_capture_preset", lambda topology: cardioid)
+    context = conductor_context.resolve_conductor_context(
+        {"active": True, "targets": {"drivers": active_driver_targets(topology)}}, topology=topology)
+    profile = MeasurementGraphProfile(cardioid, topology, context.role_channels, ACTIVE_PCM,
+                                      protection_sections_by_role=confirmed_protection_sections(safety, targets))
+    return topology, safety, context, profile, replace(_trial_candidate(profile), rear_calibration=rear_calibration or {})
+
+
+_FRONT = frozenset({"woofer", "tweeter"})
+_REAR = "woofer:rear"
+_BASS_BASE_CLEARS = ("room_correction", "bass_extension")
+#: Each program's takes on a fresh cardioid base, and the targets each excites:
+#: speaker (check, measure, timing), every summed take (speaker candidates,
+#: rear/express, rear/seat, room) and its probe, bass and its probe, the branch
+#: takes, rear/pair and its probes, near-field and one-driver takes.
+FRESH_CARDIOID_TAKES = {
+    "speaker_check": (dict(graph_scope="drivers", program_phase="check"), _FRONT),
+    "speaker_measure": (dict(graph_scope="drivers", program_phase="measure"), _FRONT),
+    "speaker_timing": (dict(graph_scope="timing", program_phase="timing"), _FRONT),
+    "summed": (dict(graph_scope="candidate", program_phase="lateral"), _FRONT),
+    "summed_probe": (dict(graph_scope="candidate", program_phase="lateral", level_probe=True), _FRONT),
+    "bass": (dict(graph_scope="candidate", program_phase="lateral", stimulus=preset("bass/axis").stimulus,
+                  cleared_layers=_BASS_BASE_CLEARS), _FRONT),
+    "bass_probe": (dict(graph_scope="candidate", program_phase="lateral", stimulus=preset("bass/axis").stimulus,
+                        cleared_layers=_BASS_BASE_CLEARS, level_probe=True), _FRONT),
+    "branches": (dict(graph_scope="candidate_branches", program_phase="lateral",
+                      branch_target_ids=("woofer", "tweeter")), _FRONT),
+    "rear_pair": (dict(graph_scope="candidate_branches", program_phase="lateral",
+                       branch_target_ids=("woofer", _REAR), cleared_layers=("rear_calibration",)),
+                  frozenset({"woofer", _REAR})),
+    "rear_pair_probe_rear": (_REAR, frozenset({_REAR})),
+    "rear_pair_probe_front": ("woofer", frozenset({"woofer"})),
+    "nearfield_rear": (dict(graph_scope="drivers", program_phase="lateral", branch_target_ids=(_REAR,),
+                            stimulus=preset("nearfield/each").stimulus), frozenset({_REAR})),
+    "nearfield_front": (dict(graph_scope="drivers", program_phase="lateral", branch_target_ids=("woofer",),
+                             stimulus=preset("nearfield/each").stimulus), frozenset({"woofer"})),
+    "driver_tweeter": (dict(graph_scope="drivers", program_phase="lateral", branch_target_ids=("tweeter",)),
+                       frozenset({"tweeter"})),
+    "driver_rear": (dict(graph_scope="drivers", program_phase="lateral", branch_target_ids=(_REAR,)),
+                    frozenset({_REAR})),
+}
+
+
+def _fresh_take(shape, candidate_id):
+    if isinstance(shape, str):  # one branch's probe of a rear/pair take, on the drivers graph
+        pair = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id=candidate_id,
+                           program_phase="lateral", branch_target_ids=("woofer", _REAR), level_probe=True)
+        return next(spec for spec in branch_probes(pair) if spec.branch_target_ids == (shape,))
+    if shape["graph_scope"] == "drivers":
+        return MeasureSpec(kind="baseline", **shape)
+    return MeasureSpec(kind="verify", candidate_id=candidate_id, **shape)
+
+
+def _split_sources(graph_text, output_index):
+    entry, = (entry for name, mixer in yaml.safe_load(graph_text)["mixers"].items() if name.startswith("split_active_")
+              for entry in mixer["mapping"] if entry["dest"] == output_index)
+    return entry.get("sources") or []
+
+
+@pytest.mark.parametrize("take", sorted(FRESH_CARDIOID_TAKES))
+@pytest.mark.asyncio
+async def test_a_fresh_cardioid_base_admits_every_take_with_its_muted_rear_parked(tmp_path, monkeypatch, take):
+    """#6113: on a cardioid whose rear stays muted until cardioid tuning is
+    applied, each program's take is built, composed and admitted the production
+    way. A summed take excites the front drivers only; a take that measures the
+    rear plays it on its own; no other take feeds the rear. The park moves no
+    sound: each take's PCM is byte-identical to what the unparked graphs compose."""
+    from jasper.web.correction_run_host import compose_plan_program  # lazy: the web host imports the engine under test
+
+    topology, safety, context, profile, candidate = _fresh_cardioid(monkeypatch)
+    shape, excited = FRESH_CARDIOID_TAKES[take]
+    spec = _fresh_take(shape, candidate.fingerprint)
+    door = bind_measurement_graph(profile, camilla_factory=lambda: None, config_dir=tmp_path, candidate=candidate)
+    door.select_scope(spec.graph_scope, spec.candidate_id, branch_channels_for(spec), spec.cleared_layers)
+    fader = probe_fader_db(context.driver_caps_dbfs)
+    host = SimpleNamespace(excitation=excitation_from_context(context, fader),
+                           gain_plan_db={"woofer": -40.0, "tweeter": -40.0}, set_program=lambda *args: None)
+
+    async def admitted_pcm(graph, reference):
+        paths: list = []
+        compose = bind_program_composer(
+            program_for_spec=lambda spec, level: compose_plan_program(host, spec, level, context=context),
+            store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=paths.append),
+            capture_session_id="fresh", cam_factory=lambda: None, config_dir=str(tmp_path), topology=topology,
+            safety_profile=safety, role_targets=context.role_targets, graph_yaml=lambda: graph,
+            level_reference_yaml=reference, roles=context.roles_bands,
+            graph_evidence_for_spec=lambda spec: measurement_graph_evidence(
+                scope=spec.graph_scope, candidate=candidate, cleared_layers=spec.cleared_layers))
+        played = await compose(spec=spec, level_db=fader)
+        return await played.seams["readmit"](), (tmp_path / paths[-1]).read_bytes()
+
+    graph = door.graph_yaml()
+    admission, pcm = await admitted_pcm(graph, door.level_reference_yaml)
+
+    assert admission.allowed, admission.to_dict()
+    assert {segment.role for segment in admission.segments} == excited
+    rear, = (target["output_index"] for target in active_driver_targets(topology)
+             if target["target_fingerprint"] == context.role_targets[_REAR])
+    assert bool(_split_sources(graph, rear)) == (_REAR in excited)
+    unparked = graph if spec.graph_scope == "drivers" else compile_tuning_graph(
+        profile, candidate, scope=spec.graph_scope, branch_channels=branch_channels_for(spec) or None,
+        cleared_layers=spec.cleared_layers)
+    assert (await admitted_pcm(unparked, compile_tuning_graph(profile, candidate)))[1] == pcm
+
+
+def test_a_summed_take_that_feeds_its_muted_rear_still_refuses_and_names_it(tmp_path, monkeypatch):
+    """The gate holds (#6113): the household's own graph feeds the rear it keeps
+    muted, so a summed take through it refuses, and the refusal names the output
+    it found muted, under its own incident and action."""
+    topology, safety, context, profile, candidate = _fresh_cardioid(monkeypatch)
+    graph = compile_tuning_graph(profile, candidate, scope="timing")
+    program = excitation_from_context(context, -30.0).verify_program()
+    wav = tmp_path / "timing.wav"
+    write_program_wav(wav, program)
+
+    admission = readmit_summed_program_from_wav(
+        program, wav, graph_yaml=graph, topology=topology, safety_profile=safety,
+        role_targets=context.role_targets, session_volume_db=-30.0,
+        graph_evidence=measurement_graph_evidence(scope="timing", candidate=candidate))
+
+    assert admission.refusals == (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,)
+    assert admission.to_dict()["muted_output"] == {"target_id": _REAR, "output_index": 2}
+    assert admission_incident(ProgramPlaybackRefused(admission)) == REASON_PROGRAM_OUTPUT_MUTED
+    assert REASON_REGISTRY[REASON_PROGRAM_OUTPUT_MUTED].next_action["id"] == "measure_rear"
+
+
+@pytest.mark.parametrize("scope, cleared", [("timing", ()), ("candidate", ()), ("candidate", _BASS_BASE_CLEARS)])
+def test_the_park_changes_only_the_muted_rears_split_entry(monkeypatch, scope, cleared):
+    """Parking the muted rear (#6113) empties its split entry and nothing else:
+    the graph still passes its proof, and it carries its own charge, which is
+    the unparked graph's (ADR-0385)."""
+    topology, _safety, _context, profile, candidate = _fresh_cardioid(monkeypatch)
+    unparked = compile_tuning_graph(profile, candidate, scope=scope, cleared_layers=cleared)
+    parked = park_muted_outputs(unparked)
+    expected = yaml.safe_load(unparked)
+    for entry in expected["mixers"]["split_active_2way"]["mapping"]:
+        if entry["dest"] == 2:
+            entry["sources"] = []
+
+    assert yaml.safe_load(parked) == expected
+    assert desired_graph_approved(prove_desired_graph(topology, parked, snapshot=measurement_graph_evidence(
+        scope=scope, candidate=candidate, cleared_layers=cleared)))
+    assert charge_db(yaml.safe_load(parked)) == charge_db(yaml.safe_load(unparked)) == pytest.approx(
+        graph_headroom_db(view_from_emitted_text(parked)))
+
+
+def _shipped_scoped_variants(topology, roles_bands, candidate_id):
+    """Every scoped graph the shipped presets this speaker offers play, at each
+    layout they offer: its scope, branch pair and cleared layers."""
+    targets = tuple(measurement_target_id(target["role"], target.get("output_variant") or "primary")
+                    for target in active_driver_targets(topology))
+    variants = set()
+    for name in available_presets():
+        for layout in preset(name).layouts:
+            plan = run_preset(name, layout)
+            if not offered_here(plan, programs=programs_for_topology(topology), targets=targets):
+                continue
+            request = request_for_preset(plan, candidates=(candidate_id,) if plan.regime == "branches" else (),
+                                         mover=plan.mover or MOVER_HUMAN, targets=targets)
+            variants |= {(capture.spec.graph_scope, tuple(branch_channels_for(capture.spec).items()),
+                          capture.spec.cleared_layers)
+                         for capture in prepare_plan_captures(request, roles_bands=roles_bands)
+                         if capture.spec.graph_scope in CANDIDATE_SCOPES}
+    return variants
+
+
+@pytest.mark.parametrize("base", ["rear_tuned_cardioid", "two_way"])
+def test_a_base_that_mutes_nothing_parks_nothing_for_any_shipped_take(monkeypatch, base):
+    """#6113: a cardioid with its rear tune applied, or a two-way, has no output
+    a take routes into a terminal mute, so every scoped graph of every shipped
+    preset and layout is the one the door emitted before the park."""
+    if base == "two_way":
+        topology, safety, targets = _profile_and_targets(woofer_floor=20, woofer_highpass=20)
+        profile = MeasurementGraphProfile(_preset(), topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+                                          protection_sections_by_role=confirmed_protection_sections(safety, targets))
+        candidate = _trial_candidate(profile)
+    else:
+        topology, _safety, _context, profile, candidate = _fresh_cardioid(monkeypatch, rear_calibration=_rear_document())
+    variants = _shipped_scoped_variants(topology, tuple(_roles()), candidate.fingerprint)
+
+    assert {scope for scope, _pair, _cleared in variants} == set(CANDIDATE_SCOPES)
+    for scope, pair, cleared in sorted(variants):
+        emitted = compile_tuning_graph(profile, candidate, scope=scope, branch_channels=dict(pair) or None,
+                                       cleared_layers=cleared)
+        assert park_muted_outputs(emitted) == emitted, (scope, pair, cleared)
 
 
 @pytest.mark.parametrize("rear", [False, True])

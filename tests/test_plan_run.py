@@ -2322,13 +2322,18 @@ async def test_a_ladder_stopped_on_the_channel_map_keeps_the_drivers_it_named(mo
     assert (result.reason, result.failed_roles) == (REASON_CHANNEL_MAP_MISMATCH, ("tweeter",))
 
 
+@pytest.mark.parametrize("muted", [False, True], ids=["over_limits", "output_muted"])
 @pytest.mark.parametrize("site", ["transaction", "executor", "ladder"])
-async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, tmp_path, box, site):
+async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, tmp_path, box, site, muted):
+    """A refused admission banks its code; one that found an excited output in its
+    terminal mute banks that output's own code (#6113)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
-    admission = ProgramAdmission("verify", "verify", -23, (
-        SegmentAdmission("summed-1", "summed", 0, (20, 20000), -23, False, ()),
-    ), (), (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS,))
+    admission = ProgramAdmission("verify", "verify", -23, (), (), (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,),
+                                 {"target_id": "woofer:rear", "output_index": 2}) if muted else ProgramAdmission(
+        "verify", "verify", -23, (SegmentAdmission("summed-1", "summed", 0, (20, 20000), -23, False, ()),), (),
+        (ProgramAdmissionRefusal.SEGMENT_OUTSIDE_LIMITS,))
+    reason = "program_output_muted" if muted else "program_admission_refused"
     failure = ProgramPlaybackRefused(admission)
     fakes = FakeSeams()
     store = _Store(fakes.records)
@@ -2362,13 +2367,13 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
             await run
             play.assert_not_awaited()
         await packet.finish()
-        assert packet.runs["run"]["reason"] == "program_admission_refused"
-        assert all(row["reason"] == "program_admission_refused" for row in manifest.not_measured)
+        assert packet.runs["run"]["reason"] == reason
+        assert all(row["reason"] == reason for row in manifest.not_measured)
     saved = store.snapshots[-1]
-    assert saved["reason"] == "program_admission_refused"
+    assert saved["reason"] == reason
     if site == "transaction":
         never_played, = (take for group in saved["sets"] for take in group["takes"])
         assert never_played == {"take_id": never_played["take_id"], "record_id": "", "selected": False}
         assert with_records(tmp_path, saved, every_take=True)["sets"] == saved["sets"]
         stop = saved["not_measured"][0]
-        assert (stop["fault"], stop["evidence"]["admission"]) == ("program_admission_refused", admission.to_dict())
+        assert (stop["fault"], stop["evidence"]["admission"]) == (reason, admission.to_dict())
