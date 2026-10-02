@@ -42,8 +42,6 @@ from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     PHASE_CHECK,
     PHASE_LATERAL,
-    CommissionJourney,
-    JourneyPlan,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPE_DRIVERS,
@@ -135,7 +133,6 @@ class CrossoverV2Session:
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
         target_bands: Mapping[str, Any] | None = None,
         driver_spacing_m: float | None = 0.0,
-        accepted_phases: Sequence[str] = (),
         gain_plan_db: Mapping[str, float] | None = None,
         measure_gain_ceiling_db: Mapping[str, float] | None = None,
         timing_prior: str | None = None,
@@ -186,12 +183,10 @@ class CrossoverV2Session:
             else float(driver_spacing_m),
             mic_distance_m=MEASUREMENT_DISTANCE_M,
         )
-        # Where this round is, and the walk it is in. ONE aggregate: six correlated
-        # fields here could disagree.
-        self._journey = CommissionJourney(
-            JourneyPlan.from_index_map(index_phase_map),
-            accepted_phases=accepted_phases,
-        )
+        self._index_phase_map = dict(index_phase_map)
+        self._lateral_indexes = tuple(sorted(
+            index for index, phase in self._index_phase_map.items() if phase == PHASE_LATERAL
+        ))
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
         # CHECK's measured room floor, held for the MEASURE and lateral priors.
@@ -335,16 +330,12 @@ class CrossoverV2Session:
         )
 
     @property
-    def accepted_phases(self) -> frozenset[str]:
-        return self._journey.accepted_phases
-
-    @property
     def timing_prior(self) -> str | None:
         """The id of the session's timing take, the prior MEASURE reads (ADR-0319), or ``None``."""
         return self._timing_prior
 
     def phase_of_index(self, index: int) -> str:
-        phase = self._journey.plan.phase_for_index(index)
+        phase = self._index_phase_map.get(index)
         if phase is None:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
         return phase
@@ -357,8 +348,6 @@ class CrossoverV2Session:
     def snapshot(self) -> V2ConductorSnapshot:
         return V2ConductorSnapshot(
             session_id=self.session_id,
-            accepted_phases=self._journey.accepted_capture_phases(),
-            session_phases=self._journey.plan.phases,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
         )
@@ -436,7 +425,7 @@ class CrossoverV2Session:
         if phase == PHASE_LATERAL and self._branch_program is not None:
             return self._branch_program
         if phase == PHASE_LATERAL and any(
-            index in self._journey.plan.group_offsets(phase)
+            index in self._lateral_indexes
             and spec.graph_scope != GRAPH_SCOPE_DRIVERS
             for index, spec in self._measure_specs_by_index.items()
         ):
@@ -462,7 +451,7 @@ class CrossoverV2Session:
         )
         if phase == PHASE_LATERAL:
             # The plan's own prompt for this pose: one per lateral index, in order.
-            prompt = self._lateral_prompts[self._journey.plan.group_offsets(phase).index(index)]
+            prompt = self._lateral_prompts[self._lateral_indexes.index(index)]
             position, vertical = (
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),
@@ -472,9 +461,6 @@ class CrossoverV2Session:
             position_deg=position,
             vertical_deg=vertical,
         )
-
-    def note_accepted(self, phase: str, index: int) -> None:
-        self._journey.accept(phase, index)
 
     def check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         gain_plan = analysis.gain_plan

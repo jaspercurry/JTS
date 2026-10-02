@@ -549,10 +549,10 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
 
 def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch):
     """A state file from an older build carries ``cloud``,
-    ``evidence.cloud_artifacts`` and ``evidence.household_findings``. It still
-    loads everywhere, no surface reports or grades those stale blocks, and the
-    next persist does not carry them. The applied candidate still survives a
-    re-arm's new session id (#2079)."""
+    ``evidence.cloud_artifacts`` and ``evidence.household_findings``, and the
+    stored journey (``accepted_phases``, ``applied``). It still loads
+    everywhere, no surface reports or grades those stale blocks, and the next
+    persist does not carry them. A new run carries no candidate."""
     from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 
     passing_group = {
@@ -599,8 +599,8 @@ def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch)
     )
     state = v2state.load_v2_state()
     assert state["session_id"] == "cap_rearm_session"
-    assert state["candidate"] == {"fingerprint": "fp-original"}
-    assert "cloud" not in state
+    assert state["candidate"] is None
+    assert not {"cloud", "accepted_phases", "applied"} & set(state)
     assert state["evidence"] == {"bundle_session_id": "bundle-2"}
 
 
@@ -617,7 +617,6 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
             records=V2RecordPublishers(check=lambda *a, **k: None),
         ),
         driver_spacing_m=0.15,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         index_phase_map=index_phase_map,
     )
 
@@ -648,9 +647,7 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
     }
     v2state.save_v2_state({
         "session_id": "cap_measuring_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": "fp-measured"},
-        "applied": True,
         "fc_selection": legacy,
     })
 
@@ -686,7 +683,6 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
             records=V2RecordPublishers(check=lambda *a, **k: None),
         ),
         driver_spacing_m=0.15,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
         index_phase_map=index_phase_map,
         **kwargs,
     )
@@ -760,17 +756,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     assert correction_runtime.refusal_envelope(refused.value)["next_action"]["id"] == "review_safety_limits"
 
 
-def test_observe_apply_success_marks_the_state_applied():
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": False,
-    })
-    v2state.observe_apply_success({"fingerprint": "fp-1"})
-    assert v2state.load_v2_state()["applied"] is True
-
-
 def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
     """#2839: the writer fails, not the packet.
 
@@ -785,7 +770,7 @@ def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
     ``json.dumps`` raises while evaluating an ARGUMENT, so ``atomic_write_text``
     is never entered and the prior state is still on disk afterwards.
     """
-    v2state.save_v2_state({"session_id": "cap_ok", "applied": False})
+    v2state.save_v2_state({"session_id": "cap_ok"})
     good = v2state.load_v2_state()
 
     for bad in (float("nan"), float("inf")):
@@ -1910,14 +1895,12 @@ def _seed_alternative_apply(
     candidate = _run6_measured_candidate(selected_preset)
     v2state.save_v2_state({
         "session_id": "cap_alternative",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
         "fc_selection": {
             "verdict": "recommend_alternative", "configured_hz": 2500.0,
             "recommended_hz": selected_hz, "comparison_complete": True,
         },
         "sound_design_revision": 1,
-        "applied": False,
     })
     return candidate
 
@@ -1956,7 +1939,7 @@ def test_alternative_apply_loads_exact_candidate_then_records_sound(
         "LinkwitzRileyHighpass": (2750.0, 4),
     }
     assert load_design_draft()["revision"] == 2
-    assert v2state.load_v2_state()["applied"] is True
+    assert v2state.load_v2_state()["candidate"]["fingerprint"] == candidate.fingerprint
 
 
 def test_a_below_floor_apply_is_refused_before_sound_is_written(
@@ -2011,7 +1994,7 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
     # so there is nothing for a household to undo and nothing for the next
     # measurement session to read as its configured crossover.
     assert draft["revision"] == 1
-    assert (v2state.load_v2_state() or {})["applied"] is False
+    assert (v2state.load_v2_state() or {})["candidate"] == {"fingerprint": candidate.fingerprint}
 
 
 def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
@@ -2042,7 +2025,6 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     as_declared = _run6_measured_candidate(configured_preset)
     v2state.save_v2_state({
         "session_id": "cap_stale_selection",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": as_declared.fingerprint},
         # Everything the old gate needed to fire, all of it true of some other
         # review: a complete comparison recommending a different crossover.
@@ -2051,7 +2033,6 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
             "recommended_hz": 2750.0, "comparison_complete": True,
         },
         "sound_design_revision": 1,
-        "applied": False,
     })
 
     payload = _apply(
@@ -2206,9 +2187,7 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
 
     v2state.save_v2_state({
         "session_id": "cap_run6",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
     })
 
     payload = _apply(
@@ -2242,9 +2221,7 @@ def test_a_blocked_apply_moves_no_level(monkeypatch, tmp_path):
 
     v2state.save_v2_state({
         "session_id": "cap_run6",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
     })
 
     # Move the crossover design out from under the reviewed candidate, exactly
@@ -2274,10 +2251,7 @@ class _StubConductor:
         self._session_id = session_id
 
     def snapshot(self):
-        return SimpleNamespace(
-            session_id=self._session_id, accepted_phases=(),
-            session_phases=(), gain_plan_db=None,
-        )
+        return SimpleNamespace(session_id=self._session_id, gain_plan_db=None)
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
@@ -2290,8 +2264,8 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     host-owned when the apply path gives it a value and a persist driven by
     the conductor ALONE (empty prior, nothing to carry) cannot regenerate one.
     A new such key fails this test the moment it is written, without anyone
-    having to remember to extend a list. A brand-new session id is the hard
-    case, so that is what this crosses.
+    having to remember to extend a list. The run's own next persist is what
+    this crosses: a new run starts a fresh document.
     """
     # (1) What a persist can rebuild from the conductor alone, with an empty
     # prior so nothing can be carried forward.
@@ -2303,10 +2277,7 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     }
 
     # (2) What the apply path establishes on top of it.
-    v2state.save_v2_state({
-        "session_id": "s1", "applied": False,
-        "accepted_phases": [PHASE_MEASURE], "candidate": {"fingerprint": "fp"},
-    })
+    v2state.save_v2_state({"session_id": "s1"})
     v2state.observe_apply_success({"fingerprint": "fp"})
     after_apply = dict(v2state.load_v2_state() or {})
     host_owned = {
@@ -2316,8 +2287,8 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
     # A guard that derives an empty set proves nothing.
     assert "candidate" in host_owned
 
-    # (3) Cross the seam under the re-arm's BRAND-NEW session id.
-    v2state.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
+    # (3) The same run's next persist.
+    v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None)
     after_persist = v2state.load_v2_state() or {}
     for key in sorted(host_owned):
         assert after_persist.get(key) == after_apply[key], (
@@ -2368,15 +2339,11 @@ def _start_apply(apart: str, state_path: Path) -> Callable[[float], bool]:
 
 
 @pytest.mark.parametrize("apart", ["thread", "process"])
-@pytest.mark.parametrize("rewrite", [
-    pytest.param(lambda: v2state.reset_v2_journey_state(), id="reset"),
-    pytest.param(lambda: v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None), id="persist"),
-])
-def test_an_apply_landing_inside_a_state_rewrite_keeps_its_record(monkeypatch, tmp_path, rewrite, apart):
-    """A rewrite reads the state and writes a successor built from that read.
+def test_an_apply_landing_inside_a_state_rewrite_keeps_its_record(monkeypatch, tmp_path, apart):
+    """A persist reads the state and writes a successor built from that read.
     An apply in another thread or web process that records its candidate
     between the two must not lose it."""
-    v2state.save_v2_state({"session_id": "s1", "applied": True, "candidate": {"fingerprint": "old"}})
+    v2state.save_v2_state({"session_id": "s1", "candidate": {"fingerprint": "old"}})
     applies: list[Callable[[float], bool]] = []
     read = v2state.load_v2_state
 
@@ -2388,7 +2355,7 @@ def test_an_apply_landing_inside_a_state_rewrite_keeps_its_record(monkeypatch, t
         return state
 
     monkeypatch.setattr(v2state, "load_v2_state", read_then_start_an_apply)
-    rewrite()
+    v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None)
 
     [apply_ended] = applies
     assert apply_ended(10)
@@ -2396,7 +2363,7 @@ def test_an_apply_landing_inside_a_state_rewrite_keeps_its_record(monkeypatch, t
 
 
 def test_a_state_rewrite_refuses_by_code_while_another_process_holds_the_state(monkeypatch, tmp_path, caplog):
-    v2state.save_v2_state({"session_id": "s1", "applied": True})
+    v2state.save_v2_state({"session_id": "s1"})
     monkeypatch.setattr(v2state, "STATE_LOCK_TIMEOUT_S", 0.05)
 
     with spawn_lock_holder(tmp_path / "v2_state.json", hold_seconds=60):
@@ -2437,7 +2404,7 @@ def test_two_threads_in_one_process_never_hold_the_state_together(tmp_path):
     pytest.param(lambda: v2state.persist_execution_result("s1", volume_restore="exact_restored"), id="execution_result"),
 ])
 def test_a_post_commit_write_outwaits_a_holder_a_request_gives_up_on(monkeypatch, tmp_path, write):
-    v2state.save_v2_state({"session_id": "s1", "applied": False})
+    v2state.save_v2_state({"session_id": "s1"})
     before = v2state.load_v2_state()
     monkeypatch.setattr(v2state, "STATE_LOCK_TIMEOUT_S", 0.05)
 
@@ -2457,9 +2424,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
 
     v2state.save_v2_state({
         "session_id": "cap_run6",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
     })
 
     payload = _apply(
@@ -2472,7 +2437,7 @@ def test_a_pre_pr6b_candidate_payload_still_applies(monkeypatch, tmp_path):
     )
 
     assert payload["status"] == "applied", payload.get("issues")
-    assert v2state.load_v2_state()["applied"] is True
+    assert v2state.load_v2_state()["candidate"]["fingerprint"] == candidate.fingerprint
 
 
 def _prior_measured_candidate(preset):
@@ -2551,9 +2516,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     candidate = _run6_measured_candidate(preset)
     v2state.save_v2_state({
         "session_id": "cap_e2e_1",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
     })
     payload = _apply(
         {
@@ -2596,9 +2559,7 @@ def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
     candidate_again = _run6_measured_candidate(preset_again)
     v2state.save_v2_state({
         "session_id": "cap_e2e_2",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
         "candidate": {"fingerprint": candidate_again.fingerprint},
-        "applied": False,
     })
     payload_again = _apply(
         {
@@ -3159,7 +3120,7 @@ def test_a_restore_by_fingerprint_moves_the_declaration_back(monkeypatch, tmp_pa
                      _bg_run_async, lambda: cam)
     assert applied["status"] == "applied"
     state = v2state.load_v2_state()
-    state.update(candidate={"fingerprint": selected.fingerprint}, applied=False)
+    state.update(candidate={"fingerprint": selected.fingerprint})
     v2state.save_v2_state(state)
     applied = _apply({"candidate": selected.to_dict(), "expected_candidate_fingerprint": selected.fingerprint},
                      _bg_run_async, lambda: cam)

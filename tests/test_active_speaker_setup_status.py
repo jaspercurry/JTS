@@ -4,14 +4,10 @@
 
 from __future__ import annotations
 
-from jasper.web import correction_crossover_v2_state as v2state
-from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 
-from importlib.resources import files
-import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -20,7 +16,6 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import jasper.active_speaker.applied_tune as applied_tune_mod
 import jasper.active_speaker.baseline_profile as baseline_mod
 import jasper.active_speaker.setup_status as setup_mod
-from jasper.audio_routes.output_topology import topology_config_fingerprint
 from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
 from jasper.audio_routes.output_topology_store import save_output_topology
 from tests.active_speaker_fixtures import (
@@ -145,77 +140,6 @@ def _candidate(
     }
 
 
-def _applied_acoustic_profile(
-    *,
-    measured: bool = True,
-    config_path: Path | None = None,
-    with_snapshot: bool = True,
-    tuning_owner: str = "manual",
-) -> dict:
-    profile = {
-        "artifact_schema_version": 1,
-        "kind": "jts_active_speaker_baseline_profile_candidate",
-        "status": "applied",
-        "baseline_id": "baseline-bench_mono",
-        "source": {
-            "fingerprint": "source-fp",
-        },
-        "config": {
-            "path": str(config_path) if config_path is not None else "",
-        },
-        "provisional": not measured,
-        "tuning_owner": tuning_owner,
-    }
-    if with_snapshot:
-        profile["candidate_fingerprint"] = "candidate-fp"
-        preset = json.loads(
-            (
-                Path(str(files("jasper.active_speaker")))
-                / "presets"
-                / "bc_de250_dayton_e150he44_v1.json"
-            ).read_text(encoding="utf-8")
-        )
-        profile["recomposition_snapshot"] = {
-            "schema_version": 1,
-            "topology_id": "bench_mono",
-            "topology_fingerprint": topology_config_fingerprint(_active_topology()),
-            "domain": "full",
-            "preset": preset,
-            "playback_device": "hw:Loopback,0",
-            "corrections": {
-                "woofer": {"gain_db": 0.0, "delay_ms": 0.0, "inverted": False},
-                "tweeter": {"gain_db": -10.0, "delay_ms": 0.0, "inverted": False},
-            },
-            "level_match": {
-                "applied": measured,
-                "groups_measured": 1 if measured else 0,
-            },
-            "corrections_source": {
-                "woofer": "measured" if measured else "none",
-                "tweeter": "measured" if measured else "sensitivity",
-            },
-            "tuning_owner": tuning_owner,
-        }
-    return profile
-
-
-def _write_applied_graph(
-    topology: OutputTopology,
-    profile: dict,
-    path: Path,
-    *, monkeypatch,
-) -> None:
-    from tests.active_speaker_fixtures import declare_applied_fixture
-    declare_applied_fixture(monkeypatch, topology, profile)
-    text, issues = compile_applied_fixture(
-        topology,
-        applied_profile=profile,
-    )
-    assert issues == []
-    assert text is not None
-    path.write_text(text, encoding="utf-8")
-
-
 def test_active_config_path_from_statefile_reads_through_canonical_reader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -262,101 +186,6 @@ def test_active_config_path_from_statefile_none_becomes_empty_string(
     )
 
     assert setup_mod.active_config_path_from_statefile() == ""
-
-
-#: The measured candidate the applied automatic crossover was composed from.
-_APPLIED_CANDIDATE_FINGERPRINT = "9" * 64
-
-
-@pytest.fixture
-def v2_journey(tmp_path: Path):
-    """The real v2 journey writers, pointed at a temp state file.
-
-    Through ``set_state_path_for_tests``, the seam the flow's own loaders
-    honour, so a test drives writer -> gate end to end.
-    """
-    from jasper.web import correction_crossover_v2 as v2
-
-    v2state.set_state_path_for_tests(tmp_path / "crossover_v2_state.json")
-    try:
-        yield v2
-    finally:
-        v2state.set_state_path_for_tests(None)
-
-
-def _v2_apply(v2: Any) -> None:
-    """A reviewed candidate, applied — ``observe_apply_success``'s own path."""
-    v2state.save_v2_state({
-        "session_id": "session-1",
-        "accepted_phases": ["measure"],
-        "candidate": {"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT},
-        "applied": False,
-    })
-    v2state.observe_apply_success({"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT})
-
-
-def _new_session_first_persist(v2: Any) -> None:
-    """``build_conductor_state`` carries ``applied`` forward only within one
-    session, so the first persist of a NEW measure session writes it ``False``
-    beside no candidate — while the applied graph keeps playing.
-    """
-    v2state.save_v2_state({
-        "session_id": "session-2",
-        "accepted_phases": [],
-        "candidate": None,
-        "applied": False,
-    })
-
-
-def _republish_door(v2: Any) -> None:
-    """The way back republishes a banked candidate and writes ``applied``
-    ``False`` (``correction_crossover_v2_republish``), naming a DIFFERENT
-    candidate than the one playing.
-    """
-    v2state.save_v2_state({
-        "session_id": "session-3",
-        "accepted_phases": ["measure"],
-        "candidate": {"fingerprint": "1" * 64},
-        "applied": False,
-        "republished": {"at": 1.0},
-    })
-
-
-def _start_over(v2: Any) -> None:
-    """Start over keeps the applied graph playing and drops the candidate."""
-    v2state.reset_v2_journey_state()
-
-
-def _applied_automatic_room_status(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    candidate_fingerprint: str,
-) -> dict:
-    """One real setup status for an APPLIED automatic crossover."""
-
-    topology = _active_topology()
-    _save_topology(monkeypatch, tmp_path, topology)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    automatic = _applied_acoustic_profile(config_path=config_path)
-    automatic["tuning_owner"] = "automatic"
-    automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
-    if candidate_fingerprint:
-        automatic["source"]["measured_candidate_fingerprint"] = candidate_fingerprint
-    _write_applied_graph(topology, automatic, config_path, monkeypatch=monkeypatch)
-    monkeypatch.setattr(
-        applied_tune_mod,
-        "compile_commissioning_profile",
-        lambda **k: _candidate(status="ready_to_compile", config_path=config_path),
-    )
-    monkeypatch.setattr(
-        baseline_mod,
-        "load_applied_baseline_profile_state",
-        lambda _path=None: automatic,
-    )
-    return setup_mod.read_active_speaker_setup_status(
-        active_config_path=str(config_path),
-    )
 
 
 def test_state_says_when_the_staging_candidate_is_the_applied_one(

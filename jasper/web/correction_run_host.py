@@ -70,7 +70,6 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     answers: dict[str, tuple[Any, Any]] = {}
     roles = tuple(band.role for band in conductor.roles_bands)
     diameters = context.radiating_diameter_mm_by_target if context is not None else {}
-    index = 0
     phase = ""
     answer: Any = None
 
@@ -150,10 +149,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         return analysis
 
     def analyze(record: Any) -> Any:
-        nonlocal index, phase, answer
+        nonlocal phase, answer
         answer, analysis = answers[record["take_id"]]
-        index = index_of(record)
-        phase = conductor.phase_of_index(index)
+        phase = conductor.phase_of_index(index_of(record))
         if isinstance(analysis, Exception):
             raise analysis
         return analysis
@@ -178,8 +176,6 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
             after_grading(partial(conductor.rearm_measure_after_transient, assessed))
-        elif verdict is not None and assessed.ok:
-            after_grading(partial(conductor.note_accepted, phase, index))
         return assessed
 
     return analyze, assessor

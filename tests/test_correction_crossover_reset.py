@@ -136,15 +136,14 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
     """W6.10 fold-in: Start-over must clear the durable v2 conductor state so the
     next envelope serves the clean start screen. Without this, a stale
     candidate/verify/failure re-rendered "Ready to start again" with stale
-    verify-fail actions and no start button (round-1 finding #4). NOT-applied
-    ⇒ the clear is total (nothing worth preserving)."""
+    verify-fail actions and no start button (round-1 finding #4). The clear
+    is total, with or without an applied tune: the tune is the applied
+    profile's, not this file's."""
 
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         v2state.save_v2_state({
             "session_id": "cap_x",
-            "accepted_phases": ["check", "measure"],
-            "applied": False,
             "candidate": {"fingerprint": "fp"},
             "failure": {"code": "position_hold_expired"},
         })
@@ -157,38 +156,6 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
         # The durable v2 state is gone — a fresh journey starts at the
         # microphone check, not the stale failure screen.
         assert v2state.load_v2_state() is None
-    finally:
-        v2state.set_state_path_for_tests(None)
-
-
-def test_handle_reset_while_applied_keeps_applied(monkeypatch, tmp_path):
-    """Start-over while a candidate is APPLIED keeps `applied` and clears the
-    journey fields, so the envelope serves the clean start screen."""
-    v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
-    try:
-        v2state.save_v2_state({
-            "session_id": "cap_x",
-            "accepted_phases": ["check", "measure"],
-            "applied": True,
-            "candidate": {"fingerprint": "fp-new"},
-            "failure": {"code": "verify_crossover_region"},
-            "gain_plan_db": {"woofer": -6.0},
-        })
-        _reset_scaffold(monkeypatch)
-
-        payload, status = flow.handle_reset()
-
-        assert status == 200
-        state = v2state.load_v2_state()
-        assert state is not None
-        assert state["applied"] is True
-        # Journey fields cleared, so the envelope lands on the clean start
-        # screen (phase derives to the microphone check).
-        assert state["accepted_phases"] == []
-        assert state["candidate"] is None
-        assert state["failure"] is None
-        assert state["gain_plan_db"] is None
-        assert state["session_id"] is None
     finally:
         v2state.set_state_path_for_tests(None)
 

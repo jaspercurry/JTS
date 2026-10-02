@@ -1023,10 +1023,8 @@ def test_program_and_journey_phase_values_stay_identical():
       ``PROGRAM_PHASES``. A new value would re-fingerprint every program — and
       ``stimulus_id`` equality IS #2291's before→after benefit check — and would
       stop every banked program JSON from loading.
-    * **Journey side.** The values land in ``session_phases`` /
-      ``accepted_phases`` in the on-disk flow state
-      (``durable_state.DEFAULT_V2_STATE_PATH``), which
-      ``crossover_v2_phase`` reads back.
+    * **Journey side.** The values land in every banked take record's
+      ``phase``, which the round readers filter on.
 
     So if this fails, the question is not "which spelling is nicer" but "what
     migrates the artifacts already on disk".
