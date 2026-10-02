@@ -68,7 +68,6 @@ def build_commissioning_view(
     *,
     design_draft: Mapping[str, Any] | None = None,
     crossover_preview: Mapping[str, Any] | None = None,
-    commission: Mapping[str, Any] | None = None,
     startup_load: Mapping[str, Any] | None = None,
     baseline_profile: Mapping[str, Any] | None = None,
     calibration_level: Mapping[str, Any] | None = None,
@@ -143,20 +142,12 @@ def build_commissioning_view(
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "test_level": dict((calibration_level or {}).get("test_signal") or {}),
-        "runtime": {"commission": dict(commission or {}), "startup_load": dict(startup_load or {})},
+        "runtime": {"startup_load": dict(startup_load or {})},
     }
 
 
-def load_commissioning_view(
-    topology: OutputTopology | None = None,
-    *,
-    commission: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Share commissioning inputs between /sound/ and the crossover envelope.
-
-    A caller that omits ``commission`` silently degrades the view; ``None``
-    composes identical steps.
-    """
+def load_commissioning_view(topology: OutputTopology | None = None) -> dict[str, Any]:
+    """Share commissioning inputs between /sound/ and the crossover envelope."""
     from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: import cost (graph compilation)
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
     from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: reader imports baseline
@@ -176,7 +167,6 @@ def load_commissioning_view(
         topology,
         design_draft=design_draft,
         crossover_preview=preview,
-        commission=commission,
         startup_load={"state": load_startup_load_state()},
         baseline_profile=baseline,
         calibration_level=calibration_level,
