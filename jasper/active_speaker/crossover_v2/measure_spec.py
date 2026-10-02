@@ -15,7 +15,7 @@ from dataclasses import dataclass, fields, replace
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-from jasper.platform.json_fields import require_finite
+from jasper.platform.json_fields import finite_float, require_finite
 from jasper.platform.speaker_layout import measurement_target_id
 
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS, validated_stimulus
@@ -126,6 +126,15 @@ class MeasureSpec:
     #: probes instead (:func:`branch_probes`). Only
     #: ``capture_schedule.prepare_plan_captures`` sets it (ADR-0365, ADR-0403).
     level_probe: bool = False
+    #: The level each branch of a ``candidate_branches`` take plays alone at, in
+    #: ``branch_target_ids`` order, in dBFS; ``level_ladder_dbfs`` plays their sum.
+    #: Only the executor sets it, from the branches' probes (ADR-0407).
+    branch_levels_dbfs: tuple[float, ...] = ()
+    #: What this take's graph keeps on each output for its dynamic bass boost, dB, by
+    #: measurement target: each branch alone plays under the tightest of the take's
+    #: caps less it (ADR-0359, ADR-0407). Only the composition seam sets it, from the
+    #: take's own graph.
+    bass_reserve_db: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         if self.stimulus is not None:
@@ -151,6 +160,15 @@ class MeasureSpec:
             raise ValueError(
                 f"branch_target_ids requires the candidate_branches or drivers graph_scope, got {self.graph_scope!r}"
             )
+        if self.branch_levels_dbfs and (self.graph_scope != "candidate_branches"
+                                        or len(self.branch_levels_dbfs) != len(ids)):
+            raise ValueError(f"branch_levels_dbfs names one level per branch of a candidate_branches take, "
+                             f"got {self.branch_levels_dbfs!r} on {self.graph_scope!r}")
+        if self.bass_reserve_db is not None and not (isinstance(self.bass_reserve_db, Mapping) and all(
+                isinstance(target, str) and finite_float(reserve) is not None and reserve >= 0.0
+                for target, reserve in self.bass_reserve_db.items())):
+            raise ValueError(f"bass_reserve_db names a finite reserve of 0 dB or more per target, "
+                             f"got {self.bass_reserve_db!r}")
         if self.cleared_layers and (self.graph_scope not in CANDIDATE_SCOPES
                                     or not set(self.cleared_layers) <= set(CANDIDATE_LAYERS)):
             raise ValueError(f"cleared_layers names layers of a candidate graph, each one of {CANDIDATE_LAYERS}, "
@@ -304,7 +322,7 @@ _TRIMMED_STRINGS = frozenset({
     "candidate_id", "delayed_role", "graph_scope", "program_phase",
 })
 _ARRAYS = frozenset({"positions", "pose_prompts", "level_ladder_dbfs", "sweep_band_hz",
-                     "branch_target_ids", "cleared_layers"})
+                     "branch_target_ids", "cleared_layers", "branch_levels_dbfs"})
 #: ``sweep_s`` read ``None`` back as the statement it is.
 _NUMBERS = frozenset({"delay_us", "sweep_s"})
 #: Read back as banked; the dataclass judges them.
@@ -336,7 +354,7 @@ def _from_json(name: str, value: Any) -> Any:
             isinstance(entry, str) for entry in value
         ):
             raise ValueError(f"{name} entries must be strings, got {value!r}")
-        if name in ("level_ladder_dbfs", "sweep_band_hz"):
+        if name in ("level_ladder_dbfs", "sweep_band_hz", "branch_levels_dbfs"):
             return tuple(require_finite(entry, field=name) for entry in value)
         return tuple(value)
     if name in _NUMBERS:

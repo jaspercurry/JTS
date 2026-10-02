@@ -25,9 +25,8 @@ from ..graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME, GraphSafety
 from ..output_contract import (
     ACTIVE_BASELINE_SOURCE,
     ACTIVE_DRIVER_DOMAIN_SOURCE,
+    bass_extension_output_indexes,
     classify_output_contract,
-    mains_lowest_driver_indexes as _mains_lowest_driver_indexes,
-    subwoofer_output_indexes as _subwoofer_output_indexes,
 )
 from ..runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
@@ -86,9 +85,7 @@ def _classify_bass_extension_snapshot(
         try:
             descriptor = validate_dynamic_bass_descriptor(descriptor)
             contract = classify_output_contract(topology)
-            channels = tuple(sorted(
-                _subwoofer_output_indexes(contract) or _mains_lowest_driver_indexes(contract)
-            ))
+            channels = tuple(sorted(bass_extension_output_indexes(contract)))
             # Startup/parked graphs have their own proof and contain no extension.
             source = str(classify_camilla_config_text(graph_text).get("source") or "")
             if source in (ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE):

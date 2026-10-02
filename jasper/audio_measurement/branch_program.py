@@ -18,8 +18,10 @@ def is_branch_program(program: ExcitationProgram) -> bool:
     }
 
 
-def build_branch_program(summed: ExcitationProgram, branch_channels: Mapping[str, int]) -> ExcitationProgram:
-    """Solo each branch, then sum them, on one clock at one level.
+def build_branch_program(summed: ExcitationProgram, branch_channels: Mapping[str, int],
+                         alone_gains_db: Mapping[str, float] | None = None) -> ExcitationProgram:
+    """Solo each branch, then sum them, on one clock. A branch plays alone at its
+    ``alone_gains_db`` level where one is given, else at the sum's (ADR-0407).
 
     A branch identity is a measurement target id — the two drivers of a
     crossover take (``woofer``/``tweeter``) or the two woofers of a cardioid
@@ -47,8 +49,13 @@ def build_branch_program(summed: ExcitationProgram, branch_channels: Mapping[str
                                     start_sample=cursor, channel=channel, role=None)
                             for channel in (0, 1))
         else:
-            segments.append(replace(sweep, segment_id=name, kind=KIND_SWEEP,
-                                    start_sample=cursor, channel=branch_channels[role], role=role))
+            segment = replace(sweep, segment_id=name, kind=KIND_SWEEP,
+                              start_sample=cursor, channel=branch_channels[role], role=role)
+            alone = (alone_gains_db or {}).get(role)
+            if alone is not None:
+                segment = replace(segment, gain_db=alone,
+                                  effective_peak_dbfs=sweep.effective_peak_dbfs - sweep.gain_db + alone)
+            segments.append(segment)
         cursor += sweep.n_samples
         segments.append(replace(tail, segment_id=f"tail_{name}", start_sample=cursor))
         cursor += tail.n_samples

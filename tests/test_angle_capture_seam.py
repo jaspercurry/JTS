@@ -1058,8 +1058,8 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
      {"candidate_id": "fp-a", "graph_scope": "candidate"},
      {"candidate_id": "fp-a", "graph_scope": "candidate_branches",
       "branch_target_ids": ("woofer", "woofer:rear")},
-     {"level_probe": True}],
-    ids=["positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe"],
+     {"level_probe": True}, {"bass_reserve_db": {"woofer": 3.0}}],
+    ids=["positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe", "bass_reserve_db"],
 )
 def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -> None:
     """The template is replayed at every stop, so a pose or candidate stated on it

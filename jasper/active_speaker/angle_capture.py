@@ -273,15 +273,19 @@ def level_sets(stops: Sequence[AngleStop]) -> tuple[int | None, ...]:
     """For each take in run order, the index of the take whose level it shares,
     or ``None`` when it plays at its run's fader (ADR-0366 §2). A driver's
     takes share a level within their placement (ADR-0361). A driverless summed
-    spot closer than the mark, or a branch take of one pair at any spot, shares
-    one with the next spots at its kind and distance -- its repeats and lateral
-    poses -- found by the set's first take (ADR-0403). A summed set is one
+    spot closer than the mark shares one with the next spots at its kind and
+    distance -- its repeats and lateral poses -- found by the set's first take
+    (ADR-0403); a branch take of one pair shares one only within its placement,
+    since each placement probes what it plays (ADR-0407). A summed set is one
     candidate graph there (its candidate and ``played_layers``), levelled by
     that graph's own first take; a branch set's probes play the drivers graph,
     so its candidates share them (ADR-0406)."""
     def key(stop: AngleStop) -> tuple[object, ...]:
-        return (stop.pose.place if stop.pose.driver
-                else (stop.regime, stop.branch_pair, stop.pose.kind, stop.pose.distance_m))
+        if stop.pose.driver:
+            return stop.pose.place
+        if stop.regime == REGIME_BRANCHES:
+            return (stop.regime, stop.branch_pair, stop.pose.place)
+        return (stop.regime, stop.branch_pair, stop.pose.kind, stop.pose.distance_m)
 
     starts: list[int | None] = []
     firsts: dict[tuple[object, ...], int] = {}
@@ -377,10 +381,11 @@ def walk_template(**spec_fields: object) -> MeasureSpec:
 #: always built, with no overlay and no stimulus stated.
 DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
 
-#: The template fields the EXECUTOR assigns per capture, and which a walk
-#: therefore may not state: a stated one would be silently replaced at every
-#: stop and silently kept on the design-axis spec.
-_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe")
+#: The template fields the EXECUTOR or its composition seam assigns per capture,
+#: and which a walk therefore may not state: a stated one would be silently
+#: replaced at every stop and silently kept on the design-axis spec.
+_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe",
+                      "bass_reserve_db")
 
 
 @dataclass(frozen=True)
