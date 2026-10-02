@@ -17,7 +17,7 @@ from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.platform.json_fields import finite_float
 
 from .angle_capture import AngleCaptureRequest, LateralWalkRefused, resolve_request
-from .crossover_v2.capture_plan import position_screen_keys
+from .crossover_v2.capture_plan import pose_batch_screens, position_screen_keys
 from .crossover_v2.door import IsolationHold
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.position_gate import PositionGate
@@ -145,15 +145,21 @@ async def run_levels(
         issue = ladder.levels[0].blocking_issue
         raise LateralWalkRefused(issue.code, issue.detail)
     signals = signals or RunSignals()
+    # Each hold counts what the ladder plays at its position by the run's schedule, which the
+    # host publishes to the gate before the run (#6206).
+    counts = (gate.published().get("run") or {}).get("measurements_per_pose") or ()
     results: list[RunManifest] = []
     found: float | None = None
     try:
         async with hold as held:
             for pose_index, (_, group) in enumerate(groupby(ladder.plan.stops, key=lambda stop: stop.pose.place), 1):
                 stops = tuple(group)
-                prompt = resolve_request(replace(ladder.plan, stops=stops))[0].prompt
+                first = resolve_request(replace(ladder.plan, stops=stops))[0]
+                prompt = first.prompt
                 entry = SimpleNamespace(screen={"title": prompt.headline, "body": prompt.detail,
-                                               **position_screen_keys(prompt)})
+                                               **position_screen_keys(prompt),
+                                               **pose_batch_screens([pose_index], [prompt], [first.candidate_id],
+                                                                    counts[pose_index - 1:pose_index] or None)[pose_index]})
                 try:
                     await _grant(gate, pose_index, pose_index, entry, signals)
                 except _Control:

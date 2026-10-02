@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, round_inpu
 from jasper.active_speaker.crossover_v2.round_views.directivity import _pose as directivity_pose
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
+from jasper.active_speaker.crossover_v2.capture_plan import POSITION_BATCH_SIZE_KEY
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, branch_probes
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
@@ -2252,6 +2253,33 @@ async def test_a_ladder_rungs_operator_retake_plays_in_place_then_its_other_take
     assert [(take["index"], take["attempt"]) for take in manifests[1].takes] == [(1, 1), (1, 2), (2, 1)]
     assert [run["status"] for run in packet.to_dict()["runs"]] == ["complete", "complete"]
     assert len(gate.grants) == 1
+
+
+async def test_every_ladder_position_holds_with_its_count(tmp_path, box, rung_spl):
+    """Each ladder hold counts what the ladder plays at its position, by the
+    schedule the host publishes to the gate before the run (#6206)."""
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    class CountingGate(AnsweredGate):
+        def gate(self, index, attempt, entry):
+            sizes.append(int(entry.screen[POSITION_BATCH_SIZE_KEY]))
+            super().gate(index, attempt, entry)
+
+    request = _walk([0, 20, 40], candidates=("base",))
+    request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
+    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0)), ready_facts(request))
+    fakes, gate, sizes, manifests = FakeSeams(), CountingGate(), [], []
+    gate.publish({"measurements_per_pose": [2, 2, 2]})
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(manifests)}", _Store(fakes.records))
+        manifests.append(manifest)
+        return _ladder_run(fakes, manifest, _finds_its_level(_run_door(tmp_path, box, fakes, manifest), plan),
+                           TakeVerdict(True), _summed_captures(plan))
+
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
+    assert sizes == [2, 2, 2]
 
 
 @pytest.mark.parametrize("purpose", ["room", "speaker"])
