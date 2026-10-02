@@ -1604,8 +1604,15 @@ def test_the_parked_emitter_takes_its_queue_from_its_governing_device():
     devices = yaml.safe_load(parked(output_count=2))["devices"]
     assert devices["queuelimit"] == RING_CAMILLA_QUEUELIMIT
     assert devices["enable_rate_adjust"] is False
-    # Clockless, so fan-in's pacer sets the capture rate; a long rate window
-    # keeps CamillaDSP's warn-only rate check out of the journal (#6148).
+
+
+def test_the_parked_graph_measures_its_capture_rate_over_an_hour():
+    """See #6148."""
+    import yaml
+
+    devices = yaml.safe_load(
+        active_camilla_yaml.emit_active_speaker_parked_config(output_count=2)
+    )["devices"]
     assert devices["rate_measure_interval"] == 3600.0
 
 

@@ -32,10 +32,10 @@ PARKED_SILENCE_MIXER = "parked_silence"
 # no active outputd lane at all can still park).
 PARKED_SINK_PATH = "/dev/null"
 
-# Nothing clocks the File sink, so fan-in's pacer sets the capture rate, at
-# 4/3 of nominal; CamillaDSP's once-a-second rate check then warns every
-# second. The check only warns here (no rate adjust, no stop on change), so
-# an hour-long window keeps the journal quiet. See #6148.
+# Nothing clocks the File sink, so fan-in's pacer sets the capture rate above
+# nominal, and CamillaDSP's rate check (1 s windows by default) warned every
+# second. With stop_on_rate_change off the check only warns, so an hour-long
+# window keeps the journal quiet. See #6148.
 PARKED_RATE_MEASURE_INTERVAL_S = 3600.0
 
 
