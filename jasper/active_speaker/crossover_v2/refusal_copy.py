@@ -891,8 +891,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_SNR_FLOOR: _retriable_reason(
         REASON_SNR_FLOOR, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
-            "The room is too loud right now, or the microphone is too far away.",
-            "Quiet the room or move the microphone closer, then try again.",
+            "The measurement didn't rise clearly above the room — the room was "
+            "too loud, or the speaker too quiet.",
+            "Quiet the room or move the microphone closer, then try again. "
+            "If one driver stays quiet, check its wiring and its amp.",
         ),
         capture_quality=True,
     ),
