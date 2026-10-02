@@ -44,7 +44,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
-    POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
@@ -64,11 +63,12 @@ from tests.crossover_v2_banked_round import (
 _SHIPPED_ANGLES = (0, 7, -7, 22, -22)
 
 
-def _both_at(angles_deg, *, mover: str = ac.MOVER_HUMAN) -> ac.AngleCaptureRequest:
-    """Both regimes at each angle, per-driver first."""
+def _stops_at(angles_deg, *, mover: str = ac.MOVER_HUMAN,
+              regimes=(ac.REGIME_PER_DRIVER, ac.REGIME_SUMMED)) -> ac.AngleCaptureRequest:
+    """A stop in each regime at each angle, in ``regimes`` order."""
     return ac.AngleCaptureRequest(stops=tuple(
         ac.AngleStop(mp.Pose(angle, 0), regime, purpose="speaker")
-        for angle in angles_deg for regime in (ac.REGIME_PER_DRIVER, ac.REGIME_SUMMED)), mover=mover)
+        for angle in angles_deg for regime in regimes), mover=mover)
 
 _FC_HZ = 2000.0
 _ROLES_BANDS = (
@@ -143,68 +143,6 @@ def test_the_one_pose_record_refuses_a_non_whole_degree(bad: object) -> None:
             mp.Pose(**{"azimuth_deg": 0, "elevation_deg": 0, axis: bad})
 
 
-# --- the whole-degree contract binds EVERY door, not just two --------------- #
-#
-# A request constructor that coerced with ``int(a)`` BEFORE the validator ran
-# would turn `per_driver_at([0.4])` into an on-axis capture. These pin every
-# door against the truncation cases.
-
-_DOORS = (
-    pytest.param(lambda a: ac.per_driver_at([a]), id="per_driver_at"),
-    pytest.param(lambda a: ac.summed_at([a]), id="summed_at"),
-)
-_TRUNCATING = [7.9, -7.9, 0.4, "45", None]
-
-
-@pytest.mark.parametrize("door", _DOORS)
-@pytest.mark.parametrize("bad", _TRUNCATING)
-def test_every_door_refuses_a_non_whole_degree(door: object, bad: object) -> None:
-    """No constructor rounds, truncates, or parses its way to an angle."""
-    with pytest.raises(contracts.CrossoverV2FlowError):
-        door(bad)  # type: ignore[operator]
-
-
-@pytest.mark.parametrize("door", _DOORS)
-def test_a_fractional_angle_never_becomes_an_on_axis_capture(door: object) -> None:
-    """The sharp row: 0.4 must REFUSE, never truncate to 0.
-
-    Truncating 0.4 to 0 turns a request for a pose just off the design axis
-    into an on-axis capture at ``offset_cm=0.0`` -- which also routes around
-    `position_angle_deg`'s zero-sign guard, the one that exists to stop a pose
-    recording "an offset the microphone never had". A silent 0 is therefore
-    worse than a loud refusal, not a lenient version of it.
-    """
-    with pytest.raises(contracts.CrossoverV2FlowError):
-        door(0.4)  # type: ignore[operator]
-
-
-@pytest.mark.parametrize("door", _DOORS)
-def test_every_door_accepts_a_numpy_integer(door: object) -> None:
-    """np.int64 is an integer, and arm/numpy-derived schedules produce them.
-
-    Refusing it would push exactly those callers back into the `int()` coercion
-    this contract removes. It normalizes to a plain `int` so no numpy scalar
-    reaches a record or an equality check.
-    """
-    request = door(np.int64(45))  # type: ignore[operator]
-    stop = ac.resolve_request(request)[0]
-    assert stop.prompt.pose.azimuth_deg == 45
-    assert type(stop.prompt.pose.azimuth_deg) is int
-    assert capture_plan.position_angle_deg(stop.prompt) == 45
-
-
-@pytest.mark.parametrize("door", _DOORS)
-@pytest.mark.parametrize("bad", [np.float64(45.0), True, False])
-def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
-    """np.float64 is not an integer; bool is one in Python and must still refuse.
-
-    `True` would otherwise sail through as a perfectly valid +1 deg bearing --
-    a real angle and an obvious caller error at the same time.
-    """
-    with pytest.raises(contracts.CrossoverV2FlowError):
-        door(bad)  # type: ignore[operator]
-
-
 # --------------------------------------------------------------------------- #
 # 2. the seam's dispatch: angle x mover
 # --------------------------------------------------------------------------- #
@@ -212,14 +150,14 @@ def test_every_door_refuses_floats_and_bools(door: object, bad: object) -> None:
 
 def test_requested_angle_order_is_the_running_order() -> None:
     """The walk is the caller's order, indexed 1-based like the capture drives it."""
-    stops = ac.resolve_request(ac.per_driver_at([0, 22, -7, 45]))
+    stops = ac.resolve_request(_stops_at([0, 22, -7, 45], regimes=(ac.REGIME_PER_DRIVER,)))
     assert [s.prompt.pose.azimuth_deg for s in stops] == [0, 22, -7, 45]
     assert [s.index for s in stops] == [1, 2, 3, 4]
 
 
 def test_arbitrary_angles_are_reachable() -> None:
     """The point of the seam: any whole-degree angle a request states."""
-    stop, = ac.resolve_request(ac.per_driver_at([45]))
+    stop, = ac.resolve_request(_stops_at([45], regimes=(ac.REGIME_PER_DRIVER,)))
     assert capture_plan.position_angle_deg(stop.prompt) == 45
 
 
@@ -247,8 +185,8 @@ def test_mover_changes_the_advance_policy_and_nothing_else() -> None:
     per-mover branch anywhere downstream.
     """
     angles = [0, 7, -22]
-    by_hand = ac.resolve_request(ac.per_driver_at(angles, mover=ac.MOVER_HUMAN))
-    by_arm = ac.resolve_request(ac.per_driver_at(angles, mover=ac.MOVER_ARM))
+    by_hand = ac.resolve_request(_stops_at(angles, mover=ac.MOVER_HUMAN, regimes=(ac.REGIME_PER_DRIVER,)))
+    by_arm = ac.resolve_request(_stops_at(angles, mover=ac.MOVER_ARM, regimes=(ac.REGIME_PER_DRIVER,)))
 
     for hand, arm in zip(by_hand, by_arm, strict=True):
         assert hand.regime == arm.regime
@@ -263,14 +201,14 @@ def test_mover_changes_the_advance_policy_and_nothing_else() -> None:
 
 def test_the_string_and_protractor_combination_is_reachable() -> None:
     """A human move uses an angle prompt and waits for a tap."""
-    stop, = ac.resolve_request(ac.per_driver_at([22], mover=ac.MOVER_HUMAN))
+    stop, = ac.resolve_request(_stops_at([22], mover=ac.MOVER_HUMAN, regimes=(ac.REGIME_PER_DRIVER,)))
     assert "22" in stop.prompt.headline                       # degrees...
     assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_TAP  # ...and a tap
 
 
 def test_human_mover_taps_and_declares_no_position() -> None:
     """A human move waits for a tap and declares no position target."""
-    for stop in ac.resolve_request(_both_at([0, 22])):
+    for stop in ac.resolve_request(_stops_at([0, 22])):
         assert stop.screen == {"auto_advance": capture_plan.AUTO_ADVANCE_TAP}
         assert capture_plan.POSITION_DEG_KEY not in stop.screen
 
@@ -283,7 +221,7 @@ def test_arm_mover_pairs_the_countdown_with_the_position_gate() -> None:
     tape, released by their own tap -- which is exactly the shape
     a hand-released session says apart from this one.
     """
-    for stop in ac.resolve_request(_both_at([0, -22], mover=ac.MOVER_ARM)):
+    for stop in ac.resolve_request(_stops_at([0, -22], mover=ac.MOVER_ARM)):
         assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_COUNTDOWN
         assert stop.screen["countdown_s"] == str(capture_plan.AUTO_ADVANCE_COUNTDOWN_S)
         assert stop.screen[capture_plan.POSITION_DEG_KEY] == str(stop.prompt.pose.azimuth_deg)
@@ -296,8 +234,8 @@ def test_the_gate_angle_is_read_back_off_the_pose() -> None:
     Not copied from the request: one fact, one source. The round trip is what
     would otherwise hide a defect between them.
     """
-    for stop in ac.resolve_request(ac.per_driver_at([0, 7, -7, 22, -22, 45],
-                                                    mover=ac.MOVER_ARM)):
+    for stop in ac.resolve_request(_stops_at([0, 7, -7, 22, -22, 45], mover=ac.MOVER_ARM,
+                                              regimes=(ac.REGIME_PER_DRIVER,))):
         assert int(stop.screen[capture_plan.POSITION_DEG_KEY]) == capture_plan.position_angle_deg(
             stop.prompt
         )
@@ -311,7 +249,7 @@ def test_a_resolved_stop_banks_in_the_shipped_record_shape() -> None:
     hand-walked one, so one replay path covers both and the attribution stage
     reads them alike.
     """
-    stop, = ac.resolve_request(ac.per_driver_at([22]))
+    stop, = ac.resolve_request(_stops_at([22], regimes=(ac.REGIME_PER_DRIVER,)))
     record = cloud_position_record(
         position_id="angle_01", phase="measure", index=stop.index, attempt=1,
         prompt=stop.prompt.text, wide=stop.prompt.wide, role=stop.prompt.role,
@@ -344,7 +282,7 @@ def test_a_resolved_stop_is_actually_frozen() -> None:
     position gate is waiting for. It still compares equal to a plain dict, so
     reading it is unchanged.
     """
-    stop, = ac.resolve_request(ac.per_driver_at([7], mover=ac.MOVER_ARM))
+    stop, = ac.resolve_request(_stops_at([7], mover=ac.MOVER_ARM, regimes=(ac.REGIME_PER_DRIVER,)))
     with pytest.raises(TypeError):
         stop.screen["position_deg"] = "45"  # type: ignore[index]
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -965,60 +903,17 @@ def test_walk_price_reports_stimulus_seconds_for_named_programs(
     stimulus_s: float | None,
 ) -> None:
     program = mp.run_preset(program_id, layout)
-    request = ac.request_for_preset(
-        program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN,
-        template=ac.walk_template(
-            kind=MEASURE_KIND_CANDIDATE, sweep_s=sweep_s,
-            level_ladder_dbfs=level_ladder_dbfs,
-        ),
+    summed = {"graph_scope": "candidate", "candidate_id": "base"} if sweep_s is not None else {}
+    request = replace(
+        ac.request_for_preset(program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN),
+        template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, sweep_s=sweep_s, level_ladder_dbfs=level_ladder_dbfs,
+                             **summed),
     )
     price = walk_price(request)
 
     assert price["mic_moves"] == program.mic_move_count
     assert price["captures"] == len(prepare_plan_captures(request))
     assert price["stimulus_s"] == (None if stimulus_s is None else pytest.approx(stimulus_s))
-
-
-@pytest.mark.parametrize(
-    ("fields", "reason"),
-    [
-        ({"sweep_band_hz": (3000.0,)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"sweep_band_hz": (3000.0, 200.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"sweep_band_hz": (200.0, 200.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"sweep_band_hz": (200.0, math.inf)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"sweep_band_hz": (math.nan, 3000.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"sweep_band_hz": (200.0, 3000.0, 9000.0)}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"sweep_s": 0.0}, ac.WALK_STIMULUS_NOT_ACCEPTED),
-        ({"polarity": POLARITY_INVERTED}, ac.WALK_POLARITY_NOT_ACCEPTED),
-        ({"inverted_role": "tweeter"}, ac.WALK_POLARITY_NOT_ACCEPTED),
-        ({"delayed_role": "tweater", "delay_us": 250.0},
-         ac.WALK_DELAY_NOT_ACCEPTED),
-        ({"delay_us": 250.0}, ac.WALK_DELAY_NOT_ACCEPTED),
-    ],
-    ids=["one-bound", "descending", "equal", "infinite", "nan", "three-bounds",
-         "zero-duration", "polarity-with-no-branch", "branch-with-no-polarity",
-         "unknown-delayed-branch", "delay-with-no-branch"],
-)
-def test_a_template_field_the_spec_refuses_names_the_half_it_refused(
-    fields: dict, reason: str,
-) -> None:
-    """``MeasureSpec`` is the only judge of a spec field, and the refusal reaches
-    an operator under the slug for the flag they got wrong -- with the spec's own
-    sentence as the detail, compared here against what the spec actually raises
-    rather than against a copy of its wording.
-    """
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields)
-
-    assert excinfo.value.reason == reason
-    with pytest.raises(ValueError):
-        MeasureSpec(
-            kind=MEASURE_KIND_CANDIDATE, graph_scope=ac.TEMPLATE_SWEEP_SCOPE
-            if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None
-            else "drivers",
-            candidate_id="base" if fields.get("sweep_band_hz") or fields.get("sweep_s") is not None else "",
-            **fields,
-        )
 
 
 @pytest.mark.parametrize(
@@ -1036,7 +931,8 @@ def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
         ac.AngleCaptureRequest(
             stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-            template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE, **fields),
+            template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id="base",
+                                 **fields),
         )
     assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
 
@@ -1092,9 +988,9 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     each summed stop gets the template at ITS pose, prompt, candidate and scope,
     and a per-driver stop gets no spec at all (it plays the phase's own program).
     """
-    template = ac.walk_template(
-        kind=MEASURE_KIND_CANDIDATE, sweep_band_hz=(200.0, 3000.0), sweep_s=2.5,
-        level_ladder_dbfs=(-20.0, -14.0),
+    template = MeasureSpec(
+        kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id="base",
+        sweep_band_hz=(200.0, 3000.0), sweep_s=2.5, level_ladder_dbfs=(-20.0, -14.0),
     )
     request = ac.AngleCaptureRequest(
         stops=(
@@ -1120,26 +1016,10 @@ def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> 
     )
 
 
-@pytest.mark.parametrize(
-    "overlay",
-    [{"polarity": "inverted", "inverted_role": "tweeter"},
-     {"delayed_role": "tweeter", "delay_us": 250.0}, {"level_matched": True}],
-    ids=["polarity", "delay", "level-match"],
-)
-def test_a_summed_sweep_beside_an_overlay_is_refused_as_not_measurable(overlay: dict) -> None:
-    """The two cannot share a template: a summed trial plays its own graph. Named
-    for what it is at statement time, not for whichever half ``MeasureSpec``
-    happened to refuse first.
-    """
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.walk_template(kind=MEASURE_KIND_CANDIDATE, sweep_s=2.5, **overlay)
-    assert excinfo.value.reason == ac.WALK_CANDIDATE_NOT_MEASURABLE
-
-
 def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
     request = ac.AngleCaptureRequest(
         stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-        template=ac.walk_template(kind=MEASURE_KIND_VERIFY),
+        template=MeasureSpec(kind=MEASURE_KIND_VERIFY),
     )
     assert ac.design_axis_spec(request).kind == MEASURE_KIND_CANDIDATE
 
@@ -1228,8 +1108,7 @@ def test_a_rear_pair_plays_its_parent_with_the_rear_stage_cleared(preset, candid
 def test_request_levels_and_single_level_bytes(levels):
     program = mp.preset("room")
     scalar = ac.request_for_preset(program, candidates=("base", "room-fp"), level=ac.LevelPolicy(level_db=-10.0))
-    request = ac.request_for_preset(program, candidates=scalar.candidates, levels=levels,
-                                     level=ac.LevelPolicy(level_db=-10.0 if levels is None else None))
+    request = replace(scalar, levels=levels, level=ac.LevelPolicy(level_db=-10.0 if levels is None else None))
     document = json.dumps(request.to_dict()).encode()
     assert request.stops == scalar.stops
     if levels is None or len(levels) == 1:
@@ -1254,7 +1133,7 @@ def test_invalid_level_policy_refuses_at_construction(level_db):
 ])
 def test_invalid_walk_fields_refuse_by_name(fields, reason):
     with pytest.raises(ac.LateralWalkRefused) as refused:
-        replace(ac.summed_at([0]), **fields)
+        replace(_stops_at([0], regimes=(ac.REGIME_SUMMED,)), **fields)
     assert refused.value.reason == reason
 
 
@@ -1279,7 +1158,7 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("pure planning opened the candidate bank")
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", unexpected)
-    request = ac.summed_at([0, 20])
+    request = _stops_at([0, 20], regimes=(ac.REGIME_SUMMED,))
     specs = ac.stop_specs(request, baseline_id="banked-base",
                           prompts=[stop.prompt for stop in ac.resolve_request(request)])
     assert [spec.candidate_id for spec in specs] == ["banked-base", "banked-base"]

@@ -36,7 +36,6 @@ from jasper.active_speaker.crossover_v2.round_views.directivity import _pose as 
 from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.capture_plan import POSITION_BATCH_SIZE_KEY
-from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_CANDIDATE
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, branch_probes
 from jasper.active_speaker.crossover_v2.position_gate import POSITION_HOLD_EXPIRED_CODE, PositionGate
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
@@ -91,8 +90,7 @@ _ABORTS = {SeamFailure: "seam_failed"}
 def _walk(angles, candidates=("fp-a",)):
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
         ac.AngleStop(Pose(angle, 0), ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
-        for angle in angles for candidate in candidates),
-        template=ac.walk_template(kind=MEASURE_KIND_CANDIDATE), program="tournament/express")
+        for angle in angles for candidate in candidates), program="tournament/express")
 
 
 def _analysis(_record):
@@ -1596,7 +1594,7 @@ async def _ladder_found(monkeypatch, request, *, caps, chain_db, gate=None):
     windows: list = []
     _found_door(monkeypatch, windows, [])
     fakes, signals = FakeSeams(volume=_Fader()), plan_run.RunSignals()
-    ladder = preflight_levels(request, ready_facts(request))
+    ladder = level_ladder(request, ready_facts(request))
     assert not ladder.blocking
 
     def prepare(plan):
@@ -1727,52 +1725,14 @@ def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(mo
 
 
 _CLOSE_SET = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
-_DRIVER_POSE = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3, "driver": "woofer"}
 _MARK = {"azimuth_deg": 0, "elevation_deg": 0}
 
 
-def _ladder_plans():
-    """Ladders of two steps. The two whose first pose levels every take itself are
-    the review's; a later pose of drivers alone has no summed take of its own."""
-    def stepped(program, poses):
-        return ac.request_for_preset(run_preset(program, poses=poses), targets=("woofer", "tweeter"), levels=(-20.0, -25.0))
-
-    return {"mark first": stepped("rear/express", [_MARK, _CLOSE_SET]),
-            "drivers alone at a later pose": ac.AngleCaptureRequest(
-                (ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="rear"),
-                 ac.AngleStop(Pose(20, 0), ac.REGIME_PER_DRIVER, purpose="speaker")),
-                program="rear/express", levels=(-20.0, -25.0)),
-            "close set first": stepped("rear/express", [_CLOSE_SET, _MARK]),
-            "driver pose first": stepped("speaker/mark", [_DRIVER_POSE, _MARK])}
-
-
-@pytest.mark.parametrize(("shape", "rungs"), [
-    ("mark first", 4), ("drivers alone at a later pose", 4), ("close set first", 1), ("driver pose first", 1)])
-def test_a_ladder_plays_only_under_the_level_its_first_rung_found(monkeypatch, shape, rungs):
-    """A ladder's first rung at its first pose finds the level its rungs step
-    under, and every later rung plays its step under that level, at a pose with
-    no summed take too. A first pose where every take levels itself finds none,
-    so the ladder ends there: no later pose plays at a level no probe found
-    (ADR-0403 §4)."""
-    signals, results, _, windows = asyncio.run(_ladder_found(
-        monkeypatch, _ladder_plans()[shape], caps={"woofer": 0.0, "tweeter": -6.0},
-        chain_db={"bearing": 100.0, "close": 110.0}))
-
-    summed = [take["capture_integrity"]["spl"]["max_window_db_spl"] for result in results
-              for take in _takes(result.joined())
-              if take["selected"] and take["pose_kind"] == "bearing" and take["phase"] in ("timing", "lateral")]
-    found = rungs == 4
-    assert (len(results), signals.stop.is_set() and signals.stop_reason) == (rungs, not found and REASON_LEVEL_UNSOLVED)
-    assert windows == ([0.0, -9.0, -14.0, -9.0, -14.0] if found else [0.0])
-    assert summed == pytest.approx([79.0, 74.0] if found else [], abs=0.02)
-
-
-@pytest.mark.parametrize(("levels", "stated", "rungs"), [
-    ("auto", None, len(LEVEL_OFFSETS_DB)), (None, (-20.0, -25.0), 2), (None, None, 1)],
-    ids=["the preset's whole ladder", "the steps a plan states", "no ladder"])
-def test_a_ladder_plays_each_placements_captures_at_every_rung(levels, stated, rungs):
+@pytest.mark.parametrize(("levels", "rungs"), [("auto", len(LEVEL_OFFSETS_DB)), (None, 1)],
+                         ids=["the preset's whole ladder", "no ladder"])
+def test_a_ladder_plays_each_placements_captures_at_every_rung(levels, rungs):
     """A ladder finishes a placement's captures at each rung before the microphone moves (``run_levels``)."""
-    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"), levels=stated)
+    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
     captures = prepare_level_captures(request)
 
     played = ladder_captures(request, levels, captures)
@@ -1784,7 +1744,8 @@ def test_a_ladder_plays_each_placements_captures_at_every_rung(levels, stated, r
 
 def test_a_ladders_frames_name_the_program_the_page_words_them_by(monkeypatch):
     """A ladder's own frames replace the run's facts, so each names the program whose headline the page shows."""
-    request, gate = _ladder_plans()["mark first"], AnsweredGate()
+    request = ac.request_for_preset(run_preset("rear/express", poses=[_MARK, _CLOSE_SET]), targets=("woofer", "tweeter"))
+    gate = AnsweredGate()
     asyncio.run(_ladder_found(monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0},
                               chain_db={"bearing": 100.0, "close": 110.0}, gate=gate))
 
@@ -2192,14 +2153,15 @@ def _finds_its_level(door, plan):
 async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial, rung_spl):
     """A ladder holds the room once and finishes each pose. Its first rung
     probes and finds its level, and each rung plays its step under it at every
-    pose, a stated ladder too (ADR-0403 §4). A rung's retake plays again in
-    place, up to its pose's retries, with no new placement (#6113)."""
+    pose (ADR-0403 §4). A rung's retake plays again in place, up to its pose's
+    retries, with no new placement (#6113)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
     request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
-    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0, -18.0)), ready_facts(request))
+    ladder = level_ladder(request, ready_facts(request))
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
+    last = 2 * len(LEVEL_OFFSETS_DB)
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
     entry_volume = box.volume_db
 
@@ -2210,7 +2172,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
         door = _finds_its_level(_run_door(tmp_path, box, fakes, manifest), plan)
         verdict = (TakeVerdict(False, fault=REASON_SPL_CEILING_EXCEEDED, next="stop") if partial == "stop" else
                    TakeVerdict(False, fault=REASON_CLIPPED, next="fix_and_retake")
-                   if partial and (partial == "all" or len(manifests) == (6 if partial == "last" else 1)) else TakeVerdict(True))
+                   if partial and (partial == "all" or len(manifests) == (last if partial == "last" else 1)) else TakeVerdict(True))
         return _ladder_run(fakes, manifest, door, verdict, _summed_captures(plan))
 
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
@@ -2219,9 +2181,9 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     await packet.finish()
     document = packet.to_dict()
     rungs = [(0, _LADDER_FOUND_DB)] if partial == "stop" else [
-        (pose, _LADDER_FOUND_DB + step) for pose in (0, 20) for step in (0.0, -5.0, -10.0)]
-    statuses = ["partial" if partial and (partial == "all" or index == (5 if partial == "last" else 0)) else "complete"
-                for index in range(len(rungs))]
+        (pose, _LADDER_FOUND_DB + step) for pose in (0, 20) for step in LEVEL_OFFSETS_DB]
+    statuses = ["partial" if partial and (partial == "all" or index == (last - 1 if partial == "last" else 0))
+                else "complete" for index in range(len(rungs))]
     replays = 0 if partial == "stop" else MAX_EXTRA_ATTEMPTS_PER_POSITION
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [
         (0, 0.0), *(rung for rung, status in zip(rungs, statuses) for _ in range(1 + replays * (status == "partial")))]
@@ -2255,7 +2217,7 @@ async def test_a_ladder_rungs_operator_retake_plays_in_place_then_its_other_take
     request = _walk([0], candidates=("base",))
     request = replace(request, repeats=2, stops=tuple(replace(stop, purpose="bass", purposes=("bass",))
                                                       for stop in request.stops))
-    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0)), ready_facts(request))
+    ladder = level_ladder(request, ready_facts(request))
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
     retakes = [TakeVerdict(False, fault=REASON_ANCHOR_AMBIGUOUS, next="fix_and_retake", charge="operator")]
@@ -2272,11 +2234,12 @@ async def test_a_ladder_rungs_operator_retake_plays_in_place_then_its_other_take
     hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
     await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
     await packet.finish()
-    second = _LADDER_FOUND_DB - 5.0
+    first, second, *rest = (_LADDER_FOUND_DB + step for step in LEVEL_OFFSETS_DB)
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [
-        (0, 0.0), (0, _LADDER_FOUND_DB), (0, _LADDER_FOUND_DB), (0, second), (0, second), (0, second)]
+        (0, 0.0), (0, first), (0, first), (0, second), (0, second), (0, second),
+        *((0, level) for level in rest for _ in range(2))]
     assert [(take["index"], take["attempt"]) for take in manifests[1].takes] == [(1, 1), (1, 2), (2, 1)]
-    assert [run["status"] for run in packet.to_dict()["runs"]] == ["complete", "complete"]
+    assert [run["status"] for run in packet.to_dict()["runs"]] == ["complete"] * len(LEVEL_OFFSETS_DB)
     assert len(gate.grants) == 1
 
 
@@ -2292,7 +2255,7 @@ async def test_every_ladder_position_holds_with_its_count(tmp_path, box, rung_sp
 
     request = _walk([0, 20, 40], candidates=("base",))
     request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
-    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0)), ready_facts(request))
+    ladder = level_ladder(request, ready_facts(request))
     fakes, gate, sizes, manifests = FakeSeams(), CountingGate(), [], []
     gate.publish({"measurements_per_pose": [2, 2, 2]})
 
@@ -2345,36 +2308,6 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     assert (pilot["level_lo_dbfs"], pilot["level_hi_dbfs"], pilot["snr_db"]) == (-75, -65, 0)
     assert evidence["required_snr_db"] > pilot["snr_db"]
     assert evidence["ambient_report"] == analysis.ambient_report
-
-
-async def test_room_plan_levels_keep_pose_order(tmp_path, box, tuning_profile, rung_spl):
-    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
-
-    candidate = _room_candidate(tuning_profile)
-    program = run_preset("room")
-    levels = (-10.0, -20.0)
-    rung_spl[-20] = {"loudest_half_second_db_spl": 73, "max_window_db_spl": 73, "ceiling_db_spl": 95}
-    request = ac.request_for_preset(program, candidates=("base", candidate.fingerprint), levels=levels)
-    report = preflight_levels(request, ready_facts(request, candidates={candidate.fingerprint: candidate}, commissioning_stop_db_spl=95))
-    assert not report.blocking
-    fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
-
-    def prepare(plan):
-        manifest = RunManifest(f"run-{len(manifests)}", _Store(fakes.records))
-        manifests.append(manifest)
-        return _ladder_run(fakes, manifest, _finds_its_level(_run_door(tmp_path, box, fakes, manifest), plan),
-                           TakeVerdict(True), prepare_level_captures(plan))
-
-    assert sum(len(row.schedule) for row in report.levels) == 3 * 2 * len(levels)
-    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
-    results = await run_levels(report, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
-    expected = [(pose.seat_offset_m, _LADDER_FOUND_DB + step, cid) for pose in program.poses
-                for step in (0.0, -10.0) for cid in ("banked-base", candidate.fingerprint)]
-    probe, *banked = [(row["seat_offset_m"], row["level_db"], row["candidate_id"]) for row in fakes.records.banked]
-    assert (banked, probe) == (expected, (program.poses[0].seat_offset_m, 0.0, "banked-base"))
-    assert len(fakes.play.calls) == len(expected) + 1
-    assert len(gate.grants) == 3 and fakes.graph.restores == 1
-    assert all(result.status == "complete" for result in results)
 
 
 async def test_run_door_preemption_defers_volume_restore_and_restores_graph(tmp_path, box):
@@ -2532,7 +2465,7 @@ def _ladder_execute(monkeypatch, box, levels, *, manifest=None, production=None)
     monkeypatch.setattr(correction_run_host, "run_levels", levels)
     return correction_run_host.bind_run_door(
         host=None, device=None, evidence_store=None, manifest=RunManifest("packet", _Store(FakeSeams().records)) if manifest is None else manifest,
-        production=FakeSeams() if production is None else production, conductor=None, refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85,
+        production=FakeSeams() if production is None else production, conductor=None, refs={}, ceiling_s=30, ceiling_db_spl=85,
         camilla_factory=lambda: box,
         ladder=SimpleNamespace(admissible=[None], plan=SimpleNamespace(levels=(-23,)), to_dict=lambda: {}),
     )[3]

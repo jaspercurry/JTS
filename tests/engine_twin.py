@@ -118,26 +118,15 @@ class FakeGraph:
     fingerprint: str = GRAPH_FINGERPRINT
     installs: int = 0
     restores: int = 0
-    #: One entry per install: the polarity variant that stimulus asked for.
-    inverted_roles: list[tuple[str, ...]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
-    measurement_delays: list = field(default_factory=list)
-    #: One entry per install: the level match that stimulus asked for.
-    level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
 
     def select_scope(self, scope: str, candidate_id: str = "", branch_channels=None, cleared_layers=()) -> None:
         self.scopes.append((scope, candidate_id))
 
-    async def install(
-        self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
-        level_trims_db=None,
-    ) -> str:
+    async def install(self) -> str:
         self.installs += 1
-        self.inverted_roles.append(tuple(inverted_roles))
-        self.measurement_delays.append(dict(measurement_delays_us or {}))
-        self.level_trims.append(dict(level_trims_db or {}))
         if self.install_raises:
             raise GraphInstallFailed("twin graph install failed")
         return self.fingerprint

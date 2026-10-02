@@ -357,53 +357,8 @@ def test_phase_overlay_clamps_into_the_measured_overlap_like_the_shoulders():
 
 
 # --------------------------------------------------------------------------- #
-# the spec's delay pair
+# the landscape's inputs
 # --------------------------------------------------------------------------- #
-
-
-def test_a_spec_states_both_halves_of_its_delay_or_neither():
-    from jasper.active_speaker.crossover_v2.measure_spec import (
-        MeasureSpec,
-        measurement_delays_for,
-    )
-
-    paired = MeasureSpec(kind="baseline", delayed_role="tweeter", delay_us=250.0)
-    assert measurement_delays_for(paired) == {"tweeter": 250.0}
-    assert measurement_delays_for(MeasureSpec(kind="baseline")) == {}
-
-    # One half without the other is a spec that means two things.
-    for half in ({"delayed_role": "tweeter"}, {"delay_us": 250.0}):
-        with pytest.raises(ValueError):
-            MeasureSpec(kind="baseline", **half)
-
-
-def test_the_spec_states_WHETHER_to_level_match_and_the_session_states_by_how_much():
-    """The values never travel on the spec. ``level_trims_for`` is the one
-    translation from the boolean into the graph's vocabulary, and it applies
-    what the SESSION resolved on the box — so a spec cannot carry one
-    cabinet's level match onto another's measurement."""
-    from jasper.active_speaker.crossover_v2.measure_spec import (
-        MeasureSpec,
-        level_trims_for,
-    )
-
-    resolved = {"tweeter": -9.5}
-    matched = MeasureSpec(kind="baseline", level_matched=True)
-    assert level_trims_for(matched, resolved) == resolved
-    # Asking for none applies none, however much the session is holding.
-    assert level_trims_for(MeasureSpec(kind="baseline"), resolved) == {}
-    # And asking for one the session has nothing for is empty here, not a
-    # raise: that pairing is refused at open, where an operator can act on it.
-    assert level_trims_for(matched, None) == {}
-
-
-def test_a_delay_beyond_the_dsp_ceiling_is_refused_at_the_spec():
-    from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-
-    for bad in (-1.0, MAX_DSP_DELAY_US + 1.0):
-        with pytest.raises(ValueError):
-            MeasureSpec(kind="baseline", delayed_role="tweeter", delay_us=bad)
 
 
 def test_the_grid_a_curve_was_banked_on_does_not_change_the_answer():
@@ -432,23 +387,6 @@ def test_the_grid_a_curve_was_banked_on_does_not_change_the_answer():
     assert sparse.best_coordinate_us == dense.best_coordinate_us == pytest.approx(100.0)
     assert sparse.best_predicted_null_depth_db == pytest.approx(
         dense.best_predicted_null_depth_db, abs=1.0
-    )
-
-
-# --------------------------------------------------------------------------- #
-# the staging thread — R-1's DISPOSE half, operator to graph
-# --------------------------------------------------------------------------- #
-
-
-def _walk(**template):
-    from jasper.active_speaker.angle_capture import (
-        AngleCaptureRequest, AngleStop, walk_template,
-    )
-    from jasper.active_speaker.measurement_programs import Pose
-
-    return AngleCaptureRequest(
-        stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),),
-        template=walk_template(kind="candidate", **template),
     )
 
 

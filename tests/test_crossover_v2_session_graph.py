@@ -56,20 +56,10 @@ _LOGGER = "jasper.active_speaker.crossover_v2.session_graph"
 def _graph(cam, *, tmp_path, emits=None, emit_scoped=None):
     emitted = emits if emits is not None else []
 
-    def _emit(
-        inverted_roles=(), measurement_delays_us=None, level_trims_db=None, excited_channels=None,
-    ) -> str:
+    def _emit(excited_channels=None) -> str:
         # One distinct text per measurement variant, the way the real emitter
-        # produces one: a flipped mixer is different bytes, so is a Delay
-        # filter carrying a different coordinate, and so is a mixer source
-        # carrying a different gain.
+        # produces one: a take that plays one target alone is different bytes.
         text = GRAPH
-        if inverted_roles:
-            text += f"inverted: {inverted_roles}\n"
-        if measurement_delays_us:
-            text += f"delays: {sorted(measurement_delays_us.items())}\n"
-        if level_trims_db:
-            text += f"trims: {sorted(level_trims_db.items())}\n"
         if excited_channels:
             text += f"excited: {sorted(excited_channels.items())}\n"
         emitted.append(text)
@@ -521,94 +511,25 @@ def test_scope_refusal_cannot_load_an_unrequested_graph(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# R-1 — one graph per POLARITY VARIANT, and the entry graph survives the swap
+# one graph per variant, and the entry graph survives the swap
 # --------------------------------------------------------------------------- #
 
 
-def test_a_polarity_variant_is_its_own_graph_with_its_own_fingerprint(tmp_path):
-    """The record's provenance must name the graph the stimulus played through.
-
-    A variant that reused the normal graph's fingerprint would point every
-    reverse-null record at its non-inverted twin.
-    """
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-
-    normal = asyncio.run(graph.install())
-    flipped = asyncio.run(graph.install(("tweeter",)))
-
-    assert graph.installed_graph_yaml() == cam.live
-    assert graph.installed_graph_yaml() != graph.graph_yaml()
-    assert normal and flipped and normal != flipped
-    assert len(graph.emitted) == 2, "one emit per variant"
-
-
-def test_a_delay_coordinate_is_its_own_graph_with_its_own_fingerprint(tmp_path):
-    """R-1's other half. The confirmation plays three coordinates in a row, so a
-    cache keyed on polarity alone would hand the second one the first's graph
-    and measure a delay nobody asked for — under a fingerprint naming the wrong
-    coordinate."""
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-
-    first = asyncio.run(graph.install(("tweeter",), {"tweeter": 100.0}))
-    second = asyncio.run(graph.install(("tweeter",), {"tweeter": 200.0}))
-    flipped_only = asyncio.run(graph.install(("tweeter",)))
-
-    assert len({first, second, flipped_only}) == 3
-    assert len(graph.emitted) == 3, "one emit per delay variant"
-
-
-def test_a_level_match_is_its_own_graph_with_its_own_fingerprint(tmp_path):
-    """The third variant axis. A level-matched capture and its unmatched twin
-    differ ONLY in the mixer gains, so a cache that did not key on them would
-    serve the untrimmed graph and bank a record claiming a level match that
-    never played."""
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-
-    unmatched = asyncio.run(graph.install(("tweeter",)))
-    matched = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -9.5}))
-    deeper = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -10.5}))
-
-    assert len({unmatched, matched, deeper}) == 3
-    assert len(graph.emitted) == 3, "one emit per level-match variant"
-
-
-def test_the_same_level_match_twice_is_emitted_once(tmp_path):
-    """The variant cache still does its job on the new axis: every stimulus of
-    one walk asks for the same trims and pays one emit between them."""
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-
-    first = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -9.5}))
-    again = asyncio.run(graph.install(("tweeter",), None, {"tweeter": -9.5}))
-
-    assert first == again
-    assert len(graph.emitted) == 1
-
-
-def test_the_same_coordinate_twice_is_emitted_once(tmp_path):
-    """The variant cache still does its job: repeats of one coordinate cost a
-    liveness proof, not a re-emit."""
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path)
-
-    first = asyncio.run(graph.install(("tweeter",), {"tweeter": 100.0}))
-    again = asyncio.run(graph.install(("tweeter",), {"tweeter": 100.0}))
-
-    assert first == again
-    assert len(graph.emitted) == 1
+def _alone(graph, target="woofer:rear"):
+    """Select the variant that plays ``target`` alone."""
+    graph.select_scope("drivers", "", {target: 0})
 
 
 def test_each_variant_is_emitted_at_most_once_however_many_stimuli(tmp_path):
-    """MS-13's structural fact survives R-1: still one emit per variant."""
+    """MS-13's structural fact holds per variant: still one emit each."""
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)
 
     for _ in range(3):
+        graph.select_scope("drivers")
         asyncio.run(graph.install())
-        asyncio.run(graph.install(("tweeter",)))
+        _alone(graph)
+        asyncio.run(graph.install())
 
     assert len(graph.emitted) == 2
 
@@ -625,7 +546,9 @@ def test_a_variant_swap_restores_the_ORIGINAL_entry_graph(tmp_path):
     graph = _graph(cam, tmp_path=tmp_path)
 
     asyncio.run(graph.install())
-    asyncio.run(graph.install(("tweeter",)))
+    _alone(graph)
+    asyncio.run(graph.install())
+    graph.select_scope("drivers")
     asyncio.run(graph.install())
     asyncio.run(graph.restore())
 
@@ -634,14 +557,15 @@ def test_a_variant_swap_restores_the_ORIGINAL_entry_graph(tmp_path):
 
 
 def test_a_variant_swap_is_not_logged_as_a_concurrent_writer(tmp_path, caplog):
-    """A walk alternating polarities must not cry "somebody stomped us" twice
+    """A walk alternating graphs must not cry "somebody stomped us" twice
     per position. A stomp stays a WARNING; our own swap does not."""
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)
 
     asyncio.run(graph.install())
+    _alone(graph)
     with caplog.at_level(logging.INFO, logger=_LOGGER):
-        asyncio.run(graph.install(("tweeter",)))
+        asyncio.run(graph.install())
 
     swap = event_records(caplog, "active_speaker.session_graph")
     assert len(swap) == 1, "the swap must be journalled exactly once"
@@ -650,7 +574,7 @@ def test_a_variant_swap_is_not_logged_as_a_concurrent_writer(tmp_path, caplog):
 
 
 def test_a_variant_swap_over_a_STOMPED_graph_still_discloses_the_stomp(tmp_path, caplog):
-    """The disclosure a polarity walk would otherwise lose entirely.
+    """The disclosure an alternating walk would otherwise lose entirely.
 
     On an alternating walk every install is a variant change, so a level
     decided from "the text differs" alone would repair a concurrent writer's
@@ -662,8 +586,9 @@ def test_a_variant_swap_over_a_STOMPED_graph_still_discloses_the_stomp(tmp_path,
 
     asyncio.run(graph.install())
     cam.live = "somebody else's graph\n"
+    _alone(graph)
     with caplog.at_level(logging.INFO, logger=_LOGGER):
-        asyncio.run(graph.install(("tweeter",)))
+        asyncio.run(graph.install())
 
     swap = event_records(caplog, "active_speaker.session_graph")
     assert len(swap) == 1
@@ -676,11 +601,12 @@ def test_a_stomped_graph_is_still_reported_as_a_reinstall(tmp_path, caplog):
     and a variant that is stomped rather than swapped must still reach it."""
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)
+    _alone(graph)
 
-    asyncio.run(graph.install(("tweeter",)))
+    asyncio.run(graph.install())
     cam.live = "somebody else's graph\n"
     with caplog.at_level(logging.INFO, logger=_LOGGER):
-        asyncio.run(graph.install(("tweeter",)))
+        asyncio.run(graph.install())
 
     stomp = event_records(caplog, "active_speaker.session_graph")
     assert len(stomp) == 1

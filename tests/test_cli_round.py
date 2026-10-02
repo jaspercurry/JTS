@@ -1494,7 +1494,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
                 host=SimpleNamespace(_wired_stimulus_capture=lambda *a, **kw: None, bind_v2_engine_seams=engine),
                 device=SimpleNamespace(model_key="minidsp_umik2"), evidence_store=store, manifest=manifest,
                 production=SimpleNamespace(graph=fakes.graph, compose=None),
-                conductor=conductor, refs={}, trims={},
+                conductor=conductor, refs={},
                 ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box,
                 ladder=report if isinstance(report, LevelLadder) else None,
             )

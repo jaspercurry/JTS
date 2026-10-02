@@ -1124,7 +1124,7 @@ def test_host_aims_only_check_at_the_first_spots_target(monkeypatch, caplog, sen
         door, analyze, _assessor, _execute = correction_run_host.bind_run_door(
             host=SimpleNamespace(session_volume_plan=lambda: None),
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
-            production=SimpleNamespace(graph=None), conductor=conductor, refs={}, trims={},
+            production=SimpleNamespace(graph=None), conductor=conductor, refs={},
             ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
         )
         for index, phase in enumerate(("check", "measure", "verify"), 1):
@@ -1179,7 +1179,7 @@ def test_each_banked_curve_carries_the_band_its_window_trusts(monkeypatch, caplo
         host=SimpleNamespace(session_volume_plan=lambda: None),
         device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
         production=SimpleNamespace(graph=None), conductor=conductor,
-        refs={}, trims={}, ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
+        refs={}, ceiling_s=30, ceiling_db_spl=85, camilla_factory=None,
         context=SimpleNamespace(radiating_diameter_mm_by_target={"woofer": 114.0, "woofer:rear": 114.0, "tweeter": 25.0}),
     )
 
@@ -1421,8 +1421,8 @@ _TAKE_RECORD_KEYS = frozenset({
     "analysis", "attempt", "baseline_record_id", "branch_diagnostic", "candidate_id", "capture_calibration",
     "capture_device", "capture_index", "capture_integrity", "capture_session_id", "capture_setup", "captured_at",
     "cleared_layers", "curves", "diagnostic", "gating_applied", "graph_fingerprint", "graph_scope", "impulses",
-    "incident", "index", "inverted_role", "kind", "layout", "level", "level_db", "level_match_trims_db", "level_matched",
-    "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback", "polarity",
+    "incident", "index", "kind", "layout", "level", "level_db",
+    "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback",
     "pose", "pose_driver", "pose_index", "pose_kind", "position_axis", "position_deg", "preset", "program",
     "prompt", "provenance", "purposes", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
     "stimulus_dbfs", "stimulus_id", "stimulus_ordinal", "stimulus_wav_sha256", "take_id", "targets", "verdict",

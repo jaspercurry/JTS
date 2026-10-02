@@ -82,17 +82,11 @@ class LevelLadder:
 
 
 def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadder:
-    return _ladder(tuple(replace(plan, levels=None, level=replace(plan.level, level_db=offset))
-                         for offset in LEVEL_OFFSETS_DB), facts)
-
-
-def _ladder(plans: Sequence[AngleCaptureRequest], facts: PreflightFacts) -> LevelLadder:
-    """A stated ladder keeps its steps under its loudest rung, which the run's probe finds (ADR-0403 §4).
-    Only its first rung at its first pose probes, so that rung's preflight checks the probe's order."""
-    top = max(float(plan.level.level_db or 0.0) for plan in plans)
-    return LevelLadder(tuple(preflight(replace(plan, level=replace(plan.level, level_db=float(plan.level.level_db or 0.0) - top)),
+    """Each rung its step under the level the run's probe finds (ADR-0403 §4). Only the first
+    rung at the first pose probes, so that rung's preflight checks the probe's order."""
+    return LevelLadder(tuple(preflight(replace(plan, levels=None, level=replace(plan.level, level_db=offset)),
                                        facts, finds_fader=False)
-                             for plan in sorted(plans, key=lambda plan: -(plan.level.level_db or 0.0))), facts)
+                             for offset in LEVEL_OFFSETS_DB), facts)
 
 
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
@@ -101,10 +95,7 @@ def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
         if plan.level.level_db is not None:
             raise ValueError("levels require a plan without level-db")
         return level_ladder(plan, facts)
-    if plan.levels is None:
-        return preflight(plan, facts)
-    return _ladder(tuple(replace(plan, levels=None, level=replace(plan.level, level_db=value))
-                         for value in plan.levels), facts)
+    return preflight(plan, facts)
 
 
 def prepare_level_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:

@@ -210,11 +210,6 @@ def prepare_v2_session(
 
     stage1_index_phase = {index: capture.spec.program_phase for index, capture in enumerate(captures, 1)}
     engine_measure_specs = {index: capture.spec for index, capture in enumerate(captures, 1)}
-    engine_level_trims, _ = v2state.resolve_measurement_level_trims(
-        request.template, preset=context.preset, topology=context.topology,
-    )
-    if request.template.level_matched and not engine_level_trims:
-        raise CrossoverV2Refused("No measured driver levels are available", code="walk_level_match_no_evidence")
     lateral_prompts = tuple(capture.resolved(request).prompt
         for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
     evidence_store, _bundle_id = v2evidence.open_v2_evidence_store(context.topology)
@@ -295,7 +290,7 @@ def prepare_v2_session(
         tuning, analyze, assessor, execute = bind_run_door(
             host=host, device=device, evidence_store=evidence_store,
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
-            trims=engine_level_trims, ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
+            ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
             ceiling_db_spl=report.spl_ceiling_db_spl, margin_db=report.rung_admission.get("run_margin_db", 0.0),
             ladder=report if isinstance(report, LevelLadder) else None,
         )

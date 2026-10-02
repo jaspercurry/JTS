@@ -39,6 +39,7 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import arm_walk as aw
 from jasper.active_speaker import wizard_client as wc
+from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.poll_backoff import next_poll_s
 from jasper.cli import _refusal as refusal
 from jasper.cli import angle_capture as cli
@@ -282,7 +283,7 @@ def test_the_arm_envelope_is_the_adapters_own_bound():
 
 def test_an_arm_walk_past_the_envelope_is_refused_where_it_is_stated():
     with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.per_driver_at([7, 60], mover=ac.MOVER_ARM)
+        ac.request_for_preset(run_preset("speaker", poses="7,60"), mover=ac.MOVER_ARM)
     assert excinfo.value.reason == ac.WALK_OVER_MOVER_ENVELOPE
     assert "+60" in excinfo.value.detail
     assert "45" in excinfo.value.detail
@@ -291,14 +292,14 @@ def test_an_arm_walk_past_the_envelope_is_refused_where_it_is_stated():
 
 def test_the_same_angle_is_fine_for_a_person():
     """The bound is the ARM's reach, not the geometry's -- a person still walks."""
-    request = ac.per_driver_at([60, -60], mover=ac.MOVER_HUMAN)
+    request = ac.request_for_preset(run_preset("speaker", poses="60,-60"), mover=ac.MOVER_HUMAN)
     assert [stop.pose.azimuth_deg for stop in request.stops] == [60, -60]
 
 
 def test_the_geometry_ceiling_still_refuses_both_movers():
     for mover in ac.MOVERS:
         with pytest.raises(ac.CrossoverV2FlowError):
-            ac.per_driver_at([ac.MAX_ANGLE_DEG + 1], mover=mover)
+            ac.request_for_preset(run_preset("speaker", poses=str(ac.MAX_ANGLE_DEG + 1)), mover=mover)
 
 # --------------------------------------------------------------------------- #
 # power is read before every WALK move

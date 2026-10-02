@@ -323,13 +323,6 @@ class TakeClaim:
     measure_kind: str = ""
     baseline_record_id: str = ""
     candidate_id: str = ""
-    polarity: str = ""
-    #: Whether the graph this take played through carried the box's own
-    #: per-driver level match, and by how much: a reverse-null pair is only
-    #: comparable to a reader who knows whether the branches were levelled
-    #: before they were summed. ``False``/``None`` on a take that declared none.
-    level_matched: bool = False
-    level_match_trims_db: Mapping[str, float] | None = None
     level_db: float | None = None
     stimulus_dbfs: float | None = None
     incident: str = ""
@@ -374,9 +367,6 @@ def _take_identity(
         "graph_fingerprint": graph_fingerprint,
         "baseline_record_id": claim.baseline_record_id,
         "candidate_id": claim.candidate_id,
-        "polarity": claim.polarity,
-        "level_matched": claim.level_matched,
-        "level_match_trims_db": dict(claim.level_match_trims_db or {}) if claim.level_matched else {},
         # Stated or absent, never a guessed default: see TakeClaim.
         **(
             {"phase_composition": claim.phase_composition}

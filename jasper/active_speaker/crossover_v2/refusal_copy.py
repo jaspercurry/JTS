@@ -135,9 +135,6 @@ REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 REASON_WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
-REASON_WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
-REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
-REASON_WALK_LEVEL_MATCH_NO_EVIDENCE = "walk_level_match_no_evidence"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
 REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupported_for_per_driver_programs"
@@ -1179,27 +1176,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'The test signal settings include position fields that the plan must set. Remove those '
         'fields from the signal settings.',
         own_action={"id": 'correct_walk_template', "label": 'Correct the signal settings',
-                    "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_POLARITY_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_POLARITY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
-        'The selected driver and polarity settings do not match. Correct the polarity settings '
-        'before starting.',
-        own_action={"id": 'correct_walk_polarity', "label": 'Correct the polarity settings',
-                    "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_DELAY_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_DELAY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
-        'The selected driver and delay settings do not match. Correct the delay settings before '
-        'starting.',
-        own_action={"id": 'correct_walk_delay', "label": 'Correct the delay settings',
-                    "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_LEVEL_MATCH_NO_EVIDENCE: ReasonSpec(
-        REASON_WALK_LEVEL_MATCH_NO_EVIDENCE, TEMPLATE_HARD_STOP, 0,
-        'JTS has no measured driver levels to match. Measure the driver levels before asking it to '
-        'match them.',
-        own_action={"id": 'measure_driver_levels', "label": 'Measure the driver levels',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_CANDIDATE_NOT_MEASURABLE: ReasonSpec(

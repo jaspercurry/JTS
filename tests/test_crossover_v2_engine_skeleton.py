@@ -20,7 +20,6 @@ from typing import Any, Mapping
 import pytest
 
 from jasper.platform.volume_latch import READBACK_TOLERANCE_DB
-from jasper.audio_measurement.program_analysis import polarity_label
 
 from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.contracts import (
@@ -32,16 +31,10 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
-    POLARITIES,
-    POLARITY_INVERTED,
-    POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
 )
-from jasper.active_speaker.crossover_v2.measure_spec import (
-    MeasureSpec,
-    inverted_roles_for,
-)
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.playback_transaction import (
     PLAYBACK_STAGES,
     STAGE_ADMIT,
@@ -77,13 +70,8 @@ class _Graph:
     fingerprint: str = "graph-abc"
     installs: int = 0
     restores: int = 0
-    #: One entry per install: the polarity variant that stimulus asked for.
-    inverted_roles: list[tuple[str, ...]] = field(default_factory=list)
     install_raises: bool = False
     restore_raises: bool = False
-    measurement_delays: list = field(default_factory=list)
-    #: One entry per install: the level match that stimulus asked for.
-    level_trims: list = field(default_factory=list)
     scopes: list = field(default_factory=list)
     cleared_layers: list = field(default_factory=list)
 
@@ -91,37 +79,13 @@ class _Graph:
         self.scopes.append((scope, candidate_id))
         self.cleared_layers.append(tuple(cleared_layers))
 
-    async def install(
-        self, inverted_roles: tuple[str, ...] = (), measurement_delays_us=None,
-        level_trims_db=None,
-    ) -> str:
+    async def install(self) -> str:
         self.installs += 1
-        self.inverted_roles.append(tuple(inverted_roles))
-        self.measurement_delays.append(dict(measurement_delays_us or {}))
-        self.level_trims.append(dict(level_trims_db or {}))
         if self.install_raises:
             raise RuntimeError("install blew up after arming half a graph")
         if self.scopes and self.scopes[-1][0] != "drivers":
             return f"{self.fingerprint}-{'-'.join(self.scopes[-1])}"
-        if level_trims_db:
-            # A level match is a DIFFERENT graph, for the delay's reason: the
-            # real emitter moves the mixer gains and so the fingerprint.
-            matched = "+".join(
-                f"{role}@{db:g}" for role, db in sorted(level_trims_db.items())
-            )
-            return f"{self.fingerprint}-lm-{matched}"
-        if measurement_delays_us:
-            # A delay coordinate is a DIFFERENT graph, exactly as a polarity
-            # variant is, so it cannot answer with another one's fingerprint.
-            tail = "+".join(
-                f"{role}@{us:g}" for role, us in sorted(measurement_delays_us.items())
-            )
-            return f"{self.fingerprint}-{tail}"
-        if not inverted_roles:
-            return self.fingerprint
-        # A variant is a DIFFERENT graph, so it must not answer with the
-        # normal graph's fingerprint — the real one does not.
-        return f"{self.fingerprint}-{'+'.join(inverted_roles)}"
+        return self.fingerprint
 
     async def restore(self) -> None:
         self.restores += 1
@@ -202,11 +166,7 @@ class _Play:
         )
 
 
-def _session(
-    *,
-    level_match_trims_db: Mapping[str, float] | None = None,
-    **overrides: Any,
-) -> tuple[TuningSession, dict[str, Any]]:
+def _session(**overrides: Any) -> tuple[TuningSession, dict[str, Any]]:
     parts: dict[str, Any] = {
         "graph": _Graph(),
         "volume": _Volume(),
@@ -219,7 +179,6 @@ def _session(
         session_id="s1",
         seams=EngineSeams(**parts),
         measurement_level_db=-20.0,
-        level_match_trims_db=level_match_trims_db or {},
     )
     return session, parts
 
@@ -236,25 +195,6 @@ def _session(
         {"kind": MEASURE_KIND_BASELINE, "graph_scope": "household"},
         {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate"},
         {"kind": MEASURE_KIND_BASELINE, "program_phase": "done"},
-        *[
-            {"kind": MEASURE_KIND_BASELINE, "graph_scope": scope, "candidate_id": "fp", **axis}
-            for scope in ("candidate", "candidate_branches")
-            for axis in (
-                {"polarity": POLARITY_INVERTED, "inverted_role": DRIVER_ROLE_TWEETER},
-                {"delayed_role": DRIVER_ROLE_TWEETER, "delay_us": 100.0},
-                {"level_matched": True},
-            )
-        ],
-        {"kind": MEASURE_KIND_BASELINE, "polarity": "flipped"},
-        # R-1: the regime and the branch it flips are one parameter in two
-        # halves, so neither half stands alone.
-        {"kind": MEASURE_KIND_BASELINE, "polarity": POLARITY_INVERTED},
-        {
-            "kind": MEASURE_KIND_BASELINE,
-            "polarity": POLARITY_INVERTED,
-            "inverted_role": "midrange",
-        },
-        {"kind": MEASURE_KIND_BASELINE, "inverted_role": DRIVER_ROLE_TWEETER},
         {"kind": MEASURE_KIND_BASELINE, "position_axis": "diagonal"},
         {"kind": MEASURE_KIND_BASELINE, "vertical_deg": 7.5},
         {"kind": MEASURE_KIND_BASELINE, "vertical_deg": True},
@@ -331,19 +271,6 @@ def test_the_measure_kinds_are_the_index_columns_and_no_more():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_polarity_words_are_the_measurement_frames_own():
-    """``polarity_label`` calls itself "the ONE spelling of the map".
-
-    Asserting the literals against the function — not the function against
-    itself — so a change to either spelling reds this.
-    """
-    assert POLARITY_NORMAL == "normal"
-    assert POLARITY_INVERTED == "inverted"
-    assert polarity_label(1) == POLARITY_NORMAL
-    assert polarity_label(-1) == POLARITY_INVERTED
-    assert set(POLARITIES) == {POLARITY_NORMAL, POLARITY_INVERTED}
-
-
 def test_the_design_axis_is_spelled_the_way_the_take_fixture_spells_it():
     """``()`` means the design axis, and the design axis is ``0`` there."""
     assert DESIGN_AXIS_DEG == _DESIGN_AXIS_GEOMETRY.degrees
@@ -408,34 +335,6 @@ async def test_the_record_carries_the_fingerprint_its_own_stimulus_proved():
     [record] = parts["records"].banked
     assert record["graph_fingerprint"] == "graph-reproven"
     assert session.graph_fingerprint == "graph-reproven"
-
-
-@pytest.mark.parametrize("restore_fails", [False, True])
-async def test_analysis_can_restore_the_graph_and_keep_the_next_take_available(restore_fails):
-    class RestoringRecords(_Records):
-        async def bank(self, record):
-            await session.restore_graph()
-            return await super().bank(record)
-
-    records = RestoringRecords()
-    graph = _Graph(restore_raises=restore_fails)
-    session, parts = _session(graph=graph, records=records)
-    spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
-    async with session:
-        if restore_fails:
-            with pytest.raises(RuntimeError):
-                await asyncio.wait_for(session.measure(spec), 1)
-        else:
-            await asyncio.wait_for(session.measure(spec), 1)
-        assert session.is_open
-        assert parts["volume"].releases == 0
-        assert session.graph_fingerprint == graph.fingerprint
-        graph.restore_raises = False
-        await asyncio.wait_for(session.measure(spec), 1)
-        assert records.banked[-1]["graph_fingerprint"] == graph.fingerprint
-    assert parts["volume"].acquired == [-20.0]
-    assert parts["volume"].releases == 1
-    assert graph.restores == 3
 
 
 async def test_opening_an_open_session_is_a_programming_error():
@@ -1185,11 +1084,6 @@ def test_the_confirm_tolerance_prove_is_specified_against_is_the_repos_one():
     assert READBACK_TOLERANCE_DB == 0.05
 
 
-# --------------------------------------------------------------------------- #
-# R-1 — the reverse-null, end to end at the engine's own altitude
-# --------------------------------------------------------------------------- #
-
-
 def test_the_driver_role_words_are_the_presets_own():
     """The cheap copy, pinned to the module that owns the roles.
 
@@ -1201,218 +1095,6 @@ def test_the_driver_role_words_are_the_presets_own():
 
     assert DRIVER_ROLES == DRIVER_ROLES_BY_WAY[2]
     assert (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER) == DRIVER_ROLES
-
-
-@pytest.mark.parametrize(
-    "spec, expected",
-    [
-        (MeasureSpec(kind=MEASURE_KIND_BASELINE), ()),
-        (
-            MeasureSpec(
-                kind=MEASURE_KIND_BASELINE,
-                polarity=POLARITY_INVERTED,
-                inverted_role=DRIVER_ROLE_TWEETER,
-            ),
-            (DRIVER_ROLE_TWEETER,),
-        ),
-        (
-            MeasureSpec(
-                kind=MEASURE_KIND_BASELINE,
-                polarity=POLARITY_INVERTED,
-                inverted_role=DRIVER_ROLE_WOOFER,
-            ),
-            (DRIVER_ROLE_WOOFER,),
-        ),
-    ],
-)
-def test_the_spec_translates_into_exactly_the_branches_the_graph_must_flip(
-    spec: MeasureSpec, expected: tuple[str, ...],
-):
-    """The one translation from polarity words into graph vocabulary."""
-    assert inverted_roles_for(spec) == expected
-
-
-async def test_an_inverted_capture_plays_and_banks_like_any_other():
-    """An inverted spec plays once and banks one record."""
-    session, parts = _session()
-
-    async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_TWEETER,
-        ))
-
-    assert len(parts["play"].calls) == 1
-    assert len(outcome.record_ids) == 1
-
-
-async def test_the_named_branch_reaches_the_graph_that_stimulus_installs():
-    """The sign is applied by INSTALLING a different graph, so the flip has to
-    travel on the install — not on a patch afterwards, which would leave the
-    fingerprint naming the non-inverted twin."""
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_WOOFER,
-        ))
-
-    # One at open() and one per stimulus.
-    assert parts["graph"].inverted_roles == [(), (), (DRIVER_ROLE_WOOFER,)]
-
-
-async def test_the_delay_coordinate_reaches_the_graph_that_stimulus_installs():
-    """R-1's delay travels the same road its polarity does: by INSTALLING a
-    different graph. A coordinate applied any other way would leave the
-    fingerprint naming a graph that carried a different delay."""
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_TWEETER,
-            delayed_role=DRIVER_ROLE_TWEETER,
-            delay_us=250.0,
-        ))
-
-    assert parts["graph"].measurement_delays == [
-        {}, {}, {DRIVER_ROLE_TWEETER: 250.0},
-    ]
-
-
-async def test_two_coordinates_are_two_graphs_not_one_reused():
-    """The confirmation plays three coordinates in a row. If the graph seam
-    keyed its cache on polarity alone it would hand the second coordinate the
-    first one's graph and measure the wrong delay."""
-    session, parts = _session()
-
-    async with session:
-        for delay_us in (100.0, 200.0):
-            await session.measure(MeasureSpec(
-                kind=MEASURE_KIND_BASELINE,
-                polarity=POLARITY_INVERTED,
-                inverted_role=DRIVER_ROLE_TWEETER,
-                delayed_role=DRIVER_ROLE_TWEETER,
-                delay_us=delay_us,
-            ))
-
-    installed = [d for d in parts["graph"].measurement_delays if d]
-    assert installed == [
-        {DRIVER_ROLE_TWEETER: 100.0}, {DRIVER_ROLE_TWEETER: 200.0},
-    ]
-
-
-async def test_the_level_match_reaches_the_graph_that_stimulus_installs():
-    """The session was opened with the box's own trims; the SPEC decides which
-    stimuli carry them. Applying them any other way would leave the fingerprint
-    naming a graph whose branches were not levelled."""
-    session, parts = _session(level_match_trims_db={DRIVER_ROLE_TWEETER: -9.5})
-
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_TWEETER,
-            level_matched=True,
-        ))
-
-    # One at open() and one per stimulus, and the un-matched spec carries none
-    # even though the session was holding trims all along.
-    assert parts["graph"].level_trims == [
-        {}, {}, {DRIVER_ROLE_TWEETER: -9.5},
-    ]
-
-
-async def test_a_session_holding_no_trims_installs_none():
-    """The refusal for that pairing is the host's, at open. The engine's own
-    answer is empty rather than a raise mid-walk, so a spec cannot invent a
-    level match out of a session that was given none."""
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, level_matched=True,
-        ))
-
-    assert parts["graph"].level_trims == [{}, {}]
-
-
-async def test_a_record_states_the_level_match_that_installed_not_the_one_asked():
-    """Defense in depth: the record's ``level_matched`` is derived from what
-    the graph actually CARRIED, never from what the spec asked.
-
-    A spec can ask for a level match a session was opened with no trims to
-    supply — the host refuses that pairing before open, but the engine is a
-    separate unit and must be self-consistent however it is reached. Here the
-    session holds no trims and the spec asks for a match, so nothing installs;
-    the record must say ``level_matched=False`` and carry no numbers rather
-    than claim a match its own graph never played. Reading the boolean off the
-    installed trims is what keeps it from ever disagreeing with the trims key.
-    """
-    session, parts = _session()  # holds NO trims
-
-    async with session:
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, level_matched=True,
-        ))
-
-    record, = parts["records"].banked
-    assert record["level_matched"] is False
-    assert record["level_match_trims_db"] == {}
-
-
-async def test_a_banked_level_matched_record_says_what_levelled_it():
-    """A reverse-null depth is only readable by somebody who knows whether the
-    branches were levelled before they were summed, and by how much — so the
-    record carries both, and the fingerprint separates it from its unmatched
-    twin."""
-    session, parts = _session(level_match_trims_db={DRIVER_ROLE_TWEETER: -9.5})
-
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, level_matched=True,
-        ))
-
-    plain, matched = parts["records"].banked
-    assert plain["level_matched"] is False
-    assert plain["level_match_trims_db"] == {}
-    assert matched["level_matched"] is True
-    assert matched["level_match_trims_db"] == {DRIVER_ROLE_TWEETER: -9.5}
-    assert plain["graph_fingerprint"] != matched["graph_fingerprint"]
-    assert plain["kind"] == matched["kind"], "same kind, different level match"
-
-
-
-
-async def test_a_banked_inverted_record_says_which_branch_was_flipped():
-    """A reverse-null pair is only readable by somebody who knows the sign
-    convention it was taken under, so the record carries both halves — and the
-    fingerprint distinguishes it from its non-inverted twin."""
-    session, parts = _session()
-
-    async with session:
-        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-        await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE,
-            polarity=POLARITY_INVERTED,
-            inverted_role=DRIVER_ROLE_TWEETER,
-        ))
-
-    normal, flipped = parts["records"].banked
-    assert (normal["polarity"], normal["inverted_role"]) == (POLARITY_NORMAL, "")
-    assert (flipped["polarity"], flipped["inverted_role"]) == (
-        POLARITY_INVERTED, DRIVER_ROLE_TWEETER,
-    )
-    assert normal["graph_fingerprint"] != flipped["graph_fingerprint"]
-    assert normal["kind"] == flipped["kind"], "same kind, different polarity"
 
 
 @pytest.mark.parametrize("blocked", ["finish", "place", "enrich", "publish", "after_bank"])

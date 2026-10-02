@@ -38,11 +38,8 @@ __all__ = [
     "MEASURE_KIND_CANDIDATE",
     "MEASURE_KIND_VERIFY",
     "NoCrossoverSectionsError",
-    "POLARITIES",
     "POLARITY_INVERT",
-    "POLARITY_INVERTED",
     "POLARITY_KEEP",
-    "POLARITY_NORMAL",
     "POSITION_AXES",
     "POSITION_AXIS_HORIZONTAL",
     "POSITION_AXIS_VERTICAL",
@@ -328,16 +325,11 @@ BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
 #: Spelled here because `record_store` writes it and `record_index` reads it.
 MEASURE_KIND_KEY = "measure_kind"
 
-#: Capture polarity describes the take; candidate polarity names the action.
+#: Candidate polarity names the action.
 POLARITY_KEEP = "keep"
 POLARITY_INVERT = "invert"
-POLARITY_NORMAL = "normal"
-POLARITY_INVERTED = "inverted"
-POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
 
-#: The driver branches a `polarity=inverted` measurement may flip. Owner:
-#: `profile.DRIVER_ROLES_BY_WAY[2]`. A polarity flip is a statement about two
-#: branches summing, so a 1-way's MeasureSpec names no inverted role.
+#: A 2-way's driver branches. Owner: `profile.DRIVER_ROLES_BY_WAY[2]`.
 DRIVER_ROLE_WOOFER = "woofer"
 DRIVER_ROLE_TWEETER = "tweeter"
 DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)
