@@ -77,6 +77,7 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
 from jasper.active_speaker.measurement_programs import Pose
+from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
 from jasper.active_speaker import baseline_profile
 
@@ -772,35 +773,30 @@ def test_prepare_refuses_when_volume_needs_recovery():
 
 @pytest.mark.parametrize("body", [{}, {"tier": "full"}, {"stage": "post_apply"}, {"plan": {}},
                                   {"request": {"layouts": "seat_cloud"}}, {"request": {}, "plan": {}}])
-def test_session_requires_a_request_or_an_inline_plan(body):
+def test_session_requires_a_request(body):
     from jasper.web.correction_runtime import refusal_envelope
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
     envelope = refusal_envelope(caught.value)
-    assert envelope["code"] in {"program_plan_shape_invalid", "walk_schema_version_unsupported"}
+    assert envelope["code"] == "program_plan_shape_invalid"
     assert envelope["next_action"]
 
 
 def test_session_open_refuses_the_preflight_candidate_code(monkeypatch):
     from jasper.active_speaker import preflight_live
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
-    from jasper.active_speaker.measurement_programs import Pose
     from tests.test_preflight import ready_facts
 
-    name = "unbanked"
-    request = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, candidate_id=name, purpose="speaker"),), candidates=(name,))
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: SimpleNamespace(
-        safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=object(),
+        safety_profile={"targets": []}, role_targets={}, preset=_preset(), topology=mono_output_topology(),
     ))
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda *_: pytest.fail("bundle opened before preflight"))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", lambda: object())
-    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda *args, **kwargs: ready_facts(
-        request,
-    ))
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **kwargs: ready_facts(plan))
     with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
-        v2host.prepare_v2_session({"plan": request.to_dict()}, status={}, run_async=None, camilla_factory=None)
+        v2host.prepare_v2_session({"request": {"program": "room", "candidates": ["unbanked"]}},
+                                  status={}, run_async=None, camilla_factory=None)
     assert exc.value.code == "not_found"
     assert refusal_copy_for(exc.value.code)[1]
 
@@ -818,10 +814,7 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
 
     _ready_inline(monkeypatch)
     v2volume.set_volume_plan_for_tests(_Ready())
-    monkeypatch.setattr(
-        v2host, "resolve_conductor_context",
-        lambda _status: _inline_context(),
-    )
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: _inline_context(mono_output_topology()))
     monkeypatch.setattr(branch_chain, "confirmed_protection_sections", _unrepresentable)
     monkeypatch.setattr(
         v2evidence, "open_v2_evidence_store",
@@ -2918,26 +2911,19 @@ def test_graph_refusal_reaches_the_http_client_with_its_code_and_action(
 
 
 def _inline_body():
-    from jasper.active_speaker.angle_capture import summed_at
-    return {"plan": {**summed_at([0, 20]).to_dict(), "program": "tournament/express"}}
-
-
-def _timing_ladder_body():
-    from jasper.active_speaker.angle_capture import request_for_preset
-    from jasper.active_speaker.measurement_programs import run_preset
-    plan = request_for_preset(run_preset("speaker/mark")).to_dict()
-    plan["template"]["level_ladder_dbfs"] = [-12.0]
-    return {"plan": plan}
+    return {"request": {"program": "tournament/express", "poses": [0, 20], "candidates": ["base"]}}
 
 
 @pytest.mark.parametrize(("body", "code"), [
-    (lambda: {"plan": {**_inline_body()["plan"], "levels": [-10, -10]}}, "walk_level_policy_invalid"),
-    (_timing_ladder_body, "walk_template_not_accepted")], ids=["duplicate levels", "a ladder over a timing take"])
-def test_a_session_plan_its_door_refuses_answers_its_code(monkeypatch, body, code):
-    """A plan the door refuses answers a bad request under its own code, never a
-    server error: a timing take finds its run's fader with its own probe, so a
-    template cannot state a ladder for it (ADR-0405, ADR-0408)."""
-    body = body()
+    ({"request": {**_inline_body()["request"], "repeats": 0}}, "walk_level_policy_invalid"),
+    ({"request": {"program": "speaker/mark", "template": {"level_ladder_dbfs": [-12.0]}}}, "program_plan_shape_invalid")],
+    ids=["no takes", "a stated ladder"])
+def test_a_session_request_its_door_refuses_answers_its_code(monkeypatch, body, code):
+    """A request the door refuses answers a bad request under its own code, never
+    a server error; a request states no template, so no ladder skips a probe
+    (ADR-0405, ADR-0408)."""
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context(mono_output_topology()))
+    v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     monkeypatch.setattr(correction_runtime, "read_json_body", lambda _: body)
     monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", lambda: {})
@@ -2959,7 +2945,7 @@ def _ready_inline(monkeypatch):
         plan, declared_target_ids=tuple(kwargs["context"].role_targets), roles_bands=kwargs["context"].roles_bands))
 
 
-def _inline_context() -> V2ConductorContext:
+def _inline_context(topology: Any = None) -> V2ConductorContext:
     return V2ConductorContext(
         preset=_preset(), fc_hz=FC_HZ, roles_bands=tuple(_roles()),
         safety_profile={"targets": [{
@@ -2978,7 +2964,7 @@ def _inline_context() -> V2ConductorContext:
         driver_caps_dbfs=dict(CAPS),
         driver_sweep_duration_limits_s={role: 6.0 for role in CAPS},
         driver_spacing_m=0.0, driver_spacing_source="unknown",
-        topology=SimpleNamespace(topology_id="t-inline"),
+        topology=topology or SimpleNamespace(topology_id="t-inline"),
         playback_device="hw:Test", role_channels={"woofer": 0, "tweeter": 1},
         sound_design_revision=1,
     )
@@ -2986,7 +2972,7 @@ def _inline_context() -> V2ConductorContext:
 
 def _inline_prepared(monkeypatch, tmp_path, body=None):
     _ready_inline(monkeypatch)
-    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context())
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _: _inline_context(mono_output_topology()))
     v2volume.set_volume_plan_for_tests(SimpleNamespace(needs_recovery=False))
     store = _bundle_store(tmp_path)
     monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _: (store, store.session_id))
@@ -2997,14 +2983,11 @@ def test_a_branch_pair_this_box_never_declared_refuses_by_name(monkeypatch, tmp_
     """The one place that holds both the plan and the box. A front/rear take on a
     speaker with no rear output is refused before the microphone is placed;
     admission stays the independent tripwire behind it."""
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
     from jasper.active_speaker.crossover_v2.refusal_copy import refusal_copy_for
-    from jasper.active_speaker.measurement_programs import BRANCH_PAIR_FRONT_REAR, REGIME_BRANCHES, Pose
 
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_BRANCHES, branch_pair=BRANCH_PAIR_FRONT_REAR, purpose="speaker"),))
     assert "woofer:rear" not in _inline_context().role_targets
     with pytest.raises(refusal_copy.CrossoverV2Refused) as exc:
-        _inline_prepared(monkeypatch, tmp_path, {"plan": plan.to_dict()})
+        _inline_prepared(monkeypatch, tmp_path, {"request": {"program": "rear/pair"}})
     assert exc.value.code == "walk_branch_pair_undeclared"
     assert refusal_copy_for(exc.value.code)[1]
 
@@ -3081,22 +3064,21 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     assert env["round_lines"]
     assert env["capture"]["join"] == result["join"]
     plan = store.reopen_json_artifact(store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
-    assert plan["stops"] == _inline_body()["plan"]["stops"]
+    resolved, _ = resolve_plan(RunRequest.from_mapping(_inline_body()["request"]), targets=lambda: ())
+    assert plan == json.loads(json.dumps(resolved.to_dict()))
     # A saved level sets no level: the run finds its own (ADR-0403 §4).
     assert (plan["level"]["level_db"], plan["level_source"]) == (None, "program_default")
     assert v2state.load_v2_state() == before
 
 
-@pytest.mark.parametrize("levels", [None, (-18, -23)], ids=["one pass", "a ladder"])
-def test_a_placement_prompt_counts_the_measurements_the_schedule_plays_there(monkeypatch, tmp_path, levels):
+@pytest.mark.parametrize("ladder", [False, True], ids=["one pass", "a ladder"])
+def test_a_placement_prompt_counts_the_measurements_the_schedule_plays_there(monkeypatch, tmp_path, ladder):
     """The first prompt at each position counts what the run plays there, the count the plan's
     schedule states; a level ladder plays every rung at a position, not one rung's takes."""
-    from jasper.active_speaker.angle_capture import request_for_preset
-    from jasper.active_speaker.measurement_programs import preset
+    from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB
 
-    selected = preset("bass")
-    body = {"plan": request_for_preset(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
-    prepared, _ = _inline_prepared(monkeypatch, tmp_path, body)
+    levels = LEVEL_OFFSETS_DB if ladder else None
+    prepared, _ = _inline_prepared(monkeypatch, tmp_path, {"request": {"program": "bass"}} if ladder else None)
     entries = prepared.join_spec.capture_plan.entries
     per_pose = prepared.position_gate.published()["run"]["measurements_per_pose"]
     firsts = [entry.screen for entry in entries if entry.screen[POSITION_BATCH_CONFIG_KEY] == "1"]
@@ -3106,22 +3088,17 @@ def test_a_placement_prompt_counts_the_measurements_the_schedule_plays_there(mon
     assert per_pose == [len(levels or (0,)) * listed[screen[POSITION_BATCH_START_KEY]] for screen in firsts]
 
 
-@pytest.mark.parametrize("levels,phases", [
+@pytest.mark.parametrize("body,phases", [
     (None, ("timing", "lateral", "lateral")),
-    ((-18, -23), ("lateral",) * 3),
-    ((-8, -18), ("lateral",) * 3),
-])
+    ({"request": {"program": "bass"}}, ("lateral",) * 3),
+], ids=["one pass", "a ladder"])
 def test_inline_preparation_binds_the_real_engine_without_fitting(
-    monkeypatch, tmp_path, levels, phases
+    monkeypatch, tmp_path, body, phases
 ):
     from jasper.web import correction_crossover_v2_wired as wired
     from tests.test_correction_crossover_v2_wired import _device
     from tests.test_preflight import ready_facts
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, request_for_preset
-    from jasper.active_speaker.measurement_programs import preset
 
-    selected = preset("bass")
-    body = {"plan": request_for_preset(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
     prepared, store = _inline_prepared(monkeypatch, tmp_path, body)
     _own_the_fader(monkeypatch, _FakeVolCam(-30))
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
@@ -3129,7 +3106,7 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(
     v2volume.set_volume_plan_for_tests(SessionVolumePlan())
     monkeypatch.setattr(wired, "resolve_v2_wired_mic", _device)
     monkeypatch.setattr("jasper.audio_measurement.household_mic.resolved_household_sensitivity",
-                        lambda _: ready_facts(AngleCaptureRequest.from_mapping(_inline_body()["plan"])).mic_sensitivity)
+                        lambda _: ready_facts(SimpleNamespace(mover="human")).mic_sensitivity)
     bound = {}
 
     def build(conductor, **kwargs):
@@ -3140,8 +3117,8 @@ def test_inline_preparation_binds_the_real_engine_without_fitting(
     opened = prepared.open()
     assert opened.pi_session.session_id == prepared.session_id
     assert not bound["door"].is_open
-    assert bound["request"] == AngleCaptureRequest.from_mapping(store.reopen_json_artifact(
-        store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json")))
+    assert json.loads(json.dumps(bound["request"].to_dict())) == store.reopen_json_artifact(
+        store.identify_artifact(f"evidence/v1/artifacts/crossover_v2/{prepared.session_id}/plan.json"))
     assert prepared.join_spec.capture_plan.capture_target == len(bound["captures"])
     assert tuple(capture.spec.program_phase for capture in bound["captures"]) == phases
     assert (bound["execute"] is not None) == (bound["request"].levels is not None)

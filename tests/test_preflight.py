@@ -4,14 +4,11 @@
 
 import logging
 import math
-import random
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-import numpy as np
 import pytest
-import yaml
 
 from jasper.active_speaker.angle_capture import (
     AngleCaptureRequest, AngleStop, LevelPolicy, REGIME_PER_DRIVER, REGIME_SUMMED, request_for_preset,
@@ -21,15 +18,10 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.graph_transfer import complex_channel_transfer
-from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
-from jasper.active_speaker.measured_crossover_candidate import candidate_room_peqs
-from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph, room_layer_charge_db
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
-from jasper.active_speaker.preflight import (
-    PreflightFacts, PreflightIssue, bass_lift_db, preflight, rise_without_room_db,
-)
+from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, bass_lift_db, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
@@ -37,7 +29,6 @@ from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
-from jasper.platform.biquad import FilterSpec, PeqFilter, filter_response_db, freq_trig
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.platform import control_client
 from tests.active_speaker_fixtures import mono_output_topology
@@ -48,7 +39,6 @@ from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, _trial_candidate, tuning_profile as tuning_profile,
 )
-from tests.test_active_speaker_measured_crossover_candidate import _room_correction
 
 BASS, NEAR_FIELD = preset("bass/axis").stimulus, preset("nearfield/each").stimulus
 
@@ -163,7 +153,6 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     monkeypatch.setattr(preflight_live, "candidate_from_applied_profile",
                         lambda *a: SimpleNamespace(bass_extension={}, room_correction={}, source_preset=None))
     monkeypatch.setattr(preflight_live, "plays_rear", lambda _: False)
-    monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda _: None)
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     facts = preflight_live.read_preflight_facts(plan, mover_available=True)
     assert facts.declared_target_ids == tuple(role_targets)
@@ -398,80 +387,6 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     assert issue.blocking and issue.next_action
 
 
-_CUT = PeqFilter(50.0, 8.0, -6.0)
-
-
-@pytest.mark.parametrize("room,lin,rise_db", [
-    ((), None, 0.0),
-    (({"freq": 50.0, "q": 8.0, "gain": -6.0},), None, 6.0),
-    (({"freq": 120.0, "q": 2.0, "gain": 3.0},), None, 3.88),  # a lone boost pays its peak and the margin
-    (({"freq": 120.0, "q": 2.0, "gain": -3.0},), (120.0, 3.0), 0.0),  # the room cut nets a driver boost
-    (({"freq": 120.0, "q": 2.0, "gain": 3.0},), (28.0, 6.0), 2.96),  # the declared high-pass nets a driver boost
-])
-def test_the_room_off_rise_is_the_rooms_charge_less_its_lowest_response_in_band(tuning_profile, room, lin, rise_db):
-    """Clearing the applied room layer moves the program charge by what the layer adds to it and
-    gives back the layer's response, so the room-off take plays at most that much louder across
-    the band, read off the graphs the probe and the take play (ADR-0385)."""
-    profile = replace(tuning_profile, protection_sections_by_role={
-        "woofer": (CrossoverSection(40, 4, True),), "tweeter": (CrossoverSection(1800, 4, True),)})
-    band_hz, spend = (20.0, 1100.0), sum(entry["gain"] for entry in room if entry["gain"] > 0.0)
-    candidate = replace(
-        _room_candidate(profile), blend_correction=(), role_attenuations_db={"woofer": 0.0, "tweeter": -3.0},
-        linearization={"woofer": {"filters": [{"biquad_type": "Peaking", "freq": lin[0], "q": 2.0, "gain": lin[1]}]}} if lin else {},
-        room_correction=_room_correction(sides={"mono": list(room)}, boost_db_total=spend, level_cost_db=spend, basis={
-            **_room_correction()["basis"], "admitted_boosts_hz": [e["freq"] for e in room if e["gain"] > 0.0]}) if room else {})
-    rise = rise_without_room_db(candidate_room_peqs(candidate), band_hz, charge_db=room_layer_charge_db(profile, candidate))
-    hz = np.geomspace(*band_hz, 4001)
-    with_room, without = (np.abs(complex_channel_transfer(
-        yaml.safe_load(compile_tuning_graph(profile, candidate, cleared_layers=cleared)),
-        hz, input_weights={0: 1.0}, output_channels={"woofer": 0}, allow_limiter_passthrough=True,
-    )["woofer"]) for cleared in ((), ("room_correction",)))
-    assert rise == pytest.approx(rise_db, abs=0.02)
-    assert rise == pytest.approx(max(0.0, float(np.max(20.0 * np.log10(without / with_room)))), abs=0.01)
-
-
-def _rise_before_the_shared_cascade(room_peqs, band_hz, charge_db):
-    """``rise_without_room_db`` as it read before it shared ``biquad.peaking_cascade_response_db``
-    with the stereo room charge (#5909 H5): the oracle the shared form must match bit for bit."""
-    low, high = band_hz
-    steps = max(1, math.ceil(48 * math.log2(high / low)))
-    grid = sorted({*(low * (high / low) ** (step / steps) for step in range(steps + 1)),
-                   *(peq.freq for peq in room_peqs if low <= peq.freq <= high)})
-    trig = freq_trig(grid)
-    response = [sum(values) for values in zip(*(
-        filter_response_db(FilterSpec("room", "Peaking", peq.freq, peq.gain, peq.q), grid, trig)
-        for peq in room_peqs))]
-    return max(0.0, charge_db - min(response))
-
-
-@pytest.mark.parametrize("seed", range(3))
-def test_the_room_off_rise_is_bit_identical_on_the_shared_cascade(seed):
-    """The ADR-0370 rise bounds an SPL raise, so sharing its grid with the stereo room charge
-    must not move one bit of it: random rooms and bands, compared with exact equality."""
-    rng = random.Random(seed)
-    for _ in range(20):
-        room = [PeqFilter(rng.uniform(15.0, 600.0), rng.uniform(0.5, 12.0), rng.uniform(-12.0, 6.0))
-                for _ in range(rng.randint(1, 10))]
-        low = rng.uniform(15.0, 200.0)
-        band_hz, charge_db = (low, low * rng.uniform(1.0, 30.0)), rng.uniform(0.0, 6.0)
-        assert rise_without_room_db(room, band_hz, charge_db=charge_db) == _rise_before_the_shared_cascade(
-            room, band_hz, charge_db)
-
-
-@pytest.mark.parametrize("purposes,room,blocked", [
-    (("bass",), None, False), (("speaker", "bass"), None, True), (("speaker", "bass"), (_CUT,), True),
-    (("speaker", "room"), None, False)])
-def test_an_unreadable_room_layer_refuses_only_a_rise_over_the_probe(purposes, room, blocked):
-    """A take that clears the room layer the run's probe plays has an unknown rise
-    when that layer or its charge cannot be read, so preflight refuses its plan.
-    A run whose probe clears the layer too, or whose takes all play it, needs no
-    rise (ADR-0370, ADR-0403 §4)."""
-    plan = AngleCaptureRequest(tuple(AngleStop(Pose(azimuth, 0), REGIME_SUMMED, purpose=purpose)
-                                     for azimuth, purpose in zip((0, 20), purposes)), level=LevelPolicy(level_db=0))
-    report = preflight(plan, ready_facts(plan, applied_room_peqs=room))
-    assert [issue.code for issue in report.issues if issue.blocking] == (["walk_level_policy_invalid"] if blocked else [])
-
-
 @pytest.mark.parametrize("program,layout,applied_db,trial_db,lift", [
     ("speaker", "speaker_mark", 18, None, "none"), ("room", "seat_express", 18, None, "none"),
     ("room", "seat_express", 6, 18, "trial over applied")])
@@ -493,21 +408,10 @@ def test_the_margins_are_measured_against_the_graph_the_probe_plays(tuning_profi
     assert (lift == "none") is (expected == 0.0)
 
 
-def test_a_take_clearing_the_room_layer_the_probe_plays_adds_its_rise():
-    """A take that clears the room layer the run's probe plays can play louder
-    than the probe by that layer's rise across its band (ADR-0370, ADR-0385)."""
-    plan = AngleCaptureRequest(tuple(AngleStop(Pose(azimuth, 0), REGIME_SUMMED, purpose=purpose)
-                                     for azimuth, purpose in ((0, "speaker"), (20, "bass"))), level=LevelPolicy(level_db=0))
-    report = preflight(plan, ready_facts(plan, applied_room_peqs=(_CUT,), applied_room_charge_db=0.0))
-    assert not report.blocking
-    assert report.rung_admission["room_off_rise_db"] == pytest.approx(6.0, abs=0.1)
-    assert report.rung_admission["run_margin_db"] == pytest.approx(report.rung_admission["room_off_rise_db"])
-
-
-@pytest.mark.parametrize("state,room", [({}, ()), ({"status": "applied"}, None)])
-def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatch, state, room):
-    """No applied profile plays no room layer or rear woofer; an applied one whose
-    candidate cannot be read has unknown ones (ADR-0370, ADR-0385)."""
+@pytest.mark.parametrize("state,rear", [({}, False), ({"status": "applied"}, None)])
+def test_live_facts_tell_no_applied_rear_from_an_unreadable_one(monkeypatch, state, rear):
+    """No applied profile plays no rear woofer; an applied one whose candidate
+    cannot be read has an unknown one (ADR-0370)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass"),))
     ready = ready_facts(plan)
 
@@ -522,8 +426,7 @@ def test_live_facts_tell_no_applied_room_layer_from_an_unreadable_one(monkeypatc
                               preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
     monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
     facts = preflight_live.read_preflight_facts(plan, context=context)
-    assert (facts.applied_room_peqs, facts.applied_room_charge_db, facts.applied_rear_plays) == (
-        (room, None, None) if room is None else (room, None, False))
+    assert facts.applied_rear_plays is rear
 
 
 _REAR_SUM_DB = 20 * math.log10(2)
@@ -620,7 +523,6 @@ def test_live_facts_read_a_cardioid_base_and_its_rear(monkeypatch):
     state = {"status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint}}
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state)
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda _: SimpleNamespace(candidate=applied))
-    monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda _: profile)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live, "read_output_volume", lambda: {})
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
@@ -643,15 +545,11 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
     sensitivity = ready_facts(plan).mic_sensitivity
-    # A lone room boost gives the applied tune a program charge.
-    applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {}, room_correction=_room_correction(
-        sides={"mono": [{"freq": 120.0, "q": 2.0, "gain": 6.0}]}, boost_db_total=6.0, level_cost_db=6.0,
-        basis={**_room_correction()["basis"], "admitted_boosts_hz": [120.0]}))
+    applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {})
     state = {"status": "applied", "source": {"measured_candidate_fingerprint": applied.fingerprint}}
     monkeypatch.setattr(preflight_live, "load_applied_baseline_profile_state", lambda: state if descriptor is not None else {})
     monkeypatch.setattr(candidate_parts, "find_banked_candidate", lambda name: {applied.fingerprint: SimpleNamespace(candidate=applied)}[name])
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
-    monkeypatch.setattr(preflight_live, "load_tuning_declaration", lambda topology: tuning_profile)
     monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda device: sensitivity)
     context = SimpleNamespace(topology=None, roles_bands=(), safety_profile={}, role_targets={},
         driver_caps_dbfs={}, fc_hz=None, driver_sweep_duration_limits_s={},
@@ -659,7 +557,6 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
     facts = preflight_live.read_preflight_facts(plan, context=context)
     assert facts.applied_bass_extension == applied.bass_extension
-    assert facts.applied_room_peqs == (candidate_room_peqs(applied) if descriptor is not None else ())
     assert facts.applied_rear_plays is False
     report = preflight(plan, facts)
     assert not report.blocking

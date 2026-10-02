@@ -1072,19 +1072,18 @@ def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -
     ("bass/axis", "seat_express", None, (), False),
 ], ids=["driver", "close set", "branch set", "a timing take", "a trial over a timing take", "bass"])
 def test_a_plan_states_no_ladder_for_a_take_that_levels_itself(program, layout, poses, candidates, refused) -> None:
-    """A take that levels itself plays its probe first, so a staged plan whose
-    template states a ladder is refused where every plan document enters, the
-    page's and ``jasper-round run --plan``'s alike; a bass stop keeps its ladder
-    (ADR-0405). Over a timing take each candidate graph levels itself (ADR-0408)."""
-    document = ac.request_for_preset(mp.run_preset(program, layout, poses), targets=("woofer", "tweeter"),
-                                     candidates=candidates).to_dict()
-    document["template"]["level_ladder_dbfs"] = [-12.0]
+    """A take that levels itself plays its probe first, so a plan whose template
+    states a ladder is refused; a bass stop keeps its ladder (ADR-0405). Over a
+    timing take each candidate graph levels itself (ADR-0408)."""
+    request = ac.request_for_preset(mp.run_preset(program, layout, poses), targets=("woofer", "tweeter"),
+                                    candidates=candidates)
+    ladder = replace(request.template, level_ladder_dbfs=(-12.0,))
     if refused:
         with pytest.raises(ac.LateralWalkRefused) as excinfo:
-            ac.AngleCaptureRequest.from_mapping(document)
+            replace(request, template=ladder)
         assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
     else:
-        assert ac.AngleCaptureRequest.from_mapping(document).template.level_ladder_dbfs == (-12.0,)
+        assert replace(request, template=ladder).template.level_ladder_dbfs == (-12.0,)
 
 
 def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> None:
@@ -1164,19 +1163,17 @@ def test_template_accepts_only_the_base_candidate_token(candidate_id):
 
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
-def test_request_round_trip_and_capture_schedule(repeats, candidates):
+def test_request_document_and_capture_schedule(repeats, candidates):
     request = ac.request_for_preset(
         mp.run_preset("room", "room_quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
         retries_per_pose=2, level=ac.LevelPolicy(level_db=-25),
     )
     doc = request.to_dict()
-    assert doc["artifact_schema_version"] == ac.REQUEST_SCHEMA_VERSION
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
     assert doc["level"] == {"level_db": -25}
     assert doc["level_source"] == "operator"
     assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
-    assert ac.AngleCaptureRequest.from_mapping(doc) == request
     specs = ac.stop_specs(request, baseline_id="banked-base",
                           prompts=[s.prompt for s in ac.resolve_request(request)])
     assert {spec.kind for spec in specs if spec.candidate_id == "banked-base"} == {MEASURE_KIND_VERIFY}
@@ -1191,13 +1188,11 @@ def test_request_round_trip_and_capture_schedule(repeats, candidates):
 
 @pytest.mark.parametrize("row, pair", [("branches", ("woofer", "tweeter")),
                                        ("front_rear", ("woofer", "woofer:rear"))])
-def test_a_branch_row_names_its_pair_through_the_round_trip_and_onto_the_spec(row, pair):
+def test_a_branch_row_names_its_pair_onto_the_spec(row, pair):
     """The registry row, not the box's acoustic roles, decides which two targets
-    a branch take excites, and the pair survives the plan document the CLI posts
-    to the wizard."""
+    a branch take excites."""
     request = ac.request_for_preset(mp.preset(row), candidates=("trial",))
     assert {stop.branch_pair for stop in request.stops} == {mp.preset(row).branch_pair}
-    assert ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(request.to_dict()))) == request
     specs = ac.stop_specs(request, baseline_id="banked-base", roles_bands=_ROLES_BANDS,
                           prompts=[stop.prompt for stop in ac.resolve_request(request)])
     assert {spec.branch_target_ids for spec in specs} == {pair}
@@ -1230,13 +1225,12 @@ def test_a_rear_pair_plays_its_parent_with_the_rear_stage_cleared(preset, candid
 
 
 @pytest.mark.parametrize("levels", [None, (-10.0,), (-10.0, -20.0)])
-def test_request_levels_round_trip_and_single_level_bytes(levels):
+def test_request_levels_and_single_level_bytes(levels):
     program = mp.preset("room")
     scalar = ac.request_for_preset(program, candidates=("base", "room-fp"), level=ac.LevelPolicy(level_db=-10.0))
     request = ac.request_for_preset(program, candidates=scalar.candidates, levels=levels,
                                      level=ac.LevelPolicy(level_db=-10.0 if levels is None else None))
     document = json.dumps(request.to_dict()).encode()
-    assert ac.AngleCaptureRequest.from_mapping(json.loads(document)) == request
     assert request.stops == scalar.stops
     if levels is None or len(levels) == 1:
         assert document == json.dumps(scalar.to_dict()).encode()
@@ -1292,25 +1286,15 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
     assert {spec.graph_scope for spec in specs} == {"candidate"}
 
 
-@pytest.mark.parametrize("version", [6, 7])
-def test_previous_request_version_requires_restage(version):
-    doc = {**ac.summed_at([0]).to_dict(), "artifact_schema_version": version}
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.AngleCaptureRequest.from_mapping(doc)
-    assert refused.value.reason == ac.WALK_SCHEMA_VERSION_UNSUPPORTED
-
-
 def test_a_stop_is_one_take_of_its_pose():
-    """A layout's take count repeats the stop, so a staged stop's pose states
-    none, and a staged stop whose pose states one refuses: the request's
-    ``repeats`` is the one per-stop repeat (#5737 F1)."""
+    """A layout's take count repeats the stop, so a stop's pose states none,
+    and a stop whose pose states one refuses: the request's ``repeats`` is the
+    one per-stop repeat (#5737 F1)."""
     doc = ac.request_for_preset(mp.run_preset("speaker", "baseline_express")).to_dict()
     assert [stop["pose"] for stop in doc["stops"]].count({"azimuth_deg": 0, "elevation_deg": 0}) == 4
     assert not any("repeats" in stop["pose"] for stop in doc["stops"])
-    doc["stops"][0]["pose"]["repeats"] = 3
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.AngleCaptureRequest.from_mapping(doc)
-    assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID
+    with pytest.raises(contracts.CrossoverV2FlowError):
+        ac.AngleStop(mp.Pose(0, 0, repeats=3), ac.REGIME_PER_DRIVER, purpose="speaker")
 
 
 _NEAR_FIELD = mp.preset("nearfield/each").stimulus
@@ -1321,22 +1305,11 @@ _NEAR_FIELD = mp.preset("nearfield/each").stimulus
     (mp.REGIME_SUMMED, "woofer", {**_NEAR_FIELD, "gap_s": 3.0}),
     (mp.REGIME_PER_DRIVER, "", mp.preset("bass/axis").stimulus)],
     ids=["ceiling-on-one-driver", "band-on-the-candidate-graph", "gap-past-the-standby-bound", "ceiling-on-each-driver"])
-def test_a_staged_stop_whose_stimulus_cannot_play_refuses_by_name(regime, driver, stimulus):
+def test_a_stop_whose_stimulus_cannot_play_refuses_by_name(regime, driver, stimulus):
     """A plan's stimulus is judged before anything composes it (#5737): a
     ceiling row plays on the candidate graph, a band row on one driver alone,
     with silences the analysis and the amplifier both keep, and a per-driver
     stop that names no driver plays neither."""
-    doc = ac.summed_at([0]).to_dict()
-    doc["stops"][0].update(regime=regime, pose={"azimuth_deg": 0, "elevation_deg": 0, "driver": driver},
-                           stimulus=stimulus)
     with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.AngleCaptureRequest.from_mapping(doc)
+        ac.AngleStop(mp.Pose(0, 0, driver=driver), regime, purpose="speaker", stimulus=stimulus)
     assert refused.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
-
-
-def test_a_stale_banked_stop_keeps_its_registered_refusal_code():
-    doc = ac.summed_at([0]).to_dict()
-    doc["stops"][0]["pose"]["azimuth_deg"] = ac.MAX_ANGLE_DEG + 1
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        ac.AngleCaptureRequest.from_mapping(doc)
-    assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID

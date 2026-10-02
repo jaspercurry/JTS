@@ -102,7 +102,6 @@ __all__ = [
     "LevelPolicy",
     "BASE_CANDIDATE",
     "candidate_identity",
-    "WALK_SCHEMA_VERSION_UNSUPPORTED",
     "AngleStop",
     "AngleCaptureRequest",
     "ResolvedStop",
@@ -122,7 +121,6 @@ __all__ = [
     "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
-    "WALK_STOP_NO_LONGER_VALID",
     "WALK_TEMPLATE_NOT_ACCEPTED",
     "WALK_DELAY_NOT_ACCEPTED",
     "WALK_POLARITY_NOT_ACCEPTED",
@@ -134,8 +132,6 @@ __all__ = [
 
 
 LEVEL_SOURCES = ("program_default", "operator")
-REQUEST_SCHEMA_VERSION = 8
-REQUEST_KIND = "jts_active_speaker_angle_capture_request_staged"
 
 
 #: How far off the design axis a stop may be asked for. :func:`pose_at_angle` is a
@@ -319,8 +315,7 @@ def level_sets(stops: Sequence[AngleStop], scopes: Sequence[str]) -> tuple[int |
 
 def _stop_pose(**stated: Any) -> Pose:
     """A stop's pose from its stated fields, refused as a stop is (a
-    :class:`CrossoverV2FlowError`), so a door that takes raw angles or a staged
-    stop refuses a bad pose the way it refuses a bad stop."""
+    :class:`CrossoverV2FlowError`)."""
     try:
         return Pose(**stated)
     except ValueError as exc:
@@ -329,7 +324,7 @@ def _stop_pose(**stated: Any) -> Pose:
 
 def _stated(record: Any, always: tuple[str, ...]) -> dict[str, Any]:
     """A record's fields that ``always`` names or that differ from their
-    defaults, tuples as lists: a staged stop's shape."""
+    defaults, tuples as lists: a stop's shape in :meth:`AngleCaptureRequest.to_dict`."""
     return {f.name: list(value) if isinstance(value, tuple) else value
             for f in fields(record) for value in (getattr(record, f.name),)
             if f.name in always or value != f.default}
@@ -418,12 +413,6 @@ class LevelPolicy:
 
     def to_dict(self) -> dict[str, Any]:
         return {"level_db": self.level_db}
-
-    @classmethod
-    def from_mapping(cls, doc: Mapping[str, Any]) -> LevelPolicy:
-        if set(doc) != {"level_db"}:
-            raise ValueError("level must state level_db, and only that")
-        return cls(level_db=doc["level_db"])
 
 
 @dataclass(frozen=True)
@@ -533,51 +522,7 @@ class AngleCaptureRequest:
                 for stop in self.stops
             ],
             "candidates": list(self.candidates),
-            "artifact_schema_version": REQUEST_SCHEMA_VERSION, "kind": REQUEST_KIND,
         }
-
-    @classmethod
-    def from_mapping(cls, doc: Mapping[str, Any]) -> AngleCaptureRequest:
-        if doc.get("artifact_schema_version") != REQUEST_SCHEMA_VERSION:
-            raise LateralWalkRefused(WALK_SCHEMA_VERSION_UNSUPPORTED,
-                                     f"restage the request as version {REQUEST_SCHEMA_VERSION}")
-        if doc.get("kind") != REQUEST_KIND:
-            raise ValueError("invalid angle request kind")
-        unknown = set(doc) - {f.name for f in fields(cls)} - {"kind", "artifact_schema_version", "staged_at"}
-        if unknown:
-            raise ValueError(f"unknown request fields: {sorted(unknown)}")
-        missing = {f.name for f in fields(cls)} - set(doc) - {"levels", "level_source", "layout"}
-        if missing:
-            raise ValueError(f"request must state {', '.join(sorted(missing))}")
-        values = {f.name: doc[f.name] for f in fields(cls) if f.name in doc}
-        for name in ("mover", "program", "layout"):
-            if not isinstance(values.get(name, ""), str):
-                raise ValueError(f"{name} must be text")
-        if not isinstance(values["stops"], list) or not values["stops"]:
-            raise ValueError("stops must be a nonempty list")
-        for name, read in (
-            ("stops", lambda entries: tuple(AngleStop(**{**entry, "pose": _stop_pose(**entry["pose"])})
-                                            for entry in entries)),
-            ("template", MeasureSpec.from_mapping), ("level", LevelPolicy.from_mapping),
-        ):
-            try:
-                if name != "stops" and not isinstance(values[name], Mapping):
-                    raise ValueError("must be an object")
-                values[name] = read(values[name])
-            except LateralWalkRefused:
-                raise
-            except CrossoverV2FlowError as exc:
-                if name != "stops":
-                    raise
-                raise LateralWalkRefused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
-            except (TypeError, ValueError, KeyError) as exc:
-                raise ValueError(f"{name}: {exc}") from exc
-        try:
-            return cls(**values)
-        except LateralWalkRefused:
-            raise
-        except CrossoverV2FlowError as exc:
-            raise LateralWalkRefused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
 
     def _refuse_bad_template(self) -> None:
         """The questions about a template that are the WALK's, not the spec's:
@@ -885,8 +830,6 @@ WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 
 WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 
-WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
-
 #: The walk states an SPL ceiling and no microphone sensitivity resolves, so
 #: nothing could turn a recording into dB SPL to watch it. Decided beside the
 #: ceiling, where the watch is built (:func:`~.plan_run.spl_watch`). The value
@@ -910,11 +853,6 @@ WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-
-#: A banked stop no longer satisfies this module's own contract (a
-#: hand-edited angle, an unknown regime or mover). The spool re-raises
-#: :func:`_validated_angle`'s bare :class:`CrossoverV2FlowError` under this slug.
-WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 
 #: The walk's template carries what the EXECUTOR assigns per capture
 #: (:data:`_EXECUTOR_ASSIGNED`), so the walk would measure somewhere other than
@@ -951,12 +889,10 @@ WALK_REFUSAL_REASONS = frozenset({
     REASON_MEASUREMENT_CANDIDATE_REQUIRED,
     WALK_OVER_MOVER_ENVELOPE,
     WALK_LEVEL_POLICY_INVALID,
-    WALK_SCHEMA_VERSION_UNSUPPORTED,
     WALK_SPL_CALIBRATION_REQUIRED,
     WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
-    WALK_STOP_NO_LONGER_VALID,
     WALK_TEMPLATE_NOT_ACCEPTED,
     WALK_POLARITY_NOT_ACCEPTED,
     WALK_DELAY_NOT_ACCEPTED,

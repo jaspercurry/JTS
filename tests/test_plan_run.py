@@ -166,30 +166,22 @@ def _takes(document):
     return [take for group in document["sets"] for take in group["takes"]]
 
 
-@pytest.mark.parametrize("reader,refusal,field,code", [
-    ("staged_stop", ac.LateralWalkRefused, "reason", ac.WALK_STOP_NO_LONGER_VALID),
-    ("kept_take", CodedFieldError, "code", "field_required"),
-    ("purpose_take", CodedFieldError, "code", "field_required"),
-])
-def test_a_stop_or_take_that_names_no_purpose_refuses_by_its_code(tmp_path, reader, refusal, field, code):
-    """No purpose is inferred from a pose kind (#2902): a staged stop that
-    names none is no longer valid, and a banked take that names none refuses
-    by that field."""
-    plan = ac.request_for_preset(run_preset("room", "seat_cube")).to_dict()
-    del plan["stops"][0]["purpose"]
+@pytest.mark.parametrize("reader", ["kept_take", "purpose_take"])
+def test_a_take_that_names_no_purpose_refuses_by_its_code(tmp_path, reader):
+    """No purpose is inferred from a pose kind (#2902): a banked take that
+    names none refuses by that field."""
     root = bank_seat_round(tmp_path)
     session, = (root / "bundle").iterdir()
     take = next(session.rglob("positions/*.json"))
     take.write_text(json.dumps({key: value for key, value in json.loads(take.read_text()).items()
                                 if key != "measurement_purpose"}))
     reads = {
-        "staged_stop": lambda: ac.AngleCaptureRequest.from_mapping(plan),
         "kept_take": lambda: list(kept_measurements(session, phases=("lateral",), purposes=("room",))),
         "purpose_take": lambda: purpose_take_records(session, purpose="room"),
     }
-    with pytest.raises(refusal) as refused:
+    with pytest.raises(CodedFieldError) as refused:
         reads[reader]()
-    assert getattr(refused.value, field) == code
+    assert refused.value.code == "field_required"
 
 
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
@@ -753,20 +745,6 @@ def test_a_baseline_keeps_timing_at_entry_and_reads_no_room(layout):
         pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
 
 
-def test_a_hand_written_branch_plan_resolves_its_timing_take_as_a_summed_take():
-    plan = ac.AngleCaptureRequest(
-        (ac.AngleStop(Pose(0, 0), ac.REGIME_BRANCHES, branch_pair="front_rear", purpose="speaker"),), program="speaker/mark",
-    )
-    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan.to_dict())))
-    captures = plan_run.prepare_plan_captures(request, roles_bands=tuple(_roles()))
-
-    entry = next(c for c in captures if c.spec.program_phase == "timing")
-    assert (entry.stop.regime, entry.stop.branch_pair) == (ac.REGIME_SUMMED, "drivers")
-    assert entry.spec.branch_target_ids == ()
-    assert {c.spec.branch_target_ids for c in captures if c.spec.graph_scope == "candidate_branches"} == {
-        ("woofer", "woofer:rear")}
-
-
 def test_a_speaker_preset_walks_its_driver_stops_and_no_summed_stop_names_a_band():
     """A speaker preset plays each driver alone at each pose after the entry
     timing take, and keeps no room sweep; a room take's summed stop names no
@@ -831,7 +809,7 @@ def test_a_near_field_plan_asks_for_every_driver_pose_and_banks_reference_takes(
     program = Preset("nearfield/each", tuple(
         Pose(0, 0, kind="close", distance_m=mm / 1000, driver=driver) for driver, mm in layout),
         purposes=("reference",), stimulus=NEAR_FIELD)
-    request = ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(ac.request_for_preset(program).to_dict())))
+    request = ac.request_for_preset(program)
     captures = plan_run.prepare_plan_captures(request)
     gate = AnsweredGate()
 
@@ -2071,33 +2049,24 @@ async def test_a_run_banks_its_preset_and_its_layout():
         "preset": "tournament/express", "layout": "tournament_full"}
 
 
-def _staged(name, layout, restaged):
-    plan = ac.request_for_preset(run_preset(name, layout)).to_dict()
-    for stop in plan["stops"]:
-        stop.update(restaged)
-    return ac.AngleCaptureRequest.from_mapping(json.loads(json.dumps(plan)))
-
-
-@pytest.mark.parametrize("name,layout,restaged,banked", [
-    ("speaker/mark", "speaker_mark", {}, {("speaker", ("speaker",))}),
-    ("rear/seat", "seat_express", {}, {("rear", ("rear", "room"))}),
-    ("rear/seat", "seat_express", {"purpose": "room", "purposes": ["room"]}, {("room", ("room",))}),
+@pytest.mark.parametrize("name,layout,banked", [
+    ("speaker/mark", "speaker_mark", {("speaker", ("speaker",))}),
+    ("rear/seat", "seat_express", {("rear", ("rear", "room"))}),
 ])
-async def test_a_take_banks_the_purposes_its_stop_names(name, layout, restaged, banked):
-    """A preset names its purposes on each stop, and a stop staged under a preset's id serves
-    what it names, not the preset's (ADR-0336, ADR-0383)."""
-    request = _staged(name, layout, restaged)
+async def test_a_take_banks_the_purposes_its_stop_names(name, layout, banked):
+    """A preset names its purposes on each stop, and each take banks them (ADR-0336, ADR-0383)."""
+    request = ac.request_for_preset(run_preset(name, layout))
     result, fakes = await _run_gated(request, captures=plan_run.prepare_plan_captures(request),
                                      assessor=lambda *_args, **_kwargs: TakeVerdict(True, next="accept"))
     assert result.status == "complete"
     assert {(take["measurement_purpose"], tuple(take["purposes"])) for take in fakes.banked} == banked
 
 
-@pytest.mark.parametrize("restaged", [{"purpose": "room"}, {"purposes": ["rear", "rear"]}])
-def test_a_staged_stop_names_its_purpose_first_and_each_purpose_once(restaged):
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        _staged("rear/seat", "seat_express", restaged)
-    assert refused.value.reason == ac.WALK_STOP_NO_LONGER_VALID
+@pytest.mark.parametrize("purpose,purposes", [("room", ("rear", "room")), ("rear", ("rear", "rear"))])
+def test_a_stop_names_its_purpose_first_and_each_purpose_once(purpose, purposes):
+    pose = replace(run_preset("rear/seat", "seat_express").poses[0], repeats=1)
+    with pytest.raises(ac.CrossoverV2FlowError):
+        ac.AngleStop(pose, ac.REGIME_SUMMED, purpose=purpose, purposes=purposes)
 
 
 async def test_room_uses_its_first_seat_take_as_the_level_reference():

@@ -10,10 +10,8 @@ from itertools import product
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
-from jasper.audio_measurement.program import MEASURE_SWEEP_F_HI_HZ, RoleBand
-from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
+from jasper.audio_measurement.program import RoleBand
 from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
-from jasper.platform.biquad import PeqFilter, peaking_cascade_response_db
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.json_fields import finite_float
 
@@ -98,10 +96,6 @@ class PreflightFacts:
     #: The declared room's unreadable field, ``None`` when it reads (ADR-0388).
     geometry_unreadable: str | None = None
     applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
-    #: ``None`` when an applied profile's room layer could not be read.
-    applied_room_peqs: tuple[PeqFilter, ...] | None = ()
-    #: What that layer adds to the applied program charge (ADR-0385); ``None`` when unknown.
-    applied_room_charge_db: float | None = None
     #: Whether the run's base graph plays a rear woofer; ``None`` when it could not be read.
     applied_rear_plays: bool | None = False
     declared_target_ids: tuple[str, ...] | None = None
@@ -164,24 +158,14 @@ def bass_lift_db(bass: Mapping[str, Any], under: Mapping[str, Any]) -> float:
     return max(0.0, dynamic_bass_gain_reserve_db(bass) - dynamic_bass_gain_reserve_db(under))
 
 
-def rise_without_room_db(room_peqs: Sequence[PeqFilter], band_hz: tuple[float, float], *, charge_db: float) -> float:
-    """The most a graph without ``room_peqs`` plays above one with them across
-    ``band_hz``: ``charge_db``, what they add to the program charge, less their
-    lowest response there (ADR-0385). Never negative."""
-    if not room_peqs:
-        return 0.0
-    return max(0.0, charge_db - min(peaking_cascade_response_db(room_peqs, *band_hz)[1]))
-
-
 def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
                 bass_extensions: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
     """How much louder than the take a run probes its other takes at the run's
-    fader may play: the largest bass lift and the largest rise of a take that
-    clears the room layer, each against the graph the probe plays, and, for a rear
-    woofer the probe's graph mutes and a later take plays, the coherent sum of the
-    woofers sharing its band (ADR-0403 §4, ADR-0370, ADR-0385). Empty when no take
-    plays at the run's fader. Raises ``ValueError`` when a take clears a room
-    layer the probe plays and that layer or its charge could not be read."""
+    fader may play: the largest bass lift against the graph the probe plays and,
+    for a rear woofer the probe's graph mutes and a later take plays, the coherent
+    sum of the woofers sharing its band (ADR-0403 §4, ADR-0370). Empty when no
+    take plays at the run's fader. Clearing the applied room layer adds nothing:
+    only a bass run's takes clear it, its probe among them (ADR-0370)."""
     takes = [(scope, levelled) for scope, levelled, _ in run_takes(captures)]
     probed = run_probe_index(takes)
     if probed is None:
@@ -195,14 +179,6 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
 
     probe = captures[probed]
     lift = max(bass_lift_db(bass(capture), bass(probe)) for capture in at_fader)
-    clearing = ([] if "room_correction" in probe.spec.cleared_layers else
-                [capture for capture in at_fader if "room_correction" in capture.spec.cleared_layers])
-    room_peqs, charge = facts.applied_room_peqs, facts.applied_room_charge_db
-    if clearing and (room_peqs is None or (room_peqs and charge is None)):
-        raise ValueError("the applied room layer could not be read, so a take clearing it has no known rise")
-    rise = max((rise_without_room_db(room_peqs or (), (
-        ROOM_FLOOR_HZ, float((capture.stop.stimulus or {}).get("ceiling_hz") or MEASURE_SWEEP_F_HI_HZ)),
-        charge_db=charge or 0.0) for capture in clearing), default=0.0)
 
     def graph(capture: Any) -> tuple[Any, ...]:
         return capture.spec.graph_scope, capture.stop.candidate_id, capture.spec.cleared_layers
@@ -219,7 +195,7 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     summed = max((20 * math.log10((1 + rear(capture, unread=True)) / (1 + rear(probe, unread=False)))
                   for capture in others), default=0.0)
     summed = max(0.0, summed)
-    return {"lift_bound_db": lift, "room_off_rise_db": rise, "rear_sum_db": summed, "run_margin_db": lift + rise + summed}
+    return {"lift_bound_db": lift, "rear_sum_db": summed, "run_margin_db": lift + summed}
 
 
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: bool = True) -> PreflightReport:

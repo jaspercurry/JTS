@@ -10,7 +10,6 @@ import json
 import math
 import re
 import sys
-from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Sequence
 from urllib.parse import urlsplit
@@ -104,46 +103,32 @@ def _run_links(run_id: str) -> dict[str, Any]:
     return dict(run_id=run_id, link=speaker_url(CROSSOVER_PAGE_PATH), status_url=speaker_url(STATUS_PATH))
 
 
-def _shared(values: Iterable[Any]) -> Any:
-    """The one value a plan's stops share, their sorted distinct values when they differ, or None (ADR-0389)."""
-    distinct = sorted(set(values))
-    return distinct[0] if len(distinct) == 1 else distinct or None
-
-
-def _plan_envelope(plan: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    """A run's subject and parameters, from its resolved plan; a staged run has no round yet (ADR-0389).
-    A preset spreads its repeats over duplicate stops, so takes per pose and configuration are counted."""
-    takes = Counter((stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops)
-    return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
-            {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
-             "levels": list(plan.levels) if plan.levels else None,
-             "repeats": _shared(count * plan.repeats for count in takes.values()),
-             "driver": _shared(stop.pose.driver for stop in plan.stops if stop.pose.driver)})
-
-
 def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
+    """A dry run judges the plan on this speaker's facts; a run posts its request, and the session door
+    resolves, admits and stages it, as it does the page's (#5737)."""
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError  # lazy: run-only
-    from ._run_request import ARM_FACT_CODES, resolve_run  # lazy: run-only measurement imports
+    from jasper.active_speaker.run_request import run_envelope, run_mover  # lazy: run-only measurement imports
+    from ._run_request import preflight_run, read_request  # lazy: run-only measurement imports
 
     try:
-        report = resolve_run(args)
+        asked, request = read_request(args)
+        report = preflight_run(request) if args.dry_run else None
+        mover = run_mover(request)
     except (LayoutNotOfferedError, PosesNameALayoutError, DriverNotOfferedError) as exc:
         return failed(EXIT_REFUSED, exc.reason, exc.detail, code=exc.reason)
     except (ValueError, OSError, CrossoverV2FlowError) as exc:
         return failed(EXIT_REFUSED, getattr(exc, "reason", "program_plan_shape_invalid"), str(exc))
-    if report.plan.mover == MOVER_ARM and not args.wait and not args.dry_run:
-        build_parser().error("--mover arm requires --wait")
-    subject, parameters = _plan_envelope(report.plan)
-    # A dry run refuses what would block the run; a run, only the arm facts the door cannot see (ADR-0237).
-    blocked = report.blocking if args.dry_run else any(issue.blocking and issue.code in ARM_FACT_CODES for issue in report.issues)
-    if blocked:
-        issue = report.blocking_issue
-        return failed(EXIT_REFUSED, issue.code, {"subject": subject, "parameters": parameters, **report.to_dict()},
-                      code=issue.code, next_action=issue.next_action, line=issue.detail)
-    if args.dry_run:
+    if report is not None:
+        subject, parameters = run_envelope(report.plan)
+        if report.blocking:
+            issue = report.blocking_issue
+            return failed(EXIT_REFUSED, issue.code, {"subject": subject, "parameters": parameters, **report.to_dict()},
+                          code=issue.code, next_action=issue.next_action, line=issue.detail)
         return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} run --dry-run"], subject=subject,
                       parameters=parameters, line="", **report.to_dict())
-    http, payload = client.open_session(report.plan.to_dict(), attest_rig_clear=args.attest_rig_clear)
+    if mover == MOVER_ARM and not args.wait:
+        build_parser().error("--mover arm requires --wait")
+    http, payload = client.open_session(asked, attest_rig_clear=args.attest_rig_clear)
     if http != 200:
         return _wizard_failure(EXIT_UNREADABLE if http == 0 else EXIT_REFUSED,
                                "run_refused", {"http": http}, payload)
@@ -154,7 +139,7 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
     if args.wait:
         print(json.dumps(_run_links(run_id)), file=sys.stderr, flush=True)
         args.run = run_id
-        if report.plan.mover != MOVER_ARM:
+        if mover != MOVER_ARM:
             return _cmd_wait(client, args)
         from jasper.active_speaker import arm_walk  # lazy: arm-only
 
@@ -166,9 +151,12 @@ def _cmd_run(client: WizardClient, args: argparse.Namespace) -> int:
             arm_walk.WalkConfig(),
         ) as arm:
             return _cmd_wait(client, args, finish_arm=arm.finish)
-    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} run"], subject=subject, parameters=parameters,
-                  line="Run ready; place the microphone to start.", **_run_links(run_id),
-                  first_prompt=capture.get("first_prompt"), schedule=report.to_dict())
+    staged = payload.get("staged") if isinstance(payload, dict) else None
+    if not isinstance(staged, dict) or not {"subject", "parameters", "schedule"} <= staged.keys():
+        return failed(EXIT_UNREADABLE, "run_answer_invalid", payload)
+    return answer(args.command, schema=ANSWER_SCHEMAS[f"{PROG} run"], subject=staged["subject"],
+                  parameters=staged["parameters"], line="Run ready; place the microphone to start.",
+                  **_run_links(run_id), first_prompt=capture.get("first_prompt"), schedule=staged["schedule"])
 
 
 def _cmd_trial(client: WizardClient, args: argparse.Namespace) -> int:
@@ -415,16 +403,14 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
     presets = ", ".join(available_presets())
     run.add_argument("--program", help=f"a preset ({presets}); a program name runs its first preset")
-    source = run.add_mutually_exclusive_group()
-    source.add_argument("--plan", help="a staged plan document; used without plan-building flags")
-    source.add_argument("--request", help="the run as a JSON object keyed by the plan-building flags' names "
-                        "(program, layout, poses, driver, candidates, repeats, mover, level_db); used without them")
+    run.add_argument("--request", help="the run as a JSON object keyed by the plan-building flags' names "
+                     "(program, layout, poses, driver, candidates, repeats, mover, level_db); used without them")
     run.set_defaults(func=_cmd_run)
     trial_help = ("Test a banked candidate with the program its document states; --mover picks that program's "
                   "layout the mover can walk.")
     trial = sub.add_parser("trial", parents=[run_args], help=trial_help, description=trial_help)
     trial.add_argument("fingerprint", help="banked candidate fingerprint")
-    trial.set_defaults(func=_cmd_trial, plan=None, request=None)
+    trial.set_defaults(func=_cmd_trial, request=None)
     for verb, function, help_line in (
         ("placed", _cmd_placed, "Confirm microphone placement at the pending pose."),
         ("stop", _cmd_stop, "Stop the current run."),

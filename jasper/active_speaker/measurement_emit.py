@@ -239,23 +239,6 @@ def park_muted_outputs(text: str) -> str:
     return _with_mixers(text, graph["mixers"]) if fed else text
 
 
-def room_layer_charge_db(profile: MeasurementGraphProfile, candidate: MeasuredCrossoverCandidate) -> float:
-    """What ``candidate``'s room layer adds to the charge of the graph it plays on ``profile``, dB:
-    that graph's charge less the room-cleared take's. Negative where its cuts net a boost elsewhere
-    (ADR-0385)."""
-    if not candidate_room_peqs(candidate):
-        return 0.0
-
-    def charge(cleared_layers: tuple[str, ...]) -> float:
-        try:
-            return graph_headroom_db(view_from_emitted_text(
-                compile_tuning_graph(profile, candidate, cleared_layers=cleared_layers)))
-        except camilla_yaml.ProgramHeadroomExhausted as exc:
-            return exc.charge_db
-
-    return charge(()) - charge(("room_correction",))
-
-
 def emit_measurement_graph(
     profile: MeasurementGraphProfile,
     inverted_roles: tuple[str, ...] = (),

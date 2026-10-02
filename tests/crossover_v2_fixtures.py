@@ -42,7 +42,7 @@ import numpy as np
 from jasper.active_speaker.bundles import BUNDLE_SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, Pose
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -958,10 +958,8 @@ def _open_prepared(monkeypatch, prepared: Any, run=None) -> tuple[Any, dict[str,
 
 
 def _inline_body():
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER
     # The speaker program's timing take is the run's probe, which plays before CHECK (ADR-0403 §4).
-    return {"plan": AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker"),),
-                                        program="speaker/mark").to_dict()}
+    return {"request": {"program": "speaker/mark", "poses": [0]}}
 
 
 def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
