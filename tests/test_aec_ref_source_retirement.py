@@ -47,9 +47,9 @@ def _arm_chip_aec(monkeypatch, tmp_path, *, chip_ref_pcm: str) -> None:
     # same EX_CONFIG with its own reason; stub it so a missing plan cannot
     # masquerade as this guard firing.
     monkeypatch.setattr(
-        aec_bridge,
-        "_chip_beam_plan",
-        lambda: aec_bridge._mic_profile.SQUARE_FIXED_150_210_PLAN,
+        aec_bridge._mic_profile,
+        "chip_beam_plan_from_env",
+        lambda _env: aec_bridge._mic_profile.SQUARE_FIXED_150_210_PLAN,
     )
 
 

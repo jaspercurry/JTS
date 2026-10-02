@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..aec import bridge_reference
+from ..aec.bridge_config import AEC_MIC_GAIN_DB_DEFAULT
 from jasper.runtime.mic_capture import MicCapture
 from jasper.audio_routes.aec_sweep import (
     AGC1_ENABLED_ENV,
@@ -141,7 +142,7 @@ class WakeTelemetry:
             "agc1_target_dbfs": _pack_knob(AGC1_TARGET_DBFS_ENV),
             "agc1_max_gain_db": _pack_knob(AGC1_MAX_GAIN_DB_ENV),
             "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", bridge_reference.AEC_REF_GAIN_DB_DEFAULT),
-            "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", bridge_reference.AEC_MIC_GAIN_DB_DEFAULT),
+            "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", AEC_MIC_GAIN_DB_DEFAULT),
             "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", bridge_reference.AEC_REF_HPF_HZ_DEFAULT),
         }
         try:
