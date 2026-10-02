@@ -14,6 +14,8 @@ import pytest
 
 from jasper.active_speaker.bass_fit import bass_alignment
 from jasper.active_speaker.round_view_artifacts import PROG
+from jasper.audio_measurement.band_ladders import BASS_BANDS_HZ
+from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.trusted_band import TrustedBand
 from jasper.cli import round_views
 from tests.run_manifest_fixture import write_manifest
@@ -68,16 +70,20 @@ def unplayed_woofer_round(root: Path) -> Path:
                                             _tweeter()], {})
 
 
-def _bass_take(take_id: str, magnitude_db: list[float]) -> dict:
-    """An on-axis take that banked this summed curve, trusted everywhere."""
+def _bass_take(take_id: str, magnitude_db: list[float], noisy_below_hz: float = 0.0) -> dict:
+    """An on-axis take that banked this summed curve, trusted everywhere, and its
+    bass reading, whose bands under ``noisy_below_hz`` miss the SNR floor."""
     curve = {"role": "summed", "window": "ungated", "freqs_hz": FREQS.tolist(), "band_hz": [20.0, 20000.0],
              "magnitude_db": magnitude_db, "trusted_band": asdict(TrustedBand())}
-    return {"take_id": take_id, "selected": True, "curves": [curve],
+    bands = [{"band_hz": [lo, hi], "estimated_snr_db": DRIVER.snr_warn_db + (-10.0 if hi <= noisy_below_hz else 20.0)}
+             for lo, hi in BASS_BANDS_HZ]
+    return {"take_id": take_id, "selected": True, "curves": [curve], "diagnostic": {},
+            "analysis": {"glitch_detected": False, "bass": {"bands": bands}},
             "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}}
 
 
-def bass_round(root: Path, magnitude_db: list[float]) -> Path:
-    return _bundle(root, "bass/axis", [_bass_take("b0", magnitude_db)], {"role": "summed"})
+def bass_round(root: Path, magnitude_db: list[float], noisy_below_hz: float = 0.0) -> Path:
+    return _bundle(root, "bass/axis", [_bass_take("b0", magnitude_db, noisy_below_hz)], {"role": "summed"})
 
 
 def ladder_round(root: Path, magnitude_db: list[float], rungs: int = 4) -> Path:
@@ -117,17 +123,35 @@ def test_each_driver_fits_at_its_nearest_placement_and_a_curve_that_cannot_place
     assert len(filed["woofer"]["model_db"]) == len(filed["woofer"]["measured_db"]) > 3
 
 
-@pytest.mark.parametrize("corner_hz,q,band_hz,trusted,why", [
-    (60.0, 0.2, (25.0, 300.0), TrustedBand(), {"at_bound": ["source_q"]}),
-    (250.0, 0.7, (25.0, 300.0), TrustedBand(), {"at_bound": ["source_hz"]}),
-    (84.1, 1.02, (150.0, 300.0), TrustedBand(), {"at_bound": []}),
-    (84.1, 1.02, (25.0, 300.0), _GATE_FLOOR, {"trusted_band": asdict(_GATE_FLOOR)}),
-], ids=["q_on_its_bound", "corner_on_its_bound", "bins_above_the_corner", "gate_floor_above_the_band"])
-def test_a_curve_that_cannot_place_its_corner_is_a_coverage_gap_that_says_why(corner_hz, q, band_hz, trusted, why):
-    gap = bass_alignment(FREQS, 90.0 + _box_db(corner_hz, q), band_hz, trusted)
+@pytest.mark.parametrize("corner_hz,q,band_hz,trusted,qualified_from_hz,why", [
+    (60.0, 0.2, (25.0, 300.0), TrustedBand(), 0.0, {"at_bound": ["source_q"]}),
+    (250.0, 0.7, (25.0, 300.0), TrustedBand(), 0.0, {"at_bound": ["source_hz"]}),
+    (84.1, 1.02, (150.0, 300.0), TrustedBand(), 0.0, {"at_bound": []}),
+    (84.1, 1.02, (25.0, 300.0), _GATE_FLOOR, 0.0, {"trusted_band": asdict(_GATE_FLOOR)}),
+    (84.1, 1.02, (25.0, 300.0), TrustedBand(), 400.0, {"qualified_bins": 0}),
+], ids=["q_on_its_bound", "corner_on_its_bound", "bins_above_the_corner", "gate_floor_above_the_band",
+        "no_qualified_bin_in_the_band"])
+def test_a_curve_that_cannot_place_its_corner_is_a_coverage_gap_that_says_why(
+        corner_hz, q, band_hz, trusted, qualified_from_hz, why):
+    gap = bass_alignment(FREQS, 90.0 + _box_db(corner_hz, q), band_hz, trusted, FREQS >= qualified_from_hz)
 
     assert (gap["status"], gap["reason"]) == ("unavailable", "coverage_short")
     assert {key: gap["detail"][key] for key in why} == why
+
+
+def test_a_takes_fit_reads_only_the_bins_its_bass_reading_qualifies(tmp_path, monkeypatch, capsys):
+    """Under 50 Hz a seat take reads the room's noise, its bands there under the
+    SNR floor (#6227 F2). The fit reads only the qualified bins, so it finds the
+    box above them (ADR-0419)."""
+    monkeypatch.chdir(tmp_path)
+    seat = 80.0 + np.where(FREQS < 50.0, np.random.default_rng(0).normal(-8.0, 4.0, FREQS.size), _box_db(84.0, 1.0))
+    bundle = bass_round(tmp_path, seat.tolist(), noisy_below_hz=50.0)
+
+    assert round_views.main(["bass-alignment", str(bundle), "--take", "b0"]) == round_views.EXIT_OK
+
+    fit, = json.loads(capsys.readouterr().out)["fits"]
+    assert (fit["source_hz"], fit["source_q"]) == (pytest.approx(84.0, abs=0.5), pytest.approx(1.0, abs=0.02))
+    assert fit["band_hz"][0] >= 50.0
 
 
 def test_a_band_that_does_not_rise_from_above_zero_is_a_usage_error(tmp_path):
