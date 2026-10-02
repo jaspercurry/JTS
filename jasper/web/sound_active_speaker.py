@@ -21,20 +21,14 @@ if TYPE_CHECKING:
     from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidate
 
 from jasper.active_speaker import calibration_level, commissioning_coordinator, design_draft as design_draft_store
-from jasper.active_speaker.driver_safety import build_driver_research_context
-from jasper.active_speaker.driver_safety_prompt import build_driver_research_prompt
-from jasper.active_speaker.installation import installation_view
 from jasper.active_speaker.playback_route import (
     ActiveLaneCapabilityGap, UnrecognizedDacProfile,
     active_lane_capability_gap, active_playback_route_capability,
 )
-from jasper.active_speaker.rear_calibration import RearCalibrationError, diagnostic_seed, read_rear_calibration
 from jasper.active_speaker.safe_playback import stop_safe_playback_session
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
 from jasper.active_speaker.measurement_programs import program_entries
-from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
-from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 
 from jasper.audio_hardware.config_txt import DEFAULT_BOOT_CONFIG_PATH
 from jasper.audio_hardware.hat_eeprom import DEFAULT_HAT_DIR
@@ -79,7 +73,6 @@ from jasper.active_speaker.commission_wiring import (
     commission_seams,
 )
 
-from .correction_runtime import refusal_envelope
 from .sound_profile_apply import _sound_state_write_lock
 
 logger = logging.getLogger(__name__)
@@ -599,74 +592,6 @@ def _active_speaker_tuning_handoff_payload(program_id: str = "speaker") -> dict[
     return payload
 
 
-def _active_speaker_design_draft_payload() -> dict[str, Any]:
-    """Return the saved active-speaker design draft, if any."""
-
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    payload = load_design_draft(topology=load_output_topology())
-    log_event(
-        logger,
-        "sound.active_speaker_design_draft",
-        status=str(payload.get("status")),
-        driver_count=str((payload.get("summary") or {}).get("driver_count")),
-        candidate_count=str(
-            (payload.get("summary") or {}).get("crossover_candidate_count")
-        ),
-    )
-    return installation_view(payload)
-
-
-def _active_speaker_driver_research_request_payload(
-    raw: dict[str, Any],
-) -> dict[str, Any]:
-    """Return prompt text for the unsaved models and build notes."""
-
-    if not isinstance(raw, dict):
-        raise ValueError("driver research request must be an object")
-    allowed = {"operator_inputs"}
-    unknown = sorted(str(key) for key in raw if key not in allowed)
-    if unknown:
-        raise ValueError(
-            "driver research request has unknown fields: " + ", ".join(unknown)
-        )
-    topology = load_output_topology()
-    operator_inputs = design_draft_store.normalise_operator_inputs(raw.get("operator_inputs"))
-    request = build_driver_research_context(
-        topology,
-        operator_inputs,
-        design_draft_store.load_design_draft(topology=topology).get("manual_settings"),
-    )
-    payload = {
-        "prompt": build_driver_research_prompt(request),
-    }
-    log_event(
-        logger,
-        "sound.active_speaker_driver_research_request",
-        topology_id=topology.topology_id,
-        target_count=len(request.get("targets") or []),
-    )
-    return payload
-
-
-def _active_speaker_crossover_preview_payload() -> dict[str, Any]:
-    """Compute the no-audio crossover preview from the current design draft."""
-
-    from jasper.active_speaker.crossover_preview import current_crossover_preview
-
-    payload = current_crossover_preview()
-    log_event(
-        logger,
-        "sound.active_speaker_crossover_preview",
-        status=str(payload.get("status")),
-        active_crossover_count=str(
-            (payload.get("summary") or {}).get("active_crossover_count")
-        ),
-        blocker_count=str((payload.get("summary") or {}).get("blocker_count")),
-    )
-    return payload
-
-
 async def _active_speaker_restore_auto_source(*, reason: str) -> dict[str, Any]:
     """Best-effort return from setup-only routing to normal latest-source-wins."""
 
@@ -722,116 +647,6 @@ async def _active_speaker_commission_ramp_abort_payload(
         status=str(payload.get("status")),
     )
     return payload
-
-
-async def _active_speaker_commission_state_payload(
-    *,
-    camilla_factory: Callable[[], Any],
-) -> dict[str, Any]:
-    """Read commission-load, ramp and floor state for the commissioning view.
-
-    Skip preflight because it writes candidate YAML.
-    """
-
-    from jasper.active_speaker.commission_ramp import (
-        effective_confirmed_roles,
-        load_ramp_state,
-    )
-    from jasper.active_speaker.safe_playback import load_safe_playback_state
-    from jasper.active_speaker.commission_load import (
-        commission_load_runtime_status,
-        commission_load_state_with_runtime_status,
-    )
-    from jasper.active_speaker.startup_load import load_commission_load_state  # lazy: import cost
-
-    commission = load_commission_load_state()
-    if commission.get("status") == "loaded":
-        try:
-            running_raw = await camilla_factory().get_active_config_raw(
-                best_effort=False
-            )
-        except Exception:  # noqa: BLE001 - status must fail closed, not crash the page.
-            running_raw = None
-        commission = commission_load_state_with_runtime_status(
-            commission,
-            commission_load_runtime_status(commission, running_raw),
-        )
-    ramp = load_ramp_state()
-    target = commission.get("target") or {}
-    group = str(
-        target.get("speaker_group_id") or ramp.get("speaker_group_id") or ""
-    ).strip()
-    quiet = load_safe_playback_state().get("quiet_start") or {}
-    stale = commission.get("status") == "stale"
-    pending = None if stale else ramp.get("pending")
-    floor_status = quiet.get("status")
-    if stale and floor_status == "floor_pending_operator":
-        floor_status = "floor_required"
-    return {
-        "kind": "jts_active_speaker_commission_state",
-        "commission_load": {
-            "status": commission.get("status"),
-            "target": commission.get("target") or {},
-            "rollback_available": bool(commission.get("rollback_available")),
-            "runtime_status": commission.get("runtime_status") or {},
-            "issues": commission.get("issues") or [],
-        },
-        "ramp": {
-            "confirmed_roles": effective_confirmed_roles(
-                ramp, speaker_group_id=group,
-            ),
-            "pending": pending,
-        },
-        "floor": {
-            "status": floor_status,
-            "floor_audio_confirmed": bool(
-                quiet.get("floor_audio_confirmed") and not stale
-            ),
-            "last_level_dbfs": None if stale else quiet.get("last_level_dbfs"),
-            "last_operator_result": (
-                {}
-                if stale or not isinstance(quiet.get("last_operator_result"), dict)
-                else quiet.get("last_operator_result")
-            ),
-        },
-    }
-
-
-async def _active_speaker_commissioning_view_payload(
-    *,
-    camilla_factory: Callable[[], Any],
-) -> dict[str, Any]:
-    """Return the backend-owned active-speaker setup view model.
-
-    State-loading and composition live in the shared
-    ``commissioning_coordinator.load_commissioning_view``, which the crossover
-    envelope consumes too. Only the ``commission`` runtime relay is built here,
-    because it needs the async CamillaDSP runtime probe this caller owns.
-    """
-
-    from jasper.active_speaker.commissioning_coordinator import (
-        load_commissioning_view,
-    )
-
-    commission = await _active_speaker_commission_state_payload(
-        camilla_factory=camilla_factory,
-    )
-    view = load_commissioning_view(commission=commission)
-    from jasper.active_speaker.applied_identity import applied_identity  # lazy: view-only bank lookup
-    from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: view-only state
-    from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: view-only bank lookup
-    from jasper.active_speaker.timing_status import timing_status_lines  # lazy: view-only formatting
-    applied = load_applied_baseline_profile_state()
-    identity = applied_identity(applied)
-    recent = latest_banked_rounds(identity, programs=("speaker",)) if identity is not None else {}
-    view["timing"] = timing_status_lines(applied, recent.get("speaker"))
-    log_event(
-        logger,
-        "sound.active_speaker_commissioning_view",
-        status=str(view.get("status")),
-        next_action=str((view.get("next_action") or {}).get("id")),
-    )
-    return view
 
 
 def _active_speaker_baseline_profile_payload() -> dict[str, Any]:
@@ -971,83 +786,6 @@ async def _active_speaker_finish_commissioning_payload(
         issue_count=len(payload.get("issues") or []),
     )
     return payload
-
-
-# --- rear calibration (cardioid) wizard panel -------------------------------
-#
-# ADR-0318: a `jts_rear_calibration` document is authored data, not a form.
-# These three routes seed a diagnostic starting document, validate a pasted
-# document against the reader alone, and bank a candidate that carries it as
-# a `jts_prescription` document's `rear_calibration` section on the applied
-# baseline. None of the three apply anything — the page's existing apply flow
-# adopts a banked fingerprint.
-
-
-def _active_speaker_rear_calibration_seed_payload() -> dict[str, Any]:
-    """Return the explicitly untuned, muted rear-calibration diagnostic seed."""
-
-    return {"ok": True, "calibration": diagnostic_seed(DEFAULT_SAMPLE_RATE)}
-
-
-def _rear_calibration_summary(document: Mapping[str, Any]) -> str:
-    """One line describing a validated document, for the panel's status text."""
-
-    if document["case"] == "acoustic_targets":
-        return "acoustic targets, pending electrical fitting"
-    return ("muted" if document["rear_muted"] else "unmuted") + " electrical rear stage"
-
-
-def _active_speaker_rear_calibration_validate_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    """Validate a pasted rear-calibration document; never applies or banks it."""
-
-    if not isinstance(raw, dict):
-        return refusal_envelope(code="rear_calibration_invalid", message="calibration request must be an object")
-    try:
-        document = read_rear_calibration(raw, sample_rate=DEFAULT_SAMPLE_RATE)
-    except RearCalibrationError as exc:
-        return refusal_envelope(code="rear_calibration_invalid", message=str(exc))
-    return {"ok": True, "case": document["case"], "summary": _rear_calibration_summary(document)}
-
-
-def _active_speaker_rear_calibration_bank_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    """Bank a candidate carrying a pasted rear-calibration document on the applied
-    baseline, through the same ``base: saved`` composer
-    ``jasper-crossover-prescriber compose`` uses; never applies it."""
-
-    from jasper.active_speaker.applied_tune import rear_calibration_issues  # lazy: graph compilation imports NumPy
-    from jasper.active_speaker.candidate_bank import (  # lazy: graph compilation imports NumPy
-        CandidateBankRefusal,
-        publish_authored_candidate,
-    )
-    from jasper.active_speaker.crossover_v2.prescription_document import (  # lazy: graph compilation imports NumPy
-        PrescriptionDocumentRefused,
-        bank_section,
-    )
-    from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError  # lazy: graph compilation imports NumPy
-    from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError  # lazy: graph compilation imports NumPy
-
-    try:
-        candidate = bank_section(
-            "rear_calibration", raw,
-            rationale="Bank a cardioid rear calibration edited in the wizard.",
-        )
-        issues = rear_calibration_issues(candidate)
-        published = publish_authored_candidate(candidate)
-    except PrescriptionDocumentRefused as exc:
-        return exc.to_dict()
-    except (CandidateBankRefusal, MeasuredCrossoverCandidateError) as exc:
-        return PrescriptionDocumentRefused(exc.code, None, exc.detail).to_dict()
-    except (CrossoverEvidencePacketError, OSError, ValueError) as exc:
-        # Mirrors jasper-crossover-prescriber's ``base: saved`` read: a corrupt or
-        # unreadable on-disk topology/applied-profile file fails closed as a
-        # typed refusal instead of an unhandled exception reaching the client.
-        return PrescriptionDocumentRefused(REASON_UNREADABLE, None, str(exc)).to_dict()
-    log_event(
-        logger,
-        "sound.active_speaker_rear_calibration_bank",
-        candidate_fingerprint=published.fingerprint,
-    )
-    return {"ok": True, "candidate_fingerprint": published.fingerprint, "issues": issues}
 
 
 def _cardioid_compare_payload(*, cached_only: bool = False) -> dict[str, Any]:

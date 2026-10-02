@@ -24,8 +24,7 @@ ACTIVE ring for both marker values —
 `ring_active_endpoint_armed` left in that module is a past-tense comment
 recording the deletion; there is no call. So the unconditional harness calls are
 safe here, and they are installed: `_load` arms by default, and
-`test_active_speaker_cli.py`'s and `test_sound_setup_commission.py`'s shared
-envs call this directly.
+`test_active_speaker_cli.py`'s shared env calls this directly.
 
 WHAT IT DOES NOT DO. It does not make a graph coherent, protected, or audible —
 Gate 1, the protection-while-audible evidence, and the ramp's seven checks all

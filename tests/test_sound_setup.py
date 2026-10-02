@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker import baseline_record
 from jasper.audio_routes import output_topology_store as topology_mod
-from jasper.active_speaker.candidate_bank import bank_candidate
 
 import asyncio
 import io
@@ -851,7 +849,7 @@ def test_design_draft_save_carries_field_refusals(monkeypatch, tmp_path, manual,
     monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
     body = json.dumps({"manual_settings": manual}).encode()
     response, _ = _drive_raw_sound_post(
-        tmp_path, path="/active-speaker/design-draft", content_length=len(body), body=body,
+        tmp_path, path="/setup/details", content_length=len(body), body=body,
     )
     assert b" 400 " in response.split(b"\r\n", 1)[0]
     assert json.loads(response.split(b"\r\n\r\n", 1)[1])["code"] == code
@@ -913,21 +911,17 @@ def test_follower_block_set_is_content_dsp_only():
 
 
 def test_bonded_follower_allows_active_speaker_endpoints(monkeypatch, tmp_path: Path):
-    """Invariant 6 (live): on a follower an active-speaker read returns 200 and a
-    commissioning/crossover POST reaches its handler (never 404/409), while a
+    """Invariant 6 (live): on a follower a speaker-setup read returns 200 and a
+    speaker-setup POST reaches its handler (never 404/409), while a
     content-DSP POST still 409s. Local driver work stays with the DAC owner."""
     monkeypatch.setattr(sound_setup, "bonded_follower_active", lambda: True)
     with sound_server(tmp_path) as base:
         session = make_csrf_session(base, "/")
         # A content-DSP mutation is delegated to the leader.
         assert _follower_post_status(base, "/settings", session) == 409
-        # An active-speaker read is served (200) — the GET path has no follower gate.
-        assert (
-            _follower_get_status(base, "/active-speaker/design-draft", session) == 200
-        )
-        active_status = _follower_post_status(
-            base, "/active-speaker/rear-calibration/validate", session,
-        )
+        # A speaker-setup read is served (200) — the GET path has no follower gate.
+        assert _follower_get_status(base, "/setup", session) == 200
+        active_status = _follower_post_status(base, "/setup/layout", session)
         assert active_status not in (404, 409), active_status
 
 
@@ -1899,98 +1893,6 @@ def test_subwoofer_crossover_fc_round_trips_through_topology_save(posted_fc_hz, 
     assert sub_group.channels[0].crossover_fc_hz == posted_fc_hz
 
 
-def _active_speaker_driver_research_payload(*, frequency_hz: float = 2500) -> dict:
-    return {
-        "artifact_schema_version": 2,
-        "kind": "jts_active_crossover_driver_research",
-        "drivers": [
-            {
-                "target_id": "mono:woofer",
-                "role": "woofer",
-                "model": "Dayton Epique E150HE-44",
-                "recommended_lowpass_hz": frequency_hz,
-                "sources": ["https://example.test/woofer"],
-            },
-            {
-                "target_id": "mono:tweeter",
-                "role": "tweeter",
-                "model": "Eminence F110M-8",
-                "recommended_highpass_hz": frequency_hz,
-                "do_not_test_below_hz": 1200,
-                "sources": ["https://example.test/tweeter"],
-            },
-        ],
-        "crossover_candidates": [
-            {
-                "between_roles": ["woofer", "tweeter"],
-                "frequency_hz": frequency_hz,
-                "filter_type": "Linkwitz-Riley",
-                "slope_db_per_octave": 24,
-                "confidence": "medium",
-            }
-        ],
-    }
-
-
-def _save_active_speaker_design_and_preview(*, frequency_hz: float = 2500) -> dict:
-    sound_setup._active_speaker_design_draft_save_payload({
-        "operator_inputs": {
-            "woofer": "Dayton Epique E150HE-44",
-            "tweeter": "Eminence F110M-8",
-        },
-        "driver_research": _active_speaker_driver_research_payload(
-            frequency_hz=frequency_hz,
-        ),
-    })
-    return sound_setup._active_speaker_crossover_preview_payload()
-
-
-def test_driver_research_prompt_payload_uses_unsaved_models_and_notes(monkeypatch) -> None:
-    topology = mono_output_topology(card_id=None)
-    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    payload = sound_setup._active_speaker_driver_research_request_payload({
-        "operator_inputs": {"woofer": "Example W6", "tweeter": "Example T1", "notes": "sealed cabinet"},
-    })
-    assert set(payload) == {"prompt"}
-    assert all(model in payload["prompt"] for model in ("Example W6", "Example T1"))
-    assert "sealed cabinet" in payload["prompt"]
-    with pytest.raises(ValueError):
-        sound_setup._active_speaker_driver_research_request_payload({"typo": "unknown"})
-
-
-@pytest.mark.parametrize("model", [None, "", " \t "])
-def test_driver_research_prompt_refuses_a_target_without_a_model(monkeypatch, model) -> None:
-    topology = mono_output_topology(card_id=None)
-    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    with pytest.raises(ValueError):
-        sound_setup._active_speaker_driver_research_request_payload({
-            "operator_inputs": {"woofer": "Example W6", "tweeter": model},
-        })
-
-
-def test_draft_and_preview_preserve_the_saved_topology(
-    monkeypatch,
-    tmp_path: Path,
-):
-    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-
-    sound_setup._save_output_topology_payload(
-        _active_speaker_mono_topology_payload()
-    )
-    path = paths["JASPER_OUTPUT_TOPOLOGY_PATH"]
-    before = path.read_bytes(), path.stat().st_mtime_ns
-    refreshed = _save_active_speaker_design_and_preview()
-    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
-
-    assert refreshed["status"] == "ready_for_protected_staging"
-    filters = refreshed["groups"][0]["crossovers"][0]["filters"]
-    tweeter_filter = next(
-        item for item in filters
-        if item["role"] == "tweeter"
-    )
-    assert tweeter_filter["channel"]["protection_required"] is True
-
-
 def _record_dac8x() -> None:
     """The reconciler's record for a ready DAC8x, at the path conftest isolates."""
     write_output_hardware_state(
@@ -2058,7 +1960,7 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
-    saved = sound_setup._active_speaker_design_draft_save_payload({
+    saved = sound_design_draft._active_speaker_design_draft_save_payload({
         "manual_settings": {"drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "Test woofer"}], **spacing},
     })
     loaded = load_design_draft(topology=topology, path=paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
@@ -2075,7 +1977,7 @@ def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp
 @pytest.mark.parametrize("field", ["confirm_safety_profile", "typo"])
 def test_design_draft_save_payload_refuses_unknown_fields(field) -> None:
     with pytest.raises(ValueError):
-        sound_setup._active_speaker_design_draft_save_payload({field: True})
+        sound_design_draft._active_speaker_design_draft_save_payload({field: True})
 
 
 def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_path: Path) -> None:
@@ -2083,54 +1985,9 @@ def test_design_draft_save_without_expected_revision_succeeds(monkeypatch, tmp_p
     topology = mono_output_topology(card_id=None)
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
-    saved = sound_setup._active_speaker_design_draft_save_payload({"operator_inputs": {"notes": "current"}})
+    saved = sound_design_draft._active_speaker_design_draft_save_payload({"operator_inputs": {"notes": "current"}})
     assert saved["revision"] == 1
     assert json.loads(paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"].read_text())["operator_inputs"] == {"notes": "current"}
-
-
-def test_preview_preserves_driver_values_and_does_not_rewrite_draft(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from jasper.active_speaker.driver_safety import build_driver_research_context
-    from tests.test_active_speaker_driver_safety import (
-        _manual_settings,
-        _operator_inputs,
-        _research_result,
-    )
-
-    topology = mono_output_topology(card_id=None)
-    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
-
-    save_output_topology(topology)
-    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
-    request = build_driver_research_context(
-        topology,
-        _operator_inputs(),
-    )
-    saved = sound_setup._active_speaker_design_draft_save_payload({
-        "driver_research": _research_result(request),
-        "manual_settings": _manual_settings(),
-        "operator_inputs": _operator_inputs(),
-    })
-    draft = json.loads(draft_path.read_text(encoding="utf-8"))
-    draft["updated_at"] = "2026-08-14T16:33:48Z"
-    draft_path.write_text(json.dumps(draft), encoding="utf-8")
-    before = draft_path.read_bytes()
-
-    preview = sound_setup._active_speaker_crossover_preview_payload()
-
-    after = draft_path.read_bytes()
-    loaded = sound_setup._active_speaker_design_draft_payload()
-    assert after == before
-    assert loaded["revision"] == saved["revision"] == 1
-    assert loaded["driver_research"] == saved["driver_research"]
-    assert loaded["driver_safety_profile"] == (
-        saved["driver_safety_profile"]
-    )
-    assert preview["source"]["design_draft_updated_at"] == draft["updated_at"]
 
 
 def _declared_candidate_box(
@@ -2167,7 +2024,7 @@ def _declared_candidate_box(
 
     fsync_calls: list[int] = []
     monkeypatch.setattr(os, "fsync", lambda fd: fsync_calls.append(fd))
-    saved = sound_setup._active_speaker_design_draft_save_payload({
+    saved = sound_design_draft._active_speaker_design_draft_save_payload({
         "manual_settings": manual,
         "operator_inputs": operator_inputs or {},
     })
@@ -2787,136 +2644,6 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     assert payload["reset"]["status"] == "needs_attention"
 
 
-def _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path: Path) -> dict:
-    """An applied baseline on a rear-output topology, so ``--base saved``
-    resolves — the shape ``candidate_from_applied_profile`` needs."""
-    from .active_speaker_fixtures import declared_graph_fixture, standard_design_draft
-    from .test_rear_output_foundation import _rear_pair
-
-    _set_active_speaker_state_paths(
-        monkeypatch, tmp_path, "JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE",
-    )
-    monkeypatch.setattr(
-        "jasper.active_speaker.bundles.sessions_dir", lambda: tmp_path / "sessions",
-    )
-    _, topology = _rear_pair("mono")
-    save_output_topology(topology, path=Path(os.environ["JASPER_OUTPUT_TOPOLOGY_PATH"]))
-    draft = standard_design_draft(topology)
-    declaration, declared = declared_graph_fixture(topology, draft)
-    prepared = baseline_record.prepare_applied_baseline_profile(
-        bank_candidate(declared), declaration=declaration, design_draft=draft,
-        config_path=None, config_sha256="",
-    )
-    prepared["status"] = "applied"
-    state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"])
-    state_path.write_text(json.dumps(prepared), encoding="utf-8")
-    return prepared
-
-
-def test_rear_calibration_seed_route_returns_a_document_that_validates(tmp_path: Path):
-    with sound_server(tmp_path) as base:
-        seed_resp = urllib.request.urlopen(f"{base}/active-speaker/rear-calibration/seed")
-        seed_payload = json.loads(seed_resp.read().decode("utf-8"))
-        assert seed_payload["ok"] is True
-        assert seed_payload["calibration"]["kind"] == "jts_rear_calibration"
-
-        validate_resp = request_with_csrf(
-            base, "/active-speaker/rear-calibration/validate",
-            json.dumps(seed_payload["calibration"]).encode("utf-8"),
-            content_type="application/json",
-        )
-        validate_payload = json.loads(validate_resp.read().decode("utf-8"))
-
-    assert validate_payload == {
-        "ok": True, "case": "electrical_dsp", "summary": "muted electrical rear stage",
-    }
-
-
-def test_rear_calibration_validate_route_refuses_a_bad_document_with_its_code(tmp_path: Path):
-    with sound_server(tmp_path) as base:
-        bad_document = {**sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"],
-                        "sample_rate_hz": 44100}
-        resp = request_with_csrf(
-            base, "/active-speaker/rear-calibration/validate",
-            json.dumps(bad_document).encode("utf-8"),
-            content_type="application/json",
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-
-    assert payload["ok"] is False
-    assert payload["code"] == "rear_calibration_invalid"
-    assert payload["next_action"]["id"] == "read_contract"
-    assert isinstance(payload["error"], str) and payload["error"]
-
-
-def test_rear_calibration_bank_route_banks_without_touching_the_applied_identity(
-    monkeypatch, tmp_path: Path,
-):
-    prepared = _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path)
-    base_fingerprint = prepared["source"]["measured_candidate_fingerprint"]
-    document = {
-        **sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"],
-        "rear_muted": False,
-    }
-    with sound_server(tmp_path) as base:
-        resp = request_with_csrf(
-            base, "/active-speaker/rear-calibration/bank",
-            json.dumps(document).encode("utf-8"),
-            content_type="application/json",
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-
-    assert payload["ok"] is True
-    assert payload["candidate_fingerprint"] != base_fingerprint
-    assert payload["issues"] == []
-    state_path = Path(os.environ["JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE"])
-    reloaded = json.loads(state_path.read_text(encoding="utf-8"))
-    assert reloaded["source"]["measured_candidate_fingerprint"] == base_fingerprint
-
-
-def test_rear_calibration_bank_route_names_the_section_on_a_refused_document(
-    monkeypatch, tmp_path: Path,
-):
-    from .test_active_speaker_measured_crossover_candidate import _acoustic_rear_document
-
-    _bank_rear_calibration_applied_fixture(monkeypatch, tmp_path)
-    with sound_server(tmp_path) as base:
-        resp = request_with_csrf(
-            base, "/active-speaker/rear-calibration/bank",
-            json.dumps(_acoustic_rear_document()).encode("utf-8"),
-            content_type="application/json",
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-
-    assert payload["ok"] is False
-    assert payload["code"] == "rear_calibration_case_unsupported"
-    assert payload["section"] == "rear_calibration"
-
-
-def test_rear_calibration_bank_route_refuses_a_corrupt_saved_topology(
-    monkeypatch, tmp_path: Path,
-):
-    """Mirrors jasper-crossover-prescriber's ``--base saved`` block: a corrupt
-    on-disk file fails closed as a typed refusal, not an unhandled 502."""
-
-    monkeypatch.setattr(
-        "jasper.audio_routes.output_topology_store.load_output_topology_strict",
-        lambda *a, **kw: (_ for _ in ()).throw(OutputTopologyError("output topology is not valid JSON")),
-    )
-    document = sound_active_speaker._active_speaker_rear_calibration_seed_payload()["calibration"]
-    with sound_server(tmp_path) as base:
-        resp = request_with_csrf(
-            base, "/active-speaker/rear-calibration/bank",
-            json.dumps(document).encode("utf-8"),
-            content_type="application/json",
-        )
-        payload = json.loads(resp.read().decode("utf-8"))
-
-    assert payload["ok"] is False
-    assert payload["code"] == "evidence_unreadable"
-    assert payload["section"] is None
-
-
 def test_active_speaker_baseline_http_route_is_exposed(
     monkeypatch,
     tmp_path: Path,
@@ -2940,22 +2667,14 @@ def test_active_speaker_baseline_http_route_is_exposed(
 BASELINE_CONFIG_PATH = "/var/lib/camilladsp/configs/active_speaker_baseline.yml"
 
 
-def _stub_baseline_apply(
-    monkeypatch, *, applied_profile: bool = True, refusal: dict | None = None,
-):
-    """Stub the graph apply and collect finish cleanup/source restoration.
-
-    ``refusal`` is returned verbatim instead of an applied envelope, and the
-    verification callback stays unrun — nothing was verified.
-    """
+def _stub_baseline_apply(monkeypatch, *, applied_profile: bool = True):
+    """Stub the graph apply and collect finish cleanup/source restoration."""
 
     apply_calls: list[dict] = []
     mux_commands: list[str] = []
 
     async def fake_apply_candidate(candidate=None, **kwargs):
         apply_calls.append(kwargs)
-        if refusal is not None:
-            return refusal
         callback = kwargs.get("on_candidate_verified")
         if callback is not None:
             await callback()
@@ -3019,60 +2738,6 @@ async def test_active_speaker_baseline_apply_converges_route_before_source_auto(
         assert payload["issues"][-1]["code"] == "output_route_not_ready"
 
 
-@pytest.mark.parametrize("echo", [None, "stale-candidate", "reviewed-candidate"])
-def test_active_speaker_finish_commissioning_ignores_page_echo(monkeypatch, tmp_path, echo):
-    apply_calls, mux_commands = _stub_baseline_apply(monkeypatch)
-
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
-    body = json.dumps({"expected_candidate_fingerprint": echo}).encode()
-    response, _ = _drive_raw_sound_post(
-        tmp_path, path="/active-speaker/baseline-profile/save-and-apply",
-        body=body, content_length=len(body),
-    )
-    assert response.startswith(b"HTTP/1.1 200")
-    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
-
-    assert len(apply_calls) == 1
-    assert mux_commands == ["AUTO"]
-    assert payload["status"] == "applied"
-    assert payload["profile"]["status"] == "applied"
-    assert payload["source_selection_restore"]["status"] == "ok"
-    assert payload["output_safety"] == {
-        "safety_muted": False,
-        "reason": None,
-        "active_config_path": BASELINE_CONFIG_PATH,
-    }
-
-
-def test_save_and_apply_answers_a_refusal_as_a_typed_two_hundred(monkeypatch, tmp_path):
-    """A refused finish is a 200 carrying the refusal, never an HTTP error: the
-    status is a wire contract only HTTP can pin. When the door refuses is
-    pinned at module altitude in test_baseline_profile_commissioning.py.
-    """
-    _, mux_commands = _stub_baseline_apply(monkeypatch, refusal={
-        "status": "blocked",
-        "issues": [{
-            "severity": "blocker",
-            "code": "baseline_config_validation_failed",
-            "message": "x",
-        }],
-    })
-    monkeypatch.setattr(_common, "guard_mutating_request", lambda handler: True)
-
-    response, _ = _drive_raw_sound_post(
-        tmp_path, path="/active-speaker/baseline-profile/save-and-apply",
-        body=b"{}", content_length=2,
-    )
-
-    assert response.startswith(b"HTTP/1.1 200")
-    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
-    assert payload["status"] == "blocked"
-    assert [issue["code"] for issue in payload["issues"]] == [
-        "baseline_config_validation_failed"
-    ]
-    assert mux_commands == []
-
-
 async def test_active_speaker_finish_proof_refusal_skips_cleanup(monkeypatch):
     seen = {}
 
@@ -3093,7 +2758,7 @@ async def test_active_speaker_finish_proof_refusal_skips_cleanup(monkeypatch):
         refuse_after_locked_refresh,
     )
 
-    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+    payload = await sound_active_speaker._active_speaker_finish_commissioning_payload(
         camilla_factory=lambda: pytest.fail("refused apply must not open CamillaDSP"),
     )
 
@@ -3132,35 +2797,13 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
     })
     _stub_baseline_apply(monkeypatch)
 
-    payload = await sound_setup._active_speaker_finish_commissioning_payload(
+    payload = await sound_active_speaker._active_speaker_finish_commissioning_payload(
         camilla_factory=lambda: FakeCamilla("/tmp/prior.yml"),
     )
 
     assert payload["status"] == "applied"
     assert payload["commissioning_cleanup"]["ramp"]["status"] == "aborted"
     assert load_ramp_state()["pending"] is None
-
-
-def test_active_speaker_crossover_preview_get_tracks_draft_without_preview_file(
-    monkeypatch, tmp_path: Path,
-):
-    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    sound_setup._save_output_topology_payload(_active_speaker_mono_topology_payload(
-        card_id=None, identity_verified=True,
-    ))
-    _save_active_speaker_design_and_preview()
-    for frequency in (2500, 3200):
-        draft_path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
-        draft = json.loads(draft_path.read_text())
-        draft["driver_research"]["crossover_candidates"][0]["frequency_hz"] = frequency
-        draft_path.write_text(json.dumps(draft))
-        payload = _get_json(tmp_path, "/active-speaker/crossover-preview")
-        assert payload["status"] == "ready_for_protected_staging"
-        assert payload["groups"][0]["crossovers"][0]["proposed_frequency_hz"] == frequency
-        assert payload["safety"]["no_audio"] is True
-        assert payload["safety"]["emits_camilla_yaml"] is False
-        assert "design_draft_fingerprint" not in payload["source"]
-        assert "preview_fingerprint" not in payload["source"]
 
 
 @pytest.fixture(scope="module")
@@ -5281,38 +4924,6 @@ def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
         default_payload["binding"], "speaker")
     assert invalid.value.code == 400
     assert set(json.loads(invalid.value.read())) == {"error"}
-
-
-@pytest.mark.parametrize("legacy_profile", [False, True])
-def test_design_draft_get_computes_profile_from_current_values(monkeypatch, tmp_path, legacy_profile):
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.test_active_speaker_driver_safety import _manual_settings
-
-    topology = mono_output_topology(card_id=None)
-    paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
-    monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
-    path = paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"]
-    saved = sound_setup._active_speaker_design_draft_save_payload({"manual_settings": _manual_settings()})
-    stored = json.loads(path.read_text())
-    assert {"driver_safety_profile", "driver_safety_profile_evaluation", "driver_protection_policy_view"}.isdisjoint(stored)
-    if legacy_profile:
-        stored.update(driver_safety_profile={"targets": "obsolete"},
-                      driver_safety_profile_evaluation={"status": "malformed"}, driver_protection_policy_view={"obsolete": True})
-    stored["manual_settings"]["drivers"][1]["recommended_highpass_hz"] = 6000
-    path.write_text(json.dumps(stored))
-    before = path.read_bytes()
-    loaded = sound_setup._active_speaker_design_draft_payload()
-    assert "driver_safety_profile_evaluation" not in loaded
-    profile = loaded["driver_safety_profile"]
-    assert {"status", "confirmation", "profile_fingerprint", "research"}.isdisjoint(profile)
-    tweeter = next(t for t in profile["targets"] if t["target_id"] == "mono:tweeter")
-    assert tweeter["recommended_highpass_hz"] == 6000
-    assert tweeter["hard_excitation_band_hz"][0] == 6000
-    assert tweeter["required_protection_filters"][0]["cutoff_hz"] == 6000
-    assert profile != saved["driver_safety_profile"]
-    assert "obsolete" not in loaded["driver_protection_policy_view"]
-    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("reason", ["", "follower", "no_rear_output", "no_applied_profile", "no_rear_layer", "rear_muted_in_tune"])

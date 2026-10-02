@@ -123,12 +123,10 @@ def build_commissioning_view(
                   "endpoint": SPEAKER_SETUP_PAGE_PATH, "method": "GET", "body": {}}
     elif not values_ready:
         status = "needs_driver_safety_profile" if design_ready and preview_ready else "needs_driver_values"
-        action = {"id": "save_driver_values", "label": "Save values", "enabled": True,
-                  "endpoint": "./active-speaker/design-draft", "method": "POST", "body": {}}
+        action = {"id": "save_driver_values", "label": "Save values", "enabled": True}
     else:
         status = "ready_to_save_profile" if review_ready else "blocked"
-        action = {"id": "save_baseline_profile", "label": "Save to speaker", "enabled": review_ready,
-                  "endpoint": "./active-speaker/baseline-profile/save-and-apply", "method": "POST", "body": {}}
+        action = {"id": "save_baseline_profile", "label": "Save to speaker", "enabled": review_ready}
     return {
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
         "steps": steps, "current_step": current, "next_action": action, "programs": programs,
