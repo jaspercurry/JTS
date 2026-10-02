@@ -201,6 +201,15 @@ def _cmd_show(_args: argparse.Namespace) -> int:
         path = household_mic_path()
         stored = read_household_mic(path=path)
         if stored is None:
+            # read_household_mic swallows read faults, so a non-root run would
+            # otherwise report no mic on a box that holds one.
+            try:
+                path.open("rb").close()
+            except PermissionError:
+                return failed(EXIT_REFUSED, "local_state_unreadable",
+                              {"evidence": {"path": str(path)}}, code="local_state_unreadable")
+            except OSError:
+                pass
             return failed(
                 EXIT_REFUSED, REFUSE_NONE_REGISTERED,
                 f"no household microphone registered at {path}",

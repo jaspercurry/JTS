@@ -309,6 +309,23 @@ def test_show_prints_the_record_and_its_resolved_calibration(
     assert answer["record_path"] == str(store)
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_show_refuses_a_record_this_user_cannot_read(store: Path, tmp_path, capsys):
+    """A record a non-root run cannot read is not "no mic registered"."""
+    path = tmp_path / "lab.txt"
+    path.write_text(SAMPLE_CAL)
+    assert mic_calibration.main(["upload", str(path)]) == _refusal.EXIT_OK
+    capsys.readouterr()
+    store.chmod(0)
+    try:
+        code, document = _run(["show"], capsys)
+    finally:
+        store.chmod(0o644)
+
+    assert code == _refusal.EXIT_REFUSED
+    assert document["reason"] == "local_state_unreadable"
+
+
 def test_show_separates_no_record_from_a_record_whose_calibration_is_gone(
     store: Path, tmp_path, capsys,
 ):
