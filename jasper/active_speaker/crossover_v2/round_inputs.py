@@ -280,15 +280,16 @@ def banked_rounds(
 
 def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
     """The programs a banked packet counts for: its own, and room when it carries room views.
-    A round whose every take plays one driver alone counts for none but reference: it holds
-    no take its program's next step reads, until #5696 (ADR-0360 §2)."""
+    A round that kept no take counts for none. A round whose every take plays one driver
+    alone counts for none but reference: it holds no take its program's next step reads,
+    until #5696 (ADR-0360 §2)."""
     try:
         purpose = run_purpose(packet.get("preset"))
     except ValueError:
         return ()
-    one_driver = [bool((take.get("pose") or {}).get("driver"))
-                  for group in packet.get("sets") or () for take in group.get("takes") or ()]
-    if purpose != PURPOSE_REFERENCE and one_driver and all(one_driver):
+    takes = [take for group in packet.get("sets") or () for take in group.get("takes") or ()]
+    if not any(take.get("selected") for take in takes) or (
+            purpose != PURPOSE_REFERENCE and all((take.get("pose") or {}).get("driver") for take in takes)):
         return ()
     return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
 
@@ -592,12 +593,21 @@ def set_choices(sets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def resolve_set(
-    inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
+    inputs: RoundInputs, set_id: str | None = None, *, take: str | None = None,
+    manifest: Mapping[str, Any] | None = None,
 ) -> SetTakes:
     """Resolve the executor's set without rebuilding its identity (ADR-0299).
     Its takes are the manifest's rows, as given; a reader of a take's facts
-    joins them (:meth:`SetTakes.with_records`, ADR-0395)."""
+    joins them (:meth:`SetTakes.with_records`, ADR-0395). With no ``set_id``, a
+    ``take`` names the set that holds it; a take two sets hold (one per role it
+    recorded) still needs the set named, and a take no set holds is unknown."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
+    if set_id is None and take is not None:
+        held = [row for row in sets if any(one["take_id"] == take for one in row["takes"])]
+        if not held:
+            raise RoundSetRefused("round_take_unknown", take_id=take, take_ids=tuple(dict.fromkeys(
+                kept for row in sets for kept in SetTakes.from_row(row).selected_ids)))
+        sets = held
     if set_id is None and files_by_set(sets):
         raise RoundSetRefused(SET_REQUIRED, sets=set_choices(sets))
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]

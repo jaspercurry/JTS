@@ -19,7 +19,7 @@ from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F4
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
-from jasper.active_speaker import angle_capture as ac, arm_walk, rear_calibration
+from jasper.active_speaker import angle_capture as ac, rear_calibration
 from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
@@ -114,6 +114,7 @@ def test_program_table_projections(site):
     ("room/seat", "room_quick", 3, 3, 3),
     ("rear/seat", "seat_express", 3, 3, 3),
     ("rear/pair", "speaker_mark", 1, 1, 2),
+    ("bass/axis", "seat_express", 3, 3, 3),
     ("bass/axis", "bass_axis", 1, 1, 1),
 ])
 def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures: int) -> None:
@@ -236,9 +237,6 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
         {"target_id": "mono:woofer:rear", "physical_output_index": 2, **woofer_facts},
     ]
     templates = set()
-    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
-    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: True)
-    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
     for row in mp.PROGRAM_ROWS:
         handoff = th.build_tuning_handoff(commissioning_view=view, design_draft=draft, program_id=row.purpose)
         binding, prompt = handoff["binding"], handoff["prompt"]
@@ -250,26 +248,14 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
         if note := th.PROGRAM_NOTES.get(row.purpose):
             assert note in prompt.splitlines()
             prompt = prompt.replace(f"{note}\n", "")
+        run_line, = [line for line in prompt.splitlines() if line.startswith("Run: ")]
+        prompt = prompt.replace(f"{run_line}\n", "")
         for value, blank in ((row.title, "<title>"), (row.description, "<description>"),
                              (f"--program {row.purpose}", "--program <p>"), (f"--section {row.purpose}", "--section <p>")):
             assert value in prompt
             prompt = prompt.replace(value, blank)
         templates.add(prompt)
     assert len(templates) == 1
-
-
-@pytest.mark.parametrize(("arm", "argv"), [(True, ["--program", "bass"]), (False, ["--program", "bass", "--layout", "seat_express"])])
-def test_the_bass_prompt_runs_a_layout_this_box_can_play(monkeypatch, arm, argv):
-    """The run line names the program's own layout where its arm is here, and the
-    first layout that needs none where it is not; the line is one the round CLI takes."""
-    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
-    monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: arm)
-    prompt = th.build_tuning_handoff_prompt({}, "bass", th.run_layout("bass"))
-    run_line, = [line for line in prompt.splitlines() if line.startswith("Run: ")]
-    _sudo, _path, *args = shlex.split(run_line.removeprefix("Run: "))
-    assert args == ["run", *argv]
-    parsed = round_cli.build_parser().parse_args(args)
-    assert mp.run_preset(parsed.program, parsed.layout).mover == ("arm" if arm else "human")
 
 
 def test_the_rear_prompt_names_the_axis_that_unmutes_a_fresh_speakers_rear_seed():
@@ -501,6 +487,33 @@ def test_a_program_name_resolves_to_its_first_preset() -> None:
         "rear": "rear/express", "nearfield": "nearfield/each"}
 
 
+@pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
+def test_a_programs_first_plan_is_its_own_at_a_layout_its_preset_offers(program) -> None:
+    first = mp.first_plan(program)
+
+    assert first.purpose == program and first.layout in mp.preset(first.preset).layouts
+    if program != mp.PURPOSE_REAR:
+        assert first == mp.preset(program)
+
+
+def test_a_bass_run_starts_at_the_seat_by_hand_and_the_arm_layouts_stay_selectable() -> None:
+    """No box has an arm, so the bass default is the seat; the arm's layouts still pin the arm."""
+    default = mp.run_preset("bass")
+
+    assert (default.preset, default.layout, default.mover) == ("bass/axis", "seat_express", "human")
+    assert {layout: mp.run_preset("bass", layout).mover for layout in ("bass_axis", "room_quick")} == {
+        "bass_axis": "arm", "room_quick": "arm"}
+
+
+def test_the_rear_program_starts_with_the_pair_model_at_the_mark() -> None:
+    """The playbook's Seat loop banks the pair model first; the rear program's default preset
+    stays the summed one a trial of candidates walks."""
+    first = mp.first_plan("rear")
+
+    assert (first.preset, first.layout, first.regime) == ("rear/pair", "speaker_mark", mp.REGIME_BRANCHES)
+    assert mp.preset("rear").preset == "rear/express"
+
+
 @pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM), ("bass", mp.PURPOSE_BASS)])
 def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> None:
     cloud = mp.run_preset(program, "seat_cloud")
@@ -719,7 +732,7 @@ def test_shared_layout_can_change_to_two_positions_without_code(tmp_path: Path) 
 
 def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     config = _bundled_config()
-    pose = config["layouts"]["bass_axis"]["poses"][0]  # type: ignore[index]
+    pose = config["layouts"]["seat_express"]["poses"][0]  # type: ignore[index]
     pose.update({"headline": "Measure the main seat", "detail": "Hold the mic at ear height."})
 
     loaded = mp._load_presets(_write_config(tmp_path, config))[0]["bass/axis"].poses[0]

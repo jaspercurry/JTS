@@ -10,7 +10,10 @@ from jasper.active_speaker.crossover_v2.round_inputs import with_records
 from jasper.active_speaker.linearization_budget import DEFAULT_FIT_BUDGET
 from jasper.active_speaker.speaker_fit import SpeakerFitUnreadable, speaker_fit
 from jasper.cli._refusal import EXIT_UNREADABLE, stage
-from ._common import ANSWER_SCHEMAS, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, answer, read_run_manifest, round_inputs, subject
+from ._common import (
+    ANSWER_SCHEMAS, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, add_set_argument, answer, read_run_manifest, round_inputs,
+    subject,
+)
 
 
 def _cmd_speaker_fit(args: argparse.Namespace) -> int:
@@ -29,8 +32,7 @@ def _cmd_speaker_fit(args: argparse.Namespace) -> int:
 def add_parser(sub: argparse._SubParsersAction) -> None:
     parser = sub.add_parser("speaker-fit", help="propose driver filters and read banked alignment and trims")
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
-    parser.add_argument("--set", required=True, help="manifest set containing the Speaker take")
-    parser.add_argument("--take", help="selected take ID when the set holds several takes")
+    add_set_argument(parser, take=True)
     for key in DEFAULT_FIT_BUDGET:
         parser.add_argument("--" + key.replace("_", "-"), type=int if key == "max_filters" else float,
                             help=f"inspection-only {key} override; leaves banked declarations unchanged")

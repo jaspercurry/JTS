@@ -67,12 +67,27 @@ def unplayed_woofer_round(root: Path) -> Path:
                                             _tweeter()], {})
 
 
-def bass_round(root: Path, magnitude_db: list[float]) -> Path:
-    """A bass round of one on-axis take that banked this summed curve, trusted everywhere."""
+def _bass_take(take_id: str, magnitude_db: list[float]) -> dict:
+    """An on-axis take that banked this summed curve, trusted everywhere."""
     curve = {"role": "summed", "window": "ungated", "freqs_hz": FREQS.tolist(), "band_hz": [20.0, 20000.0],
              "magnitude_db": magnitude_db, "trusted_band": asdict(TrustedBand())}
-    return _bundle(root, "bass/axis", [{"take_id": "b0", "selected": True, "curves": [curve],
-                                        "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}}], {"role": "summed"})
+    return {"take_id": take_id, "selected": True, "curves": [curve],
+            "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}}
+
+
+def bass_round(root: Path, magnitude_db: list[float]) -> Path:
+    return _bundle(root, "bass/axis", [_bass_take("b0", magnitude_db)], {"role": "summed"})
+
+
+def ladder_round(root: Path, magnitude_db: list[float], rungs: int = 4) -> Path:
+    """A bass round whose every level rung is a set of its own, each holding one take: ``b0``, ``b1``, ..."""
+    bundle = root / "sessions" / "bass-ladder"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
+    write_manifest(bundle, program="bass/axis", groups=[
+        {"set_id": f"rung-{rung}", "capture_basis": {"role": "summed"}, "takes": [_bass_take(f"b{rung}", magnitude_db)]}
+        for rung in range(rungs)])
+    return bundle
 
 
 def test_each_driver_fits_at_its_nearest_placement_and_a_curve_that_cannot_place_its_corner_is_a_gap(
@@ -126,3 +141,28 @@ def test_a_bass_takes_catalog_call_fits_its_curve_as_played_and_files_where_the_
     assert (fit["role"], fit["take_ids"], fit["source_hz"], fit["source_q"]) == (
         "summed", ["b0"], pytest.approx(55.0, abs=0.2), pytest.approx(0.8, abs=0.02))
     assert (answer["subject"]["set_id"], answer["out"]) == ("bass", call["out"])
+
+
+def test_a_take_of_a_ladder_round_names_its_set(tmp_path, monkeypatch, capsys):
+    """Each rung is its own set, and a take id belongs to one of them, so naming the
+    take is enough; the answer says which set it read."""
+    monkeypatch.chdir(tmp_path)
+    bundle = ladder_round(tmp_path, (80.0 + _box_db(55.0, 0.8)).tolist())
+
+    assert round_views.main(["bass-alignment", str(bundle), "--take", "b2"]) == round_views.EXIT_OK
+
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["subject"]["set_id"], answer["subject"]["take_ids"]) == ("rung-2", ["b2"])
+
+
+@pytest.mark.parametrize("argv", [["--take", "b2", "--set", "rung-1"], ["--take", "no-such-take"]],
+                         ids=["a set that is not the take's", "a take no set holds"])
+def test_a_take_that_no_named_set_holds_refuses_by_name(tmp_path, monkeypatch, capsys, argv):
+    monkeypatch.chdir(tmp_path)
+    bundle = ladder_round(tmp_path, (80.0 + _box_db(55.0, 0.8)).tolist())
+
+    assert round_views.main(["bass-alignment", str(bundle), *argv]) == round_views.EXIT_REFUSED
+
+    answer = json.loads(capsys.readouterr().out)
+    assert (answer["status"], answer["reason"]) == ("refused", "round_take_unknown")
+    assert not list(tmp_path.rglob("*bass_alignment*.json"))

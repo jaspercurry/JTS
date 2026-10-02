@@ -108,7 +108,7 @@ def resolve_set_take(
     response the set measured, and the take read with its record."""
     inputs = round_inputs(round_dir)
     # A named take the run did not keep refuses with its record's verdict (#6067).
-    selected = resolve_set(inputs, set_id).with_records(inputs.session_dir, every_take=take is not None)
+    selected = resolve_set(inputs, set_id, take=take).with_records(inputs.session_dir, every_take=take is not None)
     take_id = selected.take_id(take)
     joined = next(one for one in selected.takes if one["take_id"] == take_id)
     return subject(inputs, selected, take_ids=[take_id]), take_id, role or selected.role, joined
@@ -150,9 +150,12 @@ def add_set_argument(
     parser: argparse.ArgumentParser, *, name: str = "--set", required: bool = False,
     take: bool = False,
 ) -> None:
-    parser.add_argument(name, required=required, help="set in the run manifest; optional for a one-set round")
+    flag = name.removesuffix("set") + "take"
+    parser.add_argument(name, required=required, help="set in the run manifest; optional for a one-set round"
+                                                      + (f" and with {flag}" if take else ""))
     if take:
-        parser.add_argument(name.removesuffix("set") + "take", help=f"selected take within {name}; defaults to the unique on-axis take")
+        parser.add_argument(flag, help=f"selected take, which names its set (a take two sets hold needs {name}); "
+                                       "default: the set's unique on-axis take")
 
 
 def add_rungs_ms_argument(

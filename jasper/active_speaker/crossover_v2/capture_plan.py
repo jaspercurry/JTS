@@ -80,11 +80,12 @@ def build_inline_session_spec(
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
     safety_profile: Mapping[str, Any] | None = None, role_targets: Mapping[str, str] | None = None,
     excitation: SessionExcitation | None = None,
-    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
+    acknowledgement_binding: str, retries_per_pose: int,
+    measurements_per_pose: Sequence[int] | None = None, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
-                                 [candidate_id for _, _, candidate_id in captures])
+                                 [candidate_id for _, _, candidate_id in captures], measurements_per_pose)
     entries = []
     for index, (spec, prompt, _) in enumerate(captures, 1):
         phase = spec.program_phase
@@ -112,8 +113,7 @@ def build_inline_session_spec(
         entries.append(CapturePlanEntry(
             index=index - 1, kind_label=phase,
             duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
-            screen={"progress": capture_progress_label(index, len(captures)),
-                    "title": prompt.headline, "body": prompt.detail,
+            screen={"title": prompt.headline, "body": prompt.detail,
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
     attempts = len(entries) + sum(1 for _ in groupby(prompt.pose.place for prompt in prompts)) * retries_per_pose
@@ -634,15 +634,6 @@ def _program_duration_ms(program: ExcitationProgram) -> int:
     return int(round(program.total_samples / program.sample_rate_hz * 1000))
 
 
-def capture_progress_label(index: int, capture_target: int) -> str:
-    """The ONE counter a step screen shows — "Measurement N of T".
-
-    ``index`` is the entry's 1-based WIRE index (the capture's own index space),
-    not the 0-based ``CapturePlanEntry.index``.
-    """
-    return f"Measurement {int(index)} of {int(capture_target)}"
-
-
 #: The per-entry screen keys that state an entry's TARGET POSITION in machine
 #: terms. The plan is the source of that pose; the position gate reads it back
 #: off the entry. The vertical key rides only a pose that LEAVES mark height —
@@ -659,31 +650,35 @@ POSITION_BATCH_CONFIG_KEY = "position_batch_config"
 
 def pose_batch_screens(
     indexes: Sequence[int], prompts: Sequence[CloudPositionPrompt],
-    candidate_ids: Sequence[str],
+    candidate_ids: Sequence[str], measurements_per_pose: Sequence[int] | None = None,
 ) -> dict[int, dict[str, str]]:
     """Capture index -> the batch identity every capture of one POSE declares.
 
     Consecutive prompts at one ``place`` are one batch: the gate grants the
     batch's first capture and carries that grant to the rest
     (:meth:`~.position_gate.PositionGate.gate`), so the microphone moves once
-    per pose however many configs play there.
+    per pose however many configs play there. A batch's size is how many
+    measurements the run plays at its pose: ``measurements_per_pose``, from the
+    run's schedule (``plan_run.schedule_facts``), else the prompts' own count; a
+    level ladder plays more at a pose than one rung's prompts list.
     """
     if len(candidate_ids) != len(indexes) or any(not isinstance(cid, str) for cid in candidate_ids):
         raise CrossoverV2FlowError("candidate ids must name every lateral capture")
     if not indexes:
         return {}
     screens = {}
-    for _pose, group in groupby(
+    for pose, (_place, group) in enumerate(groupby(
         enumerate(prompts), key=lambda row: row[1].pose.place,
-    ):
+    )):
         offsets = [offset for offset, _prompt in group]
+        size = len(offsets) if measurements_per_pose is None else measurements_per_pose[pose]
         for ordinal, offset in enumerate(offsets, 1):
             screens[indexes[offset]] = {
                 "candidate_id": candidate_ids[offset],
                 POSITION_BATCH_START_KEY: str(indexes[offsets[0]]),
-                POSITION_BATCH_SIZE_KEY: str(len(offsets)),
+                POSITION_BATCH_SIZE_KEY: str(size),
                 POSITION_BATCH_CONFIG_KEY: str(ordinal),
-                "progress": f"Measurement {ordinal} of {len(offsets)} at this position — keep the mic still.",
+                "progress": f"Measurement {ordinal} of {size} at this position — keep the mic still.",
             }
     return screens
 

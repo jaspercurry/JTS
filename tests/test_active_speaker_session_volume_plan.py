@@ -155,7 +155,7 @@ def test_the_hf_ceiling_moves_with_its_ANCHOR_contract_shape(
         )[1]
 
     with caplog.at_level(
-        "INFO", logger="jasper.active_speaker.excitation_safety_plan"
+        "DEBUG", logger="jasper.active_speaker.excitation_safety_plan"
     ):
         assert _cap("woofer") == pytest.approx(expected_woofer_cap)
         assert _cap("tweeter") == pytest.approx(expected_tweeter_cap)

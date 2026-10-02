@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Any, Mapping
 
 from .capture_status import SESSION_ENDED_STATUSES
-from .measurement_programs import Preset, available_presets, offered_here, plan_poses, preset, run_preset
+from .measurement_programs import Preset, available_presets, first_plan, offered_here, plan_poses, preset, run_preset
 from .movers import MOVER_ARM
 from .round_copy import round_lines, round_verdict, status_lines
 from .wizard_client import CAPTURE_CANCEL_PATH, SESSION_PATH
@@ -73,9 +73,9 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     rows = [preset(name) for name in available_presets()]
     plans = {_choice_id(row, layout): run_preset(row.preset, layout) for row in rows for layout in row.layouts}
     plans = {key: plan for key, plan in plans.items() if offered_here(plan, programs=programs, targets=targets)}
-    default = preset(view["next_action"].get("program") or programs[0])
+    first = first_plan(view["next_action"].get("program") or programs[0])
     refused = bool(selected_id) and selected_id not in plans
-    default_id = selected_id or default.preset
+    default_id = selected_id or _choice_id(preset(first.preset), first.layout)
     choices = []
     for plan_id, plan in plans.items():
         walked = replace(plan, poses=plan_poses(plan, targets))

@@ -108,7 +108,7 @@ def test_registry_stimulus_reaches_the_capture_spec():
     rows = [preset(name) for name in available_presets()]
     assert {row.preset for row in rows if row.stimulus is not None} == {"bass/axis", "nearfield/each"}
     bass, = (row for row in rows if row.purpose == "bass")
-    assert bass.layouts == ("bass_axis", "seat_cloud", "room_quick", "seat_express")
+    assert bass.layouts == ("seat_express", "bass_axis", "seat_cloud", "room_quick")
     for layout in bass.layouts:
         run = run_preset("bass", layout)
         assert run.stimulus == {"ceiling_hz": 1100.0}
@@ -155,7 +155,7 @@ def test_bass_schedule_fits_caps_and_noise_windows(bass_fixture, floor):
 
 def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     _, safety, targets, excitation = bass_fixture
-    row = preset("bass/axis")
+    row = run_preset("bass/axis", "bass_axis")
     request = request_for_preset(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
@@ -177,7 +177,7 @@ def test_a_bass_takes_probe_sweeps_the_band_its_take_sweeps(bass_fixture, floor)
     the bass driver's floor to the stimulus's ceiling (ADR-0403 §4)."""
     _, safety, targets, excitation = bass_fixture
     next(target for target in safety["targets"] if target["role"] == "woofer")["hard_excitation_band_hz"][0] = floor
-    row = preset("bass/axis")
+    row = run_preset("bass/axis", "bass_axis")
     capture, = prepare_plan_captures(request_for_preset(row, mover=row.mover, candidates=("trial",)))
     probe = program_for_spec(replace(capture.spec, level_probe=True), excitation, None,
                              safety_profile=safety, role_targets=targets)

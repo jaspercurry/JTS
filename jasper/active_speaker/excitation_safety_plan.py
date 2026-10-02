@@ -625,6 +625,7 @@ def driver_cap_dbfs(
         log_event(
             logger,
             "active_speaker.excitation_ceiling_superseded",
+            level=logging.DEBUG,
             target_id=str(target.get("target_id") or ""),
             role=role,
             class_default_dbfs=f"{cap:.1f}",

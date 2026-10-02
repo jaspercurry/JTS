@@ -403,7 +403,7 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _awaiting_plan_envelope(status)
 
     log_event(
-        logger, "correction.crossover_v2_envelope_serve",
+        logger, "correction.crossover_v2_envelope_serve", level=logging.DEBUG,
         screen=env["screen"], phase=phase, failure="",
     )
     return env

@@ -117,6 +117,7 @@ def _build_envelope_logged(status: Mapping[str, Any]) -> dict[str, Any]:
     log_event(
         logger,
         "correction.crossover_envelope_serve",
+        level=logging.DEBUG,
         screen=envelope["screen"],
         active=envelope["active"],
         step_count=len(envelope["steps"]),

@@ -509,7 +509,8 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     ({"room": "document"}, ("--mover", "arm"), "room/seat", "room_quick", "arm"),
     ({"room": "document"}, ("--layout", "seat_cloud"), "room/seat", "seat_cloud", "human"),
     ({"driver": "document", "room": "document"}, (), "room/seat", "seat_express", "human"),
-    ({"driver": "document", "room": "document", "bass": "document"}, (), "bass/axis", "bass_axis", "arm"),
+    ({"driver": "document", "room": "document", "bass": "document"}, (), "bass/axis", "seat_express", "human"),
+    ({"bass": "document"}, ("--mover", "arm"), "bass/axis", "bass_axis", "arm"),
     ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "rear/seat", "seat_express", "human"),
     ({"driver": "base", "alignment": "saved"}, (), None, None, None),
 ])
@@ -1058,7 +1059,7 @@ def test_a_rear_pair_at_custom_bearings_plans_branch_takes_on_the_applied_base(
     assert candidate_bank.banked_candidates() == []
 
 
-@pytest.mark.parametrize("choice_id", ["room/seat", "bass/axis@seat_express", "rear/pair", "nearfield/each"])
+@pytest.mark.parametrize("choice_id", ["room/seat", "bass/axis", "rear/pair", "nearfield/each"])
 def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     monkeypatch, preflight_ready, choice_id,
 ):
@@ -1092,7 +1093,7 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
 
 
-@pytest.mark.parametrize("choice_id, takes", [("bass/axis@seat_express", 12), ("room/seat", 3)])
+@pytest.mark.parametrize("choice_id, takes", [("bass/axis", 12), ("room/seat", 3)])
 def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, choice_id, takes):
     """A level ladder plays each placement's captures at every rung (``run_levels``). The page's plan and
     the session's own first facts (what the awaiting-join screen prints) preview those takes from one
@@ -1307,7 +1308,8 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run, arm_plan_answer):
     opener = _opener(session='{"session_id": "run-1"}')
-    code, body = _run(["run", "--program", "bass", "--level-db", "-25", *(["--dry-run"] if dry_run else ["--wait", "--attest-rig-clear"])],
+    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25",
+                       *(["--dry-run"] if dry_run else ["--wait", "--attest-rig-clear"])],
                       opener, monkeypatch, capsys)
     body = body if dry_run else body["schedule"]
     assert code == 0 and body["mic_moves"] == 1
@@ -1355,11 +1357,9 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
         return ready_facts(plan, **kw)
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
-    code, body = _run(
-        ["run", "--program", "bass", "--mover", "human", "--dry-run"],
-        _opener(), monkeypatch, capsys,
-    )
-    assert code == 1 and body["reason"] == "walk_mover_mismatch"
+    for pinned in (["--layout", "bass_axis", "--mover", "human"], ["--mover", "arm"]):
+        code, body = _run(["run", "--program", "bass", *pinned, "--dry-run"], _opener(), monkeypatch, capsys)
+        assert code == 1 and body["reason"] == "walk_mover_mismatch"
 
     for mover in ("arm", "human"):
         code, _ = _run(
@@ -1487,7 +1487,8 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     bank = round_bank.bank_round
     monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: bank(path, campaign_root=tmp_path / "campaigns", **kw))
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
-    argv = ["trial", candidate.fingerprint] if verb == "trial" else ["run", "--program", "bass", "--layout", "bass_axis"]
+    argv = (["trial", candidate.fingerprint, "--layout", "bass_axis"] if verb == "trial"
+            else ["run", "--program", "bass", "--layout", "bass_axis"])
     code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
     expected = [(probe_db, "lateral")] + [
@@ -1668,7 +1669,7 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
 @pytest.mark.parametrize("flags", [[], ["--mover", "arm"]])
 def test_arm_dry_run_needs_neither_wait_nor_attestation(flags, preflight_ready, arm_runtime, monkeypatch, capsys):
     opener = _opener()
-    code, body = _run(["run", "--program", "bass", "--dry-run", *flags], opener, monkeypatch, capsys)
+    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--dry-run", *flags], opener, monkeypatch, capsys)
     assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"]
     assert "walk_rig_clear_not_attested" not in {issue["code"] for issue in body["issues"]}
     assert body["levels"] and not opener.requests and not arm_runtime.threads

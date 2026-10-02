@@ -21,7 +21,8 @@ from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 def _bank_packet(directory, identity, program, **fields):
     (directory / "bundle" / directory.name).mkdir(parents=True)
     (directory / "packet.json").write_text(json.dumps({
-        "applied": identity, "preset": program, "result": "partial", **fields,
+        "applied": identity, "preset": program, "result": "partial", "sets": [{"takes": [{"selected": True}]}],
+        **fields,
     }))
 
 
@@ -116,8 +117,8 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert next_program_action(profile, identity, after, programs=RUNNABLE_PROGRAMS) == action
 
 
-@pytest.mark.parametrize("drivers,counts", [(("woofer", "tweeter"), False), (("woofer", ""), True), ((), True)],
-                         ids=["every-take-one-driver", "one-summed-take", "no-takes"])
+@pytest.mark.parametrize("drivers,counts", [(("woofer", "tweeter"), False), (("woofer", ""), True)],
+                         ids=["every-take-one-driver", "one-summed-take"])
 def test_a_round_of_only_one_driver_takes_is_not_its_programs_latest(tmp_path, monkeypatch, drivers, counts):
     """A speaker round of only one-driver takes holds no MEASURE take, so until
     #5696 it is not the latest speaker round, the one its next action and the
@@ -128,10 +129,31 @@ def test_a_round_of_only_one_driver_takes_is_not_its_programs_latest(tmp_path, m
     for name, finalized_at, poses in (("older", 1.0, [{"driver": None}]), ("newer", 2.0, [
             {"driver": driver or None} for driver in drivers])):
         _bank_packet(tmp_path / "campaigns" / name, identity, "speaker", finalized_at=finalized_at,
-                     sets=[{"takes": [{"pose": pose} for pose in poses]}])
+                     sets=[{"takes": [{"pose": pose, "selected": True} for pose in poses]}])
     assert latest_banked_rounds(identity)["speaker"]["round_id"] == ("newer" if counts else "older")
-    assert packet_purposes({"preset": "nearfield/each", "sets": [{"takes": [{"pose": {"driver": "woofer"}}]}]}) == (
-        "reference",)
+    assert packet_purposes({"preset": "nearfield/each",
+                            "sets": [{"takes": [{"pose": {"driver": "woofer"}, "selected": True}]}]}) == ("reference",)
+
+
+@pytest.mark.parametrize("sets,expected", [
+    ([], ("run_program", "layer_not_applied")),
+    ([{"takes": []}], ("run_program", "layer_not_applied")),
+    ([{"takes": [{"selected": False}]}], ("run_program", "layer_not_applied")),
+    ([{"takes": [{"selected": True}]}], ("copy_prompt", "round_available")),
+], ids=["no sets", "no takes", "no kept take", "a kept take"])
+def test_a_round_that_kept_no_take_is_not_available_to_its_program(tmp_path, monkeypatch, sets, expected):
+    """A run that ended before it kept a take (an expired hold) holds nothing its program reads,
+    so the next action offers a run, not a round to copy."""
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    profile = _applied_anchor(layers=("speaker",))
+    identity = applied_identity(profile)
+    _bank_packet(tmp_path / "campaigns" / "expired", identity, "rear", sets=sets,
+                 finalized_at=parse_utc_iso(identity["applied_at"]) + 60)
+    programs = RUNNABLE_PROGRAMS
+
+    action = next_program_action(profile, identity, latest_banked_rounds(identity, programs=programs), programs=programs)
+
+    assert (action["id"], action["reason_code"], action["program"]) == (*expected, "rear")
 
 
 def test_a_take_artifact_names_a_rear_target_without_a_colon():
