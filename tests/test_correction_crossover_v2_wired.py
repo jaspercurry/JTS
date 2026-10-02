@@ -940,7 +940,7 @@ def test_capture_cancel_reason_reaches_the_executor_manifest(monkeypatch, tmp_pa
     assert manifest.records.snapshots[-1]["reason"] == code
     assert failures == [code]
     assert refusal_copy.REASON_REGISTRY[code].template == template
-    assert all(stop["reason"] == code for stop in manifest.not_measured)
+    assert [stop["reason"] for stop in manifest.not_measured] == [code, refusal_copy.REASON_NOT_REACHED]
 
 
 async def test_plan_host_waits_for_the_gate_before_admission_and_capture(monkeypatch, tmp_path, box):

@@ -245,13 +245,16 @@ class RunManifest:
         landed = {index for index, _ordinal in self._chosen}
         missing = {take["index"] for take in self.takes
                    if (take["index"], take["stimulus_ordinal"]) not in self._chosen}
-        # The run's stop reason belongs to the stops it began. A stop it never began was not reached,
-        # unless the operator completed the run early, which waives the rest.
-        halted = self.reason not in ("", "complete_requested")
+        left = [stop for stop in self.planned if stop["index"] not in landed or stop["index"] in missing]
+        # The run's stop reason belongs to the stop it halted at. When the run left that stop unmeasured,
+        # a stop it never began was not reached. When it halted after a kept take, or before its first,
+        # the reason is the only one those stops have. An operator's early Complete waives them.
+        halted_at = self.reason not in ("", "complete_requested") and any(
+            stop["index"] in self._begun and not stop.get("reason") for stop in left)
         return [{**stop, "reason": stop.get("reason") or (
-                    REASON_NOT_REACHED if halted and stop["index"] not in self._begun
+                    REASON_NOT_REACHED if halted_at and stop["index"] not in self._begun
                     else self.reason or "take_incomplete")}
-                for stop in self.planned if stop["index"] not in landed or stop["index"] in missing]
+                for stop in left]
 
     @property
     def status(self) -> str:

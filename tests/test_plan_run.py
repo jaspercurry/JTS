@@ -346,6 +346,19 @@ def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
         (2, REASON_CLIPPED), (3, REASON_NOT_REACHED)]
 
 
+def test_a_run_that_halts_after_a_kept_take_gives_the_rest_its_reason(monkeypatch):
+    """The stop reason belongs to the stop the run halted at. When that take was kept, the reason is
+    all the stops the run never began have."""
+    monkeypatch.setattr(plan_run, "assess",
+                        lambda *a, **k: TakeVerdict(True, REASON_CHANNEL_MAP_MISMATCH, next="stop"))
+
+    result, _ = asyncio.run(_run_gated(_walk([0, 20, 40])))
+
+    assert result.reason == REASON_CHANNEL_MAP_MISMATCH
+    assert [(stop["index"], stop["reason"]) for stop in result.not_measured] == [
+        (2, REASON_CHANNEL_MAP_MISMATCH), (3, REASON_CHANNEL_MAP_MISMATCH)]
+
+
 @pytest.mark.parametrize("action", ["retake", "complete"])
 def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
     signals, gate = plan_run.RunSignals(), AnsweredGate()
@@ -1046,7 +1059,7 @@ def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, rungs, 
     ((66.0,), 1, 0), ((66.0, 86.0), 2, 0), ((66.0, 86.0, 86.0), 3, 1),
 ], ids=["after-the-probe", "after-a-missed-take", "after-a-retake"])
 def test_a_stop_counts_no_retake_for_a_play_it_kept_from_starting(readings, stop_at, retakes):
-    """Stop pressed as a take is judged ends the run before the next play. That play is no retake: it
+    """A Stop pressed as a take is judged ends the run before the next play. That play is no retake: it
     never played, and a probe's next play spends none. A retake that played still counts."""
     request = ac.request_for_preset(Preset("nearfield/each", (
         Pose(0, 0, kind="close", distance_m=0.015, driver="woofer"),), purposes=("reference",), stimulus=NEAR_FIELD))
