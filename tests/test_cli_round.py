@@ -1092,10 +1092,11 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
 
 
-@pytest.mark.parametrize("choice_id", ["bass/axis@seat_express", "room/seat"])
-def test_the_page_prices_the_takes_its_run_plays(monkeypatch, choice_id):
-    """A level ladder plays each placement's captures at every rung (``run_levels``), so the page
-    previews those takes: their count, and their sweeps' seconds, with the moves and the probe once."""
+@pytest.mark.parametrize("choice_id, takes", [("bass/axis@seat_express", 12), ("room/seat", 3)])
+def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, choice_id, takes):
+    """A level ladder plays each placement's captures at every rung (``run_levels``). The page's plan and
+    the session's own first facts (what the awaiting-join screen prints) preview those takes from one
+    schedule: their count, and their sweeps' seconds, with the moves and the probe once."""
     topology, context = mono_output_topology(), _inline_context()
     context = with_rear_target(replace(context, topology=topology,
                                        driver_bands={role.role: role.band for role in context.roles_bands}))
@@ -1126,6 +1127,19 @@ def test_the_page_prices_the_takes_its_run_plays(monkeypatch, choice_id):
     sweeps_s = sum(row["seconds"] for pose in one["pose_sweeps"] for row in pose)
     assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"] + (len(rungs) - 1) * sweeps_s)
     assert len(rungs) == (len(LEVEL_OFFSETS_DB) if choice_id.startswith("bass") else 1)
+
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
+    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _topology: (store, store.session_id))
+
+    session = v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
+
+    published = session.position_gate.published()["run"]
+    assert published["measurements"] == sum(page["measurements_per_pose"]) == takes
+    assert published["measurements_per_pose"] == page["measurements_per_pose"]
+    assert published["estimated_seconds"] == pytest.approx(page["estimated_seconds"])
 
 
 _PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair",

@@ -27,7 +27,7 @@ from jasper.active_speaker.angle_capture import AngleCaptureRequest, LateralWalk
 from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.preflight import PreflightIssue
-from jasper.active_speaker.run_levels import LevelLadder, preflight_levels, prepare_level_captures
+from jasper.active_speaker.run_levels import LevelLadder, ladder_captures, preflight_levels, prepare_level_captures
 from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -254,7 +254,7 @@ def prepare_v2_session(
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
     )
     evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
-    schedule = preview_schedule(request, captures, context)
+    schedule = preview_schedule(request, ladder_captures(request, levels, captures), context)
     if position_gate:
         position_gate.publish(schedule)
 
