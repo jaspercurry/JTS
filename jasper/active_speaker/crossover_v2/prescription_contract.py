@@ -17,7 +17,7 @@ from typing import Any
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
-from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable, unavailable
+from jasper.audio_measurement.evidence_reasons import SET_REQUIRED, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.piston import beaming_onset_hz
 from jasper.audio_measurement.trusted_band import within_trusted
 from jasper.active_speaker.excitation_safety_plan import (
@@ -373,6 +373,8 @@ def _room(raw: Mapping[str, Any], persistence: Mapping[str, Any],
                             freqs_hz=None, cut_floor_db=None, boost_cap_db=None,
                             taper_knee_hz=None, spatial_support=None, sides=sides,
                             admit_boost=None)
+    if raw.get("code") == SET_REQUIRED:
+        return {**result, **unavailable(SET_REQUIRED, {"sets": raw["sets"]})}
     try:
         median = room.read_room_median(raw)
     except room.RoomPrescriptionRefused as exc:

@@ -9,17 +9,19 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
+from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import banked_candidates, find_banked_candidate, publish_authored_candidate
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.measured_crossover_candidate import (
     candidate_room_peqs,
 )
-from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, ROOM_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import REASON_TOO_FEW_POSITIONS, ROOM_NOT_BANKED, SET_REQUIRED
 from jasper.audio_measurement.room_boundary import ROOM_FLOOR_HZ
 from jasper.audio_measurement.seat_figures import spread_rms_db
 from jasper.audio_measurement.room_limits import ROOM_PEQ_Q_MIN, ROOM_PEQ_Q_MAX, spatial_support
@@ -29,7 +31,8 @@ from jasper.active_speaker.crossover_v2.room_views import (
     room_median,
     room_median_sha256,
 )
-from jasper.active_speaker.crossover_v2.round_inputs import ROUND_PACKET_SCHEMA, round_inputs
+from jasper.active_speaker.crossover_v2.record_index import measurement_documents
+from jasper.active_speaker.crossover_v2.round_inputs import ROUND_PACKET_SCHEMA, resolve_set, round_inputs, set_view_out
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
@@ -48,9 +51,11 @@ from jasper.active_speaker.crossover_v2.room_prescription import (
     read_room_prescription,
     room_prescription_to_candidate_fields,
 )
+from jasper.active_speaker.round_bank import bank_round
+from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.platform.biquad import PeqFilter
 from jasper.cli import crossover_prescriber as cli
-from jasper.cli.round_views._common import default_out
+from jasper.cli import round_views
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
@@ -337,8 +342,9 @@ def test_room_judge_requires_a_set_on_a_two_set_round(tmp_path, capsys, preview)
                                                     "role": "summed", "take_count": 0} for i in range(2)]
 
 
+@pytest.mark.parametrize("named_set", [False, True])
 @pytest.mark.parametrize("named_by", ["bank", "bundle"])
-def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by):
+def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by, named_set):
     """A room view run after the bank is not the round's evidence (ADR-0371)."""
     root = tmp_path / "candidates"
     base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
@@ -349,13 +355,113 @@ def test_a_banked_round_that_banked_no_room_says_so(tmp_path, capsys, named_by):
     path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
                                 "rationale": "room", "sections": {"room": _document()}}))
     named = str(round_dir if named_by == "bank" else round_inputs(round_dir).session_dir)
-    assert cli.main(["contract", "--round", named, "--section", "room"]) == 0
+    flags = ["--set", resolve_set(round_inputs(round_dir)).set_id] if named_set else []
+    assert cli.main(["contract", "--round", named, "--section", "room", *flags]) == 0
     served = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert (served["status"], served["reason"]) == ("unavailable", ROOM_NOT_BANKED)
-    assert cli.main(["judge", str(path), "--round", named, "--root", str(root)]) == 1
+    assert cli.main(["judge", str(path), "--round", named, "--root", str(root), *flags]) == 1
     answer = json.loads(capsys.readouterr().out)
     assert (answer["code"], answer["detail"]["section"], answer["next_action"]["id"]) == (
         ROOM_NOT_BANKED, "room", "measure_room")
+
+
+def test_a_multi_set_round_that_banks_no_room_is_not_asked_for_a_set(tmp_path, capsys):
+    """A speaker round's sets bank no room view, so there is none to name."""
+    round_dir = bank_seat_round(tmp_path)
+    write_manifest(round_dir, program="speaker", groups=[manifest_set([], set_id=f"set-{i}") for i in range(2)])
+    (round_dir / "packet.json").write_text(json.dumps({"schema": ROUND_PACKET_SCHEMA, "room": []}))
+    assert cli.main(["contract", "--round", str(round_dir), "--section", "room"]) == 0
+    served = json.loads(capsys.readouterr().out)["sections"]["room"]
+    assert (served["status"], served["reason"]) == ("unavailable", ROOM_NOT_BANKED)
+
+
+def _bank_room_round(tmp_path: Path, *, split: int | None = None) -> Path:
+    """A room round banked for real, so each view is filed as the bank files it. With ``split``, its seat
+    takes are two sets: the first ``split`` takes, and the rest."""
+    source = bank_seat_round(tmp_path / "source")
+    inputs = round_inputs(source)
+    if split is not None:
+        rows = list(measurement_documents(inputs.session_dir))
+        write_manifest(source, program="room", groups=[
+            manifest_set([(row.path, record) for row, record in members], set_id=f"set-{number}")
+            for number, members in enumerate((rows[:split], rows[split:]))])
+    mark_state(inputs.session_dir, "applied")
+    absent = {name: tmp_path / "absent" / name for name in (
+        "design_draft_path", "applied_profile_path", "repeat_floor_path", "declared_geometry_path", "statefile_path")}
+    return bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+                      view_runner=run_bookkeeping, **absent).path
+
+
+def _banked_room_views(bank: Path, view: str = "room") -> dict[str, Path]:
+    """Each set's ``view`` file, by the file the bank's own index names."""
+    packet = json.loads((bank / "packet.json").read_text())
+    return {row["set_id"]: Path(row["out"]) for row in packet["artifacts"]["room_views"]
+            if row["view"] == view and row["status"] == "written"}
+
+
+def _rerun(capsys: pytest.CaptureFixture[str], bank: Path, view: str, *flags: str) -> Path:
+    """Re-run ``view`` on ``bank`` and where it filed its answer."""
+    assert round_views.main([view, str(bank), *flags]) == 0
+    return Path(json.loads(capsys.readouterr().out)["out"])
+
+
+def _prescribe(tmp_path: Path, capsys: pytest.CaptureFixture[str], bank: Path, argv: list[str], sha: str) -> tuple[int, Any]:
+    """One ``jasper-crossover-prescriber`` call on ``bank`` with a room document answering ``sha``, a fresh base
+    candidate beside it: its exit code and answer."""
+    root = tmp_path / f"candidates {len(list(tmp_path.glob('candidates *')))}"
+    base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
+    path = tmp_path / f"{root.name}.json"
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
+                                "rationale": "room", "sections": {"room": _document(filters=[], sha256=sha)}}))
+    code = cli.main([argv[0], str(path), "--round", str(bank), "--root", str(root), *argv[1:]])
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_a_one_set_room_round_is_filed_and_served_by_its_set_whether_it_is_named_or_not(tmp_path, capsys):
+    """The bank files a one-set round's room views under no set name, and the round's set names them
+    all the same: a re-run of room or room-grade files where the bank does, and judge, its preview,
+    compose and room-grade answer with --set and without."""
+    bank = _bank_room_round(tmp_path)
+    (set_id, view), = _banked_room_views(bank).items()
+    assert view.name == "room.json"
+    (_, grade), = _banked_room_views(bank, "room-grade").items()
+    for name, filed in (("room", view), ("room-grade", grade)):
+        for flags in ([], ["--set", set_id]):
+            assert _rerun(capsys, bank, name, *flags) == filed
+    sha = json.loads(view.read_text())["room_median_sha256"]
+    for argv in (["judge", "--preview"], ["judge"], ["compose"]):
+        for flags in ([], ["--set", set_id]):
+            code, answer = _prescribe(tmp_path, capsys, bank, [*argv, *flags], sha)
+            assert code == 0, answer
+            assert answer["subject"]["set_id"] == set_id
+            if "--preview" not in argv:
+                assert answer["packet_contracts"]["contract_current"] is True
+
+
+def test_a_two_set_room_round_is_filed_and_served_by_the_set_named_and_asks_for_one_when_none_is(tmp_path, capsys):
+    bank = _bank_room_round(tmp_path, split=3)
+    views = _banked_room_views(bank)
+    shas = {set_id: json.loads(view.read_text())["room_median_sha256"] for set_id, view in views.items()}
+    assert len(set(shas.values())) == 2
+    served = {}
+    for set_id, sha in shas.items():
+        assert _rerun(capsys, bank, "room", "--set", set_id) == views[set_id]
+        code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--preview", "--set", set_id], sha)
+        assert code == 0, answer
+        served[set_id] = answer["preview"]["room_median_sha256"]
+        assert cli.main(["contract", "--round", str(bank), "--section", "room", "--set", set_id]) == 0
+        assert json.loads(capsys.readouterr().out)["sections"]["room"]["status"] == "available"
+    assert served == shas
+    assert cli.main(["contract", "--round", str(bank), "--section", "room"]) == 0
+    served_room = json.loads(capsys.readouterr().out)["sections"]["room"]
+    assert (served_room["status"], served_room["reason"]) == ("unavailable", SET_REQUIRED)
+    code, refused = _prescribe(tmp_path, capsys, bank, ["judge"], next(iter(shas.values())))
+    assert (code, refused["code"]) == (1, SET_REQUIRED)
+    assert served_room["detail"]["sets"] == refused["detail"]["evidence"]["sets"]
+    assert {row["set_id"] for row in served_room["detail"]["sets"]} == set(shas)
+    code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--set", next(iter(shas))], next(iter(shas.values())))
+    assert code == 0, answer
+    assert answer["packet_contracts"]["contract_current"] is True
 
 
 @pytest.mark.parametrize("filters,code", [
@@ -476,7 +582,7 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
         "graph_fingerprint": "played-graph",
     }
     median["evidence"] = {"basis": basis, "take_ids": [p["id"] for p in median["positions"]]}
-    room_path = default_out(round_inputs(round_dir), round_dir, "room.json", set_id)
+    room_path = set_view_out(round_inputs(round_dir), "room.json", set_id)
     room_path.write_text(json.dumps({"median": median, "incumbent": {"round_id": "old"}}))
     document = tmp_path / "prescription.json"
     document.write_text(json.dumps({

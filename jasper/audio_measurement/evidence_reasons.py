@@ -52,6 +52,7 @@ REFUSE_PAIR_UNDERSAMPLED = "rear_pair_phase_undersampled"
 REFUSE_TARGET_BAND_SHORT = "rear_fit_target_band_short"
 ROOM_NOT_BANKED = "room_not_banked"
 ROUND_SHAPE_INADMISSIBLE = "classification_round_shape_inadmissible"
+SET_REQUIRED = "set_required"
 TAKE_CURVES_NOT_BANKED = "take_curves_not_banked"
 
 

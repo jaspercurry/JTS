@@ -18,9 +18,11 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping, NamedTuple, Sequence
 
 from jasper.platform.json_fields import finite_float, parse_utc_iso
-from jasper.audio_measurement.evidence_reasons import CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, unavailable
+from jasper.audio_measurement.evidence_reasons import (
+    CAPTURE_UNREADABLE_SIDECAR, EVIDENCE_NOT_BANKED, ROOM_NOT_BANKED, SET_REQUIRED, unavailable,
+)
 from jasper.active_speaker.measurement_programs import (
-    POSE_KIND_BEARING, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose,
+    POSE_KIND_BEARING, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose, run_purposes,
 )
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -57,7 +59,7 @@ __all__ = [
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
-    'default_out', 'view_path',
+    'default_out', 'view_path', 'files_by_set', 'set_view_path', 'set_view_out', 'set_choices',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
     'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand', 'comparands',
 ]
@@ -353,6 +355,24 @@ def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path
     return default_out(inputs, banked_round_of(inputs.session_dir) or inputs.session_dir, name, set_id)
 
 
+def files_by_set(sets: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether a round names its sets (``sets`` is :func:`view_sets`): a round of several does. A call must then
+    name one (:func:`resolve_set`), and each per-set view of the bank is filed under its set's name, by the bank
+    and by the verbs that re-run it (:func:`set_view_out`). A round of one files each view under none."""
+    return len(sets) > 1
+
+
+def set_view_path(inputs: RoundInputs, name: str, set_id: str | None, sets: Sequence[Mapping[str, Any]]) -> Path:
+    """Where set ``set_id``'s view ``name`` is filed: under the set's name in a round of several view sets,
+    else under none (:func:`files_by_set`)."""
+    return view_path(inputs, name, set_id if files_by_set(sets) else None)
+
+
+def set_view_out(inputs: RoundInputs, name: str, set_id: str | None) -> Path:
+    """Where a verb files set ``set_id``'s view ``name`` when the operator named no ``--out``: where the bank files it."""
+    return set_view_path(inputs, name, set_id, view_sets(read_run_manifest(inputs)))
+
+
 def bank_of(inputs: RoundInputs) -> Path | None:
     """The bank holding the round, whether it is named by its bank or by its bundle."""
     return inputs.session_dir.parent.parent if inputs.banked else banked_round_of(inputs.session_dir)
@@ -372,9 +392,19 @@ def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
     return packet
 
 
-def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:
-    """The bank's copy of the room view it wrote as ``name``, or ``{}``."""
-    return next((row for row in rows if isinstance(row, dict) and Path(str(row.get("out"))).name == name), {})
+def _banked_room(rows: list[Any], sets: Sequence[Mapping[str, Any]], set_id: str | None) -> dict[str, Any]:
+    """The bank's copy of set ``set_id``'s room view, or ``{}``: each row names its set, in whatever file the bank
+    filed it. A round of one view set needs none named."""
+    wanted = set_id or (sets[0]["set_id"] if len(sets) == 1 else None)
+    return next((row for row in rows if wanted and isinstance(row, dict) and row.get("set_id") == wanted), {})
+
+
+def _banks_room(manifest: Mapping[str, Any] | None) -> bool:
+    """Whether the round's bank runs a room view for each of its sets: its preset's purposes include room."""
+    try:
+        return PURPOSE_ROOM in run_purposes(str((manifest or {}).get("preset") or ""))
+    except ValueError:
+        return False
 
 
 def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
@@ -382,17 +412,20 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     artifact_dir, reason = round_artifact_dir(inputs.session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
+    manifest = _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME)
+    sets = view_sets(manifest or {})
     # A re-run room view is a view: a banked round's contract reads its bank's copy (ADR-0371).
     banked_rooms = banked_packet(inputs).get("room")
-    room = (_banked_room(banked_rooms, set_artifact_name(ROOM_ARTIFACT, set_id)) if isinstance(banked_rooms, list)
-            else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
+    room = (_banked_room(banked_rooms, sets, set_id) if isinstance(banked_rooms, list)
+            else _read_json_mapping(set_view_path(inputs, ROOM_ARTIFACT, set_id, sets)) or {})
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
-        room = {"median": {"code": ROOM_NOT_BANKED}}
+        # Each set of a room round banks a room view, so a call that names none has no one view to serve.
+        ambiguous = set_id is None and files_by_set(sets) and _banks_room(manifest)
+        room = {"median": {"code": SET_REQUIRED, "sets": set_choices(sets)} if ambiguous else {"code": ROOM_NOT_BANKED}}
     path = artifact_dir / "candidate.json"
     # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
     # so each refuses it by this code. Only a round that banked none has no base.
     candidate = (_read_json_mapping(path) or {"code": "candidate_malformed"}) if path.is_file() else {}
-    manifest = _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME)
     return {"candidate": candidate,
             "manifest": with_records(inputs.session_dir, manifest) if manifest else {},
             **{f"room_{section}": room.get(section, {})
@@ -551,6 +584,13 @@ def read_run_manifest(
     return pointer_rows(manifest)
 
 
+def set_choices(sets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The sets a call may name, each with what tells it from the others: the list ``set_required`` carries."""
+    return [{"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
+             "role": group.role, "take_count": len(group.selected_ids)}
+            for group in map(SetTakes.from_row, sets)]
+
+
 def resolve_set(
     inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
 ) -> SetTakes:
@@ -558,12 +598,8 @@ def resolve_set(
     Its takes are the manifest's rows, as given; a reader of a take's facts
     joins them (:meth:`SetTakes.with_records`, ADR-0395)."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
-    if set_id is None and len(sets) > 1:
-        raise RoundSetRefused("set_required", sets=[
-            {"set_id": group.set_id, "candidate_id": group.capture_basis.get("candidate_id"),
-             "role": group.role, "take_count": len(group.selected_ids)}
-            for group in map(SetTakes.from_row, sets)
-        ])
+    if set_id is None and files_by_set(sets):
+        raise RoundSetRefused(SET_REQUIRED, sets=set_choices(sets))
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]
     if len(matches) != 1:
         raise RoundSetRefused("round_set_unknown", set_id=set_id, sets=[row["set_id"] for row in sets])

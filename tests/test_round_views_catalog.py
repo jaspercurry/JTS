@@ -89,10 +89,11 @@ def _catalog(capsys, *argv: str) -> dict:
 def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(tmp_path, capsys):
     """The index names the catalog call, then each call the catalog fills from the round
     alone. A call that needs another input keeps it as a placeholder, a one-set round's
-    view the bank publishes names the bank's file, the frequency call reads the bank's
-    view and leaves it as it is, and a call runs as given and files what it names."""
+    call names its set and a view the bank publishes names the bank's file, the frequency
+    call reads the bank's view and leaves it as it is, and a call runs as given and files
+    what it names."""
     root = bank_seat_round(tmp_path / "rounds 'quoted' $(x)")
-    write_manifest(root, program="room")
+    set_id = write_manifest(root, program="room")["sets"][0]["set_id"]
     packet_of(root)
 
     answer = _catalog(capsys, str(root))
@@ -105,14 +106,14 @@ def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(
     index = (root / INDEX_FILENAME).read_text().splitlines()
     assert [shlex.split(line[3:-1]) for line in index[index.index("## Tools"):] if line.startswith("- `")] == [
         shlex.split(catalog_command(root)), *(list(argv) for argv, call in calls.items() if not call["needs"])]
-    assert (calls[PROG, "repeat", str(root), "<other-round>"]["needs"], calls[PROG, "room", str(root)]["present"]) == (
-        ["<other-round>"], True)
+    assert (calls[PROG, "repeat", str(root), "<other-round>"]["needs"],
+            calls[PROG, "room", str(root), "--set", set_id]["present"]) == (["<other-round>"], True)
 
     view = Path(calls[PROG, "frequency", str(root)]["out"])
     banked = view.read_bytes()
     assert round_views.main([PROG, "frequency", str(root)][1:]) == round_views.EXIT_OK
     assert "out" not in json.loads(capsys.readouterr().out) and view.read_bytes() == banked
-    grade = calls[PROG, "room-grade", str(root)]
+    grade = calls[PROG, "room-grade", str(root), "--set", set_id]
     Path(grade["out"]).unlink()
     assert round_views.main(grade["argv"][1:]) == round_views.EXIT_OK
     capsys.readouterr()
@@ -133,14 +134,16 @@ def _one_set(preset: str, role: str) -> dict:
 
 @pytest.mark.parametrize("preset,role", [("speaker/mark", "woofer"), ("speaker/mark", "summed"), ("room/seat", "summed")])
 def test_a_one_set_rounds_calls_parse_name_their_set_and_file_apart(preset, role):
-    """Only a view the bank publishes leaves out a one-set round's --set: speaker-fit
-    requires it, and the round ladder reads other takes without it. speaker-fit reads
-    only a set that measured one driver, and each take's call files its own artifact."""
+    """Every call that takes a set names it, and a view the bank publishes names the file the
+    bank files. speaker-fit reads only a set that measured one driver, and each take's call
+    files its own artifact."""
     ready = [call for call in round_calls(Path("round"), _one_set(preset, role)) if not call["needs"]]
     for call in ready:
         _PARSERS[call["argv"][0]].parse_args(call["argv"][1:])
         row = CATALOG[call["tool"]]
-        assert ("--set" in call["argv"]) == ("<set-id>" in row.argv and not row.bookkeeping)
+        assert ("--set" in call["argv"]) == ("<set-id>" in row.argv)
+        if "<set-id>" in row.argv and row.bookkeeping:
+            assert call["artifact"] == row.artifact
     artifacts = [call["artifact"] for call in ready if call["take_id"] and call["artifact"]]
     assert artifacts and len(set(artifacts)) == len(artifacts)
     assert {call["take_id"] for call in ready if call["tool"] == f"{PROG} speaker-fit"} == (

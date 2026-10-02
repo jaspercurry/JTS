@@ -34,7 +34,6 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
     ROUND_PACKET_SCHEMA, contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs,
-    set_artifact_name,
 )
 from jasper.active_speaker import candidate_bank, candidate_parts, program_headroom
 from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
@@ -423,15 +422,17 @@ def test_linkwitz_schema_edges_match_the_validator(name):
 
 @pytest.mark.parametrize("named_set", [False, True])
 def test_a_banked_round_serves_the_room_its_bank_stored(round_bank, capsys, named_set):
-    """A re-run room view is a view (ADR-0371)."""
+    """A re-run room view is a view (ADR-0371). A one-set round's bank files its room view under no
+    set name; the row names the set."""
     bank, _ = round_bank
-    set_id = read_run_manifest(round_inputs(bank))["sets"][0]["set_id"] if named_set else None
-    view = bank / set_artifact_name("room.json", set_id)
-    stored = json.loads((bank / "room.json").read_text())
-    (bank / "packet.json").write_text(json.dumps({"schema": ROUND_PACKET_SCHEMA, "room": [{**stored, "out": str(view)}]}))
+    set_id = read_run_manifest(round_inputs(bank))["sets"][0]["set_id"]
+    view = bank / "room.json"
+    stored = json.loads(view.read_text())
+    (bank / "packet.json").write_text(json.dumps({
+        "schema": ROUND_PACKET_SCHEMA, "room": [{**stored, "out": str(view), "set_id": set_id}]}))
     view.write_text(json.dumps({}))
     assert cli.main(["contract", "--round", str(bank), "--section", "room",
-                     *(["--set", set_id] if set_id else [])]) == cli.EXIT_OK
+                     *(["--set", set_id] if named_set else [])]) == cli.EXIT_OK
     served = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert served["status"] == "available"
     assert served["bounds"]["freqs_hz"] == stored["median"]["freqs_hz"]

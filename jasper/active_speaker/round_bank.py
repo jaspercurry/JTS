@@ -219,7 +219,7 @@ def _bookkeeping(
     from .measurement_programs import run_purposes  # lazy: bank-only program registry
     from .round_view_artifacts import bookkeeping_views  # lazy: the view table imports NumPy
     from .run_manifest import RUN_MANIFEST_FILENAME, pointer_rows, view_sets  # lazy: measurement types
-    from .crossover_v2.round_inputs import round_artifact_dir  # lazy: reader imports this banker
+    from .crossover_v2.round_inputs import files_by_set, round_artifact_dir  # lazy: reader imports this banker
 
     artifacts, _ = round_artifact_dir(bundle)
     manifest = artifacts / RUN_MANIFEST_FILENAME if artifacts else None
@@ -232,7 +232,7 @@ def _bookkeeping(
 
     results = []
     for view, per_set, grades_against_base in views:
-        targets = sets if per_set and len(sets) > 1 else [None]
+        targets = sets if per_set and files_by_set(sets) else [None]
         for row in targets:
             set_id = row["set_id"] if row else None
             incumbent_id = None

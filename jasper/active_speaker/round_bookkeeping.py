@@ -30,7 +30,7 @@ def room(inputs, target, set_id, incumbent) -> _Answer:
 
 
 def room_grade(inputs, target, set_id, incumbent) -> _Answer:
-    return (payload := room_grade_payload(inputs, target, set_id, incumbent_id=incumbent)), payload
+    return (payload := room_grade_payload(inputs, set_id, incumbent_id=incumbent)), payload
 
 
 def bass(inputs, target, set_id, incumbent) -> _Answer:

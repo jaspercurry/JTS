@@ -24,7 +24,7 @@ from jasper.active_speaker.crossover_v2.gate_sweep import DEFAULT_RUNGS_MS
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundSetRefused as RoundSetRefused, SetTakes as SetTakes, read_run_manifest as read_run_manifest,
     resolve_set as resolve_set, ROUND_INPUT_ERRORS,
-    default_out as default_out, set_artifact_name as set_artifact_name,
+    default_out as default_out, set_artifact_name as set_artifact_name, set_view_out as set_view_out,
     round_artifact_dir as round_artifact_dir, subject as subject,
     RoundViewsError, round_inputs,
 )

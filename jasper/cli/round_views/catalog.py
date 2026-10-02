@@ -40,12 +40,7 @@ def _tool(command: str, row: CatalogRow) -> dict[str, Any]:
 
 def _located(inputs: RoundInputs, round_dir: Path, call: dict[str, Any]) -> dict[str, Any]:
     """One call, with where its artifact lies beside the round and whether it is there."""
-    path = None
-    if call["artifact"]:
-        path = default_out(inputs, round_dir, call["artifact"])
-        # A view run with --set on a one-set round files under the set's name.
-        named = default_out(inputs, round_dir, CATALOG[call["tool"]].artifact, call["set_id"])
-        path = path if path.is_file() or not named.is_file() else named
+    path = default_out(inputs, round_dir, call["artifact"]) if call["artifact"] else None
     size = path.stat().st_size if path is not None and path.is_file() else None
     return {**{key: call[key] for key in ("argv", "set_id", "take_id", "needs")},
             "out": None if path is None else str(path), "present": None if path is None else size is not None,
