@@ -327,7 +327,6 @@ def _commissioning_driver_filter_chain(
     *,
     filter_mode: str,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    measurement_delay_roles: frozenset[str] = frozenset(),
 ) -> list[str]:
     """The startup chain minus the per-role mute.
 
@@ -336,14 +335,9 @@ def _commissioning_driver_filter_chain(
     per-output mute layer is applied in the pipeline instead. Bring-up retains
     the dedicated tweeter high-pass; automatic response measurement removes only
     that extra filter so it measures the applied crossover shoulder.
-
-    ``measurement_delay_roles`` names the roles that carry a ``Delay`` at the
-    head of the chain. Position is free (a pure delay is LTI and commutes with
-    every stage here); the applied chains place theirs after the crossover.
     """
     if protection_sections_by_role is not None:
         return [
-            *([driver_delay_name(role)] if role in measurement_delay_roles else []),
             *(
                 program_protection_name(role, index)
                 for index, _section in enumerate(protection_sections_by_role[role])
@@ -361,7 +355,6 @@ def _emit_commissioning_pipeline(
     *,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    measurement_delay_roles: frozenset[str] = frozenset(),
     capture_channels: int = 2,
 ) -> str:
     lines = [
@@ -379,7 +372,6 @@ def _emit_commissioning_pipeline(
                 role,
                 filter_mode=filter_mode,
                 protection_sections_by_role=protection_sections_by_role,
-                measurement_delay_roles=measurement_delay_roles,
             )
         )
         lines.extend([
@@ -479,22 +471,8 @@ def _emit_role_routed_mixer(
     role_channels: dict[str, int],
     *,
     apply_region_polarity: bool = True,
-    inverted_roles: Sequence[str] = (),
-    level_trims_db: Mapping[str, float] | None = None,
 ) -> str:
     """Emit the program graph's role-routed split mixer.
-
-    ``inverted_roles`` is the measurement's reverse-null flip: each named role's
-    sign is reversed RELATIVE to whatever polarity this graph would otherwise
-    carry, so it XORs onto the region polarity rather than replacing it. It is
-    level-neutral by construction — every ``dest`` here has exactly ONE source,
-    so flipping ``inverted`` negates each sample and leaves every peak the
-    limiter and the volume ceiling answer for bit-identical.
-
-    ``level_trims_db`` is the ONE thing that moves a ``gain``: each named role's
-    single source is attenuated so the branches meet the crossover at comparable
-    level and a reverse null can form. Attenuation only
-    (:func:`_validated_measurement_trims`), so every peak can only fall.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo bus by output
     *side*), this routes by PHYSICAL TARGET: a primary output's key is its role,
@@ -519,8 +497,6 @@ def _emit_role_routed_mixer(
         if apply_region_polarity
         else {role: False for role in region_polarity}
     )
-    flipped = _validated_inverted_roles(preset, inverted_roles)
-    trims = _validated_measurement_trims(preset, level_trims_db)
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     channels_in = program_channel_count(role_channels)
@@ -530,9 +506,7 @@ def _emit_role_routed_mixer(
         channel = role_channels.get(
             measurement_target_id(role, output.output_variant)
         )
-        mapping.append((output.index, [] if channel is None else [(
-            channel, trims.get(role, 0.0), polarity[role] != (role in flipped),
-        )]))
+        mapping.append((output.index, [] if channel is None else [(channel, 0.0, polarity[role])]))
     labels = [output.label for output in outputs]
     return emit_mixer(
         f"split_active_{preset.way_count}way",

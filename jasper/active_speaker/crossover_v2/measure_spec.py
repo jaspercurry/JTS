@@ -14,20 +14,15 @@ import math
 from dataclasses import dataclass, fields, replace
 from typing import Any, Mapping, Sequence
 
-from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.platform.json_fields import finite_float
 from jasper.platform.speaker_layout import measurement_target_id
 
 from ..measurement_programs import BRANCH_PAIR_FRONT_REAR, CANDIDATE_LAYERS, validated_stimulus
 from ..test_signal_plan import MAX_DRIVER_TEST_FREQUENCY_HZ, MIN_DRIVER_TEST_FREQUENCY_HZ
 from .contracts import (
-    DRIVER_ROLES,
     DRIVER_ROLE_WOOFER,
     MEASURE_KIND_CANDIDATE,
     MEASURE_KINDS,
-    POLARITIES,
-    POLARITY_INVERTED,
-    POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
 )
@@ -41,9 +36,6 @@ __all__ = [
     "branch_channels_for",
     "branch_probes",
     "branch_target_ids_for",
-    "inverted_roles_for",
-    "level_trims_for",
-    "measurement_delays_for",
 ]
 
 GRAPH_SCOPE_DRIVERS = "drivers"
@@ -73,12 +65,6 @@ class MeasureSpec:
     voltage, nothing touched between measurements" rests on. Empty means the
     single stimulus the program declares, or with ``level_probe`` its level
     probe (ADR-0365, ADR-0403).
-
-    The polarity flip is RELATIVE to the design polarity the graph would
-    otherwise carry, so a ``polarity=inverted`` record can name a graph whose
-    source reads ``inverted: false`` by double negation. The emitted
-    ``# inverted_roles=[…]`` metadata comment is what disambiguates the pair;
-    never the flag.
     """
 
     kind: str
@@ -86,24 +72,10 @@ class MeasureSpec:
     pose_prompts: tuple[str, ...] = ()
     position_axis: str = POSITION_AXIS_HORIZONTAL
     vertical_deg: int = 0
-    polarity: str = POLARITY_NORMAL
-    inverted_role: str = ""
     level_ladder_dbfs: tuple[float, ...] = ()
     sweep_band_hz: tuple[float, float] | tuple[()] = ()
     sweep_s: float | None = None
     candidate_id: str = ""
-    #: R-1's delay coordinate: which branch carries it, and how much. The pair
-    #: behaves like ``polarity``/``inverted_role`` — stating one without the
-    #: other is a spec that means two things. Zero on every other capture, which
-    #: is what keeps their graphs byte-identical.
-    delayed_role: str = ""
-    delay_us: float = 0.0
-    #: Whether this capture's graph carries the box's own per-driver level-match
-    #: trims. A BOOLEAN and never the numbers: the trims are resolved on-box from
-    #: banked evidence at the one precedence owner, so hand-carried values would
-    #: measure through some other box's level match. False on every other
-    #: capture, which is what keeps their graphs byte-identical.
-    level_matched: bool = False
     graph_scope: str = GRAPH_SCOPE_DRIVERS
     #: Per-target level offsets of this take's graph against the level anchor's
     #: graph. None: no reference is known, so blind pilots keep their fixed cut.
@@ -185,57 +157,11 @@ class MeasureSpec:
                 raise ValueError("sweep_s requires a summed graph_scope")
             if isinstance(self.sweep_s, bool) or not math.isfinite(self.sweep_s) or self.sweep_s <= 0:
                 raise ValueError("sweep_s must be finite and positive")
-        if self.graph_scope != GRAPH_SCOPE_DRIVERS and (
-            self.polarity != POLARITY_NORMAL or self.inverted_role
-            or self.delayed_role or self.delay_us or self.level_matched
-        ):
-            raise ValueError("graph overlays require drivers graph_scope")
         if self.program_phase and self.program_phase not in CAPTURE_PHASES:
             raise ValueError(f"program_phase must be one of {CAPTURE_PHASES}")
         if self.kind not in MEASURE_KINDS:
             raise ValueError(
                 f"a measure kind must be one of {MEASURE_KINDS}, got {self.kind!r}"
-            )
-        if self.polarity not in POLARITIES:
-            raise ValueError(
-                f"a capture polarity must be one of {POLARITIES}, "
-                f"got {self.polarity!r}"
-            )
-        if self.polarity == POLARITY_INVERTED:
-            if self.inverted_role not in DRIVER_ROLES:
-                raise ValueError(
-                    "an inverted-polarity capture must name the driver branch "
-                    f"it flips, one of {DRIVER_ROLES}, got "
-                    f"{self.inverted_role!r}"
-                )
-        elif self.inverted_role:
-            raise ValueError(
-                f"inverted_role={self.inverted_role!r} needs "
-                f"polarity={POLARITY_INVERTED!r}; a {self.polarity!r} capture "
-                "flips no branch"
-            )
-        if bool(self.delayed_role) != bool(self.delay_us):
-            raise ValueError(
-                "delayed_role and delay_us are one decision with two halves: "
-                f"got delayed_role={self.delayed_role!r} with "
-                f"delay_us={self.delay_us!r}"
-            )
-        if self.delayed_role and self.delayed_role not in DRIVER_ROLES:
-            # An unknown role emits a Delay filter the pipeline never
-            # references, so the capture plays with NO delay and banks as a
-            # delayed take.
-            raise ValueError(
-                "a delayed capture must name a real driver branch, one of "
-                f"{DRIVER_ROLES}, got {self.delayed_role!r}"
-            )
-        if not math.isfinite(self.delay_us):
-            raise ValueError(f"delay_us must be finite, got {self.delay_us!r}")
-        if self.delay_us < 0.0 or self.delay_us > MAX_DSP_DELAY_US:
-            # The sign frame lives in the walk coordinate, which names the
-            # branch; what reaches a Delay filter is always non-negative.
-            raise ValueError(
-                f"delay_us is a non-negative microsecond value at or below "
-                f"{MAX_DSP_DELAY_US:g}, got {self.delay_us!r}"
             )
         for bearing in self.positions:
             # Whole degrees, for the reason `PositionGeometry` gives: the poses
@@ -331,41 +257,3 @@ def branch_channels_for(spec: MeasureSpec) -> dict[str, int]:
     reaches every driver, or a drivers take plays the session's own roles.
     """
     return {target_id: channel for channel, target_id in enumerate(spec.branch_target_ids)}
-
-
-def measurement_delays_for(spec: MeasureSpec) -> dict[str, float]:
-    """The per-role delay map this spec's graph must carry.
-
-    Empty for every spec that names no delay, which is what keeps an ordinary
-    program's graph byte-identical.
-    """
-    if not spec.delayed_role:
-        return {}
-    return {spec.delayed_role: spec.delay_us}
-
-
-def level_trims_for(
-    spec: MeasureSpec, resolved_db: Mapping[str, float] | None,
-) -> dict[str, float]:
-    """The per-role attenuation this spec's graph must carry.
-
-    ``resolved_db`` is what the session was opened with — resolved once, on-box,
-    from the banked evidence the box owns — so this chooses between applying it
-    and applying nothing, and never derives a value. A spec asking for a level
-    match when the session holds no trims answers empty rather than raising:
-    that refusal belongs at session open, where an operator can still act on it.
-    """
-    if not spec.level_matched:
-        return {}
-    return {str(role): float(db) for role, db in (resolved_db or {}).items()}
-
-
-def inverted_roles_for(spec: MeasureSpec) -> tuple[str, ...]:
-    """The driver branches this spec's graph must carry sign-flipped.
-
-    Empty for every normal-polarity spec, which is what keeps a non-inverted
-    install byte-identical to what it always emitted.
-    """
-    if spec.polarity != POLARITY_INVERTED:
-        return ()
-    return (spec.inverted_role,)

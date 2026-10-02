@@ -41,16 +41,9 @@ class SessionGraph(Protocol):
         """
         raise NotImplementedError
 
-    async def install(
-        self,
-        inverted_roles: tuple[str, ...] = (),
-        measurement_delays_us: Mapping[str, float] | None = None,
-        level_trims_db: Mapping[str, float] | None = None,
-    ) -> str:
+    async def install(self) -> str:
         """Install the graph and return its fingerprint.
 
-        Flips, delays and trims are install-time: the fingerprint must name
-        the graph the stimulus actually played through.
         The fingerprint is provenance, never a gate — a host that cannot name
         the graph returns ``""``. May raise; the session then treats nothing as
         installed and still calls :meth:`restore`.

@@ -29,23 +29,15 @@ _TEMPORARY_GRAPH_DESCRIPTION = "jts-temporary-measurement:"
 
 __all__ = ["MeasurementSessionGraph", "SessionGraphError", "temporary_graph_anchor"]
 
-#: ``(inverted_roles, measurement_delays_us, level_trims_db, excited_channels)
-#: -> yaml``. The axes of the measurement VARIANT: each makes a different graph
-#: with a different fingerprint. ``excited_channels`` is ``None`` unless the
-#: take names the one target it plays.
-EmitYaml = Callable[
-    [tuple[str, ...], Mapping[str, float], Mapping[str, float], Mapping[str, int] | None], str
-]
+#: ``excited_channels -> yaml``: ``None`` unless the take names the one target it plays.
+EmitYaml = Callable[[Mapping[str, int] | None], str]
 EmitScopedYaml = Callable[[str, str, Mapping[str, int], tuple[str, ...]], str]
-#: ``(scope, candidate, branch pair, cleared layers, inverted_roles, delays,
-#: level trims)`` — what makes one graph variant distinct from another, and
-#: therefore what the emit cache is keyed by. The branch pair and the cleared
-#: layers belong here: two takes of one session can play one candidate
-#: through different target pairs, or with different layers cleared.
-_VariantKey = tuple[
-    str, str, tuple[tuple[str, int], ...], tuple[str, ...], tuple[str, ...],
-    tuple[tuple[str, float], ...], tuple[tuple[str, float], ...],
-]
+#: ``(scope, candidate, branch pair, cleared layers)`` — what makes one graph
+#: variant distinct from another, and therefore what the emit cache is keyed by.
+#: The branch pair and the cleared layers belong here: two takes of one session
+#: can play one candidate through different target pairs, or with different
+#: layers cleared.
+_VariantKey = tuple[str, str, tuple[tuple[str, int], ...], tuple[str, ...]]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
 ConfirmLive = Callable[[Any, str], Awaitable[None]]
@@ -182,29 +174,17 @@ class MeasurementSessionGraph:
         self._branch_channels = channels
         self._cleared_layers = tuple(cleared_layers)
 
-    def graph_yaml(
-        self,
-        inverted_roles: tuple[str, ...] = (),
-        measurement_delays_us: Mapping[str, float] | None = None,
-        level_trims_db: Mapping[str, float] | None = None,
-    ) -> str:
+    def graph_yaml(self) -> str:
         """Emit and prove each selected graph once; cache its submitted text."""
-        delays = dict(measurement_delays_us or {})
-        trims = dict(level_trims_db or {})
-        if self._scope != GRAPH_SCOPE_DRIVERS and (inverted_roles or delays or trims):
-            raise SessionGraphError("graph overlays require drivers scope")
         key = (
             self._scope, self._candidate_id,
             tuple(sorted(self._branch_channels.items())),
             self._cleared_layers,
-            inverted_roles,
-            tuple(sorted(delays.items())),
-            tuple(sorted(trims.items())),
         )
         cached = self._yaml.get(key)
         if cached is None:
             if self._scope == GRAPH_SCOPE_DRIVERS:
-                cached = self._emit(inverted_roles, delays, trims, self._branch_channels or None)
+                cached = self._emit(self._branch_channels or None)
             else:
                 assert self._emit_scoped is not None
                 cached = self._emit_scoped(self._scope, self._candidate_id, self._branch_channels,
@@ -217,31 +197,24 @@ class MeasurementSessionGraph:
             raise SessionGraphError("no measurement graph is installed")
         return self._submitted_yaml.get(self._installed_yaml, self._installed_yaml)
 
-    async def install(
-        self,
-        inverted_roles: tuple[str, ...] = (),
-        measurement_delays_us: Mapping[str, float] | None = None,
-        level_trims_db: Mapping[str, float] | None = None,
-    ) -> str:
+    async def install(self) -> str:
         """Install the measurement graph, or prove the installed one is still it.
 
         Returns the fingerprint of the graph the next stimulus will play
         through. Idempotent: called before every routed stimulus, it costs a
         liveness proof when nothing moved and a reload when something did.
 
-        ``inverted_roles`` picks the polarity VARIANT (R-1). A swap this session
-        asked for and a stomp by a concurrent DSP writer are independent facts
-        and are logged apart, so a walk alternating normal and inverted captures
-        does not report a concurrent writer on every stimulus. A swap therefore
-        still asks the liveness question rather than assuming the answer.
+        A variant swap this session asked for and a stomp by a concurrent DSP
+        writer are independent facts and are logged apart, so a walk that moves
+        between graphs does not report a concurrent writer on every stimulus. A
+        swap therefore still asks the liveness question rather than assuming the
+        answer.
 
         **May raise** :class:`SessionGraphError`, and the caller treats that as
         "nothing new was installed" — :meth:`restore` stays able to put back
         whatever an earlier install displaced.
         """
-        yaml_text = self.graph_yaml(
-            inverted_roles, measurement_delays_us, level_trims_db,
-        )
+        yaml_text = self.graph_yaml()
         cam = self._cam_factory()
 
         if self._installed_yaml == yaml_text and await self._is_live(cam, yaml_text):
@@ -274,17 +247,6 @@ class MeasurementSessionGraph:
                 fingerprint=_fingerprint(yaml_text),
                 graph_scope=self._scope,
                 candidate_id=self._candidate_id,
-                inverted_roles=",".join(inverted_roles),
-                measurement_delays_us=",".join(
-                    f"{role}:{us:g}"
-                    for role, us in sorted((measurement_delays_us or {}).items())
-                ),
-                # Named on the line that says which graph went in, because a
-                # level match is otherwise invisible in a fingerprint.
-                measurement_level_trims_db=",".join(
-                    f"{role}:{db:g}"
-                    for role, db in sorted((level_trims_db or {}).items())
-                ),
             )
             await self._load(cam, yaml_text)
             self._installed_yaml = yaml_text

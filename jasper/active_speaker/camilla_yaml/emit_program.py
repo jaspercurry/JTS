@@ -44,7 +44,6 @@ from .filters import (
 )
 from .gates import (
     PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE,
-    _assert_measurement_delays_bound,
     _assert_program_graph_proven,
     _assert_tweeter_crossover_hp_satisfies_floor,
     _assert_tweeter_outputs_protected,
@@ -53,7 +52,6 @@ from .gates import (
 from .pipeline import (
     _emit_commissioning_pipeline,
     _emit_role_routed_mixer,
-    _validated_measurement_trims,
     program_channel_count,
 )
 from .topology import _output_count
@@ -157,9 +155,6 @@ def emit_active_speaker_program_config(
     limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
-    inverted_roles: Sequence[str] = (),
-    measurement_delays_us: Mapping[str, float] | None = None,
-    measurement_level_trims_db: Mapping[str, float] | None = None,
     parked_target_ids: Collection[str] = (),
     out_path: str | Path | None = None,
 ) -> str:
@@ -173,24 +168,6 @@ def emit_active_speaker_program_config(
     non-positive, and stays static (no reload mid-program). The
     protected-neutral shape omits configured crossover, delay, linearization,
     bass, Room and preference filters.
-
-    ``inverted_roles``, ``measurement_delays_us`` and
-    ``measurement_level_trims_db`` are parameters of THIS measurement emitter
-    and of nothing else: the applied and baseline emitters take their per-driver
-    delay and gain from the profile's ``corrections`` and cannot reach these, so
-    a swept coordinate can never leak into a graph a household plays. Empty or
-    ``None`` keeps every existing program byte-identical.
-
-    * ``inverted_roles`` is level-neutral — see :func:`_emit_role_routed_mixer`.
-    * ``measurement_delays_us`` reaches the YAML through a single
-      :func:`~jasper.audio_routes.camilla_emit.fmt` pass, the same formatter
-      :func:`~jasper.active_speaker.delay_graph.quantized_delay_ms` is
-      implemented as, so a proof recomputing from the same ``delay_us`` agrees
-      exactly. Delays ride ahead of the protection sections; a pure delay
-      commutes, so the position changes no magnitude.
-    * ``measurement_level_trims_db`` lands on ONE seam, the role-routed mixer's
-      per-source gain — the per-output commissioning gain is deliberately not
-      also touched, or one decision would be applied twice. Attenuation only.
 
     Two fail-closed gates run before the graph can leave: a build-time proof
     that the selected tweeter HP satisfies the declared floor, and
@@ -293,54 +270,23 @@ def emit_active_speaker_program_config(
         audible_gain_db=0.0,
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
-        measurement_delays_us=measurement_delays_us,
     )
-    level_trims = _validated_measurement_trims(preset, measurement_level_trims_db)
     mixer_yaml = _emit_role_routed_mixer(
         preset, role_channels,
         apply_region_polarity=protection_sections_by_role is None,
-        inverted_roles=inverted_roles,
-        level_trims_db=level_trims,
     )
     pipeline_yaml = _emit_commissioning_pipeline(
         preset,
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
-        measurement_delay_roles=frozenset(measurement_delays_us or ()),
         capture_channels=program_channels,
     )
-    metadata_comments = [
+    metadata_yaml = "\n".join([
         f"# preset_id={preset.preset_id}",
         f"# role_channels={dict(sorted(role_channels.items()))}",
         f"# program_channels={program_channels}",
         f"# filter_mode={filter_mode}",
-        # The graph SAYS which coordinate it carries, so a record naming it by
-        # fingerprint reads without reconstructing the Delay filter body.
-        # Emitted ONLY when there is one: an unconditional line would change the
-        # bytes — and so the fingerprint — of every CHECK and MEASURE graph.
-        *(
-            [
-                "# measurement_delays_us="
-                + repr(dict(sorted(measurement_delays_us.items())))
-            ]
-            if measurement_delays_us
-            else []
-        ),
-        # On the delay line's terms: emitted ONLY when a level match is
-        # declared. The numbers come from the SAME validated mapping the mixer
-        # gains did, so the graph states the trims it actually carries.
-        *(
-            ["# measurement_level_trims_db=" + repr(dict(sorted(level_trims.items())))]
-            if level_trims
-            else []
-        ),
-    ]
-    if inverted_roles:
-        # Emitted only when a branch is actually flipped, so a non-inverted emit
-        # stays byte-identical; the graph then SAYS which branch carries the
-        # reverse-null, beside the fingerprint a record names it by.
-        metadata_comments.append(f"# inverted_roles={sorted(set(inverted_roles))}")
-    metadata_yaml = "\n".join(metadata_comments)
+    ])
 
     if enable_rate_adjust is None:
         enable_rate_adjust = resolve_enable_rate_adjust(playback_device)
@@ -384,9 +330,6 @@ pipeline:
     _assert_program_graph_proven(
         yaml, preset, min_corner_hz=protective_hp_min_corner_hz,
         tweeter_hp_name=tweeter_hp_name,
-    )
-    _assert_measurement_delays_bound(
-        yaml, measurement_delays_us, role_channels=role_channels, preset=preset,
     )
 
     if out_path is not None:
