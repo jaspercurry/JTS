@@ -25,7 +25,6 @@ import math
 import re
 from pathlib import Path
 
-from jasper.sound import build_sound_filters
 from jasper.platform.biquad import (
     GAINLESS_BIQUAD_TYPES,
     FilterSpec,
@@ -39,7 +38,7 @@ from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec as _emit_
 import numpy as np
 import pytest
 
-from jasper.sound.profile import CUT_MAX_Q, ParametricBand, SoundProfile
+from jasper.sound.profile import CUT_MAX_Q, ParametricBand, SoundProfile, build_sound_filters
 
 FIXTURE = json.loads(
     (Path(__file__).parent / "fixtures" / "peq_response_fixture.json").read_text()
