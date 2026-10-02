@@ -2177,7 +2177,8 @@ def _finds_its_level(door, plan):
 async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, partial, rung_spl):
     """A ladder holds the room once and finishes each pose. Its first rung
     probes and finds its level, and each rung plays its step under it at every
-    pose, a stated ladder too (ADR-0403 §4)."""
+    pose, a stated ladder too (ADR-0403 §4). A rung's retake plays again in
+    place, up to its pose's retries, with no new placement (#6113)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
@@ -2204,13 +2205,15 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     document = packet.to_dict()
     rungs = [(0, _LADDER_FOUND_DB)] if partial == "stop" else [
         (pose, _LADDER_FOUND_DB + step) for pose in (0, 20) for step in (0.0, -5.0, -10.0)]
-    assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [(0, 0.0), *rungs]
+    statuses = ["partial" if partial and (partial == "all" or index == (5 if partial == "last" else 0)) else "complete"
+                for index in range(len(rungs))]
+    replays = 0 if partial == "stop" else MAX_EXTRA_ATTEMPTS_PER_POSITION
+    assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [
+        (0, 0.0), *(rung for rung, status in zip(rungs, statuses) for _ in range(1 + replays * (status == "partial")))]
     assert fakes.play.calls[0]["spec"].level_probe
     assert len(gate.grants) == (1 if partial == "stop" else 2)
     assert sum(result.mic_moves for result in results) == len(gate.grants)
     assert all(result.finalized for result in results)
-    statuses = ["partial" if partial and (partial == "all" or index == (5 if partial == "last" else 0)) else "complete"
-                for index in range(len(rungs))]
     assert [run["status"] for run in document["runs"]] == statuses
     assert document["status"] == ("partial" if partial in ("all", "stop") else "complete")
     issues = document["schedule"]["issues"]
@@ -2227,6 +2230,39 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     assert len({result.run_id for result in results}) == len(rungs)
     assert fakes.graph.restores == 1
     assert box.volume_db == entry_volume
+
+
+async def test_a_ladder_rungs_operator_retake_plays_in_place_then_its_other_takes(tmp_path, box, rung_spl):
+    """A rung's operator retake plays again where the ladder holds the microphone,
+    and the rung's other takes still play (#6113 bug 10, trial `e1be550bff88`)."""
+    from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
+
+    request = _walk([0], candidates=("base",))
+    request = replace(request, repeats=2, stops=tuple(replace(stop, purpose="bass", purposes=("bass",))
+                                                      for stop in request.stops))
+    ladder = preflight_levels(replace(request, levels=(-28.0, -23.0)), ready_facts(request))
+    fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
+    packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
+    retakes = [TakeVerdict(False, fault=REASON_ANCHOR_AMBIGUOUS, next="fix_and_retake", charge="operator")]
+
+    def prepare(plan):
+        manifest = RunManifest(f"run-{len(manifests)}", packet)
+        manifests.append(manifest)
+        run = _ladder_run(fakes, manifest, _finds_its_level(_run_door(tmp_path, box, fakes, manifest), plan),
+                          TakeVerdict(True), _summed_captures(plan))
+        if len(manifests) == 1:
+            return run
+        return replace(run, assessor=lambda *args, **kwargs: retakes.pop() if retakes else run.assessor(*args, **kwargs))
+
+    hold = _run_door(tmp_path, box, fakes, RunManifest("unused", _Store(fakes.records))).hold
+    await run_levels(ladder, hold=hold, prepare=prepare, gate=gate, aborts=_ABORTS)
+    await packet.finish()
+    second = _LADDER_FOUND_DB - 5.0
+    assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [
+        (0, 0.0), (0, _LADDER_FOUND_DB), (0, _LADDER_FOUND_DB), (0, second), (0, second), (0, second)]
+    assert [(take["index"], take["attempt"]) for take in manifests[1].takes] == [(1, 1), (1, 2), (2, 1)]
+    assert [run["status"] for run in packet.to_dict()["runs"]] == ["complete", "complete"]
+    assert len(gate.grants) == 1
 
 
 @pytest.mark.parametrize("purpose", ["room", "speaker"])

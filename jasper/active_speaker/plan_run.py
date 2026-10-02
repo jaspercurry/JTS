@@ -619,10 +619,9 @@ async def _run(
                         continue
                     manifest.reason = retry.fault or REASON_RETRIES_SPENT
                     break
+                # A run with no gate is a ladder's rung: its ladder holds the placement, so the
+                # take plays again where it is (#6113).
                 if retry.next == "fix_and_retake":
-                    if gate is None:
-                        manifest.reason = retry.fault or "placement_required"
-                        break
                     if probe_at is not None and session is not None:
                         # The fader sits at the probe fader only while the probe plays (ADR-0403 §4).
                         await window.aclose()
