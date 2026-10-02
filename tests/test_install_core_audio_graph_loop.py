@@ -852,7 +852,7 @@ require_outputd_ready() {{
 _COUPLING_AUTO = "jasper-fanin-coupling-auto.service"
 
 
-def test_coupling_install_waits_use_the_incoming_owner_bound(tmp_path):
+def test_install_reconcile_waits_use_the_incoming_owner_bounds(tmp_path):
     stale_package = tmp_path / "jasper"
     stale_package.mkdir()
     (stale_package / "__init__.py").write_text("raise AssertionError('stale package')\n")
@@ -868,9 +868,11 @@ install_run_bounded() {{ echo "bounded $*" >> "{tmp_path}/calls.log"; }}
 python3() {{ command python3 -S "$@"; }}
 JASPER_SYSTEM_PYTHON=python3
 fence_fanin_coupling
-# The second consumer must use the same loaded bound.
 JASPER_SYSTEM_PYTHON=false
 resolve_fanin_coupling_default
+function /usr/bin/timeout() {{ echo "timeout $*" >> "{tmp_path}/calls.log"; }}
+rm() {{ :; }}
+reapply_source_intent
 release_fanin_coupling_fence
 """
     result = subprocess.run(
@@ -880,16 +882,18 @@ release_fanin_coupling_fence
     assert result.returncode == 0, result.stderr
     bound = units.unit_action_timeout_sec(units.USB_COUPLING_UNIT, "start")
     calls = (tmp_path / "calls.log").read_text().splitlines()
-    assert [call for call in calls if call.startswith(("flock -w ", "bounded "))] == [
+    assert [call for call in calls if call.startswith(("flock -w ", "bounded ", "timeout "))] == [
         f"flock -w {bound:g} 8",
         f"bounded {bound:g} -- /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile --auto --reason install",
+        f"timeout --foreground --kill-after=5s {units.RECONCILE_BROKER_TIMEOUT_SECONDS:g}s "
+        "/opt/jasper/.venv/bin/jasper-source-intent-reconcile --reason install --invalidate-status-before",
     ]
 
 
 @pytest.mark.parametrize(
-    "function", ("park_audio_clients_for_core_graph_restart", "resolve_fanin_coupling_default")
+    "function", ("park_audio_clients_for_core_graph_restart", "resolve_fanin_coupling_default", "reapply_source_intent")
 )
-def test_coupling_bound_read_failure_stops_install_before_graph_actions(tmp_path, function):
+def test_reconcile_bound_read_failure_stops_install_before_graph_actions(tmp_path, function):
     calls = tmp_path / "calls.log"
     calls.touch()
     script = f"""{_shim_preamble(tmp_path)}
@@ -1001,7 +1005,7 @@ trap install_exit_cleanup EXIT
                     *_PARK_RECORD_CHAIN,
                     "restart_core_camilla_after_dsp_reconcile",
                     "fence_fanin_coupling",
-                    "_load_fanin_coupling_pass_bound",
+                    "_load_reconcile_pass_bounds",
                     "release_fanin_coupling_fence",
                 ),
                 extra_shims=shims,
