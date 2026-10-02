@@ -917,13 +917,6 @@ def list_bundles(root: Path, *, limit: int = 20) -> list[dict[str, Any]]:
     return entries
 
 
-def latest_bundle(root: Path) -> dict[str, Any] | None:
-    """The single newest parseable bundle under ``root``, or ``None``."""
-
-    found = list_bundles(root, limit=1)
-    return found[0] if found else None
-
-
 def enforce_retention(
     root: Path,
     *,

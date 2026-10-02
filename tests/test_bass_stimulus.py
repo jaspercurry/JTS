@@ -24,7 +24,7 @@ from jasper.active_speaker.measurement_analysis import BankedMeasurement
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_evidence, bass_take
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, compile_tuning_graph
 from jasper.active_speaker.measurement_programs import (
-    POSE_KIND_BEARING, POSE_KIND_SEAT, gate_exemption, load_presets, preset, run_preset, validated_capture_purpose,
+    POSE_KIND_BEARING, POSE_KIND_SEAT, available_presets, gate_exemption, preset, run_preset, validated_capture_purpose,
 )
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.profile import ActiveSpeakerPreset
@@ -105,7 +105,7 @@ def _replay(bass, raw):
 
 
 def test_registry_stimulus_reaches_the_capture_spec():
-    rows = load_presets().values()
+    rows = [preset(name) for name in available_presets()]
     assert {row.preset for row in rows if row.stimulus is not None} == {"bass/axis", "nearfield/each"}
     bass, = (row for row in rows if row.purpose == "bass")
     assert bass.layouts == ("bass_axis", "seat_cloud", "room_quick", "seat_express")

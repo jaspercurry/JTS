@@ -20,10 +20,6 @@ import numpy as np
 
 from jasper.audio_measurement.band_ladders import OCTAVE_BAND_CENTERS_HZ as OCTAVE_BAND_CENTERS_HZ, OCTAVE_BANDS_HZ
 
-# 1/6-octave for diagnostics, 1/3-octave for pass/fail.
-DEFAULT_DIAG_FRACTION = 6
-DEFAULT_SPEC_FRACTION = 3
-
 MIN_BAND_BINS = 4
 
 # Upper bound on the analysis grid; a finer canonical grid is block-averaged in linear power

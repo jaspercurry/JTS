@@ -346,8 +346,6 @@ VERIFY_NOTCH_EXCLUSION_DB = 12.0
 # different question. `CrossoverCandidate.flatness_improvement_db` is an
 # unrelated Layer-1b metric, not a spec claim.
 
-ANALYSIS_KIND = "jts_program_analysis"
-
 
 @dataclass(frozen=True)
 class MeasurementGeometry:

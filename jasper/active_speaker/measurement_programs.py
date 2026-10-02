@@ -641,11 +641,6 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
     return MappingProxyType(presets), MappingProxyType(layouts)
 
 
-def load_presets(path: str | Path | None = None) -> Mapping[str, Preset]:
-    """Load and validate the bundled plan, or a plan at ``path``."""
-    return _load_presets(path)[0]
-
-
 _PRESETS, _LAYOUTS = _load_presets()
 
 

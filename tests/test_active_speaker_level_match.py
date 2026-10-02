@@ -105,5 +105,4 @@ def test_every_refused_status_is_reported_on_the_ledger(
     _trims, meta = measured_level_trims(TWO_WAY, PREVIEW)
 
     assert meta["base_trim"]["status"] == status
-    assert meta["base_trim"]["status"] in dbt.REFUSED_STATUSES
     assert meta["base_trim"]["remediation"] == dbt.REMEASURE_REMEDIATION

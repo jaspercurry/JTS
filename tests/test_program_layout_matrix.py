@@ -19,7 +19,7 @@ from jasper.active_speaker.measurement_emit import (
     MeasurementGraphProfile, compile_tuning_graph, emit_measurement_graph, measurement_graph_evidence,
 )
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, load_presets, prescription_sections, programs_for_topology, run_preset, trial_preset,
+    RUNNABLE_PROGRAMS, available_presets, prescription_sections, programs_for_topology, run_preset, trial_preset,
 )
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.preflight import preflight
@@ -36,8 +36,9 @@ from tests.test_rear_output_foundation import _rear_document, _rear_pair
 
 LAYOUTS = ('one_way_passive', 'two_way_active', 'three_way_active', 'cardioid')
 # Every preset at every layout it offers.
-ROWS = {f'{preset_id} {layout}': run_preset(preset_id, layout) for preset_id, row in load_presets().items()
-        if row.purpose in RUNNABLE_PROGRAMS for layout in row.layouts}
+ROWS = {f'{preset_id} {layout}': run_preset(preset_id, layout)
+        for preset_id in available_presets() if run_preset(preset_id).purpose in RUNNABLE_PROGRAMS
+        for layout in run_preset(preset_id).layouts}
 LEVEL_DB = -23.0
 SENSITIVITIES = {'woofer': 84.0, 'tweeter': 109.2, 'mid': 90.0, 'full_range': 87.0}
 _REAR = {'rear/express', 'rear/seat', 'rear/pair'}

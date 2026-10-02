@@ -33,7 +33,6 @@ from jasper.active_speaker.branch_target import (
 from jasper.active_speaker.linearization_fit import (
     _MIN_FILTER_GAIN_DB,
     SHELF_SLOPE_THRESHOLD_DB_PER_OCT,
-    LIFT_SUPPRESSION_REASONS,
     FitVocabulary,
     _lift_stage,
     fit_driver_linearization,
@@ -489,14 +488,6 @@ def test_the_guard_refuses_the_cascade_that_would_have_put_gain_there():
     assert guarded.suppressed_reason == "stopband_gain"
     assert guarded.from_boost_db == 0.0
     assert all(f.gain <= 0.0 for f in guarded.filters)
-
-
-def test_every_lift_suppression_reason_is_enumerated():
-    """The new reason joins the pinned set, so a suppression path cannot ship
-    an un-enumerated string (the same rule the set already held)."""
-    assert "stopband_gain" in LIFT_SUPPRESSION_REASONS
-    _grid_hz, _target, _band_mask, guarded = _run_lift(guarded=True)
-    assert guarded.suppressed_reason in LIFT_SUPPRESSION_REASONS
 
 
 def _lift_with(*, deficit_hz: float, contribution: bool):

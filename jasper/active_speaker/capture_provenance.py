@@ -30,13 +30,6 @@ from jasper.platform.volume_latch import fader_matches
 
 logger = logging.getLogger(__name__)
 
-#: Transient per-driver routing graph, loaded under the DSP writer lock for
-#: one sweep and restored after.
-GRAPH_KIND_PROGRAM_ROUTING = "program_routing"
-
-#: No graph loaded: the standing graph is the system under test.
-GRAPH_KIND_APPLIED = "applied"
-
 
 @dataclass(frozen=True)
 class CaptureProvenance:

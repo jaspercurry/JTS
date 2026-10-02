@@ -47,15 +47,6 @@ STATUS_DECLARATION_CHANGED = "declaration_changed"
 STATUS_ROLES_CHANGED = "roles_changed"
 STATUS_UNUSABLE = "unusable"
 
-#: A trim was banked and this speaker is NOT using it. ``absent`` is not one of
-#: them: a box that never measured is the ordinary case, while every member here
-#: is a measurement being discarded and must be said out loud.
-REFUSED_STATUSES = frozenset({
-    STATUS_DECLARATION_CHANGED,
-    STATUS_ROLES_CHANGED,
-    STATUS_UNUSABLE,
-})
-
 #: The single remediation string, in every surface that refuses a banked trim.
 REMEASURE_REMEDIATION = (
     "measure and apply this speaker's crossover again to re-bank the trim"

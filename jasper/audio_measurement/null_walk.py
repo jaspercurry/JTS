@@ -15,7 +15,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field
-from typing import Any, Literal, Mapping, TypeAlias
+from typing import Any, Mapping
 
 from jasper.audio_measurement.fingerprinted_record import FingerprintedRecord
 from jasper.platform.json_fields import canonical_json_bytes, freeze_json, require_finite
@@ -24,9 +24,6 @@ MIN_STEP_US = 50.0
 MAX_STEP_US = 100.0
 DEFAULT_SOUND_SPEED_M_S = 343.0
 MAX_DSP_DELAY_US = 20_000.0
-
-DelayWalkScope: TypeAlias = Literal["active_crossover", "bass_management"]
-DELAY_WALK_SCOPES: frozenset[str] = frozenset({"active_crossover", "bass_management"})
 
 _SPEC_KIND = "jts_null_walk_spec"
 _SPEC_SCHEMA_VERSION = 2

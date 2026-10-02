@@ -123,15 +123,6 @@ _HF_AGREEMENT_TIER_SPLIT_HZ: float = 10_000.0
 # because that module imports this one.
 _HF_MIN_OCCURRENCES: int = 3
 
-# Closed vocabulary of CD-horn continuation suppression reasons. Pinned by a
-# test.
-HF_SUPPRESSION_REASONS: frozenset[str] = frozenset({
-    "insufficient_repeats",
-    "repeat_disagreement",
-    "fit_quality",
-    "no_filter_budget",
-})
-
 # Max magnitude error (dB) tolerated between the realized cut-domain cascade
 # and the desired cut_target over [onset, ceiling]; above it the stage is
 # suppressed (reason="fit_quality"). 2.0 rather than 1.5: the tighter bar
@@ -1596,18 +1587,6 @@ def _lift_stage(
         boost_excluded_residual=tuple(residual),
         boost_evidence_drops=tuple(evidence_drops),
     )
-
-
-#: Every ``lift_suppressed_reason`` a fit can carry — pinned by a test so a new
-#: suppression path cannot ship an un-enumerated reason string.
-LIFT_SUPPRESSION_REASONS: frozenset[str] = frozenset({
-    "no_filter_budget",
-    "no_realizable_boost",
-    "exceeds_envelope",
-    "stopband_gain",
-    "boost_above_measured_target",
-    "boost_excluded_band",
-})
 
 
 def _limit_giveback(

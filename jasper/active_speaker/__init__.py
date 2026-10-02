@@ -31,7 +31,6 @@ _LAZY_ATTRS: dict[str, str] = {
     "PATH_SAFETY_EVIDENCE_KIND": "path_safety",
     "STAGED_STARTUP_CONFIG_KIND": "staging",
     "SpeakerBaselineProfile": "profile",
-    "TONE_PLAN_KIND": "tone_plan",
     "abort_ramp": "commission_ramp",
     "audible_outputs_for_role": "camilla_yaml",
     "build_crossover_preview": "crossover_preview",
