@@ -79,7 +79,7 @@ from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFa
 from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import (
-    _REAR_SUM_DB, _TUNE_CHARGE_DB, _TUNE_FLOOR_DB, _cardioid_trial, _unprobed_plans, ready_facts,
+    _REAR_SUM_DB, _cardioid_trial, _unprobed_plans, ready_facts,
 )
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
@@ -1253,7 +1253,8 @@ def test_each_graph_of_a_close_set_probes_once():
     captures = plan_run.prepare_plan_captures(request)
 
     behind = [(ac.candidate_identity(capture.stop.candidate_id), capture.spec.level_probe, start)
-              for capture, start in zip(captures, ac.level_sets([capture.stop for capture in captures]))
+              for capture, start in zip(captures, ac.level_sets([capture.stop for capture in captures],
+                                                                [capture.spec.graph_scope for capture in captures]))
               if capture.stop.pose.kind == "behind"]
     firsts = {candidate: index for index, (candidate, _, _) in reversed(list(enumerate(behind)))}
     assert [probe for _, probe, _ in behind] == [index in firsts.values() for index in range(len(behind))]
@@ -1287,7 +1288,8 @@ def test_a_branch_run_of_two_candidates_shares_its_drivers_probes():
     captures = plan_run.prepare_plan_captures(request, roles_bands=roles)
 
     assert [capture.spec.level_probe for capture in captures] == [True, False]
-    assert ac.level_sets([capture.stop for capture in captures]) == (0, 0)
+    assert ac.level_sets([capture.stop for capture in captures],
+                         [capture.spec.graph_scope for capture in captures]) == (0, 0)
 
 
 def test_a_cardioid_on_off_trial_behind_the_cabinet_lands_each_graph_at_80_db(monkeypatch, tuning_profile):
@@ -1635,21 +1637,20 @@ def test_a_run_whose_first_spot_is_a_seat_lands_it_under_74_db(monkeypatch):
 
 
 @pytest.mark.parametrize(("tweeter_cap", "chain_db", "timing_gain", "margin_db", "fader", "timing_db", "pair_db"), [
-    (-6.0, 100.0, 0.0, 0.0, -9.0, 79.0, 79.0), (-6.0, 100.0, 6.0, 0.0, -5.0, 77.0, 83.0),
+    (-6.0, 100.0, 0.0, 0.0, -9.0, 79.0, 79.0), (-6.0, 100.0, 6.0, 0.0, -3.0, 79.0, 79.0),
     (-6.0, 100.0, 6.0, 0.0, -3.0, 79.0, None), (-6.0, 100.0, 0.0, 7.0, -12.0, 76.0, 76.0),
     (-20.0, 97.0, 0.0, 9.0, -11.0, 74.0, 74.0)],
-    ids=["under the stop", "backoff", "backoff on one graph", "lift and rise", "lift and rise over a take the cap holds"])
+    ids=["under the stop", "backoff, a pair that probes its graphs", "backoff on one graph", "lift and rise",
+         "lift and rise over a take the cap holds"])
 def test_the_run_fader_comes_down_by_what_its_margins_pass_the_stop_by(
         monkeypatch, tweeter_cap, chain_db, timing_gain, margin_db, fader, timing_db, pair_db):
     """A speaker run probes its timing take, which lands 1 dB under 80 dB, or at
     the tweeter's cap when that holds it lower. Its landed reading, the 2 dB
-    tolerance, the lift and rise its other takes may add, and, when the timing
-    graph plays 6 dB over the level reference so that take backs off 6 dB, the
-    6 dB a trial's A/B pair on the candidates' own graphs plays over it: the
-    takes come down only by how far their sum passes the 85 dB stop, so the pair
-    reads 83 dB, not 85. A run whose summed takes all play the timing graph adds
-    no backoff. A take the cap holds at the output comes down too, as the fader
-    drops far enough to free it (ADR-0403 §4)."""
+    tolerance and the margins stated for its other takes bring the takes down
+    only by how far their sum passes the 85 dB stop. A trial's A/B pair probes its
+    own graphs there (ADR-0408), so the timing graph's own backoff adds nothing.
+    A take the cap holds at the output comes down too, as the fader drops far
+    enough to free it (ADR-0403 §4)."""
     request = ac.request_for_preset(run_preset("speaker", "speaker_mark"),
                                     candidates=("base", "trial") if pair_db is not None else ())
 
@@ -1789,62 +1790,97 @@ def test_a_first_seat_spot_reads_at_most_76_db_over_a_lift(monkeypatch):
     assert read == {"banked-base": pytest.approx(68.0, abs=0.02), "trial": pytest.approx(74.0, abs=0.02)}
 
 
-@pytest.mark.parametrize(("program", "layout", "chain_db", "bound_db", "charge_db"), [
-    ("speaker", "speaker_mark", {"bearing": 100.0}, 85.0, 6.0), ("room", "seat_express", {"seat": 94.0}, 76.0, 0.0)],
-    ids=["timing probe at the mark", "candidate probe at a seat"])
-def test_an_ab_trial_over_a_room_boost_lands_under_its_bound(monkeypatch, tuning_profile, program, layout, chain_db,
-                                                             bound_db, charge_db):
-    """The timing take's graph folds the applied tune's program charge into its
-    trims and drops the room layer, so an A/B trial's takes on the candidates' own
-    graphs play over it by a 6 dB room boost. Preflight's margin counts that
-    charge, and the run comes down so the pair reads under the 85 dB stop. A run
-    probed on a candidate's own graph plays that boost in its probe, so it adds
-    no charge, and its first seat spot reads under 76 dB (ADR-0403 §4, ADR-0385)."""
-    request = ac.request_for_preset(run_preset(program, layout), candidates=("base", "trial"))
-    report = preflight_levels(request, ready_facts(request, candidates={"trial": _room_candidate(tuning_profile)},
-                                                   applied_program_charge_db=6.0))
-    assert not report.blocking and report.rung_admission["driver_excess_db"] == charge_db
+def test_an_ab_trial_over_a_room_boost_lands_under_76_db_at_its_first_seat(monkeypatch, tuning_profile):
+    """An A/B trial's takes on the candidates' own graphs play a 6 dB room boost.
+    A run probed on a candidate's own graph plays that boost in its probe, so it
+    adds no margin, and its first seat spot reads under 76 dB (ADR-0403 §4,
+    ADR-0385)."""
+    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
+    report = preflight_levels(request, ready_facts(request, candidates={"trial": _room_candidate(tuning_profile)}))
+    assert not report.blocking and report.rung_admission["run_margin_db"] == 0.0
 
     result, _, _ = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db=chain_db,
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
         graph_db=dict.fromkeys((("candidate", "banked-base"), ("candidate", "trial")), 6.0),
         margin_db=report.rung_admission["run_margin_db"]))
 
     read = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in _takes(result.joined())
-            if take["selected"] and take["phase"] in ("timing", "lateral")]
-    assert result.status == "complete" and len(read) == len(request.stops) + (program == "speaker")
-    assert max(read) < bound_db
+            if take["selected"] and take["phase"] == "lateral"]
+    assert result.status == "complete" and len(read) == len(request.stops) and max(read) < 76.0
 
 
-@pytest.mark.parametrize(("program", "layout", "chain_db", "rear", "over_db", "bound_db"), [
-    ("speaker", "speaker_mark", {"bearing": 100.0}, True, 3.32 + _REAR_SUM_DB, 85.0),
-    ("room", "seat_express", {"seat": 94.0}, False, _REAR_SUM_DB, 76.0)],
-    ids=["a timing probe at the mark", "a seat probe that mutes the rear"])
-def test_a_cardioid_ab_trial_lands_under_its_bound(monkeypatch, tuning_profile, program, layout, chain_db, rear,
-                                                   over_db, bound_db):
-    """A cardioid's candidate graphs play the front and rear woofers in phase where
-    the timing take, or a probe graph with the rear muted, plays the front woofer
-    alone, and over the timing take the test tune's woofer plays 3.3 dB more
-    besides. Preflight's margin counts both, so every take of an A/B trial lands
-    under the 85 dB stop at the mark, and at or under 76 dB at the first seat spot
-    (ADR-0403 §4, ADR-0385)."""
-    request = ac.request_for_preset(run_preset(program, layout), candidates=("base", "trial"))
-    report = preflight_levels(request, ready_facts(
-        request, applied_program_charge_db=_TUNE_CHARGE_DB, applied_timing_floor_db=_TUNE_FLOOR_DB,
-        applied_rear_plays=rear, candidates={"trial": _room_candidate(tuning_profile) if rear else _cardioid_trial()}))
+def test_a_cardioid_ab_trial_over_a_probe_that_mutes_the_rear_lands_under_76_db(monkeypatch):
+    """A cardioid trial plays the front and rear woofers in phase where the seat
+    probe's graph mutes the rear. Preflight's margin counts their coherent sum, so
+    every take at the first seat spot reads at or under 76 dB (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
+    report = preflight_levels(request, ready_facts(request, applied_rear_plays=False,
+                                                   candidates={"trial": _cardioid_trial()}))
     assert not report.blocking
 
-    played = (("candidate", "banked-base"), ("candidate", "trial")) if rear else (("candidate", "trial"),)
     result, _, windows = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db=chain_db,
-        graph_db=dict.fromkeys(played, over_db), margin_db=report.rung_admission["run_margin_db"]))
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
+        graph_db={("candidate", "trial"): _REAR_SUM_DB}, margin_db=report.rung_admission["run_margin_db"]))
 
     first = request.stops[0].pose.place
     read = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in _takes(result.joined())
-            if take["selected"] and take["phase"] in ("timing", "lateral")
-            and (program == "speaker" or (take["pose_kind"], take["seat_offset_m"]) == (first[0], first[4]))]
-    assert result.status == "complete" and windows[-1] < windows[0]
-    assert max(read) < bound_db if program == "speaker" else max(read) <= bound_db + 1e-6
+            if take["selected"] and (take["pose_kind"], take["seat_offset_m"]) == (first[0], first[4])]
+    assert result.status == "complete" and windows[-1] < windows[0] and max(read) <= 76.0 + 1e-6
+
+
+def test_a_room_trial_comes_down_by_its_probes_backoff_for_a_graph_at_its_fader(monkeypatch):
+    """A room trial's pair plays at the run's fader, found by the base's probe at
+    the first seat spot. That probe's graph backs off 6 dB, so a take on another
+    graph may play up to 6 dB over it, and the run comes down by that too: the
+    trial reads at most 76 dB there (ADR-0403 §4)."""
+    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
+
+    result, _, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
+        scope_gains={"candidate": dict.fromkeys(("woofer", "tweeter"), 6.0)}, graph_db={("candidate", "trial"): 6.0}))
+
+    read = {take["candidate_id"]: take["capture_integrity"]["spl"]["max_window_db_spl"]
+            for take in _takes(result.joined()) if take["selected"]}
+    assert result.status == "complete" and windows == [0.0, pytest.approx(-8.0, abs=0.02)]
+    assert read == {"banked-base": pytest.approx(68.0, abs=0.02), "trial": pytest.approx(74.0, abs=0.02)}
+
+
+#: jts3's applied bass extension at the smoke test (#6113): a 14.78 dB reserve (ADR-0359).
+_JTS3_BASS = {"linkwitz_transform": {"source_hz": 112.8, "source_q": 1.23, "target_hz": 40.0, "target_q": 0.707},
+              "delta_highpass_hz": 30.0, "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -15.0}
+
+
+@pytest.mark.parametrize(("box", "over_db"), [
+    ("a two-way's room boost", {"banked-base": 6.0, "trial": 6.0}),
+    ("a cardioid tune", {"banked-base": 3.32 + _REAR_SUM_DB, "trial": 3.32 + _REAR_SUM_DB}),
+    ("jts3's bass and rear seed", {"banked-base": 14.78 + _REAR_SUM_DB, "trial": _REAR_SUM_DB})])
+def test_over_a_timing_take_each_candidate_graph_probes_itself(monkeypatch, box, over_db):
+    """A speaker trial's timing take finds the run's fader and plays at its own
+    probe's level, with no margin cut, however much louder the candidates' graphs
+    play: jts3's applied tune adds its 14.78 dB bass reserve and a rear seed, and
+    its trial keeps the tweeter's trim. Each candidate graph's first take at the
+    mark probes that graph, so every take of the pair lands at 80 ± 2 dB (ADR-0408)."""
+    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", "trial"))
+    trial = replace(_cardioid_trial(), role_attenuations_db={"woofer": 0.0, "tweeter": -25.2})
+    report = preflight_levels(request, ready_facts(request, applied_bass_extension=_JTS3_BASS, applied_rear_plays=True,
+                                                   candidates={"trial": trial}))
+    assert not report.blocking and report.rung_admission["run_margin_db"] == 0.0
+
+    result, _, _ = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -25.0}, chain_db={"bearing": 110.0},
+        graph_db={("candidate", name): db for name, db in over_db.items()},
+        margin_db=report.rung_admission["run_margin_db"]))
+
+    takes = _takes(result.joined())
+    timing = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in takes
+              if take["selected"] and take["phase"] == "timing"]
+    pair = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in takes
+            if take["selected"] and take["phase"] == "lateral"]
+    probed = sorted(take["candidate_id"] for take in takes
+                    if take["phase"] == "lateral" and is_level_probe(ExcitationProgram.from_dict(take["program"])))
+    assert result.status == "complete" and probed == ["banked-base", "trial"]
+    assert timing == [pytest.approx(79.0)] and len(pair) == len(request.stops)
+    assert all(78.0 <= db <= 82.0 for db in pair), pair
 
 
 @pytest.mark.parametrize(("chain_db", "kept", "reason"), [(50.0, False, REASON_SNR_FLOOR),

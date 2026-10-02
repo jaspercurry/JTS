@@ -31,7 +31,7 @@ from jasper.runtime.measurement_window import MeasurementWindowError
 from .angle_capture import (
     WALK_COMMISSIONING_STOP_UNSET, WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, LateralWalkRefused,
-    level_sets, resolve_request,
+    level_sets, resolve_request, take_level,
 )
 from .capture_schedule import (
     UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index,
@@ -278,7 +278,7 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
 
 def preview_schedule(request: AngleCaptureRequest, captures: Sequence[PlanCapture], context: Any) -> dict[str, Any]:
     specs = [capture.spec for capture in captures]
-    shared = level_sets([capture.stop for capture in captures])
+    shared = level_sets([capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])
     probed = run_probe_index([(capture.spec.graph_scope, start is not None) for capture, start in zip(captures, shared)])
     if probed is not None:
         specs[probed] = replace(specs[probed], level_probe=True)
@@ -352,7 +352,8 @@ async def run_plan(
     manifest.planned = [_planned_row(index, capture.repeat, capture.stop) for index, capture in enumerate(captures, 1)]
     angle_stops = [capture.stop for capture in captures]
     places = [stop.pose.place for stop in angle_stops]
-    level_starts = level_sets(angle_stops)
+    scopes = [spec.graph_scope for spec in specs]
+    level_starts = level_sets(angle_stops, scopes)
     level = request.level.level_db
     if level is None and session is not None:
         level = session.measurement_level_db
@@ -371,7 +372,8 @@ async def run_plan(
             planned.append(stop)
             if spec is not None:
                 expanded.append((spec, stop, pose_index, stops[offset],
-                                 angle_stops[offset].level if spec.level_probe else None, level_starts[offset]))
+                                 take_level(angle_stops[offset], scope=spec.graph_scope, over_timing="timing" in scopes)
+                                 if spec.level_probe else None, level_starts[offset]))
     manifest.planned = planned
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
                                  [row[3].prompt for row in expanded], [row[3].candidate_id for row in expanded])

@@ -137,14 +137,21 @@ def _stimulus_backoff_db(spec: Any, stimulus_dbfs: float | None) -> float:
     return backoff if stimulus_dbfs is None else max(backoff, BASE_STIMULUS_PEAK_DBFS - stimulus_dbfs)
 
 
+def _reserved_caps(excitation: SessionExcitation, spec: Any) -> dict[str, float]:
+    """Each driver's cap less the dynamic bass boost the take's graph keeps on its
+    output, the cap admission checks it against (ADR-0359)."""
+    reserve = spec.bass_reserve_db or {}
+    return {target: cap - reserve.get(target, 0.0) for target, cap in excitation.caps_dbfs.items()}
+
+
 def _alone_gains_db(excitation: SessionExcitation, spec: Any) -> dict[str, float]:
     """Each branch of a branch take alone at its own level, by the sum's stimulus rule,
-    under the tightest cap of the take's two branches less the bass reserve each output
-    keeps: the ceiling admission holds every channel of the take to (ADR-0407, ADR-0359)."""
+    under the tightest reserved cap of the take's two branches: the ceiling admission
+    holds every channel of the take to (ADR-0407)."""
     if not spec.branch_levels_dbfs:
         return {}
-    reserve = spec.bass_reserve_db or {}
-    ceiling = min(excitation.caps_dbfs[target] - reserve.get(target, 0.0) for target in spec.branch_target_ids)
+    caps = _reserved_caps(excitation, spec)
+    ceiling = min(caps[target] for target in spec.branch_target_ids)
     return {target: back_off_gain(BASE_STIMULUS_PEAK_DBFS - _stimulus_backoff_db(spec, level),
                                   excitation.session_volume_db, ceiling)
             for target, level in zip(spec.branch_target_ids, spec.branch_levels_dbfs)}
@@ -152,7 +159,9 @@ def _alone_gains_db(excitation: SessionExcitation, spec: Any) -> dict[str, float
 
 def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_dbfs: float | None = None, *,
                            safety_profile: Mapping[str, Any], role_targets: Mapping[str, str]) -> ExcitationProgram:
-    excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None)
+    # The sum plays under every driver's reserved cap, so admission refuses none of it (ADR-0408).
+    excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None,
+                         caps_dbfs=_reserved_caps(excitation, spec))
     backoff = _stimulus_backoff_db(spec, stimulus_dbfs)
     if spec.stimulus is not None:
         from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free

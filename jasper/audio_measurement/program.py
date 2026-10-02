@@ -387,6 +387,16 @@ def _canonical_segment(seg: ProgramSegment) -> dict[str, Any]:
     return {key: value for key, value in seg.to_dict().items() if key != "effective_peak_dbfs"}
 
 
+def stimulus_shape_id(program: Mapping[str, Any]) -> str:
+    """A program document's ``stimulus_id`` with no level in it: each segment
+    without its gain. Programs that differ only in how loud they play share it."""
+    return json_fingerprint({
+        **{key: program[key] for key in ("phase", "sample_rate_hz", "channels", "total_samples")},
+        "segments": [{key: value for key, value in segment.items() if key not in ("gain_db", "effective_peak_dbfs")}
+                     for segment in program["segments"]],
+    })
+
+
 def _stimulus_id(
     phase: str,
     sample_rate_hz: int,

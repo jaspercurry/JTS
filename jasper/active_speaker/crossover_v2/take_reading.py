@@ -34,7 +34,7 @@ from jasper.audio_measurement.series_stats import band_change_db, curve_differen
 from jasper.audio_measurement.spatial_combine import octave_bands_hz
 
 from ..prediction_document import CAPTURE_PREDICTION_KIND
-from .measurement_context import capture_basis, compare_capture_basis
+from .measurement_context import SHAPE_FIELDS, compare_capture_basis, shaped_capture_basis
 from .round_captures import PoseCapture, capture_row, select_capture
 
 #: A take read through a window whose trusted band is too narrow to say anything.
@@ -300,8 +300,8 @@ def compare_report(
         "summary": {
             **summary, "same_recording": same_recording,
             "relative_arrival_ms": _number(b.arrival_ms - a.arrival_ms, 3) if same_recording else None,
-            "basis": compare_capture_basis(capture_basis(b.capture.record_document),
-                                           capture_basis(a.capture.record_document)),
+            "basis": compare_capture_basis(shaped_capture_basis(b.capture.record_document),
+                                           shaped_capture_basis(a.capture.record_document), required=SHAPE_FIELDS),
         },
         **curves,
     }

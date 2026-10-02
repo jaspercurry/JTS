@@ -8,6 +8,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from jasper.audio_measurement.program import stimulus_shape_id
+
 from ..measurement_programs import POSE_KIND_SEAT
 from .record_index import played_graph_fingerprint
 
@@ -45,6 +47,15 @@ CAPTURE_FIELDS = (
     "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
     "stimulus_peak_dbfs", "stimulus_id",
 )
+#: What two takes must share when each is deconvolved against the stimulus it played:
+#: the stimulus's shape at one fader, never the level it played at (ADR-0408).
+SHAPE_FIELDS = ("side", "capture_device", "level_db", "stimulus_shape_id")
+
+
+def shaped_capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
+    """:func:`capture_basis` with the shape of the stimulus the take played."""
+    program = record.get("program")
+    return {**capture_basis(record), "stimulus_shape_id": stimulus_shape_id(program) if program else None}
 
 
 def _capture_calibration_identity(value: Any) -> tuple[bool, str | None, str | None] | None:

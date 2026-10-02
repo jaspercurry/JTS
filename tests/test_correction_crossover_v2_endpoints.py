@@ -3073,9 +3073,22 @@ def _inline_body():
     return {"plan": {**summed_at([0, 20]).to_dict(), "program": "tournament/express"}}
 
 
-def test_session_duplicate_levels_returns_shared_bad_request(monkeypatch):
-    body = _inline_body()
-    body["plan"]["levels"] = [-10, -10]
+def _timing_ladder_body():
+    from jasper.active_speaker.angle_capture import request_for_preset
+    from jasper.active_speaker.measurement_programs import run_preset
+    plan = request_for_preset(run_preset("speaker/mark")).to_dict()
+    plan["template"]["level_ladder_dbfs"] = [-12.0]
+    return {"plan": plan}
+
+
+@pytest.mark.parametrize(("body", "code"), [
+    (lambda: {"plan": {**_inline_body()["plan"], "levels": [-10, -10]}}, "walk_level_policy_invalid"),
+    (_timing_ladder_body, "walk_template_not_accepted")], ids=["duplicate levels", "a ladder over a timing take"])
+def test_a_session_plan_its_door_refuses_answers_its_code(monkeypatch, body, code):
+    """A plan the door refuses answers a bad request under its own code, never a
+    server error: a timing take finds its run's fader with its own probe, so a
+    template cannot state a ladder for it (ADR-0405, ADR-0408)."""
+    body = body()
     monkeypatch.setattr(correction_runtime, "read_json_body", lambda _: body)
     monkeypatch.setattr(correction_capture, "_crossover_blocking_phase", lambda: None)
     monkeypatch.setattr(correction_crossover_backend, "status_payload", lambda: {})
@@ -3086,7 +3099,7 @@ def test_session_duplicate_levels_returns_shared_bad_request(monkeypatch):
     status, reply = replies.pop()
     assert status == 400 and reply["ok"] is False
     assert set(reply) == {"ok", "code", "next_action", "error"}
-    assert reply["code"] == "walk_level_policy_invalid"
+    assert reply["code"] == code
     assert isinstance(reply["next_action"], dict) and isinstance(reply["error"], str)
 
 
