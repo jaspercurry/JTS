@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The AEC bridge's config loading and startup resolution/validation.
-
-`BridgeConfig.from_env` is the bridge's only env-reading surface: every
-`JASPER_AEC_*` and `JASPER_USB_MIC_*` toggle main() and `_aec_loop` act on
-resolves to a `BridgeConfig` field here, once, at startup. The two
-device-presence checks main() runs before opening any capture device sit
-behind the same surface.
-"""
+"""Startup policy for the AEC bridge; engine tuning stays with each engine."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +12,7 @@ import os
 from pathlib import Path
 
 from jasper.audio_routes.aec_sweep import (
+    AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_XVF,
     Aec3SweepConfig,
     Aec3SweepConfigError,
@@ -26,6 +20,7 @@ from jasper.audio_routes.aec_sweep import (
     current_aec3_sweep_source,
     load_aec3_sweep_config,
 )
+from jasper.aec.bridge_engines import CORPUS_USB_DTLN_ENABLED_ENV, DTLN_ENABLED_ENV
 from jasper.playback_state import wake_legs
 from jasper.config import env_bool
 from jasper.service_state.wake_ports import DEFAULT_AEC_UDP_HOST as OUT_HOST
@@ -78,6 +73,7 @@ PLAN_ENV_VARS = (
 )
 USB_MIC_DEVICE = "USB PnP Sound Device"
 USB_MIC_RATE = 0
+AEC_MIC_GAIN_DB_DEFAULT = "0"
 CAPTURE_LATENCY_MAX_SECONDS = 0.25
 
 
@@ -85,6 +81,24 @@ CAPTURE_LATENCY_MAX_SECONDS = 0.25
 class BridgeConfig:
     mic_device: str
     capture_latency: str
+    mic_gain_db: float
+    stall_restart_sec: int
+    stall_drip_max_windows: int
+    debug_record_dir: str
+    corpus_ref_enabled: bool
+    corpus_usb_enabled: bool
+    corpus_usb_dtln_enabled: bool
+    corpus_aec3_sweep_enabled: bool
+    corpus_chip_aec_enabled: bool
+    production_chip_aec_enabled: bool
+    corpus_xvf_raw0_webrtc_enabled: bool
+    corpus_xvf_raw0_dtln_enabled: bool
+    dtln_enabled: bool
+    chip_beam_plan: _mic_profile.ChipBeamPlan | None
+    chip_aec_primary_leg: str
+    chip_reference_pcm: str
+    mic_variant: str
+    mic_geometry: str
     out_host: str
     out_port: int
     out_port_raw: int
@@ -154,6 +168,8 @@ class BridgeConfig:
             return int(os.environ.get(env_var, str(leg_default_port(token))))
 
         corpus_chip_aec_enabled = env_bool(_mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV)
+        production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV)
+        chip_beam_plan = _mic_profile.chip_beam_plan_from_env(os.environ)
         capture_latency = os.environ.get("JASPER_AEC_CAPTURE_LATENCY", "").strip()
         if capture_latency and capture_latency.lower() != "low":
             try:
@@ -180,6 +196,26 @@ class BridgeConfig:
                 _mic_profile.alsa_card_name(),
             ),
             capture_latency=capture_latency.lower(),
+            mic_gain_db=float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", AEC_MIC_GAIN_DB_DEFAULT)),
+            stall_restart_sec=int(float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))),
+            stall_drip_max_windows=int(os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")),
+            debug_record_dir=os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip(),
+            corpus_ref_enabled=env_bool("JASPER_AEC_CORPUS_REF_ENABLED"),
+            corpus_usb_enabled=env_bool("JASPER_AEC_CORPUS_USB_ENABLED"),
+            corpus_usb_dtln_enabled=env_bool(CORPUS_USB_DTLN_ENABLED_ENV),
+            corpus_aec3_sweep_enabled=env_bool(AEC3_SWEEP_ENV_FLAG),
+            corpus_chip_aec_enabled=corpus_chip_aec_enabled,
+            production_chip_aec_enabled=production_chip_aec_enabled,
+            corpus_xvf_raw0_webrtc_enabled=env_bool("JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"),
+            corpus_xvf_raw0_dtln_enabled=env_bool("JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"),
+            dtln_enabled=env_bool(DTLN_ENABLED_ENV),
+            chip_beam_plan=chip_beam_plan,
+            chip_aec_primary_leg=_chip_aec_primary_leg(
+                chip_beam_plan if corpus_chip_aec_enabled or production_chip_aec_enabled else None,
+            ),
+            chip_reference_pcm=os.environ.get("JASPER_OUTPUTD_CHIP_REF_PCM", "").strip(),
+            mic_variant=os.environ.get("JASPER_XVF_VARIANT", "unknown"),
+            mic_geometry=os.environ.get("JASPER_XVF_GEOMETRY", "unknown"),
             out_host=os.environ.get("JASPER_AEC_UDP_HOST", OUT_HOST),
             out_port=_env_leg_port("JASPER_AEC_UDP_PORT", "on"),
             out_port_raw=_env_leg_port("JASPER_AEC_UDP_PORT_RAW", "off"),
@@ -345,6 +381,26 @@ def resolve_usb_mic_source(
         ),
         "fallback_active": False,
     }
+
+
+def _chip_aec_primary_leg(
+    plan: _mic_profile.ChipBeamPlan | None,
+) -> str:
+    allowed = set(plan.leg_tokens if plan else ("chip_aec_150", "chip_aec_210"))
+    fallback = next(iter(plan.leg_tokens), "chip_aec_150") if plan else "chip_aec_150"
+    value = os.environ.get(
+        _mic_profile.CHIP_AEC_PRIMARY_LEG_ENV, fallback,
+    ).strip()
+    if value in allowed:
+        return value
+    log_event(
+        logger,
+        "aec.primary_leg_invalid",
+        value=repr(value),
+        fallback=fallback,
+        level=logging.WARNING,
+    )
+    return fallback
 
 
 def validate_mic_device(config: BridgeConfig | None = None) -> None:

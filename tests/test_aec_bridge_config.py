@@ -2,13 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `jasper.aec.bridge_config`.
-
-`BridgeConfig.from_env` is the bridge's only env-reading surface, and the
-two device-presence validators and the USB microphone source resolver
-sit behind it. These pins cover env parsing and the resolution logic in
-isolation, before any of it reaches `main()` or `_aec_loop`.
-"""
+"""AEC startup policy, microphone validation, and USB export selection."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock

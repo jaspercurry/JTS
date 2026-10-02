@@ -259,12 +259,16 @@ def test_corpus_lane_set_matches_pin(scenario, monkeypatch, tmp_path):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
+    config = aec_bridge.BridgeConfig.from_env()
+    for key in ("JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED",
+                "JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "JASPER_AEC_DTLN_ENABLED"):
+        monkeypatch.setenv(key, "0" if os.environ.get(key) == "1" else "1")
     emitters: dict[str, aec_bridge.LegEmitter] = {}
     try:
         lanes = bridge_corpus_lanes.build_corpus_lanes(
             emitters,
             aec_bridge._bridge_stats,
-            aec_bridge.BridgeConfig.from_env(),
+            config,
             select_engine=_select_stub,
             xvf_raw0_webrtc_enabled=flags["xvf_webrtc"],
             xvf_raw0_dtln_enabled=flags["xvf_dtln"],

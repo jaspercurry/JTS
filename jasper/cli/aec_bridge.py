@@ -76,14 +76,12 @@ from typing import Optional
 import numpy as np
 
 from jasper.audio_routes.aec_sweep import (
-    AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_SOURCE_USB,
 )
 from jasper.platform.watchdog import Heartbeat
 from jasper.platform.log_event import log_event
 from jasper.aec.bridge_engines import (
     Aec3Engine,
-    CORPUS_USB_DTLN_ENABLED_ENV,
     FRAME_SAMPLES,
     SAMPLE_RATE,
     # `_aec_loop` and `main` resolve the engine selector through this alias,
@@ -104,14 +102,12 @@ from jasper.aec.bridge_config import (
     OUTPUTD_REF_UDP_PORT,
     REF_SOURCE,
     UsbMicUnavailable,
-    env_bool,
     leg_default_port,
     resolve_usb_mic_source,
     validate_mic_device,
     validate_usb_mic_device,
 )
 from jasper.aec.bridge_reference import (
-    AEC_MIC_GAIN_DB_DEFAULT,
     REF_RATE,
     outputd_ref_udp_thread,
     ref_clip_percent,
@@ -151,30 +147,6 @@ _STATS_IDENTITY = StatsIdentity(
     reference_endpoint=f"{OUTPUTD_REF_UDP_HOST}:{OUTPUTD_REF_UDP_PORT}",
 )
 _bridge_stats = BridgeStats(_STATS_IDENTITY)
-
-
-def _chip_beam_plan() -> _mic_profile.ChipBeamPlan | None:
-    return _mic_profile.chip_beam_plan_from_env(os.environ)
-
-
-def _chip_aec_primary_leg(
-    plan: _mic_profile.ChipBeamPlan | None,
-) -> str:
-    allowed = set(plan.leg_tokens if plan else ("chip_aec_150", "chip_aec_210"))
-    fallback = next(iter(plan.leg_tokens), "chip_aec_150") if plan else "chip_aec_150"
-    value = os.environ.get(
-        _mic_profile.CHIP_AEC_PRIMARY_LEG_ENV, fallback,
-    ).strip()
-    if value in allowed:
-        return value
-    log_event(
-        logger,
-        "aec.primary_leg_invalid",
-        value=repr(value),
-        fallback=fallback,
-        level=logging.WARNING,
-    )
-    return fallback
 
 
 def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
@@ -788,30 +760,13 @@ def _aec_loop(
     for offline ERLE analysis.
     """
     config = config or BridgeConfig.from_env()
-    # Post-AEC static gain, applied to the engine output before it reaches
-    # jasper-voice over UDP. Restores level into openWakeWord's training
-    # distribution when the chip's mic preamp delivers a quiet AEC output;
-    # 0 dB (off) by default, and soft-clipped via tanh on the way out so a
-    # high gain cannot push hard-clip distortion into the wake-word input.
-    mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", AEC_MIC_GAIN_DB_DEFAULT))
-    mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
-    # Stall-recovery threshold: consecutive seconds of empty mic_q before
-    # bailing for a systemd-driven restart; 0 disables it. See BridgeStalled.
-    stall_restart_sec = int(
-        float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))
-    )
+    mic_gain_lin = 10.0 ** (config.mic_gain_db / 20.0)
+    stall_restart_sec = config.stall_restart_sec
     consecutive_empty_sec = 0
-    # Additive slow-drip stall watchdog: the consecutive-empty check above
-    # resets on a single frame, so an intermittent trickle never trips it.
-    # JASPER_AEC_STALL_DRIP_MAX_WINDOWS=0 disables it.
     drip_watchdog = _MicStarvationWatchdog(
-        max_starved_windows=int(
-            os.environ.get("JASPER_AEC_STALL_DRIP_MAX_WINDOWS", "3")
-        ),
+        max_starved_windows=config.stall_drip_max_windows,
     )
-    usb_mic_choice_plan = chip_beam_plan or _mic_profile.chip_beam_plan_from_env(
-        os.environ,
-    )
+    usb_mic_choice_plan = chip_beam_plan or config.chip_beam_plan
     usb_mic_source = resolve_usb_mic_source(
         config.usb_mic_leg,
         plan=usb_mic_choice_plan,
@@ -854,9 +809,7 @@ def _aec_loop(
     window = _RmsWindow(
         chip=production_chip_aec_enabled, chip_primary_leg=chip_aec_primary_leg,
     )
-    debug_wavs = _open_debug_wavs(
-        os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
-    )
+    debug_wavs = _open_debug_wavs(config.debug_record_dir)
 
     try:
         while not _shutdown.is_set():
@@ -980,32 +933,18 @@ def main() -> int:
         reference_endpoint=reference_endpoint,
     )
     _bridge_stats.write_snapshot(config.bridge_stats_path)
-    corpus_ref_enabled = env_bool("JASPER_AEC_CORPUS_REF_ENABLED")
-    corpus_usb_enabled = env_bool("JASPER_AEC_CORPUS_USB_ENABLED")
-    corpus_usb_dtln_enabled = env_bool(CORPUS_USB_DTLN_ENABLED_ENV)
-    corpus_aec3_sweep_enabled = env_bool(AEC3_SWEEP_ENV_FLAG)
-    corpus_chip_aec_enabled = env_bool(_mic_profile.CORPUS_CHIP_AEC_ENABLED_ENV)
-    production_chip_aec_enabled = env_bool(_mic_profile.CHIP_AEC_ENABLED_ENV)
-    chip_aec_enabled = corpus_chip_aec_enabled or production_chip_aec_enabled
-    chip_beam_plan = _chip_beam_plan() if chip_aec_enabled else None
+    chip_aec_enabled = config.corpus_chip_aec_enabled or config.production_chip_aec_enabled
+    chip_beam_plan = config.chip_beam_plan if chip_aec_enabled else None
     if chip_aec_enabled and chip_beam_plan is None:
         return _park(
             os.EX_CONFIG,
             "no_validated_chip_beam_plan",
             "chip-AEC requested but no validated chip beam plan is active "
-            f"(variant={os.environ.get('JASPER_XVF_VARIANT', 'unknown')} "
-            f"geometry={os.environ.get('JASPER_XVF_GEOMETRY', 'unknown')})",
+            f"(variant={config.mic_variant} geometry={config.mic_geometry})",
         )
-    chip_aec_primary_leg = _chip_aec_primary_leg(chip_beam_plan)
-    corpus_xvf_raw0_webrtc_enabled = env_bool(
-        "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
-    )
-    corpus_xvf_raw0_dtln_enabled = env_bool(
-        "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED",
-    )
     raw_out_detail = (
         "disabled-chip-aec-mode"
-        if production_chip_aec_enabled
+        if config.production_chip_aec_enabled
         else f"udp://{config.out_host}:{config.out_port_raw}"
     )
     logger.info(
@@ -1020,36 +959,34 @@ def main() -> int:
         REF_RATE, config.mic_device, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
         config.out_host, config.out_port, raw_out_detail, OUT_RATE,
-        "on" if corpus_ref_enabled else "off",
-        "on" if corpus_usb_enabled else "off",
-        "on" if corpus_usb_dtln_enabled else "off",
-        "on" if corpus_aec3_sweep_enabled else "off",
+        "on" if config.corpus_ref_enabled else "off",
+        "on" if config.corpus_usb_enabled else "off",
+        "on" if config.corpus_usb_dtln_enabled else "off",
+        "on" if config.corpus_aec3_sweep_enabled else "off",
         config.aec3_sweep_input_source,
-        "on" if corpus_chip_aec_enabled else "off",
-        "on" if production_chip_aec_enabled else "off",
+        "on" if config.corpus_chip_aec_enabled else "off",
+        "on" if config.production_chip_aec_enabled else "off",
         chip_beam_plan.plan_id if chip_beam_plan else "none",
-        chip_aec_primary_leg,
-        "on" if corpus_xvf_raw0_webrtc_enabled else "off",
-        "on" if corpus_xvf_raw0_dtln_enabled else "off",
+        config.chip_aec_primary_leg,
+        "on" if config.corpus_xvf_raw0_webrtc_enabled else "off",
+        "on" if config.corpus_xvf_raw0_dtln_enabled else "off",
     )
-    if production_chip_aec_enabled and not os.environ.get(
-        "JASPER_OUTPUTD_CHIP_REF_PCM", ""
-    ).strip():
+    if config.production_chip_aec_enabled and not config.chip_reference_pcm:
         return _park(
             os.EX_CONFIG,
             "chip_aec_without_chip_reference",
             "JASPER_AEC_CHIP_AEC_ENABLED=1 requires "
             "JASPER_OUTPUTD_CHIP_REF_PCM so outputd feeds XVF USB-IN",
         )
-    if corpus_usb_dtln_enabled and not corpus_usb_enabled:
+    if config.corpus_usb_dtln_enabled and not config.corpus_usb_enabled:
         logger.warning(
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
             "JASPER_AEC_CORPUS_USB_ENABLED=1 also starts the USB mic capture",
         )
     if (
-        corpus_aec3_sweep_enabled
+        config.corpus_aec3_sweep_enabled
         and config.aec3_sweep_input_source == AEC3_SWEEP_SOURCE_USB
-        and not corpus_usb_enabled
+        and not config.corpus_usb_enabled
     ):
         logger.warning(
             "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb is ignored unless "
@@ -1060,7 +997,7 @@ def main() -> int:
         validate_mic_device(config)
     except MicDeviceUnavailable as e:
         return _park(os.EX_NOINPUT, "mic_device_unavailable", str(e))
-    if corpus_usb_enabled:
+    if config.corpus_usb_enabled:
         try:
             validate_usb_mic_device(config)
         except UsbMicUnavailable as e:
@@ -1070,7 +1007,7 @@ def main() -> int:
             # fault is an env flag naming hardware that is not plugged in.
             return _park(os.EX_CONFIG, "corpus_usb_mic_unavailable", str(e))
 
-    engine = None if production_chip_aec_enabled else _select_engine()
+    engine = None if config.production_chip_aec_enabled else _select_engine()
 
     def on_signal(signum, _frame):
         logger.info("received signal %d, shutting down", signum)
@@ -1088,7 +1025,7 @@ def main() -> int:
         if chip_aec_enabled else None
     )
     usb_q: Queue[bytes] | None = (
-        Queue(maxsize=QUEUE_MAXSIZE) if corpus_usb_enabled else None
+        Queue(maxsize=QUEUE_MAXSIZE) if config.corpus_usb_enabled else None
     )
 
     ref_t = threading.Thread(
@@ -1156,12 +1093,12 @@ def main() -> int:
             raw0_q=raw0_q,
             chip_aec_qs=chip_aec_qs,
             chip_beam_plan=chip_beam_plan,
-            production_chip_aec_enabled=production_chip_aec_enabled,
-            chip_aec_primary_leg=chip_aec_primary_leg,
-            emit_ref=corpus_ref_enabled,
+            production_chip_aec_enabled=config.production_chip_aec_enabled,
+            chip_aec_primary_leg=config.chip_aec_primary_leg,
+            emit_ref=config.corpus_ref_enabled,
             usb_raw_q=usb_q,
-            xvf_raw0_webrtc_enabled=corpus_xvf_raw0_webrtc_enabled,
-            xvf_raw0_dtln_enabled=corpus_xvf_raw0_dtln_enabled,
+            xvf_raw0_webrtc_enabled=config.corpus_xvf_raw0_webrtc_enabled,
+            xvf_raw0_dtln_enabled=config.corpus_xvf_raw0_dtln_enabled,
             config=config,
         )
     except BridgeStalled as e:

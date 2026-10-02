@@ -292,7 +292,7 @@ def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
 def _shape_no_beam_plan(monkeypatch, tmp_path):
     _arm_main(monkeypatch, tmp_path)
     monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
-    monkeypatch.setattr(aec_bridge, "_chip_beam_plan", lambda: None)
+    monkeypatch.setattr(aec_bridge._mic_profile, "chip_beam_plan_from_env", lambda _env: None)
 
 
 def _shape_chip_aec_without_reference(monkeypatch, tmp_path):
@@ -300,9 +300,9 @@ def _shape_chip_aec_without_reference(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
     monkeypatch.setenv("JASPER_OUTPUTD_CHIP_REF_PCM", "")
     monkeypatch.setattr(
-        aec_bridge,
-        "_chip_beam_plan",
-        lambda: aec_bridge._mic_profile.SQUARE_FIXED_150_210_PLAN,
+        aec_bridge._mic_profile,
+        "chip_beam_plan_from_env",
+        lambda _env: aec_bridge._mic_profile.SQUARE_FIXED_150_210_PLAN,
     )
 
 

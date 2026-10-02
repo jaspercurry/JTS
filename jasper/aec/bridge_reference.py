@@ -40,7 +40,6 @@ REF_RATE = 48000
 REF_CHANNELS = 2
 AEC_REF_GAIN_DB_DEFAULT = "0"
 AEC_REF_HPF_HZ_DEFAULT = "125"
-AEC_MIC_GAIN_DB_DEFAULT = "0"
 
 # Clipping counters for the ref pre-clip stage (after JASPER_AEC_REF_GAIN_DB),
 # module-level for cheap cross-thread access: a race between increment and
