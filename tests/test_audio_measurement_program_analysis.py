@@ -7404,6 +7404,55 @@ def test_summed_fit_sliced_comparator_matches_full_axis(bins):
     assert score(1, 125) == pytest.approx(full_rms, rel=0, abs=1e-9)
 
 
+def _horn_two_way_takes(seed, sign, residual_us, *, measure_repeats=1, timing_repeats=0, reference_bins=(1 << 18) + 1):
+    """MEASURE's branches on the production grid (a 2**19-point FFT at 48 kHz), each take with
+    its own 1% noise, and the same-pose summed takes: the tweeter played 9.5 dB down, at ``sign``
+    and ``residual_us`` past the anchor."""
+    rng = np.random.default_rng(seed)
+
+    def speaker(bins):
+        freqs, woofer, tweeter = _lr4_branches(FC_HZ, bins, SR / 2)
+        return freqs, woofer / (1 + 1j * freqs / 6000), 3 * tweeter * (1 + .1 * np.exp(-.8e-3j * np.pi * freqs))
+
+    def noisy(tf):
+        return tf * (1 + .01 * (rng.standard_normal(tf.size) + 1j * rng.standard_normal(tf.size)))
+
+    freqs, woofer, tweeter = speaker((1 << 18) + 1)
+    (W, T), *repeats = [(noisy(woofer), noisy(tweeter)) for _ in range(1 + measure_repeats)]
+    axis, woofer, tweeter = speaker(reference_bins)
+    summed_db = 20 * np.log10(abs(woofer + sign * tweeter / 3 * np.exp(-2e-6j * np.pi * residual_us * axis)))
+    played = {"woofer": np.ones_like, "tweeter": lambda f: np.full(f.shape, 1 / 3)}
+    references = [SummedAlignmentReference(axis, summed_db + .05 * rng.standard_normal(axis.size), played, (1200.0, 5000.0))
+                  for _ in range(1 + timing_repeats)]
+    return freqs, W, T, dataclasses.replace(references[0], repeat_responses=tuple(references[1:])), tuple(repeats)
+
+
+@pytest.mark.parametrize("takes, saved, expected", [
+    ({"seed": 1, "sign": -1, "residual_us": 34.1, "measure_repeats": 2}, None,
+     (-1, 96, "summed_fit_committed", False, 3, 0, .012038688712, .656441525837, .006118892138, None)),
+    ({"seed": 1, "sign": -1, "residual_us": 34.1, "measure_repeats": 2}, AppliedAlignment(96.0, "inverted", "measured"),
+     (-1, 96.0, "saved_timing", False, 3, None, .012038688712, None, None, .006118892138)),
+    ({"seed": 2, "sign": 1, "residual_us": -105.0, "measure_repeats": 0, "timing_repeats": 1}, None,
+     (1, -43, "summed_fit_committed", False, 2, 0, .002975309919, .617997715095, .000374018979, None)),
+    ({"seed": 3, "sign": 1, "residual_us": 150.0, "reference_bins": (1 << 17) + 1}, None,
+     (1, 212, "summed_fit_committed", False, 2, 0, .002473976722, .459812377664, .000311989424, None)),
+    ({"seed": 4, "sign": -1, "residual_us": 330.0}, None,
+     (-1, 392, "needs_measurement", True, 2, 0, .001410864292, .342458575451, .000614331329, None)),
+], ids=["inverted", "saved", "timing_repeat", "coarser_reference_grid", "far_lobe"])
+def test_summed_fit_selection_is_pinned(takes, saved, expected):
+    """The measured-sum delay search's selections on production-grid takes, pinned as values (#6227)."""
+    freqs, W, T, reference, repeats = _horn_two_way_takes(**takes)
+    selection = _select_summed_alignment_pair(
+        freqs, W, T, reference=reference, woofer_role="woofer", tweeter_role="tweeter", fc_hz=FC_HZ,
+        anchor_delay_us=61.87, seed_delay_us=61.87, seed_polarity_sign=1, delay_bounds_us=(0.0, 400.0),
+        repeats=repeats, saved=saved,
+    )
+    assert (selection.polarity_sign, selection.delay_us, selection.objective, selection.left_anchor_lobe,
+            selection.repeat_count, selection.repeat_spread_us) == expected[:6]
+    assert (selection.residual_rms_db, selection.margin_db, selection.repeat_spread_db,
+            selection.repeat_noise_db) == pytest.approx(expected[6:], rel=0, abs=1e-9)
+
+
 @pytest.mark.parametrize("phase_noise,verdict", [((0, .002), "measured"), ((0, 1.5), "needs_measurement"), ((0,), "needs_measurement")])
 @pytest.mark.parametrize("summed_noise", [None, .002, 8.0])
 def test_timing_confidence_uses_the_reads_repeats(phase_noise, verdict, summed_noise):

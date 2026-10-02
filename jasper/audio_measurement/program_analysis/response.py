@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 from dataclasses import dataclass
@@ -585,22 +586,30 @@ def _summed_fit_comparator(freqs, W, T, reference, anchor_delay_us):
     axis = reference.freqs_hz
     mask = (axis >= lo / radius) & (axis <= hi * radius)
     axis = axis[mask]
-    measured = analysis.smooth_fractional_octave(axis, reference.magnitude_db[mask], VERIFY_TRACKING_SMOOTHING_FRACTION)
+    band = analysis._band_mask(axis, reference.band_hz)
+    measured = analysis.smooth_fractional_octave(axis, reference.magnitude_db[mask], VERIFY_TRACKING_SMOOTHING_FRACTION)[band]
+    # smooth_fractional_octave's boxes, read in band only: the search scores thousands of delays (#6227).
+    first, last = analysis.fractional_octave_windows(axis, axis[band], VERIFY_TRACKING_SMOOTHING_FRACTION)
     start = max(0, np.searchsorted(freqs, axis[0]) - 1)
     stop = np.searchsorted(freqs, axis[-1], side="right") + 1
     freqs, W, T = freqs[start:stop], W[start:stop], T[start:stop]
+    on_axis = np.array_equal(freqs[1:-1], axis)
 
+    # The pooled fit and each repeat's fit revisit the same delays.
+    @functools.cache
     def score(sign, delay):
         predicted = predicted_branch_sum(
             W, T, 0.0, 0.0, sign, freqs_hz=freqs,
             residual_delay_us=summed_model_residual_delay_us(anchor_delay_us, delay),
         )
-        db = 20 * np.log10(np.maximum(np.abs(predicted), 1e-12))
-        smoothed = analysis.smooth_fractional_octave(
-            axis, np.interp(axis, freqs, db), VERIFY_TRACKING_SMOOTHING_FRACTION,
-        )
-        rms, _ = analysis.tracking_error_db(axis, measured, smoothed, reference.band_hz)
-        return float(rms)
+        if on_axis:  # on the reference's own bins its dB interpolation is the identity
+            power = predicted.real[1:-1] ** 2 + predicted.imag[1:-1] ** 2
+        else:
+            power = 10 ** (np.interp(axis, freqs, 20 * np.log10(np.maximum(np.abs(predicted), 1e-12))) / 10)
+        prefix = np.concatenate(([0.0], np.cumsum(power)))
+        smoothed = 10 * np.log10(np.maximum((prefix[last] - prefix[first]) / (last - first), 1e-12))
+        rms, _ = analysis._offset_invariant_rms_and_max(measured, smoothed)
+        return rms
 
     return score
 
