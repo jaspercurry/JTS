@@ -3263,8 +3263,8 @@ def test_a_placement_prompt_counts_the_measurements_the_schedule_plays_there(mon
 
 @pytest.mark.parametrize("levels,phases", [
     (None, ("timing", "lateral", "lateral")),
-    ((-18, -23), ("lateral",)),
-    ((-8, -18), ("lateral",)),
+    ((-18, -23), ("lateral",) * 3),
+    ((-8, -18), ("lateral",) * 3),
 ])
 def test_inline_preparation_binds_the_real_engine_without_fitting(
     monkeypatch, tmp_path, levels, phases

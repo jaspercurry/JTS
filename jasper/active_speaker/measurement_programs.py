@@ -139,7 +139,7 @@ _PROGRAM_SECTIONS = (
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
         run_headline=("JTS is playing a bass sweep at each spot, in steps from loud to quiet, to see how far the bass "
                       "can extend within the driver's limits. Follow the step below."),
-        trial=(("bass/axis", "bass_axis"), ("bass/axis", "seat_express")), graph_evidence=True,
+        trial=(("bass/axis", "seat_express"), ("bass/axis", "bass_axis")), graph_evidence=True,
         clears=("room_correction",), base_clears_own=True,
     ),
     TuningProgram(

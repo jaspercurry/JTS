@@ -163,7 +163,7 @@ def test_every_program_on_every_layout(speaker, row):
 @pytest.mark.parametrize('speaker', ['cardioid'], indirect=True)
 @pytest.mark.parametrize('mover,trials', [
     (None, {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/seat', 'seat_express'),
-            'bass': ('bass/axis', 'bass_axis'), 'room': ('room/seat', 'seat_express')}),
+            'bass': ('bass/axis', 'seat_express'), 'room': ('room/seat', 'seat_express')}),
     ('arm', {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/express', 'rear_express'),
              'bass': ('bass/axis', 'bass_axis'), 'room': ('room/seat', 'room_quick')}),
     ('human', {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/seat', 'seat_express'),

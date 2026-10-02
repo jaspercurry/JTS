@@ -2,28 +2,28 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+import shlex
 from dataclasses import replace
-from types import SimpleNamespace
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.round_copy import RUN_ENDED
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
 from jasper.active_speaker.measurement_view import round_choices
-from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
-from tests.crossover_v2_fixtures import _roles
+from tests.crossover_v2_fixtures import with_rear_target
 
 from jasper.active_speaker import applied_tune, baseline_profile, commissioning_coordinator as coordinator
 from jasper.active_speaker.applied_identity import applied_identity
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
+from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, near_field_drivers
 from jasper.active_speaker import tuning_handoff
 from jasper.active_speaker.crossover_v2 import round_inputs
+from jasper.cli import round as round_cli
 from jasper.cli.doctor import active_speaker as doctor
 from jasper.platform.doctor_contract import check_row
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.platform.json_fields import parse_utc_iso
 from jasper.web import sound_active_speaker
-from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
+from tests.test_correction_crossover_v2_endpoints import _inline_context, _seed_baseline_apply_environment
 
 import pytest
 
@@ -320,25 +320,36 @@ def test_applied_identity_is_shared_by_commissioning_and_doctor(monkeypatch, rec
 
 def _plannable(monkeypatch, next_program):
     """The measure page's inputs for a cardioid speaker whose next program is ``next_program``."""
-    roles = tuple(_roles())
-    targets = {r.role: r.band for r in roles} | {"woofer:rear": FrequencyBand(150.0, 6000.0)}
-    context = SimpleNamespace(roles_bands=roles, driver_caps_dbfs=dict.fromkeys(targets, 0.0), fc_hz=2500,
-                              driver_sweep_duration_limits_s=dict.fromkeys(targets, 10.0),
-                              driver_bands=targets, safety_profile={}, role_targets={})
+    topology, context = _topology(), _inline_context()
+    context = with_rear_target(replace(context, topology=topology,
+                                       driver_bands={role.role: role.band for role in context.roles_bands}))
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *a, **kw: context)
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {
         "next_action": {"program": next_program}, "programs": RUNNABLE_PROGRAMS,
-        "near_field_drivers": ("tweeter", "woofer", "woofer:rear")})
+        "near_field_drivers": near_field_drivers(topology)})
 
 
 @pytest.mark.parametrize("program,default_id", [
-    ("rear", "rear/pair@speaker_mark"), ("speaker", "speaker/mark"), ("room", "room/seat")])
+    ("rear", "rear/pair@speaker_mark"), ("speaker", "speaker/mark"), ("bass", "bass/axis"), ("room", "room/seat")])
 def test_the_page_offers_the_next_programs_first_plan(monkeypatch, program, default_id):
     """The rear tune starts from the pair model banked at the mark (the playbook's Seat loop), not from the
     rear program's default preset; the other programs start at theirs."""
     _plannable(monkeypatch, program)
     choices = round_choices({}, "")
     assert [choice["id"] for choice in choices if choice["default"]] == [default_id]
+
+
+@pytest.mark.parametrize("program", RUNNABLE_PROGRAMS)
+def test_the_copied_prompt_runs_the_plan_the_page_offers_first(monkeypatch, program):
+    """The prompt's Run line is the plan the page offers and the playbook starts with, so the agent and
+    the page agree; the line is one the round CLI takes."""
+    _plannable(monkeypatch, program)
+    offered, = (choice for choice in round_choices({}, "") if choice["default"])
+    run_line, = [line for line in tuning_handoff.build_tuning_handoff_prompt({}, program).splitlines()
+                 if line.startswith("Run: ")]
+    _sudo, _path, *argv = shlex.split(run_line.removeprefix("Run: "))
+    parsed = round_cli.build_parser().parse_args(argv)
+    assert {"program": parsed.program, "layout": parsed.layout} == offered["action"]["body"]["request"]
 
 
 @pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/each"])
