@@ -96,8 +96,9 @@ def _document(format_: dict[str, Any], properties: dict[str, Any]) -> dict[str, 
     }, list(required))
 
 
-def _filter(*, driver_role: bool = False, room_filter: bool = False) -> dict[str, Any]:
-    props: dict[str, Any] = {"freq": _number(), "q": _number(), "gain": _number()}
+def _filter(*, driver_role: bool = False, room_filter: bool = False,
+            max_gain_db: float | None = None) -> dict[str, Any]:
+    props: dict[str, Any] = {"freq": _number(), "q": _number(), "gain": _number(hi=max_gain_db)}
     required = list(props)
     if driver_role:
         props.update(role={"type": "string"}, biquad_type={"enum": sorted(driver.LINEARIZATION_BIQUAD_TYPES)})
@@ -297,15 +298,14 @@ def _speaker(draft: Mapping[str, Any], preset: ActiveSpeakerPreset | None,
             **blend_status,
             "schema": _document(blend_format, {
                 blend.PACKET_FINGERPRINT_FIELD: {"type": "string"},
-                "filters": {"type": "array", "items": _filter(), "maxItems": blend.BLEND_MAX_FILTERS},
+                "filters": {"type": "array", "items": _filter(max_gain_db=blend.PRESCRIPTION_MAX_GAIN_DB),
+                            "maxItems": blend.BLEND_MAX_FILTERS},
             }),
             "bounds": {
                 "band_hz": band, "max_filters": blend.BLEND_MAX_FILTERS,
                 "q_range_cut": [blend.EVALUABLE_Q_MIN, blend.EVALUABLE_Q_MAX],
-                "q_max_boost": blend.PRESCRIPTION_MAX_BOOST_Q,
-                "max_filter_boost_db": blend.PRESCRIPTION_MAX_FILTER_BOOST_DB,
-                "max_composed_boost_db": blend.PRESCRIPTION_MAX_TOTAL_BOOST_DB,
-                "boost_route": unavailable(blend.BOOST_ROUTE_UNAVAILABLE, "The route refuses every boost today."),
+                "max_gain_db": blend.PRESCRIPTION_MAX_GAIN_DB,
+                "boost_route": unavailable(blend.BOOST_ROUTE_UNAVAILABLE, "Propose a boost in the driver section."),
             },
             "refusal_codes": sorted(blend.BLEND_PRESCRIPTION_REFUSAL_REASONS),
             "prohibited_keys": sorted(blend.PROHIBITED_PRESCRIPTION_KEYS),

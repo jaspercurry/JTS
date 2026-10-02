@@ -628,13 +628,11 @@ Speaker
 | driver.declared_tilt | {"type":"number","minimum":-3.0,"maximum":3.0} | dB/octave | contract.speaker.driver.schema.properties.declared_tilt_db_per_octave |
 | blend.passband | null | Hz | contract.speaker.blend.bounds.band_hz |
 | blend.cut_Q | [0.0001,1000000.0] | Q | contract.speaker.blend.bounds.q_range_cut |
-| blend.boost_Q_max | 2.0 | Q | contract.speaker.blend.bounds.q_max_boost |
-| blend.filter_boost_max | 3.0 | dB | contract.speaker.blend.bounds.max_filter_boost_db |
-| blend.composed_boost_max | 4.0 | dB | contract.speaker.blend.bounds.max_composed_boost_db |
-| blend.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: any depth the arithmetic can evaluate is admitted, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully. A boost (gain > 0) is capped at Q 2 -- its composed SPL spend is read on a sampled grid, and no fixed grid can bound an arbitrarily narrow boost's between-bin peak" | rule | blend.bounds.cuts_are_free |
+| blend.gain_max | 0.0 | dB | contract.speaker.blend.bounds.max_gain_db |
+| blend.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: any depth the arithmetic can evaluate is admitted, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully" | rule | blend.bounds.cuts_are_free |
 | blend.filters | 2 | count | contract.speaker.blend.bounds.max_filters |
 | blend.filter_type | "Peaking" | type | contract.speaker.blend.schema.properties.filters.items.properties.biquad_type.const |
-| blend.boost_route | {"status":"unavailable","reason":"boost_route_unavailable","detail":"The route refuses every boost today."} | rule | contract.speaker.blend.bounds.boost_route |
+| blend.boost_route | {"status":"unavailable","reason":"boost_route_unavailable","detail":"Propose a boost in the driver section."} | rule | contract.speaker.blend.bounds.boost_route |
 | alignment.lobe | half_period_us(fc_hz) | us | timing.half_period_us |
 | alignment.lobe_applies_to | "abs(delay_us - basis_delay_us), disclosure only" | us | contract.speaker.alignment.bounds.lobe_applies_to |
 | alignment.SNR_floor | 35.0 | dB | quality.DRIVER.alignment_snr_ok_db |

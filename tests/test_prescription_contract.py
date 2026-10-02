@@ -67,10 +67,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "3f2aa7d715392a39bd673c1b19a46012f007380211fc4adb73b12bac5316174c"),
-    ("mono", True, "fab17b8c4ef496133eae4df2ce86b96b48666788d956288703e9bff817f5e28c"),
-    ("stereo", False, "f916194c8a8bfd8942f0c32aebbd21e569a307051ccbe2206bdc36d7ef941dd6"),
-    ("stereo", True, "b95f45b6db38794fa72521a262d4e04144ffa53321c401bf73cf25945b082d79"),
+    ("mono", False, "c163bf91cec4696ce8deea31f6b09466d725007a86d00da769af1135eb8d554a"),
+    ("mono", True, "7b4507ef7aea09ead7062966a9807920a9b7763538083801d17bb44fdb6930fd"),
+    ("stereo", False, "28122168f01f47cf9dec1582709396873d21b70bb98364c3c0a96d2b8b5055f0"),
+    ("stereo", True, "44e2bd8a9e24c8f6acc0530b8ce149b87eb75a36a4e4fd6e2b79d1bf69eaeee0"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -212,8 +212,14 @@ def test_speaker_limits_come_from_the_declared_hardware_and_round(round_bank):
     assert speaker["driver"]["bounds"]["passbands_hz"] == {role: list(band) for role, band in expected.items()}
     bounds = speaker["driver"]["bounds"]
     assert set(bounds["boost_headroom"]) == set(expected)
-    route = speaker["blend"]["bounds"]["boost_route"]
-    assert (route["status"], route["reason"]) == ("unavailable", blend.BOOST_ROUTE_UNAVAILABLE)
+    # The blend door publishes no boost ceiling: one bound, gain <= 0, in its bounds and its schema.
+    section = speaker["blend"]
+    assert set(section["bounds"]) == {"band_hz", "max_filters", "q_range_cut", "max_gain_db", "boost_route"}
+    route = section["bounds"]["boost_route"]
+    assert (route["status"], route["reason"], section["bounds"]["max_gain_db"]) == (
+        "unavailable", blend.BOOST_ROUTE_UNAVAILABLE, 0.0)
+    assert section["schema"]["properties"]["filters"]["items"]["properties"]["gain"] == {"type": "number", "maximum": 0.0}
+    assert {"filter_boost_too_high", "composed_boost_exceeded"}.isdisjoint(section["refusal_codes"])
     preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
     assert speaker["alignment"]["bounds"]["declared_delay_magnitude_us"] == list(alignment.alignment_delay_search_bounds_us(preset))
     corner = preset.crossover_regions[0].fc_hz

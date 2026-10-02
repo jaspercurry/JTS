@@ -150,9 +150,7 @@ def driver_max_q_for_gain(gain_db: float) -> float:
     — ``0.0`` included — gets :data:`~jasper.platform.biquad.EVALUABLE_Q_MAX`, an
     INSTRUMENT-fidelity one (past it the f64 biquad cascade stops evaluating
     the filter asked for: measured +6.99 dB realized from a requested Q 8e14 on
-    an admitted -3.0 dB cut). Same shape as ``blend_prescription.
-    max_q_for_gain`` and deliberately not a call to it — that class's boost arm
-    is 2.0. Same predicate :func:`_check_bounds` derives
+    an admitted -3.0 dB cut). Same predicate :func:`_check_bounds` derives
     :attr:`DriverPrescription.prescription_class` from, so a filter cannot be a
     cut for the receipt and a boost for its Q bound.
     """
