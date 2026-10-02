@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from jasper.dsp_control.fanin_coupling import (
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
+    RING_ACTIVE_PLAYBACK_DEVICE,
     outputd_ring_path_for,
 )
 from jasper.platform.atomic_io import EnvKeyAction as EnvAction
@@ -25,13 +26,6 @@ from jasper.platform.env_file import read_env_file
 
 if TYPE_CHECKING:
     from jasper.audio_hardware.reconcile import Pass
-
-# The ACTIVE RING's playback PCM — the ONE legal active endpoint. This module
-# never CHOOSES it; the active-lane decision reports which endpoint the live
-# graph targets, and this literal is only how the answer is recognized. Mirrors
-# jasper.dsp_control.fanin_coupling.RING_ACTIVE_PLAYBACK_DEVICE and the conf.d block name;
-# pinned equal by tests/test_ring_active_endpoint.py.
-RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "jts_ring_active_playback"
 
 
 def active_lane_channels_for_dac(run: Pass, dac_id: str) -> tuple[int | None, bool]:
@@ -127,7 +121,7 @@ def dac_format_actions_for_recognized(
 
 
 def set_outputd_active_lane_pair(run: Pass, lane: str, endpoint_device: str) -> bool:
-    """THE SINGLE WRITER of the active-lane PAIR, and of the ring path the
+    """THE SINGLE WRITER of the active-lane PAIR and of the ring path the
     endpoint marker projects to.
 
     JASPER_OUTPUTD_ACTIVE_LANE and JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT are
@@ -139,26 +133,20 @@ def set_outputd_active_lane_pair(run: Pass, lane: str, endpoint_device: str) -> 
     which a negative test would invert into a spurious arm.
 
     outputd also refuses a marker whose ring path has not followed it (exit
-    78), and this pass restarts outputd before the coupling pass runs, so the
-    path moves in this same write. Returns whether any key changed.
+    78), and this pass restarts outputd, so the path moves in this same write.
+    Returns whether any key changed.
     """
     ring_endpoint = (
         "1"
-        if lane == "1" and endpoint_device == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
+        if lane == "1" and endpoint_device == RING_ACTIVE_PLAYBACK_DEVICE
         else ""
-    )
-    ring_path = outputd_ring_path_for(
-        {
-            **read_env_file(run.outputd_env_target),
-            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: ring_endpoint,
-        }
     )
     return run.set_env_file_var(
         run.outputd_env_target,
         [
             ("JASPER_OUTPUTD_ACTIVE_LANE", lane),
             (OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR, ring_endpoint),
-            (OUTPUTD_RING_PATH_ENV_VAR, ring_path),
+            (OUTPUTD_RING_PATH_ENV_VAR, outputd_ring_path_for(bool(ring_endpoint))),
         ],
     )
 
@@ -225,7 +213,7 @@ def _apply_composite_runtime_env(run: Pass, content_format: str) -> bool:
     # at runtime, so writing =1 there would change no behaviour but WOULD
     # churn outputd.env and /state on boxes this has no business touching.
     dual_apple_endpoint = run.dual_apple_active_endpoint_device
-    if dual_apple_endpoint == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE:
+    if dual_apple_endpoint == RING_ACTIVE_PLAYBACK_DEVICE:
         changed = set_outputd_active_lane_pair(run, "1", dual_apple_endpoint) or changed
     else:
         changed = set_outputd_active_lane_pair(run, "", "") or changed

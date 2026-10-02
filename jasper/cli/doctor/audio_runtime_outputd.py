@@ -588,12 +588,10 @@ def _outputd_transport_health(
                 "; ".join(transport_report.errors) + _transport_route_remedy(),
                 reason=REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED,
             )
-        # Notes are deliberately not elevated: both rungs are owned by
+        # Notes are deliberately not elevated: the graph rung is owned by
         # :func:`check_content_transport_coherence`, which FAILs on the same
-        # states with a runnable remedy and reads PERSISTED evidence rather than
-        # outputd's live STATUS (at the endpoint rung outputd has refused to
-        # start, so this function returns its systemd failure long before
-        # reaching here).
+        # state with a runnable remedy and reads PERSISTED evidence rather than
+        # outputd's live STATUS.
     local_pipe_detail = f"content_source={actual_content_source}" + (
         ", loaded graph=parked" if endpoint_evidence.parked else ""
     )

@@ -2039,6 +2039,11 @@ def test_reconcile_dac8x_width_two_graph_arms_the_active_ring(
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
+    # outputd refuses a marker whose ring path has not followed it.
+    assert (
+        "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/active-content.ring"
+        in outputd_env
+    )
     assert ("single_alsa_active", "2", "8", "jts_ring_active_playback") in {
         (e["mode"], e.get("active_channels"), e.get("active_lane_cap"), e.get("active_endpoint"))
         for e in stderr_events(result.stderr, "audio_hardware_reconcile.runtime_env")

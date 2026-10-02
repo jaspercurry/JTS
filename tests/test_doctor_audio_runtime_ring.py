@@ -1438,7 +1438,7 @@ def _arrange(
     ("env_lines", "status", "reason"),
     [
         ("", "ok", audio_runtime_ring.REASON_SPLIT_PARKED),
-        # The disarm lag a reset leaves: marker cleared, path still the active ring.
+        # A crossed file: marker cleared, path still the active ring.
         (
             "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/active-content.ring\n",
             "fail",
@@ -1714,16 +1714,16 @@ def _arrange_projection(monkeypatch, tmp_path, *, marker: str, carried: str, **k
 @pytest.mark.parametrize(
     "marker,carried,derived",
     [
-        # The first-arm lag (jts.local, 2026-08-21): marker armed, path Ring B.
+        # Marker armed, path still Ring B.
         ("1", "/dev/shm/jts-ring/content.ring", "/dev/shm/jts-ring/active-content.ring"),
-        # The disarm lag: marker cleared, path still the active ring.
+        # Marker cleared, path still the active ring.
         ("", "/dev/shm/jts-ring/active-content.ring", "/dev/shm/jts-ring/content.ring"),
     ],
 )
 def test_a_ring_path_lagging_its_marker_fails_with_the_runnable_remedy(
     monkeypatch, tmp_path, marker, carried, derived
 ) -> None:
-    """The waypoint must produce a doctor line, and it must be actionable.
+    """A crossed pair must produce a doctor line, and it must be actionable.
 
     This is the state ``check_outputd_service`` structurally cannot report:
     outputd refuses the crossed pair at startup, so that check returns its
@@ -1783,11 +1783,8 @@ _CROSSED_ARRANGEMENTS = [
     lambda m, t: _arrange(
         m, t, bridge=RING_BRIDGE, playback_device="outputd_content_playback",
     ),
-    lambda m, t: _arrange_projection(
-        m, t, marker="1", carried="/dev/shm/jts-ring/content.ring",
-    ),
 ]
-_CROSSED_IDS = ["ring_unconsumed", "ring_unfed", "path_lags_marker"]
+_CROSSED_IDS = ["ring_unconsumed", "ring_unfed"]
 
 
 def _hold_entry_lock(tmp_path: Path):

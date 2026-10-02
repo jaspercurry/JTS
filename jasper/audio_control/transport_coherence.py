@@ -215,10 +215,7 @@ def transport_coherence_report(
     Both ring SHAPES take the same branch: :data:`COUPLING_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
     expect, and the endpoint comparison reads that from the resolved topology
-    rather than re-deriving it. The active shape additionally requires outputd's
-    own ring PATH to be the active ring's — the Python-side twin of outputd's
-    startup allowlist, reported here at reconcile time instead of at a daemon
-    bail.
+    rather than re-deriving it.
 
     Returns a :class:`TransportCoherenceReport`: contradictions in ``errors``,
     coherent-but-transient states in ``notes``.
