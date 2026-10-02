@@ -35,6 +35,8 @@ from fractions import Fraction
 
 import numpy as np
 import pytest
+
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.audio_measurement.program_analysis.response import (
     _aligned_branch_tf,
     _alignment_delay_grid,
@@ -119,7 +121,6 @@ from jasper.audio_measurement.program_analysis import (
     PILOT_MIN_SNR_DB,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
-    RIPPLE_TRIM_MIN_DB,
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
     SWEEP_PEAK_TO_RMS_DB,
     AlignmentEstimate,
@@ -6492,7 +6493,7 @@ def test_solve_ripple_optimal_trim_never_exceeds_physical_attenuation_bounds():
     'more flat' against a perfectly flat reference (nothing on the
     reference side to trade off against), so an unconstrained scan would
     walk all the way to a physically invalid net-gain trim. The search must
-    clamp to [RIPPLE_TRIM_MIN_DB, RIPPLE_TRIM_MAX_DB] and never return a
+    clamp to [DRIVER_TRIM_MIN_DB, RIPPLE_TRIM_MAX_DB] and never return a
     value outside it, regardless of which direction the (degenerate,
     monotonic) objective wants to walk — this is the #1667 implementation
     bug the search-window clamp fixes (a real 'MeasuredCrossoverCandidate
@@ -6510,14 +6511,14 @@ def test_solve_ripple_optimal_trim_never_exceeds_physical_attenuation_bounds():
         freqs, W, T, 1600.0, lo_hz=800.0, hi_hz=3200.0,
         seed_trim_db=-0.05, trim_w_db=0.0, sign=1, window_db=100.0,
     )
-    assert RIPPLE_TRIM_MIN_DB <= trim_t <= RIPPLE_TRIM_MAX_DB
+    assert DRIVER_TRIM_MIN_DB <= trim_t <= RIPPLE_TRIM_MAX_DB
 
     # A seed near the attenuation floor: same clamp, the other side.
     trim_t2, _ripple2, _seed2 = solve_ripple_optimal_trim(
         freqs, W, T, 1600.0, lo_hz=800.0, hi_hz=3200.0,
         seed_trim_db=-59.95, trim_w_db=0.0, sign=1, window_db=100.0,
     )
-    assert RIPPLE_TRIM_MIN_DB <= trim_t2 <= RIPPLE_TRIM_MAX_DB
+    assert DRIVER_TRIM_MIN_DB <= trim_t2 <= RIPPLE_TRIM_MAX_DB
 
 
 def _candidate_alignment() -> AlignmentEstimate:

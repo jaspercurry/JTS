@@ -21,6 +21,7 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.platform.atomic_io import atomic_write_json, fsync_directory
 from jasper.platform.json_fields import finite_float as _finite, require_sha256_hex, utc_now_iso as _utc_now
 from jasper.platform.log_event import log_event
@@ -30,7 +31,6 @@ from . import passive_profile as _passive
 from ._common import coerce_finite_float
 from .crossover_contract import measured_level_match_applied
 from .crossover_preview import crossover_preview_fingerprint
-from .level_trim import MAX_ATTENUATION_DB
 from .profile import ActiveSpeakerPreset, required_driver_roles, snapshot_declares_single_branch
 
 logger = logging.getLogger(__name__)
@@ -156,7 +156,7 @@ def banked_base_trims(
 
     The trims are re-validated on the way out against the writer's envelope
     (finite, attenuation-only, at or above
-    :data:`~jasper.active_speaker.level_trim.MAX_ATTENUATION_DB`). That envelope
+    :data:`~jasper.platform.driver_gain.DRIVER_TRIM_MIN_DB`). That envelope
     is relative to UNITY and that is the whole of its guarantee; it says nothing
     about the datasheet estimate the record replaces.
     """
@@ -196,7 +196,7 @@ def banked_base_trims(
     trims: dict[str, float] = {}
     for role in ordered:
         value = _finite(raw_trims.get(role))
-        if value is None or value > 0.0 or value < MAX_ATTENUATION_DB:
+        if value is None or value > 0.0 or value < DRIVER_TRIM_MIN_DB:
             return {}, {
                 **meta,
                 "status": STATUS_UNUSABLE,
@@ -300,11 +300,11 @@ def write_base_trim(
     trims: dict[str, float] = {}
     for role in ordered:
         value = _finite(trims_db.get(role))
-        if value is None or value > 0.0 or value < MAX_ATTENUATION_DB:
+        if value is None or value > 0.0 or value < DRIVER_TRIM_MIN_DB:
             raise DriverBaseTrimError(
                 REFUSE_NOT_ATTENUATION,
                 f"{role} trim {trims_db.get(role)!r} dB is outside the "
-                f"[{MAX_ATTENUATION_DB:g}, 0.0] dB attenuation-only envelope",
+                f"[{DRIVER_TRIM_MIN_DB:g}, 0.0] dB attenuation-only envelope",
             )
         # FULL precision: the graph plays the unrounded number, so banking a
         # rounded one banks a trim nothing applies.
