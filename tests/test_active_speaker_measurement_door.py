@@ -90,13 +90,7 @@ def box(tmp_path, monkeypatch):
 
 
 def _profile() -> MeasurementGraphProfile:
-    """The applied speaker, in the PROTECTED-NEUTRAL shape a door always emits.
-
-    The protection sections are not decoration in a test either: the emitter
-    refuses a measurement delay against the unprotected shape, because that one
-    already carries its own zeroed delay lane and a second mapping key would
-    play with no delay and bank as a delayed take.
-    """
+    """The applied speaker, in the PROTECTED-NEUTRAL shape a door always emits."""
     preset = _preset()
     return MeasurementGraphProfile(
         preset=preset,
