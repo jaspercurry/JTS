@@ -951,9 +951,8 @@ def test_the_announced_capture_program_follows_the_corner_it_is_built_at():
 
     The session and the capture spec are built from what used to be one number,
     and a pin that moved only the session would leave two corners in one round.
-    The entry-baseline program the plan announces is stage 2's own anchor — the
-    pair ``program_for_phase`` compares — and ``build_verify_program`` is
-    fc-dependent in TWO places:
+    The entry-baseline program the plan announces is stage 2's own anchor, and
+    ``build_verify_program`` is fc-dependent in TWO places:
 
     * the summed sweep's low bound, ``min(VERIFY_F_LO_HZ, fc / 2)``, live below
       fc = 300 Hz;

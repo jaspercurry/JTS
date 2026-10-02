@@ -52,6 +52,8 @@ from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSe
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+from jasper.web.correction_run_host import compose_plan_program
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.evidence_grid import evidence_bins
@@ -450,13 +452,25 @@ def _candidate_sections(conductor, fc_hz: float) -> dict:
     }
 
 
+def _phase_program(conductor, phase, spec=None):
+    """What a run plays for a take of ``phase``: its spec through the door's composer.
+    With no spec, CHECK, MEASURE and a lateral pose play the drivers graph and a
+    summed take the timing graph, each at the level reference's own scope."""
+    if spec is None:
+        summed = phase not in (PHASE_CHECK, PHASE_MEASURE, journey.PHASE_LATERAL)
+        spec = MeasureSpec(kind="baseline", scope_gains_db={},
+                           **({"graph_scope": "timing", "candidate_id": "base"} if summed else {}))
+    return compose_plan_program(conductor, replace(spec, program_phase=phase), None,
+                                context=SimpleNamespace(safety_profile={}, role_targets={}))
+
+
 def _run_phase(conductor, index, attempt, result=None):
     from jasper.active_speaker.run_manifest import RunManifest
     from jasper.web.correction_run_host import bind_plan_analysis
 
     conductor.authorize_begin(index, attempt)
     phase = conductor.phase_of_index(index)
-    program = conductor.program_for_phase(phase)
+    program = _phase_program(conductor, phase, conductor._measure_specs_by_index.get(index))
     manifest = RunManifest(conductor.session_id, SimpleNamespace())
     manifest.begin(
         {"index": index, "candidate_id": "base", "pose": {"kind": "bearing", "azimuth_deg": 0}, "purpose": "speaker", "purposes": ["speaker"]},

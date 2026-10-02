@@ -104,10 +104,10 @@ def test_a_pair_reads_one_basis_when_its_stimuli_differ_only_in_level(b, status)
     its own probe (ADR-0408), compares as one basis; another sweep does not."""
     excitation = SessionExcitation(tuple(_roles()), {"woofer": 0.0, "tweeter": -6.0}, -19.0, 2000.0,
                                    {"woofer": 8.0, "tweeter": 8.0})
-    quiet = excitation.cloud_program(extra_backoff_db=14.78)
-    other = {"louder": excitation.cloud_program(),
-             "another sweep": replace(excitation, summed_sweep_band_hz=(300.0, 3000.0)).cloud_program(
-                 extra_backoff_db=14.78)}[b]
+    quiet = excitation.verify_program(courtesy_prelude=False, extra_backoff_db=14.78)
+    other = {"louder": excitation.verify_program(courtesy_prelude=False),
+             "another sweep": replace(excitation, summed_sweep_band_hz=(300.0, 3000.0)).verify_program(
+                 courtesy_prelude=False, extra_backoff_db=14.78)}[b]
 
     basis = compare_report(_take("t1", record=_played(quiet)), _take("t2", record=_played(other)))["summary"]["basis"]
 

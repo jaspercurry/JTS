@@ -33,6 +33,7 @@ from tests.crossover_v2_fixtures import (
     SESSION,
     _check_analysis_with_solves,
     _conductor,
+    _phase_program,
     _pilot_obs,
     _preset,
     _resp_with_repeats,
@@ -111,18 +112,18 @@ def test_composed_programs_admit_at_shaped_caps(tmp_path, woofer_peak, tweeter_p
             role_targets=targets, session_volume_db=sv,
         )
 
-    adm_check = _admit(c.program_for_phase(PHASE_CHECK))
+    adm_check = _admit(_phase_program(c, PHASE_CHECK))
     assert adm_check.allowed, adm_check.refusals
 
     _run_phase(c, 1, 1)  # CHECK solve → MEASURE composed
-    adm_measure = _admit(c.program_for_phase(PHASE_MEASURE))
+    adm_measure = _admit(_phase_program(c, PHASE_MEASURE))
     assert adm_measure.allowed, adm_measure.refusals
 
     # VERIFY has no admission path by design; its clamp is the only guard.
     with pytest.raises(ProgramAdmissionError):
-        _admit(c.program_for_phase(PHASE_VERIFY))
+        _admit(_phase_program(c, PHASE_VERIFY))
     binding_cap = min(woofer_peak, tweeter_peak)
-    for seg in c.program_for_phase(PHASE_VERIFY).stimulus_segments():
+    for seg in _phase_program(c, PHASE_VERIFY).stimulus_segments():
         assert seg.effective_peak_dbfs <= binding_cap + 1e-9
 
 
@@ -131,7 +132,7 @@ def test_check_pilot_pairs_preserve_delta_and_degrade_honestly():
     c, _topology, _profile, _targets, _sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
-    check = c.program_for_phase(PHASE_CHECK)
+    check = _phase_program(c, PHASE_CHECK)
 
     w_hi = check.segment("pilot_woofer_hi")
     w_lo = check.segment("pilot_woofer_lo")
@@ -152,7 +153,7 @@ def test_verify_pilot_pair_preserves_delta_after_clamp():
     c, _topology, _profile, _targets, sv = _profiled_conductor(
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
-    verify = c.program_for_phase(PHASE_VERIFY)
+    verify = _phase_program(c, PHASE_VERIFY)
     v_hi = verify.segment("pilot_summed_hi")
     v_lo = verify.segment("pilot_summed_lo")
     assert v_hi.gain_db - v_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
@@ -200,9 +201,9 @@ def test_verify_wav_rendered_sample_peak_respects_min_cap(tmp_path):
         woofer_peak=-8.0, tweeter_peak=-65.0
     )
     wav = tmp_path / "verify_program.wav"
-    write_program_wav(wav, c.program_for_phase(PHASE_VERIFY))
+    write_program_wav(wav, _phase_program(c, PHASE_VERIFY))
     rate, data = wavfile.read(str(wav))
-    assert rate == c.program_for_phase(PHASE_VERIFY).sample_rate_hz
+    assert rate == _phase_program(c, PHASE_VERIFY).sample_rate_hz
     peak = float(np.max(np.abs(data.astype(np.float64) / 32767.0)))
     assert peak > 0.0  # the clamped program still carries signal
     peak_dbfs = 20.0 * _math.log10(peak)
@@ -257,13 +258,13 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
         index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
         driver_spacing_m=0.15,
     )
-    t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")
+    t_hi = _phase_program(c, PHASE_CHECK).segment("pilot_tweeter_hi")
     assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)
     # And the play-time gate admits what the conductor composed.
     wav = tmp_path / "check.wav"
-    write_program_wav(wav, c.program_for_phase(PHASE_CHECK))
+    write_program_wav(wav, _phase_program(c, PHASE_CHECK))
     adm = readmit_program_from_wav(
-        c.program_for_phase(PHASE_CHECK), wav, topology=topology, safety_profile=profile,
+        _phase_program(c, PHASE_CHECK), wav, topology=topology, safety_profile=profile,
         role_targets=targets, session_volume_db=sv,
     )
     assert adm.allowed, adm.refusals
@@ -295,14 +296,14 @@ def test_check_pilot_delta_is_the_delta_measure_pilots_actually_use():
     fakes.check = _check_analysis_with_solves
     c = _conductor(fakes)
 
-    check = c.program_for_phase("check")
+    check = _phase_program(c, "check")
     for role in ("woofer", "tweeter"):
         lo = check.segment(f"pilot_{role}_lo")
         hi = check.segment(f"pilot_{role}_hi")
         assert hi.gain_db - lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
 
     assert _run_phase(c, 1, 1).ok is True
-    measure = c.program_for_phase("measure")
+    measure = _phase_program(c, "measure")
     m_lo = measure.segment("pilot_woofer_lo")
     m_hi = measure.segment("pilot_woofer_hi")
     assert m_hi.gain_db - m_lo.gain_db == pytest.approx(PILOT_LEVEL_DELTA_DB)
@@ -317,7 +318,7 @@ def test_measure_program_keeps_solved_gains_per_role_and_identical_per_repeat():
     fakes.check = _check_analysis_with_solves
     c = _conductor(fakes)
     assert _run_phase(c, 1, 1).ok is True
-    measure = c.program_for_phase("measure")
+    measure = _phase_program(c, "measure")
     w_gains = {
         measure.segment(sid).gain_db
         for sid in ("sweep_w", "sweep_w_rep", "sweep_w_rep2")
@@ -402,7 +403,7 @@ def test_compose_sigma_db_floor_is_behaviorally_inert_on_repeatability_limit():
      ([-10.0, -72.0], ["too_loud", "too_quiet"], "too_loud")],
 )
 def test_analysis_owns_mic_grades(monkeypatch, levels, grades, status):
-    program = _conductor(FakeSeams()).program_for_phase(PHASE_CHECK)
+    program = _phase_program(_conductor(FakeSeams()), PHASE_CHECK)
     monkeypatch.setattr(
         "jasper.audio_measurement.program_analysis.dispatch._analyze_check",
         lambda *args: ProgramAnalysis(

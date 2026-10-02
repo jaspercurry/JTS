@@ -86,8 +86,8 @@ from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import (
-    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _pilot_obs, _verify_analysis, _verify_pilot,
-    plan_context,
+    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _phase_program, _pilot_obs, _verify_analysis,
+    _verify_pilot, plan_context,
 )
 from tests.test_crossover_envelope_v2 import _status
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
@@ -1017,7 +1017,7 @@ async def test_executor_retains_summed_reference_before_measure(
     impulse[200] = 1
     measure = build_measure_program({"woofer": -30, "tweeter": -30}, _roles(),
                                     sweep_durations={"woofer": .3, "tweeter": .3})
-    captures = ([(2, "timing", conductor.program_for_phase("timing"))] if banked else [])
+    captures = ([(2, "timing", _phase_program(conductor, "timing"))] if banked else [])
     captures.append((3, "measure", measure))
     caplog.set_level(logging.INFO)
     for index, phase, program in captures:
@@ -1050,7 +1050,7 @@ def test_executor_anchors_the_first_readable_summed_repeat(responses):
     records = SimpleNamespace(enrich=None, after_bank=None)
     correction_run_host.bind_plan_analysis(conductor, records,
         manifest=SimpleNamespace(calibration={}, capture_record=dict), evidence={})
-    program = conductor.program_for_phase("timing")
+    program = _phase_program(conductor, "timing")
     anchor = None
     for index, readable in enumerate(responses):
         analysis = _verify_analysis(program)
@@ -1137,7 +1137,7 @@ def test_host_aims_only_check_at_the_first_spots_target(monkeypatch, caplog, sen
             )
             if phase == "check" and target is not None:
                 expected = replace(expected, target_capture_dbfs=target)
-            program = conductor.program_for_phase(phase)
+            program = _phase_program(conductor, phase)
             for attempt in (1, 2):
                 record = {"take_id": "engine", "index": index, "attempt": attempt, "program": program.to_dict()}
                 records.enrich(None, record)
@@ -1184,7 +1184,7 @@ def test_each_banked_curve_carries_the_band_its_window_trusts(monkeypatch, caplo
     )
 
     record = records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1,
-                                   "program": conductor.program_for_phase("verify").to_dict(), **pose})
+                                   "program": _phase_program(conductor, "verify").to_dict(), **pose})
 
     assert {curve["window"]: (band["low_source"], band["high_source"], band["undeclared"])
             if (band := curve.get("trusted_band")) is not None else None for curve in record["curves"]} == (
@@ -1213,7 +1213,7 @@ def test_each_take_gates_as_far_as_the_declared_rooms_first_bounce_at_its_pose(m
                                            manifest=SimpleNamespace(calibration={}, capture_record=dict))
 
     records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1, "measurement_purpose": "speaker",
-                          "program": conductor.program_for_phase("verify").to_dict(), **pose})
+                          "program": _phase_program(conductor, "verify").to_dict(), **pose})
 
     assert fakes.analyzed[-1][4].declared_first_bounce_s == (room.first_bounce_s(distance_m) if declared else None)
 
@@ -1239,7 +1239,7 @@ def test_each_take_is_read_through_the_window_its_pose_picks_in_every_phase(monk
                                            manifest=SimpleNamespace(calibration={}, capture_record=dict))
 
     records.enrich(None, {"take_id": "take", "index": 1, "attempt": 1, "measurement_purpose": purpose,
-                          "program": conductor.program_for_phase(phase).to_dict(), **pose})
+                          "program": _phase_program(conductor, phase).to_dict(), **pose})
 
     assert fakes.analyzed[-1][4].gate_exempt_reason == reason
 

@@ -25,6 +25,7 @@ from tests.crossover_v2_fixtures import (
     FakeSeams,
     _capture,
     _conductor,
+    _phase_program,
     _preset,
     _run_phase,
 )
@@ -134,7 +135,7 @@ def test_measure_program_gains_back_off_from_caps():
     fakes = FakeSeams()
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
-    program = c.program_for_phase(PHASE_MEASURE)
+    program = _phase_program(c, PHASE_MEASURE)
     sweep_t = program.segment("sweep_t")
     # tweeter cap −65, session −20 ⇒ ceiling −45 − backoff.
     assert sweep_t.gain_db == pytest.approx(-45.0 - GAIN_CAP_BACKOFF_DB)

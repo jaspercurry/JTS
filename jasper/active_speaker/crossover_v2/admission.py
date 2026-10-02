@@ -38,9 +38,8 @@ MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
 class AttemptOverspendError(RuntimeError):
     """A slot was charged an extra attempt it did not have.
 
-    Module-local for the reason :class:`~.programs.NoProgramForPhaseError` is:
-    a pure ledger has no business knowing the flow's ``CrossoverV2FlowError``,
-    and the session translates at the one call site.
+    Module-local: a pure ledger has no business knowing the flow's
+    ``CrossoverV2FlowError``, and the session translates at the one call site.
     """
 
 

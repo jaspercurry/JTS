@@ -366,7 +366,7 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
         caps[role] = float(cap)
     assert caps == {"woofer": -8.0, "tweeter": pytest.approx(-33.2)}
     sv = SESSION_VOLUME_DB
-    # The production composition clamp (the same call _compose_measure_program
+    # The production composition clamp (the same call SessionExcitation.measure_program
     # makes): nominal reference gain backed off against each resolved cap. The
     # tweeter's composed level is cap-DRIVEN: -33.2 - sv - 0.01 = -13.21 dB
     # digital -> -33.21 dBFS effective. Under the old -65 cap this program
@@ -842,7 +842,7 @@ def test_branch_admission_checks_both_input_routes_and_actual_channels(tmp_path,
     program = build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
         fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).cloud_program(), {"woofer": 0, "tweeter": 1})
+    ).verify_program(courtesy_prelude=False), {"woofer": 0, "tweeter": 1})
     wav = tmp_path / "branches.wav"
     write_program_wav(wav, program)
     if damage == "loud_second_channel":
@@ -1430,7 +1430,7 @@ def _rear_take_program(branch_channels):
     return build_branch_program(SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65}, session_volume_db=-20,
         fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).cloud_program(), branch_channels)
+    ).verify_program(courtesy_prelude=False), branch_channels)
 
 
 def _admit_rear_take(tmp_path, branch_channels, *, graph=None, layout="mono"):

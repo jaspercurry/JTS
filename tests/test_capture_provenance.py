@@ -518,7 +518,7 @@ def _drive_one_capture(
         topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
         playback_device="hw:Test", safety_profile={}, role_targets={},
         provenance=recorder, roles=(),
-        program_for_phase=lambda phase: program,
+        program_for_spec=lambda spec, level: program,
     )
     spec = MeasureSpec(
         kind="verify" if phase == PHASE_VERIFY else "candidate",
@@ -623,14 +623,9 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
 def test_the_stimulus_phase_is_the_capture_s_own_not_the_program_object_s(
     monkeypatch, tmp_path
 ):
-    """One program object serves several phases, so it cannot name the capture.
-
-    ``crossover_v2.programs.program_for_phase`` answers the compared
-    VERIFY/timing pair and MEASURE/LATERAL with ONE composed object each, by
-    identity — so ``program.phase`` is the name of whichever phase composed it,
-    and a record that took its label from there said "verify" for a timing
-    take and "measure" for a lateral pose. The capture's own phase is the one the play
-    seam was called with, which is also the phase the banked record carries.
+    """A timing take plays a VERIFY-phase program, so the program cannot name
+    the capture. The capture's own phase is the one the play seam was called
+    with, which is also the phase the banked record carries.
     """
     provenance = _drive_one_capture(
         monkeypatch, tmp_path, phase=PHASE_TIMING, cam=_FakeCam(volume_db=-20.0),

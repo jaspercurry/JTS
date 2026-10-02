@@ -36,7 +36,6 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from .measure_spec import branch_channels_for, solo_target
 from .journey import (
     PHASE_CHECK,
-    PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_TIMING,
     PHASE_VERIFY,
@@ -101,17 +100,6 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float) -> 
     """
     ceiling = cap_dbfs - session_volume_db - GAIN_CAP_BACKOFF_DB
     return min(float(gain_db), ceiling)
-
-
-# --------------------------------------------------------------------------- #
-# which phases share one composed program
-# --------------------------------------------------------------------------- #
-
-SUMMED_SWEEP_PHASES = frozenset({PHASE_VERIFY, PHASE_TIMING})
-
-
-class NoProgramForPhaseError(RuntimeError):
-    """This session composes no excitation for that phase."""
 
 
 def _scope_backoff_db(spec: Any) -> float:
@@ -372,9 +360,6 @@ class SessionExcitation:
         """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE
         and fitted to each role's duration limit.
 
-        Also what every lateral pose plays, verbatim, so the prelude question is
-        asked of MEASURE, the object's own phase.
-
         A sweep realizes at the nearest phase-closing length (#2921), so a
         nominal 4 s woofer realizes 4.00577 s and admission refused the whole
         program against a declared 4 s limit. :attr:`sweep_duration_limits_s`
@@ -403,21 +388,8 @@ class SessionExcitation:
         courtesy_prelude: bool | None = None, leading_pilots: bool = True,
     ) -> ExcitationProgram:
         """The mono summed sweep, bounded by every driven role's cap and duration."""
-        return self._summed_sweep(
-            courtesy_prelude=courtesy_prelude_for_phase(PHASE_VERIFY) if courtesy_prelude is None else courtesy_prelude,
-            leading_pilots=leading_pilots,
-            extra_backoff_db=extra_backoff_db,
-            sweep_s=sweep_s,
-        )
-
-    def cloud_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
-        """The same summed sweep without a courtesy prelude at each pose."""
-        return self._summed_sweep(courtesy_prelude=False, extra_backoff_db=extra_backoff_db)
-
-    def _summed_sweep(
-        self, *, courtesy_prelude: bool, extra_backoff_db: float, sweep_s: float | None = None,
-        leading_pilots: bool = True,
-    ) -> ExcitationProgram:
+        if courtesy_prelude is None:
+            courtesy_prelude = courtesy_prelude_for_phase(PHASE_VERIFY)
         gain = self._summed_gain(extra_backoff_db)
         band = measurement_band_hz(self.roles)
         return build_verify_program(
@@ -440,41 +412,6 @@ class SessionExcitation:
             self.session_volume_db,
             binding_cap,
         )
-
-
-def program_for_phase(
-    phase: str,
-    *,
-    check: ExcitationProgram,
-    measure: ExcitationProgram | None,
-    verify: ExcitationProgram,
-) -> ExcitationProgram:
-    """Which composed program this phase plays — **by identity, not by value**.
-
-    The timing take and VERIFY get the same ``verify`` object (shared
-    ``stimulus_id``).
-
-    ``measure`` is ``None`` until the CHECK gain solve produces a plan;
-    requesting MEASURE before then raises :class:`NoProgramForPhaseError` rather
-    than composing something at a guessed level.
-    """
-    if phase == PHASE_CHECK:
-        return check
-    # R16: a lateral pose replays the ANCHOR's program object VERBATIM. That
-    # identity is not an optimisation: the return-to-mark bracket and every §4.4
-    # falloff comparison are differences against the anchor, and a pose measured
-    # at a different level or with a different sweep would be uninterpretable.
-    if phase in (PHASE_MEASURE, PHASE_LATERAL):
-        if measure is None:
-            raise NoProgramForPhaseError(
-                "MEASURE armed before the CHECK gain solve produced a program"
-            )
-        return measure
-    if phase in SUMMED_SWEEP_PHASES:
-        # What differs between the two is the PRIORS the session hands the
-        # analysis and the verdict it draws — never the sound the speaker makes.
-        return verify
-    raise NoProgramForPhaseError(f"no program for phase {phase!r}")
 
 
 def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Mapping[str, float] | None,

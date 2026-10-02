@@ -260,7 +260,6 @@ def prepare_v2_session(
             roles=context.roles_bands,
             protection_sections_by_role=protection_sections,
             provenance=capture_provenance,
-            program_for_phase=lambda phase: conductor.program_for_phase(phase),
             program_for_spec=lambda spec, gain: compose_plan_program(conductor, spec, gain, context=context),
         )
         seams = bind_v2_stage_seams(

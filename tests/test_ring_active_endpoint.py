@@ -1884,8 +1884,8 @@ def _crossover_v2_program_site(
     """Drive the session measurement graph's CHECK/MEASURE emit — issue #2450.
 
     Stage 1 of the crossover-v2 flow (the isolated per-driver sweeps that BUILD
-    the crossover) is the ONLY phase group that emits its own graph: the four
-    ``SUMMED_SWEEP_PHASES`` play into the box's already-active production graph,
+    the crossover) is the ONLY phase group that emits its own graph: the summed
+    phases play into the box's already-active production graph,
     where no independently-specified capture lane exists to mismatch. So this
     site's sink was marker-aware (``resolve_active_playback_device``) while its
     capture lane, wire format and latency geometry took the emitter's ALSA-lane

@@ -132,15 +132,6 @@ def test_a_pose_is_analyzed_neutrally_while_the_anchor_is_composed():
     assert pose.ambient_report == anchor.ambient_report
 
 
-def test_a_pose_replays_the_anchors_own_program_object():
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX)
-    assert c.program_for_phase(PHASE_LATERAL) is c.program_for_phase(PHASE_MEASURE)
-    # …and therefore is NOT the summed sweep every cloud position plays.
-    assert PHASE_LATERAL not in programs.SUMMED_SWEEP_PHASES
-
-
 # ``lateral_pose_curve`` indexes its input's own frequency axis
 # (``freqs[left]`` after a ``searchsorted``/``clip``), so a degenerate response
 # with an EMPTY axis is an ``IndexError`` rather than a zero-length curve —
