@@ -1304,7 +1304,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
         REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so no measurement was taken there.",
-        REASON_NOT_REACHED: "The run stopped before JTS measured this position.",
+        REASON_NOT_REACHED: "The run stopped before JTS took this measurement.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
         "cancelled": "The measurement was stopped before it finished.",
