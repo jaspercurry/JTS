@@ -305,7 +305,6 @@ def test_clip_auto_retry_comes_from_the_registry_without_a_gain_target(phase):
     assert result.code == refusal_copy.REASON_CLIPPED
     assert refusal_copy.REASON_REGISTRY[result.code].template == refusal_copy.TEMPLATE_SILENT_AUTO_RETRY
     assert result.next == "retake_quieter" and result.next_gain_db is None
-    assert (result.code in refusal_copy.TRANSIENT_AUTO_RETRY_CODES) is True
 
 
 @pytest.mark.parametrize("glitch_inputs,frame_loss", [
@@ -546,7 +545,7 @@ def test_no_household_vocabulary_reaches_this_module():
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.Attribute):
             reached.add(node.attr)
-    assert not {"REASON_REGISTRY", "reason_message", "TRANSIENT_AUTO_RETRY_CODES", "PhaseVerdict"} & (imported | reached)
+    assert not {"REASON_REGISTRY", "reason_message", "PhaseVerdict"} & (imported | reached)
     assert not any("crossover_v2_flow" in name for name in imported)
     assert not any(name.startswith("jasper.web") for name in imported)
 

@@ -7,7 +7,7 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     CAPTURE_QUALITY_REFUSAL_CODES, REASON_CAPTURE_OVERRUN, REASON_CLIPPED, REASON_LEVEL_UNSOLVED, REASON_NOT_REACHED,
-    REASON_SNR_FLOOR, TRANSIENT_AUTO_RETRY_CODES, refusal_copy_for,
+    REASON_REGISTRY, REASON_SNR_FLOOR, TEMPLATE_SILENT_AUTO_RETRY, refusal_copy_for,
 )
 from jasper.active_speaker import round_copy
 from jasper.active_speaker.round_copy import (
@@ -55,7 +55,8 @@ def test_retake_uses_registry_words_without_codes(reason):
 
 
 @pytest.mark.parametrize("reasons", [
-    *([retry, REASON_LEVEL_UNSOLVED] for retry in sorted(TRANSIENT_AUTO_RETRY_CODES)),
+    *([retry, REASON_LEVEL_UNSOLVED] for retry in sorted(
+        code for code, spec in REASON_REGISTRY.items() if spec.template == TEMPLATE_SILENT_AUTO_RETRY)),
     [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED],
     [REASON_CLIPPED, REASON_CAPTURE_OVERRUN],
 ])

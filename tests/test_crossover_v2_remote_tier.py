@@ -391,9 +391,8 @@ def test_the_gates_three_refusals_name_neither_mover():
     pattern = re.compile(r"\b(" + "|".join(_MOVER_WORDS) + r")\b", re.IGNORECASE)
     for code in (POSITION_HOLD_EXPIRED_CODE, POSITION_TARGET_MISSING_CODE, SESSION_CEILING_EXPIRED_CODE):
         spec = REASON_REGISTRY[code]
-        for slot, text in (("message", spec.message), ("banner", spec.banner)):
-            found = pattern.findall(text or "")
-            assert not found, f"{code}.{slot} names a mover: {found} in {text!r}"
+        found = pattern.findall(spec.message)
+        assert not found, f"{code} names a mover: {found} in {spec.message!r}"
         # ...and it still says what it is about, so "names no mover" cannot be
         # satisfied by saying nothing.
         assert "microphone" in spec.message

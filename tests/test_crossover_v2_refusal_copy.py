@@ -52,7 +52,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "REASON_SNR_FLOOR",
         "REASON_USER_STOPPED",
         "REASON_VERIFY_INCONCLUSIVE",
-        "REASON_VERIFY_LEVEL_SHIFT",
         "REASON_VOLUME_UNRESOLVED",
         "ReasonSpec",
         "RetryableReasonCopy",
@@ -62,12 +61,10 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "TEMPLATE_SILENT_AUTO_RETRY",
         "TEMPLATE_VERIFY_FAIL",
         "TEMPLATE_VOLUME_RECOVERY",
-        "TRANSIENT_AUTO_RETRY_CODES",
         "_retriable_reason",
         "reason_message",
     ),
     "capture_dispatch": (
-        "_pilot_transfer_by_role",
         "_sweep_schedule_diag_fields",
         "_sweep_schedule_ok",
     ),
@@ -135,9 +132,9 @@ def test_the_web_envelope_carries_a_rows_own_action_and_never_its_templates(code
 
 def test_every_registry_row_offers_a_next_action_except_a_silent_auto_retry():
     """``jasper-round`` prints a run's fault under any registry code, so a row with no action of its own
-    needs its template's. A silent auto-retry shows a banner while it retries, and no CLI prints it."""
+    needs its template's. A silent auto-retry retries by itself, and no CLI prints it."""
     assert {code for code, spec in refusal_copy.REASON_REGISTRY.items()
-            if not spec.next_action} <= refusal_copy.TRANSIENT_AUTO_RETRY_CODES
+            if not spec.next_action and spec.template != refusal_copy.TEMPLATE_SILENT_AUTO_RETRY} == set()
 
 
 # The readers own most of these codes outside evidence_reasons, so the module scan below cannot see them.
