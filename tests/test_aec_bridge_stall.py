@@ -262,7 +262,6 @@ def _arm_main(monkeypatch, tmp_path, *, mic_ok=True, usb_ok=True):
     monkeypatch.setenv(
         "JASPER_AEC_BRIDGE_STATS_PATH", str(tmp_path / "aec_bridge_stats.json")
     )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", aec_bridge.REF_SOURCE)
     monkeypatch.setenv("JASPER_AEC_MIC_DEVICE", _MIC_DEVICE)
     monkeypatch.setenv("JASPER_AEC_USB_MIC_DEVICE", _USB_MIC_DEVICE)
     monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "0")
@@ -288,11 +287,6 @@ def _arm_park_cue(monkeypatch, *, cue_result: bool | BaseException = True):
     monkeypatch.setattr(cue_park, "TtsPlayout", lambda **_kw: FakeTts())
     monkeypatch.setattr(cue_park, "build_env_cue_manager", lambda **_kw: spy)
     return spy
-
-
-def _shape_bad_ref_source(monkeypatch, tmp_path):
-    _arm_main(monkeypatch, tmp_path)
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "chip_ref_tee")
 
 
 def _shape_no_beam_plan(monkeypatch, tmp_path):
@@ -324,12 +318,6 @@ def _shape_corpus_usb_absent(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "shape,expected_code,expected_reason,expected_slug",
     [
-        (
-            _shape_bad_ref_source,
-            os.EX_CONFIG,
-            "unsupported_reference_source",
-            VOICE_ASSETS_MISSING_CUE_SLUG,
-        ),
         (
             _shape_no_beam_plan,
             os.EX_CONFIG,
@@ -382,7 +370,7 @@ def test_a_park_cue_that_cannot_play_still_parks_on_the_same_code(
     with only `After=`/`Wants=` on fan-in, so the socket the cue writes to can
     legitimately be missing; the failure is named on the wire instead."""
     _arm_park_cue(monkeypatch, cue_result=OSError("no output path"))
-    _shape_bad_ref_source(monkeypatch, tmp_path)
+    _shape_no_beam_plan(monkeypatch, tmp_path)
 
     with caplog.at_level(logging.INFO, logger="jasper.aec_bridge"):
         assert aec_bridge.main() == os.EX_CONFIG

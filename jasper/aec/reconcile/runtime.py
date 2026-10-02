@@ -253,7 +253,6 @@ class Reconcile:
             "JASPER_MIC_DEVICE_CHIP_AEC_150": f"udp:{self.values.get('JASPER_AEC_UDP_PORT_CHIP_AEC_150') or '9887'}" if running and chip and chip150 else "",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": f"udp:{self.values.get('JASPER_AEC_UDP_PORT_CHIP_AEC_210') or '9888'}" if running and chip and chip210 else "",
             "JASPER_AEC_CHIP_AEC_ENABLED": str(int(chip)),
-            "JASPER_AEC_REF_SOURCE": "outputd_udp",
             "JASPER_AEC_OUTPUTD_REF_UDP_HOST": "127.0.0.1",
             "JASPER_AEC_OUTPUTD_REF_UDP_PORT": port,
         }

@@ -32,7 +32,7 @@ from jasper.runtime_config.audio_profile_state import (
 from jasper.chip_aec.health import AlignmentHealth, alignment_health
 from jasper.audio_routes import aec_sweep
 from jasper.aec import bridge_engines, bridge_telemetry
-from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV, REF_SOURCE_ENV
+from jasper.aec.bridge_config import OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV
 from jasper.aec.bridge_engines import DTLN_ENABLED_ENV
 from jasper.cli import aec_init
 from jasper.platform.env_load import parse_bool_value, parse_env_file
@@ -2406,7 +2406,6 @@ def test_profile_env_updates_are_consumed_by_reconciler(
     assert values["JASPER_MIC_DEVICE_RAW"] == _EMPTY
     assert values["JASPER_MIC_DEVICE_DTLN"] == _EMPTY
     assert values["JASPER_AEC_CHIP_AEC_ENABLED"] == expected["chip_enabled"]
-    assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
 
 
 _PROFILE_VECTORS = {
@@ -2647,7 +2646,6 @@ def test_aec_disabled_clears_every_leg_and_keeps_the_operator_booleans(
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
-    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
     # No card staged, so no candidate mic; the custom "Array" device is
     # neither udp: nor unset, so the reconciler leaves it alone.
@@ -2686,7 +2684,6 @@ def test_chip_aec_on_sets_carrier_and_clears_raw_dtln(tmp_path: Path) -> None:
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
-    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_AEC_OUTPUTD_REF_UDP_HOST=127.0.0.1" in body
     assert "JASPER_AEC_OUTPUTD_REF_UDP_PORT=9891" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
@@ -2874,7 +2871,6 @@ def test_chip_aec_comma_values_idempotent_across_runs(tmp_path: Path) -> None:
         "",
         # The leaving-chip-AEC-mode transition: the XVF USB-IN producer was
         # armed on the previous pass and has to be stood down.
-        "JASPER_AEC_REF_SOURCE=outputd_udp\n"
         "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0\n"
         "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891\n",
     ],
@@ -2897,7 +2893,6 @@ def test_chip_aec_off_stands_down_the_chip_producer_not_the_speaker_monitor(
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_MIC_DEVICE_CHIP_AEC_210=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
-    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
     assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
     assert "JASPER_OUTPUTD_CHIP_REF_PCM=''" in body
     assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
@@ -2919,7 +2914,6 @@ def test_chip_aec_not_armed_without_6ch_firmware(tmp_path: Path) -> None:
     body = (tmp_path / "jasper.env").read_text()
     assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" not in body
-    assert "JASPER_AEC_REF_SOURCE=outputd_udp" in body
 
 
 # ---------- Chip-ref observe mode (chip-AEC Layer 0 bootstrap) ------------
@@ -2974,7 +2968,6 @@ def test_chip_ref_observe_arms_only_the_writer_never_the_mic_path(
     assert ("chip-ref observe mode" in result.stderr) is announced
     if channels == 6:
         assert values["JASPER_MIC_DEVICE_RAW"] == "udp:9877"
-        assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
         assert "JASPER_MIC_DEVICE_CHIP_AEC_150=udp:" not in (
             tmp_path / "jasper.env"
         ).read_text()
@@ -3918,7 +3911,7 @@ def test_runtime_readers_and_restart_filter_keys_are_all_published(tmp_path: Pat
     assert result.returncode == 0, result.stderr
     expected = VOICE_IRRELEVANT_ENV_KEYS | {
         xvf3800.AEC_MIC_DEVICE_ENV, xvf3800.CHIP_AEC_ENABLED_ENV,
-        DTLN_ENABLED_ENV, REF_SOURCE_ENV, OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV,
+        DTLN_ENABLED_ENV, OUTPUTD_REF_UDP_HOST_ENV, OUTPUTD_REF_UDP_PORT_ENV,
     }
     keys = parse_env_file(str(tmp_path / "jasper.env")).keys()
     assert expected <= keys

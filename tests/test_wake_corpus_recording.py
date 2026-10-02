@@ -465,7 +465,6 @@ def test_metadata_records_audio_context_snapshot(
             "JASPER_OUTPUTD_CONTROL_SOCKET=/run/envfile-outputd.sock\n"
         ),
         corpus_env=(
-            "JASPER_AEC_REF_SOURCE=outputd_udp\n"
             "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
             "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
             "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1\n"

@@ -7,13 +7,12 @@
 `BridgeConfig.from_env` is the bridge's only env-reading surface: every
 `JASPER_AEC_*` and `JASPER_USB_MIC_*` toggle main() and `_aec_loop` act on
 resolves to a `BridgeConfig` field here, once, at startup. The two
-device-presence checks main() runs before opening any capture device, and
-the `ref_source` fallback that keeps a parked box's retired env value from
-leaving jasper-voice deaf, sit behind the same surface.
+device-presence checks main() runs before opening any capture device sit
+behind the same surface.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import logging
 import math
 import os
@@ -64,7 +63,6 @@ REF_SOURCE = "outputd_udp"
 # only reader, so the value defaults and the key names live in one place.
 OUTPUTD_REF_UDP_HOST_ENV = "JASPER_AEC_OUTPUTD_REF_UDP_HOST"
 OUTPUTD_REF_UDP_PORT_ENV = "JASPER_AEC_OUTPUTD_REF_UDP_PORT"
-REF_SOURCE_ENV = "JASPER_AEC_REF_SOURCE"
 # The recorder-owned plan identity the bridge echoes back into its stats
 # file, so a corpus session can prove the running bridge is the plan it
 # stored.
@@ -78,12 +76,6 @@ PLAN_ENV_VARS = (
     MIC_FINGERPRINT_ENV,
     DAC_FINGERPRINT_ENV,
 )
-# Retired reference source: the summed snd-aloop tap, whose path and tap are
-# both deleted. A box whose /etc/jasper/jasper.env still carries this value
-# converges on the next `jasper-aec-reconcile` run, so the bridge warns and
-# uses REF_SOURCE rather than refusing to start: a hard failure here would
-# leave jasper-voice with an unfed UDP mic and no wake detection.
-RETIRED_REF_SOURCE_ALSA = "alsa"
 USB_MIC_DEVICE = "USB PnP Sound Device"
 USB_MIC_RATE = 0
 CAPTURE_LATENCY_MAX_SECONDS = 0.25
@@ -113,7 +105,6 @@ class BridgeConfig:
     usb_mic_leg: str
     outputd_ref_udp_host: str
     outputd_ref_udp_port: int
-    ref_source: str
     out_port_aec3_sweep: dict[str, int]
     usb_mic_device: str
     usb_mic_rate: int
@@ -256,10 +247,6 @@ class BridgeConfig:
                     str(OUTPUTD_REF_UDP_PORT),
                 )
             ),
-            ref_source=os.environ.get(
-                REF_SOURCE_ENV,
-                REF_SOURCE,
-            ).strip().lower(),
             out_port_aec3_sweep={
                 variant.leg: variant.default_port
                 for variant in sweep_config.variants
@@ -300,10 +287,6 @@ class MicDeviceUnavailable(RuntimeError):
 
 class UsbMicUnavailable(RuntimeError):
     """The configured corpus USB mic device is not currently present."""
-
-
-class UnsupportedReferenceSource(RuntimeError):
-    """JASPER_AEC_REF_SOURCE names a source this bridge cannot read."""
 
 
 def resolve_usb_mic_source(
@@ -362,40 +345,6 @@ def resolve_usb_mic_source(
         ),
         "fallback_active": False,
     }
-
-
-def resolved_reference_source(config: BridgeConfig) -> BridgeConfig:
-    """Return `config` with a supported `ref_source`, or reject it.
-
-    `RETIRED_REF_SOURCE_ALSA` is converged, not rejected: a parked box can
-    still carry it on disk, and refusing to start would leave jasper-voice
-    with an unfed UDP mic. Anything else is a typo or a source this bridge
-    genuinely cannot read, and stays a hard failure.
-
-    Call this before anything reads `config.ref_source` — the bridge-stats
-    snapshot publishes it as runtime provenance that `jasper-doctor` trusts,
-    so the retired spelling must never reach it.
-    """
-    if config.ref_source == REF_SOURCE:
-        return config
-    if config.ref_source == RETIRED_REF_SOURCE_ALSA:
-        log_event(
-            logger,
-            "aec.ref_source_retired",
-            level=logging.WARNING,
-            retired=config.ref_source,
-            using=REF_SOURCE,
-            detail=(
-                "the ALSA reference fallback is gone; run "
-                "`sudo systemctl start jasper-aec-reconcile` to converge "
-                "/etc/jasper/jasper.env"
-            ),
-        )
-        return replace(config, ref_source=REF_SOURCE)
-    raise UnsupportedReferenceSource(
-        f"unsupported JASPER_AEC_REF_SOURCE={config.ref_source!r} "
-        f"(expected {REF_SOURCE!r})"
-    )
 
 
 def validate_mic_device(config: BridgeConfig | None = None) -> None:

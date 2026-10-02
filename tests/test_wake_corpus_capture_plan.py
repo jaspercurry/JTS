@@ -694,7 +694,6 @@ def test_set_bridge_outputs_enables_chip_profile_stack(
     assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED"] == "1"
-    assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert values["JASPER_OUTPUTD_CHIP_REF_PCM"] == "plughw:CARD=Test,DEV=0"
     assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == runtime_probe.OUTPUTD_REF_UDP_TARGET
     assert (
@@ -760,7 +759,6 @@ def test_set_bridge_outputs_chip_profile_without_usb_enables_ref_only(
     assert "JASPER_AEC_USB_MIC_DEVICE" not in values
     assert values["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
-    assert values["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert values["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == (
         runtime_probe.OUTPUTD_REF_UDP_TARGET
     )
