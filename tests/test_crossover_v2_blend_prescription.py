@@ -919,20 +919,6 @@ def test_a_cut_is_admitted_at_any_depth_width_and_composition(packet):
     assert [f["gain"] for f in accepted.filters] == [-6.0, -2.5]
 
 
-#: An 8-bin log axis across the region. Its bins are ~1/4 octave apart, so a
-#: Q=2.0 filter sitting at a log midpoint is sampled only on its shoulders.
-_SPARSE_GRID = [
-    824.35, 1004.89, 1224.98, 1493.27, 1820.31, 2218.99, 2704.97, 3297.4,
-]
-
-
-@pytest.mark.parametrize("supplied, dense", [(_SPARSE_GRID, False), ([800.0 + 3.0 * i for i in range(900)], True)])
-def test_the_composed_grid_is_the_denser_of_the_supplied_axis_and_the_sweep(supplied, dense):
-    in_band = [f for f in supplied if BAND[0] <= f <= BAND[1]]
-    grid = bp.composed_grid(BAND, supplied)
-    assert list(grid) == (pytest.approx(in_band) if dense else pytest.approx(list(np.geomspace(*BAND, 512))))
-
-
 def test_no_region_refuses_rather_than_inventing_a_band(packet):
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut()], packet), band_hz=None)

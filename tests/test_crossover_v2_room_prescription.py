@@ -33,6 +33,7 @@ from jasper.active_speaker.crossover_v2.room_views import (
 )
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.round_inputs import ROUND_PACKET_SCHEMA, resolve_set, round_inputs, set_view_out
+from jasper.active_speaker.crossover_v2.room_analysis import composed_grid
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
@@ -278,6 +279,18 @@ def test_optional_median_echo_and_author_are_disclosed(echo, author):
     assert {key: preview[key] for key in ("room_median_sha256", "round_id", "answers_median")} == {
         key: receipt[key] for key in ("room_median_sha256", "round_id", "answers_median")}
 
+
+#: An 8-bin log axis across a band. Its bins are ~1/4 octave apart, so a Q=2.0
+#: filter sitting at a log midpoint is sampled only on its shoulders.
+_SPARSE_GRID = [824.35, 1004.89, 1224.98, 1493.27, 1820.31, 2218.99, 2704.97, 3297.4]
+_GRID_BAND = (824.35, 3297.4)
+
+
+@pytest.mark.parametrize("supplied, dense", [(_SPARSE_GRID, False), ([800.0 + 3.0 * i for i in range(900)], True)])
+def test_the_composed_grid_is_the_denser_of_the_supplied_axis_and_the_sweep(supplied, dense):
+    in_band = [f for f in supplied if _GRID_BAND[0] <= f <= _GRID_BAND[1]]
+    grid = composed_grid(_GRID_BAND, supplied)
+    assert list(grid) == (pytest.approx(in_band) if dense else pytest.approx(list(np.geomspace(*_GRID_BAND, 512))))
 
 
 @pytest.mark.parametrize("sides", [("mono",), ("left", "right")])

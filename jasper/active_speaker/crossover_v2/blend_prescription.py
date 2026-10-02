@@ -27,8 +27,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
-
 # Leaf of the crossover_v2 DAG: no session, no flow, no web. Bounds are
 # imported from the ONE biquad evaluator and from the deterministic solver
 # rather than restated, so a door's ceiling and the arithmetic it protects
@@ -53,7 +51,6 @@ __all__ = [
     "BlendPrescription",
     "BlendPrescriptionRefused",
     "blend_prescription_to_candidate_fields",
-    "composed_grid",
     "find_prohibited_keys",
     "prescription_response_format",
     "prescription_sha256",
@@ -420,7 +417,7 @@ def _check_bounds(
                 BOOST_ROUTE_UNAVAILABLE,
                 f"filter {position} boosts {gain:g} dB, and a blend filter may "
                 f"only cut (gain <= {PRESCRIPTION_MAX_GAIN_DB:g} dB). Propose a "
-                "boost in the driver section",
+                "boost in the driver section, when the contract offers it",
                 field=f"filters[{position}].gain",
                 gain_db=gain,
                 max_gain_db=PRESCRIPTION_MAX_GAIN_DB,
@@ -458,30 +455,6 @@ def _check_bounds(
                 f"filter {position} gain {gain:g} dB underflows 64-bit "
                 "arithmetic and cannot be evaluated or emitted",
             )
-
-
-#: Points in a composed check's own log sweep, when it is the denser axis.
-_COMPOSED_GRID_POINTS = 512
-
-
-def composed_grid(
-    band_hz: tuple[float, float], freqs_hz: Sequence[float] | np.ndarray | None
-) -> np.ndarray:
-    """The axis a composed cascade is read on.
-
-    The DENSER of the supplied grid inside the band and a log sweep over it,
-    never whichever happens to be supplied — a coarse axis steps over a
-    narrow filter's peak (measured: up to 0.43 dB under-read at the eight-bin
-    floor), which would make a composed bound a property of the evidence
-    document rather than of the filters.
-    """
-    lo, hi = band_hz
-    sweep = np.geomspace(lo, hi, _COMPOSED_GRID_POINTS)
-    if freqs_hz is None or len(freqs_hz) == 0:
-        return sweep
-    supplied = np.asarray(freqs_hz, dtype=np.float64)
-    inside = supplied[(supplied >= lo) & (supplied <= hi)]
-    return inside if inside.size > sweep.size else sweep
 
 
 def _parse_prescription(

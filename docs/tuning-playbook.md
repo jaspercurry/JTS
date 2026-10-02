@@ -632,7 +632,7 @@ Speaker
 | blend.cut_rule | "a cut (gain <= 0) carries no depth ceiling and no composed ceiling: any depth the arithmetic can evaluate is admitted, and the round's own measured verify with auto-restore is the net. Its Q must sit in [0.0001, 1e+06] (ADR-0207) -- not a policy ceiling but the range this system's evaluator and emitter realize faithfully" | rule | blend.bounds.cuts_are_free |
 | blend.filters | 2 | count | contract.speaker.blend.bounds.max_filters |
 | blend.filter_type | "Peaking" | type | contract.speaker.blend.schema.properties.filters.items.properties.biquad_type.const |
-| blend.boost_route | {"status":"unavailable","reason":"boost_route_unavailable","detail":"Propose a boost in the driver section."} | rule | contract.speaker.blend.bounds.boost_route |
+| blend.boost_route | {"status":"unavailable","reason":"boost_route_unavailable","detail":"Propose a boost in the driver section, when the contract offers it."} | rule | contract.speaker.blend.bounds.boost_route |
 | alignment.lobe | half_period_us(fc_hz) | us | timing.half_period_us |
 | alignment.lobe_applies_to | "abs(delay_us - basis_delay_us), disclosure only" | us | contract.speaker.alignment.bounds.lobe_applies_to |
 | alignment.SNR_floor | 35.0 | dB | quality.DRIVER.alignment_snr_ok_db |
