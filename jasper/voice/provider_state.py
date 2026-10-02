@@ -99,17 +99,9 @@ ProviderStateStatus = Literal[
 
 @dataclass(frozen=True)
 class ActiveProviderState:
-    """Status-bearing read of the active-provider SSOT file.
-
-    ``provider`` / ``model`` keep the old display contract: empty and
-    ``None`` mean no usable provider. ``status`` preserves why, so
-    diagnostics can distinguish first-time setup from a permission
-    problem or bad value instead of collapsing every failure into
-    "unset".
-    """
+    """Provider selection with the reason an unusable selection failed."""
 
     provider: str
-    model: str | None
     status: ProviderStateStatus
     path: str
     raw_provider: str = ""
@@ -166,11 +158,10 @@ def read_active_provider_state(path: str | None = None) -> ActiveProviderState:
     resolved = _resolve_path(path)
     file_state = read_env_file_state(resolved)
     if file_state.status == "missing":
-        return ActiveProviderState("", None, "missing", resolved)
+        return ActiveProviderState("", "missing", resolved)
     if file_state.status == "unreadable":
         return ActiveProviderState(
             "",
-            None,
             "unreadable",
             resolved,
             error=file_state.error,
@@ -182,18 +173,13 @@ def read_active_provider_state(path: str | None = None) -> ActiveProviderState:
     if not provider:
         return ActiveProviderState(
             "",
-            None,
             "invalid" if raw else "unset",
             resolved,
             raw_provider=raw,
         )
 
-    entry = provider_by_id(provider)
-    assert entry is not None
-    model = (env.get(entry.model_env) or "").strip()
     return ActiveProviderState(
         provider,
-        model or default_model_id(provider),
         "configured",
         resolved,
         raw_provider=raw,
