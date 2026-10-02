@@ -460,7 +460,7 @@ def test_ceiling_supersession_logs_event(caplog):
         woofer_peak=-8, tweeter_peak=None, sensitivities=_JTS3_SENSITIVITIES,
     )
     with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
+        logging.DEBUG, logger="jasper.active_speaker.excitation_safety_plan"
     ):
         resolve_driver_excitation_ceilings(
             profile,
@@ -470,7 +470,7 @@ def test_ceiling_supersession_logs_event(caplog):
     assert event_records(caplog, "active_speaker.excitation_ceiling_superseded")
     caplog.clear()
     with caplog.at_level(
-        logging.INFO, logger="jasper.active_speaker.excitation_safety_plan"
+        logging.DEBUG, logger="jasper.active_speaker.excitation_safety_plan"
     ):
         resolve_driver_excitation_ceilings(
             profile,
