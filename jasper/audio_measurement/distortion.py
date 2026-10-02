@@ -10,7 +10,7 @@ response in every deconvolution. :mod:`jasper.audio_measurement.deconv` owns
 the windowing kernels and :func:`jasper.audio_measurement.analysis.thd_curve`
 the ratio; this module composes them and adds how much pre-guard the
 deconvolution needs so the images exist at all.
-:data:`jasper.audio_measurement.program_analysis.DECONV_PRE_GUARD_S` (0.25 s)
+:data:`jasper.audio_measurement.excitation.DECONV_PRE_GUARD_S` (0.25 s)
 is far SMALLER than those advances (the shipped 150-4000 Hz MEASURE woofer
 sweep has ``L = 1.2200 s``: H2 leads by ≈0.85 s, H3 by ≈1.34 s) and
 deconvolution is circular, so analysis re-deconvolves the SAME capture bytes at

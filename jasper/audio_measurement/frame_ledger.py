@@ -56,7 +56,7 @@ def _count(value: Any) -> int | None:
 @dataclass(frozen=True)
 class FrameLedger:
     """Every frame count the capture chain can state. ``None`` means "not reported", never zero,
-    matching :class:`~.program_analysis.CaptureIntegrity`'s convention."""
+    matching :class:`~.program_analysis.model.CaptureIntegrity`'s convention."""
 
     #: Taken BEFORE ``cap_capture_length`` truncates.
     received_frames: int

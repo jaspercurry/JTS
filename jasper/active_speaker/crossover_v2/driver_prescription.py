@@ -120,7 +120,7 @@ DRIVER_PRESCRIPTION_MAX_BYTES = 32 * 1024
 
 #: The candidate field a per-driver prescription lands in: the role-keyed
 #: ``MeasuredCrossoverCandidate.linearization`` the Layer-1a fit already
-#: writes, re-validated by ``camilla_yaml._validated_linearization`` before any
+#: writes, re-validated by ``camilla_yaml.filters._validated_linearization`` before any
 #: of it reaches CamillaDSP.
 LINEARIZATION_CANDIDATE_FIELD = "linearization"
 
@@ -169,7 +169,7 @@ DRIVER_MIN_BOOST_DB = DRIVER_MIN_CUT_DB
 
 #: How many filters one role may carry — ``linearization_fit.
 #: MAX_FILTERS_PER_DRIVER``, which is also the emitter's own
-#: ``camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER``, so a prescription
+#: ``camilla_yaml.filters.MAX_LINEARIZATION_FILTERS_PER_DRIVER``, so a prescription
 #: past it cannot be accepted here and refused at emission.
 DRIVER_MAX_FILTERS_PER_ROLE = 8
 
@@ -380,7 +380,7 @@ class DriverPrescription:
         """This role's filters, in emission order, with ``role`` stripped.
 
         The emitter's per-branch shape is ``{biquad_type, freq, q, gain}`` and
-        ``camilla_yaml._validated_biquad_entry`` refuses the extra field.
+        ``camilla_yaml.filters._validated_biquad_entry`` refuses the extra field.
         """
         return tuple(
             {key: value for key, value in entry.items() if key != "role"}

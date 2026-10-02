@@ -35,7 +35,8 @@ from jasper.audio_measurement.admission.excitation_admission import FrequencyBan
 from jasper.audio_measurement.program import (
     KIND_PILOT, KIND_SUMMED_SWEEP, RoleBand, _finalize, is_level_probe, render_program_pcm, write_program_wav,
 )
-from jasper.audio_measurement.program_analysis import MeasurementGeometry, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, analyze_program_capture
+from jasper.audio_measurement.program_analysis import MeasurementGeometry, analyze_program_capture
+from jasper.audio_measurement.program_analysis.model import SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.repeated_sweep import align_summed_capture, average_summed_capture, repeat_summed_program, sweep_ambient_id
 from jasper.audio_measurement.sweep_levels import sweep_band_levels

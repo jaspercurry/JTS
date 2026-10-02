@@ -46,10 +46,8 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2.intervention import anchor_trims
-from jasper.audio_measurement.program_analysis import (
-    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    solve_branch_trims,
-)
+from jasper.audio_measurement.program_analysis import solve_branch_trims
+from jasper.audio_measurement.program_analysis.model import REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 WOOFER = "woofer"
 TWEETER = "tweeter"

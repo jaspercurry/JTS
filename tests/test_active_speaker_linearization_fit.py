@@ -514,9 +514,8 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     correction to a magnitude scale (``W * 10**(db/20)``), this test fails.
     """
     from jasper.audio_measurement.analysis import notch_excluded_tracking_error_db
-    from jasper.audio_measurement.program_analysis import (
-        VERIFY_NOTCH_EXCLUSION_DB, predicted_branch_sum,
-    )
+    from jasper.audio_measurement.program_analysis.model import VERIFY_NOTCH_EXCLUSION_DB
+    from jasper.audio_measurement.program_analysis.response import predicted_branch_sum
 
     fc = 2000.0
     freqs = np.geomspace(500.0, 8000.0, 4096)
@@ -1355,7 +1354,7 @@ def test_cd_horn_taper_corner_is_clamped_below_nyquist_never_skipped(
     Reference's ceiling is 20 kHz (the grid's own top edge, since the
     2026-08-29 horn-droop correction ruling), where the designed corner would
     be 25 kHz -- past the 48 kHz runtime's 24 kHz Nyquist, which
-    ``camilla_yaml._validated_biquad_entry`` refuses outright. There the
+    ``camilla_yaml.filters._validated_biquad_entry`` refuses outright. There the
     corner is CLAMPED into the only interval that is legal at all, strictly
     between the ceiling (below it the shelf would cut inside the measured
     band) and Nyquist; the relaxation the policy designs still ships.

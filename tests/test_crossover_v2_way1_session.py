@@ -43,11 +43,8 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_TIMING,
     PHASE_MEASURE,
 )
-from jasper.audio_measurement.program_analysis import (
-    MEASURE_PAIR_SINGLE_DRIVER,
-    MeasurementPriors,
-    analyze_program_capture,
-)
+from jasper.audio_measurement.program_analysis import MeasurementPriors, analyze_program_capture
+from jasper.audio_measurement.program_analysis.dispatch import MEASURE_PAIR_SINGLE_DRIVER
 
 from tests.crossover_v2_fixtures import (
     WAY1_BAND,

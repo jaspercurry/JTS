@@ -33,7 +33,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.camilla_yaml.filters import _validated_blend_correction
 from jasper.active_speaker.branch_chain import chain_response
 from jasper.active_speaker.crossover_v2.blend_correction import (
     BLEND_MAX_FILTER_CUT_DB,
@@ -1171,7 +1171,7 @@ def test_a_deep_narrow_cut_survives_the_emitters_own_re_validation(packet):
     accepted = _gate(packet, _document([_cut(gain=-6.0, q=14.0)], packet))
     filters = list(accepted.filters)
     assert blend_filters_from_mapping(filters) == tuple(filters)
-    revalidated = camilla_yaml._validated_blend_correction(filters)
+    revalidated = _validated_blend_correction(filters)
     assert revalidated[0]["q"] == 14.0
     assert "q: 14.0000" in "\n".join(
         emit_peaking_biquad("blend1", freq=1400.0, q=14.0, gain=-6.0)

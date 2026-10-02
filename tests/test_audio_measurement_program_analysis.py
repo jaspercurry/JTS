@@ -44,6 +44,12 @@ from jasper.audio_measurement.program_analysis.response import (
     _ripple_db,
     _select_alignment_pair,
     _select_summed_alignment_pair,
+    n_fft_for,
+    branch_level_bands_hz,
+    predicted_branch_sum,
+    solve_ripple_optimal_trim,
+    summed_model_residual_delay_us,
+    driver_response,
 )
 from scipy.signal import butter, fftconvolve, resample_poly, sosfilt, sosfreqz
 
@@ -90,23 +96,20 @@ from jasper.audio_measurement.comparison_bands import (
     overlap_band_hz,
 )
 from jasper.audio_measurement.program_analysis import alignment_pairs, dispatch
-from jasper.audio_measurement.program_analysis.model import AppliedAlignment, DriverResponse, SummedAlignmentReference
-from jasper.audio_measurement.program_analysis import (
+from jasper.audio_measurement.program_analysis.model import (
+    AppliedAlignment,
+    DriverResponse,
+    SummedAlignmentReference,
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     ALIGNMENT_FLATNESS_MAX_STEPS,
     ALIGNMENT_FLATNESS_STEP_US,
-    ALIGNMENT_OK,
     ALIGNMENT_SNR_REFUSAL_VERDICT,
-    AMBIENT_MIN_USABLE_FRACTION,
     AMBIENT_NONSTATIONARITY_DB,
     CAPTURE_BOUND_MARGIN_S,
     GAIN_MAX_DIGITAL_PEAK_DBFS,
     GCC_SNAP_RADIUS_PERIODS,
-    IR_POST_MS,
-    IR_PRE_MS,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
-    ConfiguredPathConditioningError,
     ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
     GAIN_BOUND_CAPTURE_FLOOR,
     GAIN_BOUND_DEGENERATE_AMBIENT,
@@ -124,32 +127,53 @@ from jasper.audio_measurement.program_analysis import (
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
     SWEEP_PEAK_TO_RMS_DB,
     AlignmentEstimate,
+    PilotObservation,
+    DRIVER_SNR_ALIGNMENT_KEY,
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
+    CHANNEL_MAP_TARGET_RISE_DB,
+    CHANNEL_MAP_MIN_ISOLATION_DB,
+    MAX_DRIFT_PPM,
+    GLITCH_RESIDUAL_SAMPLES,
+    DriftEstimate,
+    DISCONTINUITY_UNRESOLVED,
+    VERIFY_TRACKING_SMOOTHING_FRACTION,
+    VERIFY_NOTCH_EXCLUSION_DB,
+    sweep_band_crest_factor_db,
+)
+from jasper.audio_measurement.program_analysis import (
+    ALIGNMENT_OK,
+    IR_POST_MS,
+    IR_PRE_MS,
+    ConfiguredPathConditioningError,
     MeasurementGeometry,
     MeasurementPriors,
-    PilotObservation,
     deconvolve_window,
-    locate_global_offset,
-    locate_segments,
-    n_fft_for,
+    analysis_diagnostic_summary,
+    analyze_program_capture,
+    solve_branch_trims,
+)
+from jasper.audio_measurement.program_analysis.locate import locate_global_offset, locate_segments
+from jasper.audio_measurement.program_analysis.summary import (
+    driver_alignment_snr_verdict,
+    driver_snr_verdict,
+)
+from jasper.audio_measurement.program_analysis.check import (
+    _ambient_from_capture,
+    _band_exclusive_pieces,
+    _solve_gain_plan,
+    AMBIENT_MIN_USABLE_FRACTION,
     clears_snr_floor,
+    ambient_rows_in_band,
+    channel_map_isolation_db,
+)
+from jasper.audio_measurement.program_analysis.dispatch import (
+    _build_candidate,
+    _compose_configured_path_ir,
     ABSOLUTE_NO_FC,
     ABSOLUTE_NO_TARGET,
     ABSOLUTE_NO_TRUSTED_BAND,
-    analysis_diagnostic_summary,
-    analyze_program_capture,
-    DRIVER_SNR_ALIGNMENT_KEY,
-    driver_alignment_snr_verdict,
-    driver_snr_verdict,
-    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
-    branch_level_bands_hz,
-    predicted_branch_sum,
-    solve_branch_trims,
-    solve_ripple_optimal_trim,
-    summed_model_residual_delay_us,
 )
-from jasper.audio_measurement.program_analysis.check import _ambient_from_capture, _band_exclusive_pieces, _solve_gain_plan
-from jasper.audio_measurement.program_analysis.dispatch import _build_candidate, _compose_configured_path_ir
-from jasper.audio_measurement.program_analysis.drift import _sweep_occurrence_index
+from jasper.audio_measurement.program_analysis.drift import _sweep_occurrence_index, estimate_drift
 from jasper.audio_measurement.program_analysis.signals import _band_average_db, _complex_tf, _peak_dbfs
 from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
@@ -1023,13 +1047,13 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
         {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
     ]}
 
-    unpaired = program_analysis.driver_response(
+    unpaired = driver_response(
         "woofer", ir, SR, calibration=None, ambient_report=raw_report,
         fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
     )
     assert unpaired.snr is None
 
-    deconvolved = program_analysis.driver_response(
+    deconvolved = driver_response(
         "woofer", ir, SR, calibration=None,
         ambient_report={**raw_report, "domain": "deconvolved"},
         fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
@@ -1042,7 +1066,7 @@ def test_driver_snr_verdict_is_absent_rather_than_computed_across_domains():
     # A segment that is present but degenerate — a capture truncated before
     # this sweep — reaches "not measured" by the other spelling: a block that
     # says `unknown` over zero bands, never a number.
-    degenerate = program_analysis.driver_response(
+    degenerate = driver_response(
         "woofer", ir, SR, calibration=None, ambient_report=raw_report,
         fc_hz=FC_HZ, n_fft=8192, capture_segment=np.zeros(0),
     )
@@ -1064,7 +1088,7 @@ def test_diagnostic_summary_names_the_band_behind_each_driver_snr_pair():
     ambient = {"schema_version": 1, "domain": "deconvolved", "bands": [
         {"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": -90.0},
     ]}
-    resp = program_analysis.driver_response(
+    resp = driver_response(
         "woofer", ir, SR, calibration=None, ambient_report=ambient,
         fc_hz=FC_HZ, n_fft=8192, capture_segment=None,
     )
@@ -1417,7 +1441,7 @@ def test_midcapture_splice_is_attributed_to_a_discontinuity_not_drift():
     # never fired on either real hardware glitch.
     assert "residual_desync" in res.drift.glitch_inputs
     assert "epsilon_out_of_bound" not in res.drift.glitch_inputs
-    assert abs(res.drift.epsilon_ppm) < program_analysis.MAX_DRIFT_PPM
+    assert abs(res.drift.epsilon_ppm) < MAX_DRIFT_PPM
     # …and the step itself is named, with its size and where it landed.
     assert res.drift.discontinuity_samples == pytest.approx(64.0, abs=2.0)
     assert res.drift.discontinuity_after_segment == "sweep_w"
@@ -1443,7 +1467,7 @@ def _pre_d7_max_residual(prog, locations, epsilon):
     """
     groups: dict[str, list[float]] = {}
     for loc in locations:
-        if loc.kind != program_analysis.KIND_SWEEP:
+        if loc.kind != KIND_SWEEP:
             continue
         start = prog.segment(loc.segment_id).start_sample
         groups.setdefault(loc.role, []).append(
@@ -1499,14 +1523,14 @@ def test_integer_locate_lobe_hop_on_a_clean_capture_is_not_a_desync():
         else loc
         for loc in res.locations
     ]
-    clean = program_analysis.estimate_drift(prog, cap, SR, res.locations)
-    hopped = program_analysis.estimate_drift(prog, cap, SR, hopped_locations)
+    clean = estimate_drift(prog, cap, SR, res.locations)
+    hopped = estimate_drift(prog, cap, SR, hopped_locations)
 
     # The defect is reproduced: read off the integer locate, those same
     # locations land squarely in the banked 2.00-3.13 band and trip the gate.
     pre_d7 = _pre_d7_max_residual(prog, hopped_locations, hopped.epsilon_ppm / 1e6)
     assert pre_d7 == pytest.approx(3.0, abs=0.05)
-    assert pre_d7 > program_analysis.GLITCH_RESIDUAL_SAMPLES
+    assert pre_d7 > GLITCH_RESIDUAL_SAMPLES
 
     # The shipped guard is unmoved — a locate that hopped is not a capture that
     # desynced. Four samples of injected locate error move the answer by six
@@ -1852,7 +1876,7 @@ def test_unlocatable_sweeps_report_unresolved_not_a_fabricated_discontinuity(
         prog, spliced, sweep_locs
     )
     if expect_unresolved:
-        assert step == program_analysis.DISCONTINUITY_UNRESOLVED
+        assert step == DISCONTINUITY_UNRESOLVED
         assert after == ""
     else:
         assert step == pytest.approx(64.0, abs=2.0)
@@ -1866,18 +1890,18 @@ def test_discontinuity_unresolved_survives_the_durable_diagnostic_summary():
     holds ``DISCONTINUITY_UNRESOLVED`` instead of a number. This is the
     "must never raise" operator-retention-sidecar path
     (``analysis_diagnostic_summary``'s own docstring)."""
-    drift = program_analysis.DriftEstimate(
+    drift = DriftEstimate(
         epsilon_ppm=0.0,
         max_residual_samples=0.0,
         glitch_detected=False,
-        discontinuity_samples=program_analysis.DISCONTINUITY_UNRESOLVED,
+        discontinuity_samples=DISCONTINUITY_UNRESOLVED,
         discontinuity_after_segment="",
     )
     analysis = program_analysis.ProgramAnalysis(
         phase=PROGRAM_PHASE_MEASURE, stimulus_id="test", locations=(), drift=drift,
     )
     summary = analysis_diagnostic_summary(analysis)
-    assert summary["discontinuity_samples"] == program_analysis.DISCONTINUITY_UNRESOLVED
+    assert summary["discontinuity_samples"] == DISCONTINUITY_UNRESOLVED
 
 
 def test_glitch_log_event_survives_an_unresolved_discontinuity(caplog):
@@ -1905,7 +1929,7 @@ def test_glitch_log_event_survives_an_unresolved_discontinuity(caplog):
             prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
         )
     assert res.glitch_detected
-    assert res.drift.discontinuity_samples == program_analysis.DISCONTINUITY_UNRESOLVED
+    assert res.drift.discontinuity_samples == DISCONTINUITY_UNRESOLVED
     fields = event_fields(caplog, "program_analysis.glitch")
     assert fields["discontinuity_samples"] == "unresolved"
 
@@ -4017,7 +4041,7 @@ def test_ambient_rows_in_band_skips_rows_it_cannot_read():
     `snr_policy.unwrap_noise_report`'s legacy bare-band shape), so a row it
     cannot read must cost it that row's evidence — never raise inside CHECK's
     accept path."""
-    rows = program_analysis.ambient_rows_in_band(
+    rows = ambient_rows_in_band(
         (150.0, 1200.0),
         [
             {"band_id": "upper_bass", "band_hz": [160.0, 350.0], "level_dbfs": -60.0},
@@ -4280,7 +4304,7 @@ def test_sweep_band_crest_factor_matches_the_rendered_sweep():
             lo_clipped, hi_clipped = max(lo, f1), min(hi, f2)
             if hi_clipped <= lo_clipped:
                 continue
-            predicted = program_analysis.sweep_band_crest_factor_db(
+            predicted = sweep_band_crest_factor_db(
                 (f1, f2), (lo, hi)
             )
             measured = measured_crest_db(
@@ -4796,9 +4820,9 @@ def test_channel_map_accepts_every_measured_session_level(
     assert target_rise == pytest.approx(target_rise_db, abs=0.5), label
     assert cross_rise == pytest.approx(cross_rise_db, abs=0.5), label
 
-    isolation = program_analysis.channel_map_isolation_db(target_rise, cross_rise)
+    isolation = channel_map_isolation_db(target_rise, cross_rise)
     assert isolation == pytest.approx(target_rise_db - cross_rise_db, abs=1.0), label
-    assert isolation > program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB, label
+    assert isolation > CHANNEL_MAP_MIN_ISOLATION_DB, label
     assert ok is True, (
         f"{label}: {role} isolation {isolation:.1f} dB refused — a healthy "
         "speaker measured at an honest level is being told to rewire itself"
@@ -4833,10 +4857,10 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     at a target rise the retired proxy left unjudged, deferred one phase to the
     SNR gates instead of refused here.
     """
-    floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
+    floor = CHANNEL_MAP_TARGET_RISE_DB
 
     both_bands_ok, both_target, both_cross = _isolation_case("woofer", 50.0, 50.0, seed=901)
-    assert program_analysis.channel_map_isolation_db(
+    assert channel_map_isolation_db(
         both_target, both_cross,
     ) == pytest.approx(0.0, abs=1.0)
     assert both_cross > floor, (
@@ -4846,7 +4870,7 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     assert both_bands_ok is False
 
     bleed_ok, bleed_target, bleed_cross = _isolation_case("woofer", 50.0, 40.0, seed=902)
-    assert program_analysis.channel_map_isolation_db(
+    assert channel_map_isolation_db(
         bleed_target, bleed_cross,
     ) == pytest.approx(10.0, abs=1.0)
     assert bleed_cross > floor
@@ -4855,7 +4879,7 @@ def test_channel_map_refuses_abnormal_cross_band_energy():
     neg_ok, neg_target, neg_cross = _isolation_case("woofer", 13.5, 38.5, seed=903)
     assert neg_target == pytest.approx(13.5, abs=0.5)
     assert neg_cross == pytest.approx(38.5, abs=0.5)
-    assert program_analysis.channel_map_isolation_db(
+    assert channel_map_isolation_db(
         neg_target, neg_cross,
     ) < 0.0
     assert neg_ok is False
@@ -4887,14 +4911,14 @@ def test_channel_map_cross_test_never_eats_the_target_floor():
     self-justifying by construction — the WRONG band cleared the very bar we
     demand of a driver that played. Nothing merely quiet can manufacture that.
     """
-    floor = program_analysis.CHANNEL_MAP_TARGET_RISE_DB
-    bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
+    floor = CHANNEL_MAP_TARGET_RISE_DB
+    bound = CHANNEL_MAP_MIN_ISOLATION_DB
 
     # The regression itself, on the real validator.
     ok, target_rise, cross_rise = _isolation_case("woofer", 13.50, 1.72, seed=904)
     assert target_rise == pytest.approx(13.50, abs=0.5)
     assert cross_rise == pytest.approx(1.72, abs=0.5)
-    isolation = program_analysis.channel_map_isolation_db(target_rise, cross_rise)
+    isolation = channel_map_isolation_db(target_rise, cross_rise)
     assert isolation < bound, (
         "premise: this capture's ratio IS under the bound — if it were not, "
         "the guard below would be untested"
@@ -4928,10 +4952,10 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
     # rather than by identity (`np.asarray` may or may not copy).
     ambient = np.full(64, 1.0)
     pilot = np.full(64, 2.0)
-    bound = program_analysis.CHANNEL_MAP_MIN_ISOLATION_DB
+    bound = CHANNEL_MAP_MIN_ISOLATION_DB
     # Scripted cross rises land at ``target_rise - bound``; keep those well
     # above the TARGET floor so the ratio is actually judged (#2801).
-    target_rise = program_analysis.CHANNEL_MAP_TARGET_RISE_DB + bound + 30.0
+    target_rise = CHANNEL_MAP_TARGET_RISE_DB + bound + 30.0
 
     def _script(cross_rise: float):
         def _rms(samples, sample_rate, f1, f2):
@@ -4948,7 +4972,7 @@ def test_channel_map_isolation_boundary_is_inclusive_at_the_bound(monkeypatch):
 
     at_bound = _run(target_rise - bound)          # isolation == bound exactly
     assert at_bound[0] is True
-    assert program_analysis.channel_map_isolation_db(
+    assert channel_map_isolation_db(
         at_bound[1], at_bound[2],
     ) == pytest.approx(bound)
 
@@ -4965,11 +4989,11 @@ def test_channel_map_isolation_is_one_definition_not_two():
     sees beside a refusal is the ratio that caused it. A missing rise is "no
     evidence" — `None`, never a number a caller could mistake for a pass.
     """
-    assert program_analysis.channel_map_isolation_db(48.5, 4.13) == pytest.approx(44.37)
-    assert program_analysis.channel_map_isolation_db(53.4, -0.79) == pytest.approx(54.19)
-    assert program_analysis.channel_map_isolation_db(None, 1.0) is None
-    assert program_analysis.channel_map_isolation_db(20.0, None) is None
-    assert program_analysis.channel_map_isolation_db(None, None) is None
+    assert channel_map_isolation_db(48.5, 4.13) == pytest.approx(44.37)
+    assert channel_map_isolation_db(53.4, -0.79) == pytest.approx(54.19)
+    assert channel_map_isolation_db(None, 1.0) is None
+    assert channel_map_isolation_db(20.0, None) is None
+    assert channel_map_isolation_db(None, None) is None
 
 
 # CHECK channel map — honest-unknown on the no-ambient fallback (issue #2052)
@@ -5393,14 +5417,14 @@ def test_verify_tracking_smooths_measured_and_predicted_curves_equally():
     measured_smoothed = analysis_mod.smooth_fractional_octave(
         response.freqs_hz,
         response.magnitude_db,
-        program_analysis.VERIFY_TRACKING_SMOOTHING_FRACTION,
+        VERIFY_TRACKING_SMOOTHING_FRACTION,
     )
     _old_rms, old_max = analysis_mod.notch_excluded_tracking_error_db(
         response.freqs_hz,
         measured_smoothed,
         response.magnitude_db,
         (FC_HZ / 2.0, FC_HZ * 2.0),
-        notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+        notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
     )
     assert old_max > 1.5
 
@@ -5647,7 +5671,7 @@ def test_the_frame_disclosure_never_moves_the_raw_grade():
     assert tracking["max_db"] == max_abs
     _rms_excl, max_excl = analysis_mod.notch_excluded_tracking_error_db(
         freqs, measured_db, predicted_db, band,
-        notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+        notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
         notch_reference_db=np.interp(freqs, pred_freqs, tilted),
     )
     assert tracking["max_db_notch_excluded"] == max_excl
@@ -5693,7 +5717,7 @@ def test_notch_mask_uses_raw_prediction_when_comparison_is_smoothed():
     smoothed_predicted_db = analysis_mod.smooth_fractional_octave(
         freqs,
         raw_predicted_db,
-        program_analysis.VERIFY_TRACKING_SMOOTHING_FRACTION,
+        VERIFY_TRACKING_SMOOTHING_FRACTION,
     )
     # The narrow raw notch is lifted above the 12 dB mask threshold by the
     # comparison smoothing. Put the only mismatch at that modeled-notch bin.
@@ -5707,7 +5731,7 @@ def test_notch_mask_uses_raw_prediction_when_comparison_is_smoothed():
             measured_db,
             smoothed_predicted_db,
             (500.0, 8000.0),
-            notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+            notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
         )
     )
     raw_mask_rms, raw_mask_max = analysis_mod.notch_excluded_tracking_error_db(
@@ -5715,7 +5739,7 @@ def test_notch_mask_uses_raw_prediction_when_comparison_is_smoothed():
         measured_db,
         smoothed_predicted_db,
         (500.0, 8000.0),
-        notch_exclusion_db=program_analysis.VERIFY_NOTCH_EXCLUSION_DB,
+        notch_exclusion_db=VERIFY_NOTCH_EXCLUSION_DB,
         notch_reference_db=raw_predicted_db,
     )
 
@@ -6963,7 +6987,7 @@ def _cdhorn_run5_analysis(monkeypatch):
     )
     capture = load(sorted(glob.glob(f"{CDHORN_ROOT}/*run5_measure.wav"))[-1])
     offset = sweep_anchored_global_offset(capture, program.segment("sweep_w"))
-    real_global_offset = program_analysis.locate_global_offset
+    real_global_offset = locate_global_offset
     monkeypatch.setattr(
         program_analysis.dispatch,
         "locate_global_offset",

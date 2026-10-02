@@ -41,9 +41,11 @@ from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB, timing_verification
-from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_OK, ALIGNMENT_ESTIMATED_FLAT_SUM,
-    AlignmentEstimate, CrossoverCandidate, DriverResponse, ProgramAnalysis,
+from jasper.audio_measurement.program_analysis import ALIGNMENT_OK, DriverResponse, ProgramAnalysis
+from jasper.audio_measurement.program_analysis.model import (
+    ALIGNMENT_ESTIMATED_FLAT_SUM,
+    AlignmentEstimate,
+    CrossoverCandidate,
 )
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round

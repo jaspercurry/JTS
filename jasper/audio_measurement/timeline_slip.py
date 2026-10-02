@@ -6,7 +6,7 @@
 isochronous capture can gain/lose whole samples with no ALSA error (Stage-0 bank, jts3: 3/577
 captures at +1.986 to +7.008 samples), biasing woofer-vs-tweeter timing in the interleaved
 ``w1 t1 w2 t2 w3 t3`` schedule (at 2 kHz, 41 us is ~30 degrees against a 10-15 degree budget).
-The shipped spread guard (``program_analysis.GLITCH_RESIDUAL_SAMPLES``) stays calibrated
+The shipped spread guard (``program_analysis.model.GLITCH_RESIDUAL_SAMPLES``) stays calibrated
 as-is; this module estimates the step directly and requires it to explain the capture. Pure and
 hardware-free: plain float sequences, never an ``ExcitationProgram`` or ``SegmentLocation``.
 """

@@ -35,7 +35,8 @@ from jasper.audio_measurement.evidence_reasons import (
 )
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S, build_verify_program, render_program_pcm
-from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S, analyze_program_capture
+from jasper.audio_measurement.program_analysis import analyze_program_capture
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S
 from jasper.audio_measurement.program_analysis import dispatch as analysis_dispatch
 from jasper.audio_measurement.program_analysis.response import recorded_impulse
 from jasper.audio_measurement.quality_model import TrustLevel

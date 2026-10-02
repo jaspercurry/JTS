@@ -16,6 +16,10 @@ import pytest
 
 from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.camilla_yaml.filters import (
+    _validated_linearization,
+    MAX_LINEARIZATION_FILTERS_PER_DRIVER,
+)
 from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
 from tests.active_speaker_fixtures import mono_output_topology
@@ -2506,7 +2510,7 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
         ]
     )
 
-    safe = camilla_yaml._validated_linearization(preset, reduced)
+    safe = _validated_linearization(preset, reduced)
 
     assert safe["tweeter"] == [{
         "biquad_type": "Peaking", "freq": TWEETER_FEATURE_HZ,
@@ -2845,7 +2849,7 @@ def test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to():
     assert DRIVER_MIN_CUT_DB == _MIN_FILTER_GAIN_DB
     assert DRIVER_MAX_FILTERS_PER_ROLE == MAX_FILTERS_PER_DRIVER
     assert DRIVER_MAX_FILTERS_PER_ROLE == (
-        camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER
+        MAX_LINEARIZATION_FILTERS_PER_DRIVER
     )
 
 
@@ -3152,7 +3156,7 @@ def test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it(tmp_path
 def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
     """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
 
-    ``camilla_yaml._emit_driver_linearization_definitions`` builds a shelf's
+    ``camilla_yaml.filters._emit_driver_linearization_definitions`` builds a shelf's
     ``FilterSpec`` with no ``q`` at all, and ``biquad.biquad_coeffs`` forces
     ``SHELF_Q`` for both shelf types whatever the record says — so a banked
     number that was not that one would be a number nothing in the loop reads.
@@ -3189,7 +3193,7 @@ def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
 def test_a_shelf_may_only_sit_where_the_emitter_can_name_it(tmp_path, filters, legal):
     """The emitter's structural rule, applied at intake instead of at emission.
 
-    ``camilla_yaml._validate_linearization_shelf_structure`` raises on any other
+    ``camilla_yaml.filters._validate_linearization_shelf_structure`` raises on any other
     placement, because position is what names the emitted filter and two
     shelves in "peak" slots would collide. A document accepted here and refused
     there is the one failure shape a gate exists to prevent, so the door

@@ -47,10 +47,8 @@ from jasper.active_speaker.camilla_yaml.emit_startup import emit_active_speaker_
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import decorate_dynamic_bass, emit_baseline, emit_program, pipeline
 import jasper.active_speaker.camilla_yaml as camilla_yaml
-from jasper.active_speaker.camilla_yaml import (
-    _assert_pipeline_references_closed,
-    emit_active_speaker_parked_config,
-)
+from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
+from jasper.active_speaker.camilla_yaml.gates import _assert_pipeline_references_closed
 from jasper.active_speaker.graph_safety import (
     TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     output_highpass_protected,

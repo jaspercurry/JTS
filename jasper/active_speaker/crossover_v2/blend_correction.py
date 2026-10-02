@@ -1,7 +1,7 @@
 """The blend correction's shared bounds, and the reader for a persisted one.
 
 A blend correction is at most :data:`BLEND_MAX_FILTERS` RBJ Peaking CUTS,
-emitted PRE-SPLIT on the stereo bus (``camilla_yaml._emit_baseline_pipeline``):
+emitted PRE-SPLIT on the stereo bus (``camilla_yaml.pipeline._emit_baseline_pipeline``):
 one ``B(f)`` on every role scales the sum and leaves the inter-driver complex
 ratio untouched, so the correction is common-mode by construction. Canonical
 contract: ``docs/active-speaker-tuning-layers-design.md``, decision 10.

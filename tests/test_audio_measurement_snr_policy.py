@@ -23,7 +23,8 @@ import math
 import numpy as np
 import pytest
 
-from jasper.audio_measurement import program_analysis, snr_policy, sweep
+from jasper.audio_measurement import snr_policy, sweep
+from jasper.audio_measurement.program_analysis.model import sweep_band_crest_factor_db
 from jasper.audio_measurement.quality import dbfs
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.sweep_levels import sweep_band_levels
@@ -192,7 +193,7 @@ def test_band_levels_dbfs_rectangular_window_matches_the_sweep_law():
         )
     }
     for band_id, lo, hi in snr_policy.SNR_BANDS_HZ:
-        predicted = peak_dbfs - program_analysis.sweep_band_crest_factor_db(
+        predicted = peak_dbfs - sweep_band_crest_factor_db(
             (f1, f2), (lo, hi)
         )
         assert levels[band_id] == pytest.approx(predicted, abs=0.3), band_id
@@ -206,7 +207,7 @@ def test_band_levels_dbfs_hann_default_still_biases_a_sweep():
     real and reproducible on demand, not an artifact of one session's log.
     """
     stimulus, peak_dbfs, f1, f2 = _room_correction_sweep()
-    predicted_sub_bass = peak_dbfs - program_analysis.sweep_band_crest_factor_db(
+    predicted_sub_bass = peak_dbfs - sweep_band_crest_factor_db(
         (f1, f2), (20.0, 80.0)
     )
     hann_levels = {
@@ -658,7 +659,7 @@ def test_band_snr_verdicts_worst_relevant_is_the_lowest_snr_ok_band():
 def test_magnitude_worst_relevant_is_the_lowest_of_equal_insufficient_bands():
     """The LIVE magnitude route, which is where the tie-break actually bites.
 
-    ``program_analysis.driver_response`` uses :func:`band_snr_verdicts` with
+    ``program_analysis.response.driver_response`` uses :func:`band_snr_verdicts` with
     ``decision_class="magnitude"``. A noisy room can put every band in the
     driver's window at the same ``insufficient`` verdict — the exact shape
     ``jasper.web.correction_crossover_backend``'s completion-time correction

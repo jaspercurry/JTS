@@ -35,6 +35,10 @@ from .transport_camilla_fixtures import (
     RETIRED_ALOOP_PLAYBACK_DEVICE,
 )
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
+from jasper.active_speaker.camilla_yaml.devices import (
+    FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
+    _assert_ring_playback_width,
+)
 from jasper.audio_hardware import reconcile as audio_hardware_reconcile
 from jasper.audio_hardware import reconcile_outputd_lane
 from jasper.dsp_control.camilla_config_contract import (
@@ -326,9 +330,9 @@ def test_forbidden_active_playback_tokens_is_a_walking_class_guard():
     """
     legitimate = tuple(sorted(OUTPUTD_LEGAL_ENDPOINT_DEVICES))
     assert legitimate, "the legal-endpoint registry is empty"
-    assert active_camilla_yaml.FORBIDDEN_ACTIVE_PLAYBACK_TOKENS, "guard is empty"
+    assert FORBIDDEN_ACTIVE_PLAYBACK_TOKENS, "guard is empty"
     for device in legitimate:
-        for token in active_camilla_yaml.FORBIDDEN_ACTIVE_PLAYBACK_TOKENS:
+        for token in FORBIDDEN_ACTIVE_PLAYBACK_TOKENS:
             assert token.lower() not in device.lower(), (
                 f"forbidden token {token!r} is a substring of the LEGITIMATE "
                 f"active device {device!r} — every active emit onto it would be "
@@ -341,7 +345,7 @@ def test_the_stereo_ring_is_a_forbidden_active_playback_target():
     # Q5: an active graph carries post-crossover per-driver channels; Ring B
     # carries a full-range stereo program to a stereo sink. Targeting it would
     # put per-driver audio on a full-range path.
-    assert RING_PLAYBACK_DEVICE in active_camilla_yaml.FORBIDDEN_ACTIVE_PLAYBACK_TOKENS
+    assert RING_PLAYBACK_DEVICE in FORBIDDEN_ACTIVE_PLAYBACK_TOKENS
 
 
 # --------------------------------------------------------------------------
@@ -1576,23 +1580,23 @@ def test_an_active_ring_emit_refuses_a_width_the_ring_cannot_carry(monkeypatch):
     ring instead of refusing it. Refusing at emit means the thing that caused the
     shear reports it.
     """
-    from jasper.active_speaker.camilla_yaml import ActiveSpeakerConfigError
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     with pytest.raises(ActiveSpeakerConfigError, match="active-ring playback"):
-        active_camilla_yaml._assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 9)
+        _assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 9)
     with pytest.raises(ActiveSpeakerConfigError, match="active-ring playback"):
-        active_camilla_yaml._assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 1)
+        _assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 1)
     # In range: silent.
-    active_camilla_yaml._assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 8)
+    _assert_ring_playback_width(RING_ACTIVE_PLAYBACK_DEVICE, 8)
     # A NON-ring device is never judged — this is a no-op on every box today.
-    active_camilla_yaml._assert_ring_playback_width(ACTIVE_OUTPUTD_PLAYBACK_DEVICE, 99)
+    _assert_ring_playback_width(ACTIVE_OUTPUTD_PLAYBACK_DEVICE, 99)
 
 
 def test_the_width_refusal_actually_fires_through_an_emitter(monkeypatch):
     """Exercise the ring width guard and pin every remaining emit call site."""
     import re as _re
 
-    from jasper.active_speaker.camilla_yaml import ActiveSpeakerConfigError
+    from jasper.active_speaker.profile import ActiveSpeakerConfigError
 
     preset = _mono_two_way_preset()  # 2 outputs (woofer + tweeter)
     monkeypatch.setattr(
@@ -2001,10 +2005,8 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
 
     from tests.active_speaker_fixtures import compile_applied_fixture
     from jasper.active_speaker import baseline_profile
-    from jasper.active_speaker.camilla_yaml import (
-        ActiveEmitDevices,
-        active_emit_devices,
-    )
+    from jasper.active_speaker.camilla_yaml import active_emit_devices
+    from jasper.active_speaker.camilla_yaml.devices import ActiveEmitDevices
 
     fields = [f.name for f in dataclasses.fields(ActiveEmitDevices)]
     assert fields, "ActiveEmitDevices lost its fields; this guard is now vacuous"

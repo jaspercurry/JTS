@@ -24,9 +24,9 @@ from jasper.active_speaker.crossover_v2.take_impulses import (
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
 from jasper.audio_measurement.program import DEFAULT_VERIFY_TAIL_S, build_measure_program, build_verify_program
-from jasper.audio_measurement.program_analysis import (
-    DECONV_PRE_GUARD_S, MeasurementPriors, RecordedImpulse, analyze_program_capture,
-)
+from jasper.audio_measurement.program_analysis import MeasurementPriors, analyze_program_capture
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S
+from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.audio_measurement.program_analysis.response import recorded_impulse
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import _verify_analysis, bank_capture_round, capture_record

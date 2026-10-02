@@ -10,9 +10,9 @@ import types
 import pytest
 from dataclasses import replace
 from jasper.active_speaker.crossover_v2.alignment_prescription import alignment_to_candidate_fields
-from jasper.audio_measurement.program_analysis import (
+from jasper.audio_measurement.program_analysis import ALIGNMENT_OK
+from jasper.audio_measurement.program_analysis.model import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
-    ALIGNMENT_OK,
     SegmentLocation,
 )
 from jasper.active_speaker.crossover_v2.admission import SlotAttempts

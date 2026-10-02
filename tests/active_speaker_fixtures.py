@@ -425,7 +425,7 @@ def standard_driver_research(*, tweeter_gain_db: float = -18.5) -> dict:
             # floor. So this speaker has zero downward headroom -- any test that
             # nudges its crossover DOWN is proposing a crossover the driver's own
             # declaration forbids, and the apply-time gate
-            # (camilla_yaml._assert_tweeter_crossover_honours_declared_floor)
+            # (camilla_yaml.gates._assert_tweeter_crossover_honours_declared_floor)
             # will refuse it. That is not a bug in the gate; it is this fixture
             # declaring a floor it does not itself leave room under. The twin of
             # this block in tests/test_active_speaker_baseline_profile.py::_research

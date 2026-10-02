@@ -43,14 +43,16 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
 )
 from jasper.audio_measurement.program_analysis import (
+    MeasurementPriors,
+    analysis_diagnostic_summary,
+    analyze_program_capture,
+)
+from jasper.audio_measurement.program_analysis.model import (
     CAPTURE_BOUND_MARGIN_S,
     INTEGRITY_CHECK_FRAME_LEDGER,
     INTEGRITY_CHECK_CAPTURE_OVERRUN,
     INTEGRITY_NOT_EVALUATED,
     INTEGRITY_PASS,
-    MeasurementPriors,
-    analysis_diagnostic_summary,
-    analyze_program_capture,
 )
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand

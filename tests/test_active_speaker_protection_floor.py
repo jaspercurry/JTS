@@ -31,7 +31,7 @@ undeclared driver, which staging writes as present-and-``None``, still passes.
 A fifth family, section (g), pins the **apply-time** layer. All four families
 above compare the floor only once a graph exists — none of them stood between a
 chosen crossover frequency and an APPLIED graph, which was harmless only while
-nothing varied Fc. ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``
+nothing varied Fc. ``camilla_yaml.gates._assert_tweeter_crossover_honours_declared_floor``
 closes that at the emitter, and section (g) keeps it honest in both directions:
 it must refuse a below-floor corner, and it must not invent a floor where the
 operator declared none.
@@ -56,12 +56,14 @@ import pytest
 
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.camilla_yaml import (
-    EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
-    _assert_tweeter_crossover_honours_declared_floor,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
     emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
+)
+from jasper.active_speaker.camilla_yaml.gates import (
+    EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
+    _assert_tweeter_crossover_honours_declared_floor,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND
