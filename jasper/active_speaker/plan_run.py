@@ -301,6 +301,7 @@ async def run_plan(
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
+    announce: bool = True,
 ) -> RunManifest:
     from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
@@ -342,8 +343,7 @@ async def run_plan(
     finds = door is not None and bool(door.caps_dbfs)
     if (level is None and not finds) or (door is None and (session is None or level != session.measurement_level_db)):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a level or a probe to find one")
-    if finds:
-        # Only the run that finds the fader announces itself: a ladder's later rungs find none.
+    if announce:
         specs = announce_run(specs)
     manifest.level = {"run": {"level_db": level, "level_source": request.level_source}}
     expanded = []

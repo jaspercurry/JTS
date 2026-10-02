@@ -651,6 +651,13 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
     assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if split else {0, 10, 20})
 
 
+def test_a_run_given_its_level_announces_its_first_take_only():
+    """A run that does not find its fader still announces itself, once (ADR-0417)."""
+    result, fakes = asyncio.run(_run_gated(replace(_walk([0, 20]), repeats=2)))
+    assert result.status == "complete"
+    assert [call["spec"].courtesy_prelude for call in fakes.play.calls] == [True, False, False, False]
+
+
 def test_the_take_that_announces_a_run_stays_in_its_set():
     """Only a run's first take plays the courtesy prelude. It measures the same
     stimulus as the takes after it, so it shares their sets (ADR-0417)."""

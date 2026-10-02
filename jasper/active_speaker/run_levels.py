@@ -192,6 +192,8 @@ async def run_levels(
                         request, manifest=bound.manifest, door=bound.door,
                         analyze=analyze, assessor=bound.assessor, captures=bound.captures,
                         aborts=aborts, signals=signals,
+                        # A ladder announces once, on the rung that finds its fader (ADR-0417).
+                        announce=found is None,
                     )
                     results.append(result)
                     if found is None:

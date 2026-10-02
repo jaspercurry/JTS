@@ -15,8 +15,8 @@
   1. A run plays the courtesy prelude once, on its first take. A level probe never plays it, so a
      run that opens on a probe plays it on the take that follows.
   2. One function decides which take: `capture_plan.announce_run` marks the first take's
-     `MeasureSpec.courtesy_prelude`. The run that finds the fader applies it, so a ladder announces
-     on its first rung's first take only. The capture plan budgets the prelude on that entry.
+     `MeasureSpec.courtesy_prelude`. Every run applies it but a ladder's later rungs, so a ladder
+     announces on its first rung's first take only, and a run given its level announces too. The capture plan budgets the prelude on that entry.
   3. Every composer plays the prelude when the spec says, and only then. No phase list remains.
   4. A take keys its run-manifest set and compares with other takes on the stimulus it measures:
      `program.take_stimulus_id`, its program's `stimulus_id` less the prelude, and the stimulus
