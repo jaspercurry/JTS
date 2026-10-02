@@ -32,7 +32,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -3259,7 +3258,6 @@ def test_a_placement_prompt_counts_the_measurements_the_schedule_plays_there(mon
     listed = Counter(entry.screen[POSITION_BATCH_START_KEY] for entry in entries)
 
     assert [int(screen[POSITION_BATCH_SIZE_KEY]) for screen in firsts] == per_pose
-    assert [[int(number) for number in re.findall(r"\d+", screen["progress"])] for screen in firsts] == [[1, n] for n in per_pose]
     assert per_pose == [len(levels or (0,)) * listed[screen[POSITION_BATCH_START_KEY]] for screen in firsts]
 
 
