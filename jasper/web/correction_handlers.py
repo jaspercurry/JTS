@@ -157,7 +157,7 @@ def _handle_crossover_v2_capture(
         session_id=prepared.session_id,
         join_entry=prepared.join_spec.capture_plan.entries[0] if prepared.join_spec is not None else None,
     )
-    return {"capture": correction_capture._stage_capture(kind, idle_hold=idle_hold)}
+    return {"capture": correction_capture._stage_capture(kind, idle_hold=idle_hold), "staged": prepared.staged}
 
 
 def _handle_crossover_v2_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:

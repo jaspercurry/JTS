@@ -12,7 +12,6 @@ from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.band_ladders import NEAR_FIELD_BANDS_HZ
 from jasper.audio_measurement.wired_capture import WiredCaptureError, require_wired_mic
-from jasper.platform.biquad import PeqFilter
 from jasper.platform.log_event import log_event
 from jasper.platform.control_client import read_output_volume
 
@@ -23,8 +22,7 @@ from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.refusal_copy import CrossoverV2Refused
-from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs, plays_rear
-from .measurement_emit import load_tuning_declaration, room_layer_charge_db
+from .measured_crossover_candidate import MeasuredCrossoverCandidate, plays_rear
 from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
@@ -57,8 +55,6 @@ def read_preflight_facts(
         pass
     stop = None
     applied_bass_extension: Mapping[str, Any] = {}
-    applied_room_peqs: tuple[PeqFilter, ...] | None = ()
-    applied_room_charge_db: float | None = None
     applied_rear: bool | None = False
     if context is not None:
         try:
@@ -69,14 +65,11 @@ def read_preflight_facts(
         try:
             state = load_applied_baseline_profile_state() or {}
             applied = candidate_from_applied_profile(context.topology, state)
-            applied_bass_extension, applied_room_peqs = applied.bass_extension, candidate_room_peqs(applied)
+            applied_bass_extension = applied.bass_extension
             applied_rear = plays_rear(applied)
-            if applied_room_peqs:
-                applied_room_charge_db = room_layer_charge_db(load_tuning_declaration(context.topology), applied)
         except (OSError, RuntimeError, ValueError, LookupError):
-            # No applied profile has no room layer or rear; one that cannot be read has unknown ones.
-            applied_room_peqs = () if state is not None and state.get("status") != "applied" else None
-            applied_rear = None if applied_room_peqs is None else False
+            # No applied profile has no rear; one that cannot be read has an unknown one.
+            applied_rear = False if state is not None and state.get("status") != "applied" else None
     candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
         if name == BASE_CANDIDATE:
@@ -98,8 +91,7 @@ def read_preflight_facts(
         mic_sensitivity=resolved_household_sensitivity(device) if device is not None else None,
         geometry_unreadable=_geometry_unreadable(),
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
-        applied_bass_extension=applied_bass_extension, applied_room_peqs=applied_room_peqs,
-        applied_room_charge_db=applied_room_charge_db, applied_rear_plays=applied_rear,
+        applied_bass_extension=applied_bass_extension, applied_rear_plays=applied_rear,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
         # A driver sweeping a declared band is offered only when that sweep, clipped to the driver's
         # own band, starts at or below the near-field view's top band, so its takes read a band.

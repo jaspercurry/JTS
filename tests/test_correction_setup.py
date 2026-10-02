@@ -286,7 +286,7 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_capture_runner(
             request_stop=lambda reason: None,
             position_gate=None,
             request_complete=None,
-            request_retake=None, join_spec=None, session_id="test",
+            request_retake=None, join_spec=None, session_id="test", staged={},
         )
 
     def _fake_run_capture(kind, *, idle_hold):
@@ -340,7 +340,7 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
             request_stop=lambda reason: None,
             position_gate=None,
             request_complete=None,
-            request_retake=None, join_spec=None, session_id="test",
+            request_retake=None, join_spec=None, session_id="test", staged={},
         )
 
     def _fake_run_capture(kind, *, idle_hold):
@@ -363,16 +363,14 @@ def test_the_v2_dispatch_carries_its_routes_stage_into_the_capture_kind(
     "recovery", ["exact_restored", "failed", v2volume.RECOVERY_DEFERRED]
 )
 def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery):
-    from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, REGIME_SUMMED
     from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
-    from jasper.active_speaker.measurement_programs import Pose
     from jasper.web import correction_crossover_backend
     from jasper.web import correction_crossover_v2 as v2host
 
     plan = SimpleNamespace(needs_recovery=True)
     calls = []
     real_prepare = v2host.prepare_v2_session
-    body = {"plan": AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),)).to_dict()}
+    body = {"request": {}}
 
     def recover(run_async, camilla_factory):
         assert run_async is correction_runtime.run_async
@@ -395,6 +393,7 @@ def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery
             request_retake=None,
             session_id="test",
             join_spec=None,
+            staged={},
         )
 
     def stage(kind, **kwargs):
@@ -411,7 +410,7 @@ def test_capture_recovers_stranded_volume_before_preparing(monkeypatch, recovery
 
     if recovery == "exact_restored":
         assert correction_handlers._handle_crossover_v2_capture(None) == {
-            "capture": {"status": "awaiting_capture", "session_id": "test"},
+            "capture": {"status": "awaiting_capture", "session_id": "test"}, "staged": {},
         }
         assert calls == ["recover", "prepare", "stage"]
         assert not plan.needs_recovery

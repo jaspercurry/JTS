@@ -31,7 +31,6 @@ from jasper.audio_routes import output_topology_store
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
 from jasper.active_speaker import commissioning_coordinator, measurement_view, plan_run, round_copy
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
@@ -44,12 +43,14 @@ from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
 from jasper.web import correction_crossover_v2_evidence as v2evidence, correction_crossover_v2_volume as v2volume
+from jasper.web import correction_crossover_backend, correction_handlers, correction_runtime
 from jasper.web.correction_runtime import refusal_envelope
+from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import (
-    RUNNABLE_PROGRAMS, Pose, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
+    RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
 )
 from jasper.active_speaker.preflight import PreflightReport
 from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
@@ -472,10 +473,59 @@ def arm_runtime(monkeypatch):
 
 @pytest.fixture
 def arm_plan_answer(monkeypatch):
-    def wait(client, args, **kw):
-        plan = _run_request.resolve_run(args)
-        return cli.answer(args.command, schema=None, subject={}, parameters={}, line="", schedule=plan.to_dict())
-    monkeypatch.setattr(cli, "_cmd_wait", wait)
+    monkeypatch.setattr(cli, "_cmd_wait", lambda client, args, **kw: cli.answer(
+        args.command, schema=None, subject={}, parameters={}, line=""))
+
+
+@pytest.fixture
+def door(monkeypatch):
+    """The session door behind the CLI's post, through its handler: it resolves the
+    request on this speaker's facts, as the CLI's dry run reads them, and answers
+    what it staged, or its refusal (HTTP 400)."""
+    topology, context = mono_output_topology(), _inline_context()
+    context = with_rear_target(replace(context, topology=topology,
+                                       driver_bands={role.role: role.band for role in context.roles_bands}))
+    store = _RecordingCheckStore()
+    for target, name, value in (
+        (v2host, "resolve_conductor_context", lambda _status: context),
+        (preflight_live, "read_preflight_facts",
+         lambda plan, *, context=None, **kw: _run_request.read_preflight_facts(plan, **kw)),
+        (v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False)),
+        (v2volume, "v2_volume_recovery_active", lambda: False),
+        (v2evidence, "open_v2_evidence_store", lambda _topology: (store, store.session_id)),
+        (correction_capture, "_crossover_blocking_phase", lambda: None),
+        (correction_crossover_backend, "status_payload", dict),
+        (correction_runtime, "read_json_body", lambda handler: handler.body),
+    ):
+        monkeypatch.setattr(target, name, value)
+
+    def serve(opener):
+        answer = opener.open
+
+        def stage(request, timeout=None):
+            if request.data is None or not request.full_url.endswith(wc.SESSION_PATH):
+                return answer(request, timeout)
+            opener.requests.append(request)
+            monkeypatch.setattr(correction_capture, "_pending_capture", None)
+            monkeypatch.setattr(correction_capture, "_capture_slot", None)
+            try:
+                staged = correction_handlers._handle_crossover_v2_capture(SimpleNamespace(body=json.loads(request.data)))
+            except ValueError as refused:
+                raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {},
+                                             io.BytesIO(json.dumps(refusal_envelope(refused)).encode())) from None
+            opener.staged.append(json.loads(json.dumps(staged)))
+            return _FakeResponse(json.dumps(staged))
+
+        opener.open, opener.staged, opener.store = stage, [], store
+        return opener
+
+    return serve
+
+
+def _posted_plan(opener):
+    """The plan the request the CLI posted resolves to, on a two-way speaker."""
+    request = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["request"]
+    return resolve_plan(RunRequest.from_mapping(request), targets=lambda: ("tweeter", "woofer"))[0]
 
 
 @pytest.fixture
@@ -523,7 +573,7 @@ def test_trial_runs_the_program_its_document_states(
         assert (code, body["code"], opener.posts()) == (cli.EXIT_REFUSED, "trial_program_unknown", [])
         return
     assert code == 0 and body["view"] == "trial"
-    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    plan = _posted_plan(opener)
     expected = run_preset(program, layout)
     assert (plan.program, plan.layout, plan.mover, plan.candidates) == (program, layout, mover, ("base", fingerprint))
     assert [(stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops] == [
@@ -546,22 +596,20 @@ def test_a_declared_crossover_states_no_trial_program(isolated_candidate_bank, m
 
 @pytest.mark.parametrize("resolution,flags,repeats", [
     ({"driver": "document"}, (), 2), ({"bass": "document"}, ("--mover", "human", "--repeats", "3"), 3)])
-def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, monkeypatch, capsys, resolution, flags,
+def test_trial_dry_run_prices_the_plan_it_runs(bank_trial, door, monkeypatch, capsys, resolution, flags,
                                                repeats):
-    """The dry run states the run it prices: the ladder's levels, and a preset's own repeats when none are typed."""
+    """The dry run states the run the session door stages from the posted request: its
+    subject, its parameters (a preset's own repeats when none are typed) and its preflight."""
     fingerprint = bank_trial(resolution)
     silent = _opener()
     code, priced = _run(["trial", fingerprint, "--dry-run", *flags], silent, monkeypatch, capsys)
     assert (code, priced["view"], priced["schema"], silent.requests) == (
         0, "trial", ANSWER_SCHEMAS["jasper-round run --dry-run"], [])
-    opener = _opener(session='{"session_id": "trial-1"}')
+    opener = door(_opener())
     code, ran = _run(["trial", fingerprint, *flags], opener, monkeypatch, capsys)
-    posted = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
     assert code == 0 and (priced["subject"], priced["parameters"]) == (ran["subject"], ran["parameters"])
-    assert priced["parameters"] == {**{key: posted[key] for key in ("program", "layout", "mover")},
-                                    "level_db": posted["level"]["level_db"], "levels": posted.get("levels"),
-                                    "repeats": repeats, "driver": None}
-    assert priced["subject"] == {"candidate_ids": posted["candidates"]}
+    assert (priced["parameters"]["repeats"], priced["parameters"]["driver"]) == (repeats, None)
+    assert priced["subject"] == {"candidate_ids": ["base", fingerprint]}
     assert _unwrapped(priced) == ran["schedule"]
 
 
@@ -571,16 +619,16 @@ def test_trial_posts_explicit_candidates(bank_trial, monkeypatch, capsys, arm_pl
     opener = _opener(session='{"session_id": "variants"}')
     code, _ = _run(["trial", first, "--wait", "--attest-rig-clear", "--candidates", f"{second},base,{first}"], opener, monkeypatch, capsys)
     assert code == 0
-    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    plan = _posted_plan(opener)
     assert (plan.program, plan.candidates) == ("speaker/mark", (second, "base", first))
     assert [stop.candidate_id for stop in plan.stops] == [second, "", first] * 2
 
 
-def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, capsys):
-    opener = _opener(session='{"session_id": "room-1"}')
+def test_room_default_uses_the_human_seat_set(preflight_ready, door, monkeypatch, capsys):
+    opener = door(_opener())
     code, _ = _run(["run", "--program", "room"], opener, monkeypatch, capsys)
     assert code == 0
-    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    plan = _posted_plan(opener)
     assert (plan.program, plan.mover) == ("room/seat", "human")
     assert [(stop.pose.kind, stop.pose.seat_offset_m) for stop in plan.stops] == [
         ("seat", (0, 0, 0)), ("seat", (0.3, 0, 0)), ("seat", (0, 0.3, 0)),
@@ -588,25 +636,22 @@ def test_room_default_uses_the_human_seat_set(preflight_ready, monkeypatch, caps
 
 
 @pytest.mark.parametrize("candidates", [None, "base"])
-@pytest.mark.parametrize("source", ["flags", "file"])
-def test_run_posts_inline_and_returns_without_a_status_read(preflight_ready, monkeypatch, capsys, tmp_path, candidates, source):
-    """A plan document states the run its flags would have: the answer names the same plan either way."""
-    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1", "first_prompt": {"title": "Place mic"}}}))
+def test_run_posts_its_request_and_returns_without_a_status_read(preflight_ready, door, monkeypatch, capsys,
+                                                                 candidates):
+    """A run posts its flags as one request, as the page posts its choice, and answers
+    with the run the session door staged from it (#5737)."""
+    opener = door(_opener())
     argv = ["run", "--program", "room", "--layout", "seat_express", "--level-db", "-25"]
     if candidates:
         argv += ["--candidates", candidates]
-    if source == "file":
-        from jasper.cli._run_request import resolve_run
-        request = resolve_run(cli.build_parser().parse_args(argv)).plan
-        path = tmp_path / "plan.json"
-        path.write_text(json.dumps(request.to_dict()))
-        argv = ["run", "--plan", str(path)]
     code, body = _run(argv, opener, monkeypatch, capsys)
     assert code == 0
-    plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
-    assert plan["candidates"] == ([] if candidates is None else [candidates])
-    assert (plan["artifact_schema_version"], body["run_id"]) == (8, "run-1")
-    assert plan["level"]["level_db"] == -25
+    assert json.loads(opener.posted_to(wc.SESSION_PATH)[0].data) == {"request": {
+        "program": "room", "layout": "seat_express", "level_db": -25.0,
+        **({"candidates": candidates} if candidates else {})}}
+    staged, = opener.staged
+    assert (body["run_id"], body["first_prompt"]) == (staged["capture"]["session_id"], staged["capture"]["first_prompt"])
+    assert body["schedule"] == staged["staged"]["schedule"]
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["subject"] == ({"candidate_ids": [candidates]} if candidates else {})
     assert body["parameters"] == {"program": "room/seat", "layout": "seat_express", "mover": "human", "level_db": -25,
@@ -629,8 +674,9 @@ _NEAR_FIELD_POSES = json.dumps([{"azimuth_deg": 0, "elevation_deg": 0, "kind": "
                                                 ("rear/pair", "--layout", "rear_behind"),
                                                 ("nearfield", "--poses", _NEAR_FIELD_POSES)])
 @pytest.mark.parametrize("repeats", [None, 1, 2])
-def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkeypatch, capsys, program, flag, value, repeats):
-    opener = _opener(session=json.dumps({"capture": {"session_id": "run-1"}}))
+def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, door, monkeypatch, capsys, program, flag, value,
+                                            repeats):
+    opener = door(_opener())
     argv = ["run", "--program", program, flag, value]
     if program.startswith("rear"):
         argv += ["--candidates", bank_trial({"rear_calibration": "document"})]
@@ -639,7 +685,7 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, monkey
         argv += ["--repeats", str(repeats)]
     code, body = _run(argv, opener, monkeypatch, capsys)
     assert code == 0
-    plan = AngleCaptureRequest.from_mapping(json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"])
+    plan = _posted_plan(opener)
     assert plan.repeats == 1
     assert Counter(stop.pose.place for stop in plan.stops) == {
         pose.place: pose.repeats if repeats is None else repeats for pose in selected.poses
@@ -1017,14 +1063,16 @@ def test_program_choices_include_rear():
 @pytest.mark.parametrize("argv,reason,detail", [
     (["--program", "speaker", "--layout", "seat_cloud"], "measurement_layout_not_offered",
      {"preset": "speaker/mark", "layout": "seat_cloud", "offered": ["speaker_mark", "baseline_express", "baseline_full"]}),
-    (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered",
-     {"preset": "nearfield/each", "driver": "woofer:rear", "offered": []}),
+    (["--program", "nearfield", "--driver", "woofer:rear"], "measurement_driver_not_offered", None),
 ])
-def test_an_unoffered_layout_or_driver_refuses_by_name(monkeypatch, capsys, argv, reason, detail):
-    opener = _opener()
+def test_an_unoffered_layout_or_driver_refuses_by_name(preflight_ready, door, monkeypatch, capsys, argv, reason, detail):
+    """A layout the preset does not offer refuses before the CLI posts, since the run's mover
+    depends on it; a driver this speaker does not play alone refuses at the session door."""
+    opener = door(_opener())
     code, body = _run(["run", *argv], opener, monkeypatch, capsys)
-    assert (code, body["reason"], body["code"], body["detail"]) == (cli.EXIT_REFUSED, reason, reason, detail)
-    assert not opener.requests
+    assert (code, body["reason"], body["code"]) == (cli.EXIT_REFUSED, reason, reason)
+    assert body["detail"] == detail if detail else body["detail"]["http"] == 400
+    assert len(opener.posted_to(wc.SESSION_PATH)) == (detail is None)
 
 
 @pytest.mark.parametrize("poses, azimuths", [
@@ -1070,7 +1118,8 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
         "next_action": {"program": "speaker"}})
     body = next(c for c in measurement_view.round_choices({}, choice_id) if c["id"] == choice_id)["action"]["body"]
     monkeypatch.setattr(_run_request, "load_output_topology", lambda: topology)
-    by_cli = _run_request.resolve_run(cli.build_parser().parse_args(["run", "--request", json.dumps(body["request"])]))
+    _, asked = _run_request.read_request(cli.build_parser().parse_args(["run", "--request", json.dumps(body["request"])]))
+    by_cli = _run_request.preflight_run(asked)
     admitted: list = []
     monkeypatch.setattr(v2host, "preflight_levels", lambda *args: admitted.append(preflight_levels(*args)) or admitted[-1])
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
@@ -1083,7 +1132,7 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
 
     by_door, = admitted
     published = next(payload for path, payload in store.published if path.endswith("/plan.json"))
-    assert AngleCaptureRequest.from_mapping(published) == by_door.plan == by_cli.plan
+    assert published == by_door.plan.to_dict() and by_door.plan == by_cli.plan
     assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
 
@@ -1232,8 +1281,8 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     (["--request", '{"program": "room"}', "--layout", "seat_cloud"], "program_plan_shape_invalid"),
     (["--request", '{"program": "room"'], "program_plan_shape_invalid"),
 ])
-def test_run_shape_refusal_is_json(preflight_ready, argv, reason, monkeypatch, capsys):
-    code, body = _run(["run", "--wait", *argv], _opener(), monkeypatch, capsys)
+def test_run_shape_refusal_is_json(preflight_ready, door, argv, reason, monkeypatch, capsys):
+    code, body = _run(["run", "--wait", *argv], door(_opener()), monkeypatch, capsys)
     assert code == 1
     assert body["reason"] == reason
 
@@ -1262,15 +1311,15 @@ def test_capture_slot_keeps_the_run_id_through_completion(monkeypatch):
     assert capture._get_capture_slot()["session_id"] == "run-1"
 
 
-def test_trial_posts_the_named_composed_candidate(tuning_profile, monkeypatch, capsys):
+def test_trial_posts_the_named_composed_candidate(tuning_profile, door, monkeypatch, capsys):
     candidate = _room_candidate(tuning_profile)
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate}))
-    opener = _opener(session='{"session_id": "trial-1"}')
+    opener = door(_opener())
     code, body = _run(["run", "--program", "room", "--candidates", candidate.fingerprint], opener, monkeypatch, capsys)
     assert code == 0 and body["subject"] == {"candidate_ids": [candidate.fingerprint]}
-    plan = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["plan"]
-    assert plan["candidates"] == [candidate.fingerprint]
-    assert {stop["candidate_id"] for stop in plan["stops"]} == {candidate.fingerprint}
+    plan = _posted_plan(opener)
+    assert plan.candidates == (candidate.fingerprint,)
+    assert {stop.candidate_id for stop in plan.stops} == {candidate.fingerprint}
 
 
 def test_run_names_a_lost_response(preflight_ready, monkeypatch, capsys):
@@ -1301,17 +1350,19 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_bass_axis_uses_the_registered_mover(preflight_ready, monkeypatch, capsys, dry_run, arm_plan_answer):
-    opener = _opener(session='{"session_id": "run-1"}')
+def test_bass_axis_uses_the_registered_mover(preflight_ready, door, monkeypatch, capsys, dry_run, arm_plan_answer):
+    opener = door(_opener())
     code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25",
                        *(["--dry-run"] if dry_run else ["--wait", "--attest-rig-clear"])],
                       opener, monkeypatch, capsys)
-    body = body if dry_run else body["schedule"]
-    assert code == 0 and body["mic_moves"] == 1
-    capture, = body["schedule"]
+    staged = body if dry_run else opener.staged[0]["staged"]
+    report = staged if dry_run else staged["schedule"]
+    assert code == 0 and report["mic_moves"] == 1
+    capture, = report["schedule"]
     assert capture["regime"] == "summed"
-    assert body["level"]["level_db"] == -25
-    assert not opener.requests if dry_run else "levels" not in json.loads(opener.posts()[0].data)
+    assert report["level"]["level_db"] == -25
+    assert (staged["parameters"]["mover"], staged["parameters"]["levels"]) == ("arm", None)
+    assert len(opener.staged) == int(not dry_run)
 
 
 @pytest.mark.parametrize("admitted", [True, False])
@@ -1434,9 +1485,9 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     open_request = opener.open
     def open_and_execute(request, timeout=None):
         if request.full_url.endswith(wc.SESSION_PATH) and request.data:
-            raw = json.loads(request.data)
-            plan = AngleCaptureRequest.from_mapping(raw["plan"])
-            report = preflight_levels(plan, facts(plan))
+            plan, levels = resolve_plan(RunRequest.from_mapping(json.loads(request.data)["request"]),
+                                        targets=lambda: ())
+            report = preflight_levels(plan, facts(plan), levels)
             plan = report.plan
             conductor = _conductor(FlowSeams())
             door, analyze, assessor, execute = host.bind_run_door(
@@ -1514,68 +1565,41 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert sorted(row["level_key"]["level_db"] for row in table["levels"]) == sorted(levels)
 
 
-@pytest.mark.parametrize("source", ["flags", "plan"])
-@pytest.mark.parametrize("dry_run,attested,available,changes,context,reason,action,forwarded", [
-    (False, False, True, {}, None, "walk_rig_clear_not_attested", "attest_rig_clear", False),
-    (False, True, False, {}, None, "walk_mover_unavailable", "connect_arm", False),
-    (True, True, False, {}, None, "walk_mover_unavailable", "connect_arm", False),
-    (False, False, True, {"output_volume": {"muted": True}}, None, "measurement_output_muted", "raise_volume", False),
-    (False, True, True, {"mic_present": False}, None, "wired_mic_missing", "connect_mic", True),
-    (False, True, True, {"output_volume": {"muted": True}}, None, "measurement_output_muted", "raise_volume", True),
-    (True, True, True, {"mic_present": False}, None, "wired_mic_missing", "connect_mic", False),
-    (False, True, True, {}, "real", "measure_box_not_ready", "speaker_setup", True),
+@pytest.mark.parametrize("dry_run,attested,available,changes,context,reason,action", [
+    (False, False, True, {}, None, "walk_rig_clear_not_attested", "attest_rig_clear"),
+    (False, True, False, {}, None, "walk_mover_unavailable", "connect_arm"),
+    (True, True, False, {}, None, "walk_mover_unavailable", "connect_arm"),
+    (False, False, True, {"output_volume": {"muted": True}}, None, "measurement_output_muted", "raise_volume"),
+    (False, True, True, {"mic_present": False}, None, "wired_mic_missing", "connect_mic"),
+    (True, True, True, {"mic_present": False}, None, "wired_mic_missing", "connect_mic"),
+    (False, True, True, {}, "real", "measure_box_not_ready", "speaker_setup"),
     (False, True, True, {}, "walk_layout_unsupported_for_per_driver_programs",
-     "walk_layout_unsupported_for_per_driver_programs", "review_plan", True),
+     "walk_layout_unsupported_for_per_driver_programs", "review_plan"),
 ])
 def test_run_refusals_keep_their_exit_and_code(
-    source, dry_run, attested, available, changes, context, reason, action, forwarded,
-    arm_runtime, monkeypatch, capsys, tmp_path,
+    dry_run, attested, available, changes, context, reason, action, door, arm_runtime, monkeypatch, capsys, tmp_path,
 ):
-    """When an arm fact, which only the CLI can see, blocks, the CLI refuses with
-    the report's first blocking issue; otherwise it forwards, and the door's own
-    context and preflight refuse. The dry run refuses with its report as the
-    detail. Either way the answer keeps its exit code, reason and action, and the
-    arm never moves."""
+    """A dry run refuses on this speaker's facts with its report as the detail. A
+    run posts its request, and the session door refuses on its own context and
+    facts, the arm's among them (#6155). Either way the answer keeps its exit
+    code, reason and action, and the arm never moves."""
     arm_runtime.mover.available.return_value = available
     monkeypatch.setattr(_run_request, "read_preflight_facts", lambda plan, **kw: ready_facts(plan, **kw, **changes))
-    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan, **changes))
-    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    opener = door(_opener())
     if context == "real":  # an empty topology store: no active crossover to measure
         monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json"))
-    else:
-        def resolve(_status):
-            if context is not None:
-                raise CrossoverV2Refused(REASON_REGISTRY[context].message, code=context)
-        monkeypatch.setattr(v2host, "resolve_conductor_context", resolve)
-    flags = ["--poses", "0", "--mover", "arm"]
-    if source == "plan":
-        plan = AngleCaptureRequest((AngleStop(Pose(0, 0), "summed", purpose="speaker"),), mover="arm")
-        path = tmp_path / "arm-plan.json"
-        path.write_text(json.dumps(plan.to_dict()))
-        flags = ["--plan", str(path)]
-    opener = _opener()
-    serve = opener.open
-
-    def door(request, timeout=None):
-        if request.data is None or not request.full_url.endswith(wc.SESSION_PATH):
-            return serve(request, timeout)
-        opener.requests.append(request)
-        try:
-            v2host.prepare_v2_session(json.loads(request.data), status={}, run_async=None, camilla_factory=None)
-        except ValueError as refused:
-            answer = io.BytesIO(json.dumps(refusal_envelope(refused)).encode())
-            raise urllib.error.HTTPError(request.full_url, 400, "Bad Request", {}, answer) from None
-        pytest.fail("the door admitted a run its preflight refuses")
-
-    opener.open = door
-    code, body = _run(["run", *flags, "--wait",
+        monkeypatch.setattr(v2host, "resolve_conductor_context", resolve_conductor_context)
+    elif context is not None:
+        def refuse(_status):
+            raise CrossoverV2Refused(REASON_REGISTRY[context].message, code=context)
+        monkeypatch.setattr(v2host, "resolve_conductor_context", refuse)
+    code, body = _run(["run", "--poses", "0", "--mover", "arm", "--wait",
                       *(["--attest-rig-clear"] if attested else []),
                       *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
     assert code == cli.EXIT_REFUSED
     assert (body["reason"], body["code"], body["next_action"]["id"]) == (reason, reason, action)
     assert not dry_run or body["detail"]["issues"][0]["code"] == reason
-    assert len(opener.posted_to(wc.SESSION_PATH)) == forwarded
-    assert forwarded or not opener.posts()
+    assert (len(opener.posts()), opener.staged) == (int(not dry_run), [])
     assert not arm_runtime.mover.moves and not arm_runtime.threads
 
 

@@ -17,18 +17,18 @@ from jasper.active_speaker.crossover_v2.position_gate import PositionGate
 
 import dataclasses
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from jasper.active_speaker import preflight_live
 from typing import Any, Callable, Mapping
 
-from jasper.active_speaker.angle_capture import AngleCaptureRequest, LateralWalkRefused
+from jasper.active_speaker.angle_capture import LateralWalkRefused
 from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.preflight import PreflightIssue
 from jasper.active_speaker.run_levels import LevelLadder, ladder_captures, preflight_levels, prepare_level_captures
-from jasper.active_speaker.run_request import RunRequest, resolve_plan
+from jasper.active_speaker.run_request import RunRequest, resolve_plan, run_envelope
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
@@ -65,6 +65,8 @@ class V2PreparedSession:
     request_retake: Callable[[], None] | None = None
     join_spec: Any = None
     session_id: str = ""
+    #: What a run's answer states of the run staged here: its subject, parameters and preflight (ADR-0389).
+    staged: Mapping[str, Any] = field(default_factory=dict)
 
 
 def bind_v2_engine_seams(
@@ -115,7 +117,7 @@ def _resolve_prepare_wired_mic() -> Any:
 
 
 def _refused(exc: Exception) -> CrossoverV2Refused:
-    """A request or plan this door cannot run, under the code it names."""
+    """A request this door cannot run, under the code it names."""
     if isinstance(exc, LateralWalkRefused):
         return CrossoverV2Refused(exc.detail, code=exc.reason)
     return CrossoverV2Refused(str(exc), code=getattr(exc, "reason", None) or "program_plan_shape_invalid")
@@ -166,12 +168,11 @@ def prepare_v2_session(
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
-    if "tier" in raw or "stage" in raw or isinstance(raw.get("plan"), Mapping) is isinstance(raw.get("request"), Mapping):
-        raise CrossoverV2Refused("A run request or an inline plan is required", code="program_plan_shape_invalid")
+    if set(raw) - {"request", "attest_rig_clear"} or not isinstance(raw.get("request"), Mapping):
+        raise CrossoverV2Refused("A run request is required", code="program_plan_shape_invalid")
     try:
-        source = (RunRequest.from_mapping(raw["request"]) if isinstance(raw.get("request"), Mapping)
-                  else AngleCaptureRequest.from_mapping(raw["plan"]))
-    except (ValueError, TypeError, CrossoverV2FlowError) as exc:
+        source = RunRequest.from_mapping(raw["request"])
+    except ValueError as exc:
         raise _refused(exc) from exc
     if v2volume.session_volume_plan().needs_recovery:
         raise CrossoverV2Refused(
@@ -340,6 +341,7 @@ def prepare_v2_session(
                 if closed is not None and position_gate:
                     await publish_round_packet(Path(evidence_store.bundle_dir), position_gate)
 
+    subject, parameters = run_envelope(request)
     return V2PreparedSession(
         label=V2_CAPTURE_KIND_SESSION,
         join_spec=spec,
@@ -352,4 +354,5 @@ def prepare_v2_session(
         request_retake=(
             signals.retake.set if position_gate is not None else None
         ),
+        staged={"subject": subject, "parameters": parameters, "schedule": report.to_dict()},
     )

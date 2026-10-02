@@ -719,7 +719,9 @@ _OTHER_ANSWERS: dict[str, Callable[[pytest.FixtureRequest, Path], list[str]]] = 
     "jasper-round list": lambda request, root: ["list"],
     "jasper-round show": lambda request, root: ["show", str(bank_measure_round(root))],
     "jasper-round run": _round_argv(["run", "--program", "room", "--layout", "seat_express", "--level-db", "-25",
-                                     "--candidates", "base"], open_session={"capture": {"session_id": "run-1"}}),
+                                     "--candidates", "base"], open_session={
+        "capture": {"session_id": "run-1"},
+        "staged": {"subject": {"candidate_ids": ["base"]}, "parameters": {"program": "room/seat"}, "schedule": {}}}),
     "jasper-round run --dry-run": _round_argv(["run", "--dry-run"]),
     "jasper-round placed": _round_argv(["placed", "--run", "run-1", "--pose", "2"],
                                       placed={"ok": True, "released": {"index": 1}}),

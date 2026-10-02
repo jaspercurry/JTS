@@ -4,13 +4,14 @@
 """One run request, resolved to the plan it runs, for the CLI, the page and the daemon (#5737)."""
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, fields, replace
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .angle_capture import (
     AngleCaptureRequest, LateralWalkRefused, LevelPolicy, WALK_LEVEL_POLICY_INVALID, request_for_preset,
 )
-from .measurement_programs import PURPOSE_SPEAKER, run_preset
+from .measurement_programs import PURPOSE_SPEAKER, Preset, run_preset
 from .movers import MOVER_HUMAN
 
 
@@ -56,16 +57,19 @@ class RunRequest:
 REQUEST_KEYS = tuple(field.name for field in fields(RunRequest))
 
 
-def resolve_plan(source: RunRequest | AngleCaptureRequest, *,
-                 targets: Callable[[], Sequence[str]]) -> tuple[AngleCaptureRequest, str | None]:
+def run_mover(source: RunRequest, preset: Preset | None = None) -> str:
+    """Who moves the microphone for a request's run: the mover it states, else
+    its layout's, else a person."""
+    return source.mover or (preset or run_preset(source.program, source.layout, source.poses)).mover or MOVER_HUMAN
+
+
+def resolve_plan(source: RunRequest, *, targets: Callable[[], Sequence[str]]) -> tuple[AngleCaptureRequest, str | None]:
     """The plan a request runs, and ``"auto"`` when its preset steps a level ladder (ADR-0365).
 
     A request plays its preset's poses with each driver role expanded to
     ``targets``, the outputs this speaker plays alone, its candidates (a rear
     pair's parent is the applied base, ADR-0386), and at its stated level, or at
     the level its run finds (ADR-0403 §4)."""
-    if isinstance(source, AngleCaptureRequest):
-        return source, None
     preset = run_preset(source.program, source.layout, source.poses)
     if source.repeats is not None:
         try:
@@ -75,6 +79,22 @@ def resolve_plan(source: RunRequest | AngleCaptureRequest, *,
     level, level_source = ((LevelPolicy(level_db=source.level_db), "operator") if source.level_db is not None
                            else (LevelPolicy(), "program_default"))
     plan = request_for_preset(preset, candidates=source.candidates, level=level, level_source=level_source,
-                              mover=source.mover or preset.mover or MOVER_HUMAN, targets=targets(),
-                              driver=source.driver)
+                              mover=run_mover(source, preset), targets=targets(), driver=source.driver)
     return plan, preset.levels if source.level_db is None else None
+
+
+def _shared(values: Iterable[Any]) -> Any:
+    """The one value a plan's stops share, their sorted distinct values when they differ, or None (ADR-0389)."""
+    distinct = sorted(set(values))
+    return distinct[0] if len(distinct) == 1 else distinct or None
+
+
+def run_envelope(plan: AngleCaptureRequest) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A run's subject and parameters, from its resolved plan; a staged run has no round yet (ADR-0389).
+    A preset spreads its repeats over duplicate stops, so takes per pose and configuration are counted."""
+    takes = Counter((stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops)
+    return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
+            {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
+             "levels": list(plan.levels) if plan.levels else None,
+             "repeats": _shared(count * plan.repeats for count in takes.values()),
+             "driver": _shared(stop.pose.driver for stop in plan.stops if stop.pose.driver)})

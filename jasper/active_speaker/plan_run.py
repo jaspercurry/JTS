@@ -140,7 +140,7 @@ class RunDoor:
     #: The session's driver caps; a door that states them finds its run's fader (ADR-0403 §4).
     caps_dbfs: Mapping[str, float] | None = None
     #: dB a take of the run may play over the take it probed: the largest bass lift
-    #: and room-off rise against the probe's graph (ADR-0403 §4).
+    #: and rear-woofer sum against the probe's graph (ADR-0403 §4).
     margin_db: float = 0.0
 
     @property
