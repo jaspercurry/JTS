@@ -141,13 +141,14 @@ class _Store:
         return await self.records.bank(record)
 
 
-def _summed_captures(request):
+def _summed_captures(request, rungs=()):
     """A plan's summed takes, as the executor's own tests play them: its stops' specs, with no
-    preparation phase and no probe."""
+    preparation phase and no probe, each playing ``rungs`` when given."""
     specs = ac.stop_specs(request, prompts=tuple(stop.prompt for stop in ac.resolve_request(request)),
                           baseline_id=ac.BASE_CANDIDATE)
     rows = [(stop, repeat) for stop in request.stops for repeat in range(1, request.repeats + 1)]
-    return tuple(plan_run.PlanCapture(stop, spec, repeat) for (stop, repeat), spec in zip(rows, specs) if spec is not None)
+    return tuple(plan_run.PlanCapture(stop, replace(spec, level_ladder_dbfs=rungs), repeat)
+                 for (stop, repeat), spec in zip(rows, specs) if spec is not None)
 
 
 async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None, **kwargs):
@@ -463,11 +464,11 @@ def test_done_requires_every_stimulus_at_the_last_stop(monkeypatch, accepted):
                      next="accept" if accepted else "retake_same", charge="speaker")])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     request = _walk([0])
-    request = replace(request, template=replace(request.template, level_ladder_dbfs=(-24, -18)))
     def analyze(record):
         signals.complete.set()
         return _analysis(record)
-    result, fakes = asyncio.run(_run_gated(request, analyze=analyze, signals=signals))
+    result, fakes = asyncio.run(_run_gated(request, analyze=analyze, signals=signals,
+                                           captures=_summed_captures(request, rungs=(-24, -18))))
     assert len(fakes.banked) == 2
     assert result.status == ("complete" if accepted else "partial")
     assert result.takes_skipped == (0 if accepted else 1)
@@ -599,9 +600,9 @@ def test_an_assessor_error_ends_its_captures_assessment_then_the_run(caplog):
     played (ADR-0383)."""
     fakes, assessor = FakeSeams(), Mock(side_effect=RuntimeError)
     request = _walk([0, 20])
-    request = replace(request, template=replace(request.template, level_ladder_dbfs=(-24, -18)))
     with caplog.at_level("WARNING", logger=plan_run.logger.name), pytest.raises(RuntimeError):
-        asyncio.run(_run_gated(request, seams=fakes, assessor=assessor))
+        asyncio.run(_run_gated(request, seams=fakes, assessor=assessor,
+                               captures=_summed_captures(request, rungs=(-24, -18))))
     assert (assessor.call_count, fakes.play.rungs) == (1, [-24, -18])
     assert [(record["verdict"]["fault"], record["verdict"]["evidence"]) for record in fakes.banked] == [
         (REASON_INTERNAL_ERROR, {"error_type": "RuntimeError"}), (REASON_INTERNAL_ERROR, {"assessed": False})]

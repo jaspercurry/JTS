@@ -71,7 +71,7 @@ class LevelLadder:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "requested_stimulus": {"program": self.plan.program, "template": self.plan.template.to_dict(),
+            "requested_stimulus": {"program": self.plan.program,
                                    "stops": [{"regime": stop.regime, "stimulus": stop.stimulus}
                                              for stop in self.plan.stops]},
             "admissions": deepcopy(self.admissions),

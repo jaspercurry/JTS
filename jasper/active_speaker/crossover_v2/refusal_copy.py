@@ -134,7 +134,6 @@ REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-REASON_WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
 REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
 REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupported_for_per_driver_programs"
@@ -1169,13 +1168,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This plan has more recordings than one session can hold. Split the positions across '
         'separate sessions.',
         own_action={"id": 'split_walk', "label": 'Split the measurement plan',
-                    "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_TEMPLATE_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_TEMPLATE_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
-        'The test signal settings include position fields that the plan must set. Remove those '
-        'fields from the signal settings.',
-        own_action={"id": 'correct_walk_template', "label": 'Correct the signal settings',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_CANDIDATE_NOT_MEASURABLE: ReasonSpec(

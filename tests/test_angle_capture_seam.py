@@ -801,12 +801,8 @@ _GOLDEN_BASELINE_EXPRESS = (
 @pytest.mark.parametrize(
     ("candidates", "regime", "price"),
     [
-        ((), ac.REGIME_PER_DRIVER,
-         {"mic_moves": 5, "captures": 10, "ceiling_min": 44,
-          "stimulus_s": None}),
-        (("base", "fpA"), ac.REGIME_SUMMED,
-         {"mic_moves": 5, "captures": 17, "ceiling_min": 58,
-          "stimulus_s": None}),
+        ((), ac.REGIME_PER_DRIVER, {"mic_moves": 5, "captures": 10, "ceiling_min": 44}),
+        (("base", "fpA"), ac.REGIME_SUMMED, {"mic_moves": 5, "captures": 17, "ceiling_min": 58}),
     ],
     ids=["no-cycle", "two-candidates"],
 )
@@ -878,167 +874,27 @@ def test_room_candidate_batch_needs_a_new_start_at_each_physical_position(layout
 
 
 # --------------------------------------------------------------------------- #
-# 9. the stimulus/level-policy fields: request-level, matched by construction
+# 9. the specs each stop plays, and the request's level policy
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize(
-    ("program_id", "layout", "candidates", "sweep_s", "level_ladder_dbfs", "stimulus_s"),
-    [
-        ("tournament", "tournament_express", (), None, (), None),
-        ("tournament", "tournament_express", ("fp-a", "fp-b"), 2.0, (), 4.0),
-        ("room", "room_quick", ("base", "room-fp"), 1.5, (-20.0, -14.0, -8.0), 27.0),
-        ("room", "seat_cloud", (), None, (), None),
-    ],
-    ids=[
-        "tournament-express-no-cand-no-sweep",
-        "tournament-express-two-cand-sweep",
-        "room-arm-two-cand-ladder",
-        "room-cloud-no-cand-no-sweep",
-    ],
-)
-def test_walk_price_reports_stimulus_seconds_for_named_programs(
-    program_id: str, layout: str, candidates: tuple[str, ...],
-    sweep_s: float | None, level_ladder_dbfs: tuple[float, ...],
-    stimulus_s: float | None,
-) -> None:
-    program = mp.run_preset(program_id, layout)
-    summed = {"graph_scope": "candidate", "candidate_id": "base"} if sweep_s is not None else {}
-    request = replace(
-        ac.request_for_preset(program, candidates=candidates, mover=program.mover or ac.MOVER_HUMAN),
-        template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, sweep_s=sweep_s, level_ladder_dbfs=level_ladder_dbfs,
-                             **summed),
-    )
-    price = walk_price(request)
-
-    assert price["mic_moves"] == program.mic_move_count
-    assert price["captures"] == len(prepare_plan_captures(request))
-    assert price["stimulus_s"] == (None if stimulus_s is None else pytest.approx(stimulus_s))
-
-
-@pytest.mark.parametrize(
-    "fields",
-    [{"sweep_band_hz": (200.0, 3000.0)}, {"sweep_s": 2.5}],
-    ids=["band", "duration"],
-)
-def test_a_summed_sweep_on_a_walk_with_no_summed_stop_refuses_at_statement_time(
-    fields: dict,
-) -> None:
-    """Per-driver stops play the program's own excitation, so a band or duration
-    stated for a summed sweep would have nothing to ride; ``walk_price`` must not
-    price a stimulus no stop plays.
-    """
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-            template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id="base",
-                                 **fields),
-        )
-    assert excinfo.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED
-
-
-@pytest.mark.parametrize(
-    "identity",
-    [{"positions": (7,)}, {"pose_prompts": ("turn it",)},
-     {"candidate_id": "fp-a", "graph_scope": "candidate"},
-     {"candidate_id": "fp-a", "graph_scope": "candidate_branches",
-      "branch_target_ids": ("woofer", "woofer:rear")},
-     {"level_probe": True}, {"bass_reserve_db": {"woofer": 3.0}}],
-    ids=["positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe", "bass_reserve_db"],
-)
-def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -> None:
-    """The template is replayed at every stop, so a pose or candidate stated on it
-    would be silently replaced there and silently kept on the design-axis spec --
-    a walk measuring somewhere other than the stops its receipt printed.
-    """
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(
-            stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),),
-            template=MeasureSpec(kind=MEASURE_KIND_CANDIDATE, **identity),
-        )
-    assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
-
-
-@pytest.mark.parametrize(("program", "layout", "poses", "candidates", "refused"), [
-    ("drivers/each", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}]', (), True),
-    ("rear/express", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.2}]', (), True),
-    ("rear/pair", "rear_behind", None, (), True),
-    ("speaker/mark", "speaker_mark", None, (), True),
-    ("speaker/mark", "speaker_mark", None, ("base", "fp-a"), True),
-    ("bass/axis", "seat_express", None, (), False),
-], ids=["driver", "close set", "branch set", "a timing take", "a trial over a timing take", "bass"])
-def test_a_plan_states_no_ladder_for_a_take_that_levels_itself(program, layout, poses, candidates, refused) -> None:
-    """A take that levels itself plays its probe first, so a plan whose template
-    states a ladder is refused; a bass stop keeps its ladder (ADR-0405). Over a
-    timing take each candidate graph levels itself (ADR-0408)."""
-    request = ac.request_for_preset(mp.run_preset(program, layout, poses), targets=("woofer", "tweeter"),
-                                    candidates=candidates)
-    ladder = replace(request.template, level_ladder_dbfs=(-12.0,))
-    if refused:
-        with pytest.raises(ac.LateralWalkRefused) as excinfo:
-            replace(request, template=ladder)
-        assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
-    else:
-        assert replace(request, template=ladder).template.level_ladder_dbfs == (-12.0,)
-
-
-def test_the_two_owners_place_the_template_at_the_scope_each_capture_plays() -> None:
-    """One template, two readers: the design-axis spec drops the summed sweep the
-    drivers scope cannot play and keeps the ladder and ceiling every scope can;
-    each summed stop gets the template at ITS pose, prompt, candidate and scope,
-    and a per-driver stop gets no spec at all (it plays the phase's own program).
-    """
-    template = MeasureSpec(
-        kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id="base",
-        sweep_band_hz=(200.0, 3000.0), sweep_s=2.5, level_ladder_dbfs=(-20.0, -14.0),
-    )
+def test_each_summed_stop_gets_a_spec_at_its_own_pose_and_a_per_driver_stop_none() -> None:
+    """Each summed stop gets a spec at ITS pose, prompt, candidate and scope, and a
+    per-driver stop gets no spec at all (it plays the phase's own program)."""
     request = ac.AngleCaptureRequest(
         stops=(
             ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),
             ac.AngleStop(mp.Pose(20, 5), ac.REGIME_SUMMED, "fp-a", purpose="speaker"),
         ),
-        candidates=("base", "fp-a"), template=template,
+        candidates=("base", "fp-a"),
     )
     prompts = tuple(stop.prompt for stop in ac.resolve_request(request))
 
-    assert ac.design_axis_spec(request) == replace(
-        template, graph_scope="drivers", candidate_id="", sweep_band_hz=(), sweep_s=None,
-    )
-    assert ac.stop_specs(
-        request, baseline_id="banked-base", prompts=prompts,
-    ) == (
+    assert ac.stop_specs(request, baseline_id="banked-base", prompts=prompts) == (
         None,
-        replace(
-            template, positions=(20,), vertical_deg=5,
-            pose_prompts=(prompts[1].text,), candidate_id="fp-a",
-            graph_scope="candidate",
-        ),
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(20,), vertical_deg=5,
+                    pose_prompts=(prompts[1].text,), candidate_id="fp-a", graph_scope="candidate"),
     )
-
-
-def test_the_design_axis_spec_is_always_the_candidate_kind() -> None:
-    request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-        template=MeasureSpec(kind=MEASURE_KIND_VERIFY),
-    )
-    assert ac.design_axis_spec(request).kind == MEASURE_KIND_CANDIDATE
-
-
-def test_a_template_that_is_not_a_spec_is_refused() -> None:
-    with pytest.raises(ac.LateralWalkRefused) as excinfo:
-        ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),), template=None)
-    assert excinfo.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
-
-
-@pytest.mark.parametrize("candidate_id", ["base", "BASE", "base:room", "fp-a"])
-def test_template_accepts_only_the_base_candidate_token(candidate_id):
-    template = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, graph_scope="candidate", candidate_id=candidate_id)
-    if candidate_id == "base":
-        assert ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),), template=template).template == template
-    else:
-        with pytest.raises(ac.LateralWalkRefused) as refused:
-            ac.AngleCaptureRequest(stops=(ac.AngleStop(mp.Pose(0, 0), ac.REGIME_SUMMED, purpose="speaker"),), template=template)
-        assert refused.value.reason == ac.WALK_TEMPLATE_NOT_ACCEPTED
 
 
 @pytest.mark.parametrize("repeats", [1, 3])
