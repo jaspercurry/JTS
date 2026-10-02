@@ -34,15 +34,6 @@ DEFAULT_MAX_CAPTURE_S = 20.0
 GCC_UPSAMPLE = 16
 
 
-class AlignmentError(RuntimeError):
-    """The capture could not be confidently aligned to the known stimulus."""
-
-    def __init__(self, message: str, confidence: float, threshold: float) -> None:
-        super().__init__(message)
-        self.confidence = confidence
-        self.threshold = threshold
-
-
 @dataclass(frozen=True)
 class AlignmentResult:
     lag_samples: int
@@ -160,34 +151,6 @@ def cross_correlation_alignment(
     if exclude_radius is None:
         exclude_radius = max(1, int(DEFAULT_EXCLUDE_RADIUS_S * sample_rate))
     return alignment_at(corr, int(np.argmax(corr)), exclude_radius=exclude_radius)
-
-
-def assert_alignment_confident(
-    captured: np.ndarray,
-    stimulus: np.ndarray,
-    *,
-    require: bool = True,
-    threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
-    sample_rate: int = RESPONSE_SAMPLE_RATE_HZ,
-    exclude_radius: int | None = None,
-    max_capture_s: float = DEFAULT_MAX_CAPTURE_S,
-) -> AlignmentResult:
-    """Score alignment and, when ``require``, fail loud below ``threshold``."""
-    result = cross_correlation_alignment(
-        captured,
-        stimulus,
-        sample_rate=sample_rate,
-        exclude_radius=exclude_radius,
-        max_capture_s=max_capture_s,
-    )
-    if require and result.confidence < threshold:
-        raise AlignmentError(
-            f"weak/ambiguous alignment (confidence {result.confidence:.2f} < "
-            f"{threshold:.2f}) — the stimulus could not be located in the capture",
-            confidence=result.confidence,
-            threshold=threshold,
-        )
-    return result
 
 
 def parabolic_peak(values: np.ndarray, idx: int) -> float:

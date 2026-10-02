@@ -735,41 +735,6 @@ def gate_impulse_response(
     return gated, fragment
 
 
-def apply_gate_fragment(
-    ir: np.ndarray,
-    sample_rate: int,
-    fragment: dict[str, Any],
-    *,
-    taper_fraction: float = TAPER_FRACTION,
-) -> np.ndarray:
-    """The paired-noise seam: detection runs on the signal exactly once, and the resulting
-    integer peak/span (round-tripped through the fragment's ms fields) builds the same
-    half-Hann operator for noise. The noise IR is never inspected to choose peak or window."""
-    ir_arr = np.asarray(ir)
-    if ir_arr.ndim != 1:
-        raise ValueError("paired gate input must be 1-D")
-    if fragment.get("floor_source") is None:
-        return np.asarray(ir_arr, dtype=np.float32)
-    sr = float(sample_rate)
-    direct_ms = fragment.get("direct_peak_ms")
-    window_ms = fragment.get("window_ms")
-    if not (
-        sr > 0
-        and isinstance(direct_ms, (int, float))
-        and isinstance(window_ms, (int, float))
-    ):
-        raise ValueError("signal gate fragment is incomplete")
-    p = int(round(float(direct_ms) * sr / 1000.0))
-    span = int(round(float(window_ms) * sr / 1000.0))
-    end = p + span
-    if not (0 <= p < end < len(ir_arr)):
-        raise ValueError("signal gate fragment is outside the paired IR")
-    win = build_gate_window(
-        len(ir_arr), peak_idx=p, span=span, taper_fraction=taper_fraction
-    )
-    return (ir_arr.astype(np.float64) * win).astype(np.float32)
-
-
 def exempt_gating_block(
     ir: np.ndarray,
     sample_rate: int,

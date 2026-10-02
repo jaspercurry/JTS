@@ -96,16 +96,6 @@ def coerce_finite_float(value: Any) -> float | None:
 
 
 
-def bounded_int(value: Any, *, default: int, lo: int, hi: int) -> int:
-    """Coerce an integer and clamp it to the inclusive ``lo``/``hi`` range."""
-
-    try:
-        out = int(value)
-    except (TypeError, ValueError):
-        out = default
-    return min(max(out, lo), hi)
-
-
 class DriverFields(JsonFields):
     def _text(
         self, raw: Any, field_name: str, *, required: bool = False, max_chars: int = 240,

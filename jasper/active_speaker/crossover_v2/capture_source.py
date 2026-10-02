@@ -54,10 +54,6 @@ class CaptureBeginDeferred(RuntimeError):
         self.user_message = str(user_message or code)
 
 
-class CaptureFailed(RuntimeError):
-    """A capture could not be produced or trusted (see ``__cause__``)."""
-
-
 class CaptureStopped(RuntimeError):
     """The host explicitly stopped this capture."""
 

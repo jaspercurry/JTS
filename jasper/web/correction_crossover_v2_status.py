@@ -19,7 +19,7 @@ from jasper.web import correction_crossover_v2_state as v2state
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 import logging
-from typing import Any, Mapping
+from typing import Any
 
 from jasper.active_speaker import crossover_envelope_v2 as _projection
 from jasper.active_speaker.applied_identity import applied_identity
@@ -28,30 +28,6 @@ from jasper.platform.log_event import log_event
 
 
 logger = logging.getLogger(__name__)
-
-def rollback_candidate(state: Mapping[str, Any] | None, *,
-                       identity: Mapping[str, Any] | None | bool = False) -> str | None:
-    """The offerable candidate displaced by this round's apply or by the durable applied record.
-
-    ``identity`` is the already-read ``applied_identity`` (``None`` when nothing is
-    applied); ``False`` reads it here.
-    """
-    state = state or {}
-    fingerprint = state.get("previous_candidate_fingerprint")
-    candidate = state.get("candidate")
-    session = str(candidate.get("fingerprint") or "") if isinstance(candidate, Mapping) else ""
-    if identity is False:
-        identity = applied_identity(load_applied_baseline_profile_state())
-    durable = (identity or {}).get("candidate") if isinstance(identity, Mapping) else None
-    displaced_by = state.get("previous_candidate_displaced_by")
-    applied = state.get("previous_applied_profile") or {}
-    if (isinstance(displaced_by, str) and displaced_by and displaced_by in {p for p in (session, durable) if p}
-            and isinstance(fingerprint, str) and fingerprint and applied.get("status") == "applied"
-            and (applied.get("source") or {}).get("measured_candidate_fingerprint") == fingerprint
-            and (applied.get("config") or {}).get("sha256")):
-        return fingerprint
-    return None
-
 
 def crossover_v2_status_block(
     *, controllability: dict[str, Any] | None | bool = False,
