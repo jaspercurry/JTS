@@ -326,30 +326,35 @@ def test_pilot_snr_is_measured_not_infinite(phase):
     assert res.pilots[0].snr_db > PILOT_MIN_SNR_DB
 
 
+# Pilot gain, dB, that puts each phase's quiet pilot about 10 dB over this room.
+_PILOT_AT_10_DB_SNR = {"measure": -11.0, "verify": -22.0}
+
+
 @pytest.mark.parametrize("phase", ["measure", "verify"])
-def test_pilots_drowned_in_room_noise_fail_snr_not_linearity(phase):
+@pytest.mark.parametrize(("snr_lift_db", "hi_shift_db", "fault"), [
+    # #6113: steps of 9.73-10.09 dB at 10.1-12.35 dB SNR, under the floor.
+    (0.0, 0.0, None),
+    (2.0, 0.0, None),
+    # A short step under the floor names the room, never the recorder.
+    (1.0, -3.0, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE),
+])
+def test_the_pilot_step_decides_a_take_under_the_snr_floor(phase, snr_lift_db, hi_shift_db, fault):
     prog = _measure_program() if phase == "measure" else _verify_pilot_program()
     cap = _synthesize(prog)
-    # Attenuate the pilot pair (the correction dropping their band) and raise
-    # the room floor across the whole capture — the ambient window included,
-    # which is exactly why that window has to live next to the pilots. The
-    # 30 dB drop is deeper than the session's measured 14-18 dB because this
-    # fixture's synthetic "room" is far quieter than a real one; what the test
-    # pins is the crossing of `PILOT_MIN_SNR_DB`, not the drop that gets there.
-    for suffix in ("lo", "hi"):
-        role = "woofer" if phase == "measure" else "summed"
+    role = "woofer" if phase == "measure" else "summed"
+    for suffix, shift_db in (("lo", 0.0), ("hi", hi_shift_db)):
         seg = prog.segment(f"pilot_{role}_{suffix}")
         start = GLOBAL_OFFSET + seg.start_sample
-        cap[start:start + seg.n_samples] *= 10.0 ** (-30.0 / 20.0)
+        cap[start:start + seg.n_samples] *= 10.0 ** ((_PILOT_AT_10_DB_SNR[phase] + snr_lift_db + shift_db) / 20.0)
     cap = cap + np.random.default_rng(7).normal(0.0, 1e-2, cap.size)
     res = analyze_program_capture(
         prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
-    assert res.pilot_snr_ok is False
-    assert res.pilot_ambient == "present"
-    assert res.pilots[0].snr_db < PILOT_MIN_SNR_DB
-    assert res.linearity_ok is None
-    assert res.linearity_ok is not False  # never the mic accusation
+    pilot, = res.pilots
+    assert 9.5 < pilot.snr_db < PILOT_MIN_SNR_DB
+    verdict = capture_dispatch.assess(res, phase=phase, program=prog)
+    assert (verdict.ok, verdict.fault) == (fault is None, fault)
+    assert [screen["code"] for screen in verdict.screens] == ([fault] if fault else [])
 
 
 @pytest.mark.parametrize("phase", ["measure", "verify"])

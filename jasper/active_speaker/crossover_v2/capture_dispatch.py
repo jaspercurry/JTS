@@ -116,8 +116,17 @@ def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
                        next_gain_db=solved, evidence={"level_shortfall_db": shortfall} if shortfall > 0 else {})
 
 
+def _pilots_heard(analysis: ProgramAnalysis) -> bool | None:
+    """The pilots cleared the room: over their SNR floor, or with a step inside
+    tolerance, since room noise would have moved it (#6113). ``None`` without
+    pilot SNR evidence."""
+    if analysis.pilot_snr_ok is None:
+        return None
+    return analysis.pilot_snr_ok or analysis.linearity_ok is True
+
+
 def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
-    if analysis.pilot_snr_ok is not False:
+    if _pilots_heard(analysis) is not False:
         return []
     bands = {segment.role: [segment.f1_hz, segment.f2_hz] for segment in program.segments
              if segment.kind == KIND_PILOT} if program else {}
@@ -301,7 +310,7 @@ def _assess_recording(
     if evidence["frame_loss"]:
         return refuse(reasons.REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge="speaker")
     over_ambient = analysis.sweep_over_ambient_db
-    if analysis.pilot_snr_ok is True and over_ambient is not None and over_ambient < SWEEP_OVER_AMBIENT_MIN_DB:
+    if _pilots_heard(analysis) is True and over_ambient is not None and over_ambient < SWEEP_OVER_AMBIENT_MIN_DB:
         return refuse(reasons.REASON_SWEEP_MISSING, next="retake_same", charge="speaker")
     if not _stimulus_locate_ok(analysis):
         return quiet(reasons.REASON_LOCATE_FAILED)
@@ -314,7 +323,7 @@ def _assess_recording(
         evidence.update({f"{reasons.CHANNEL_MAP_FAILED_PREFIX}{pilot.role}": True
                          for pilot in analysis.pilots if pilot.channel_map_ok is False})
         return refuse(reasons.REASON_CHANNEL_MAP_MISMATCH, next="stop", charge="none", ok=True)
-    if analysis.pilot_snr_ok is False:
+    if _pilots_heard(analysis) is False:
         return quiet(reasons.REASON_SNR_FLOOR if phase == "check" else reasons.REASON_PILOT_LEVEL_COLLAPSE)
     # Retire when locate can resolve the timeline without a corroborating witness.
     if anchor is not None and anchor.corroborated is False:
@@ -453,17 +462,14 @@ def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
     ``PilotObservation`` warns that ``level_hi_dbfs`` must never feed an
     ABSOLUTE-level consumer, because ambient subtraction shifts it. This use is
     safe for two independent reasons. (1) It is a RELATIVE cross-ATTEMPT
-    comparison, never a true absolute-level read. (2) The confound is bounded far
-    below the gate: ``_assess_recording`` refuses any attempt whose ``pilot_snr_ok``
-    is False before reaching G3, so every attempt here cleared
-    ``PILOT_MIN_SNR_DB`` (≈12.4 dB) on the QUIET pilot and the HI pilot sits a
-    further ``PILOT_LEVEL_DELTA_DB`` (10 dB) above, i.e. ≥22.4 dB in-band SNR. At
-    that SNR the subtraction moves ``level_hi_dbfs`` by at most
-    ``10·log10(1 − 10**−2.24)`` ≈ 0.025 dB, so two admissible attempts differ by
-    at most ~0.05 dB from this term — an order of magnitude under
-    :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` (0.35 dB). Lowering that
-    ceiling toward ~0.1 dB, or trusting ``PILOT_AMBIENT_WINDOW_S`` without the
-    SNR gate in front of it, is what would put this back in play.
+    comparison, never a true absolute-level read. (2) The confound stays under
+    the gate: an attempt reaches G3 only with its pilot step inside
+    ``LINEARITY_TOLERANCE_DB``, or with no ambient window and so nothing
+    subtracted. Room noise the subtraction misses moves the HI pilot, a further
+    ``PILOT_LEVEL_DELTA_DB`` (10 dB) above the QUIET one, by about a tenth of
+    what it moves the QUIET one, and the step bounds that: ≈0.05 dB per attempt,
+    under :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` (0.35 dB). Lowering that
+    ceiling toward ~0.1 dB is what would put this back in play.
     """
     return {
         pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db

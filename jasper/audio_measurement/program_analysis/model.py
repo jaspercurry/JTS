@@ -284,8 +284,9 @@ PILOT_FADE_TRIM_S = 0.005
 # in-band power clears ambient power by enough margin that residual bias
 # from ambient nonstationarity stays a small fraction of
 # `LINEARITY_TOLERANCE_DB`. Solving for the minimum trustworthy in-band SNR
-# gives `PILOT_MIN_SNR_DB` ≈ 12.4 dB; real jts3 hardware measures ≈26-30 dB,
-# so this floor exists for the genuinely marginal case, not the common one.
+# gives `PILOT_MIN_SNR_DB` ≈ 12.4 dB. It routes a step that fails, and sets
+# the CHECK gain solve's pilot arm; it never refuses a step that reads
+# inside tolerance (#6113).
 AMBIENT_NONSTATIONARITY_DB = 3.0
 LINEARITY_SNR_BIAS_BUDGET_FRACTION = 0.5
 _pilot_snr_k = 10.0 ** (AMBIENT_NONSTATIONARITY_DB / 10.0)
@@ -776,10 +777,10 @@ class PilotObservation:
     ``delta_implausible`` is True when ``captured_delta_db`` diverges from
     ``programmed_delta_db`` by more than `DELTA_IMPLAUSIBLE_GAP_DB` (#2647) --
     a gap no real wiring can produce, so CHECK's ladder reads it as
-    mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``
-    (unlike ``linearity_ok``): a gap this size means one of the two readings
-    floored while the other did not, and a floored reading's own
-    ``snr_valid`` can itself be an artifact of the wrong window being read.
+    mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``:
+    a gap this size means one of the two readings floored while the other
+    did not, and a floored reading's own ``snr_valid`` can itself be an
+    artifact of the wrong window being read.
     """
 
     role: str

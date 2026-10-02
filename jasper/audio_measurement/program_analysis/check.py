@@ -244,11 +244,12 @@ def _pilot_observations(
     The composer's fixed edge fade (`_pilot_trim_fade`) is trimmed before
     measuring so the RMS rides the steady-state portion, not the ramp.
 
-    Low-SNR honest routing: the quiet (lo) pilot's in-band SNR
-    (`_pilot_in_band_snr_db`) gates trust. Below `PILOT_MIN_SNR_DB`,
-    ``linearity_ok`` is ``None`` (UNKNOWN, never a false failure or pass)
-    and ``snr_valid=False`` routes to the honest room/positioning reason
-    instead of blaming the phone's AGC.
+    The step alone decides ``linearity_ok``, at any SNR (#6113): room noise
+    the ambient window missed moves the quiet pilot's level, so it shows in
+    the step. The quiet (lo) pilot's in-band SNR (`_pilot_in_band_snr_db`)
+    only routes a step that fails: below `PILOT_MIN_SNR_DB`,
+    ``snr_valid=False`` names the room or the level, never the phone's AGC.
+    With no ambient window, both are ``None``.
 
     ``peak_lo_dbfs``/``peak_hi_dbfs`` are a SEPARATE, non-ambient-subtracted
     full-band `_peak_dbfs`: `_solve_gain_plan` uses a pilot level
@@ -306,20 +307,15 @@ def _pilot_observations(
 
         lo_snr_db = _pilot_in_band_snr_db(lo_power, ambient_power) if has_ambient else math.inf
         snr_valid = lo_snr_db >= PILOT_MIN_SNR_DB if has_ambient else None
-        linearity_ok = (
-            None if snr_valid is not True
-            else abs(captured_delta - programmed_delta) <= LINEARITY_TOLERANCE_DB
-        )
+        step_gap_db = abs(captured_delta - programmed_delta)
+        linearity_ok = step_gap_db <= LINEARITY_TOLERANCE_DB if has_ambient else None
         # A gap this large is not evidence about wiring at all (#2647) --
-        # see `DELTA_IMPLAUSIBLE_GAP_DB`'s derivation. UNGATED by `snr_valid`,
-        # unlike `linearity_ok`: a gap of this size means one of the two
-        # readings floored (fell at/below ambient) while the other did not,
-        # which is either a mis-anchored window or a room too noisy to trust
-        # either way -- both route to the same retriable finding, never the
-        # wiring hard stop. A low-SNR reading (as low as 10.6 dB, itself an
-        # artifact of the wrong window) is why this must not wait on the SNR
-        # gate the way `linearity_ok` does.
-        delta_implausible = abs(captured_delta - programmed_delta) > DELTA_IMPLAUSIBLE_GAP_DB
+        # see `DELTA_IMPLAUSIBLE_GAP_DB`'s derivation: one of the two readings
+        # floored (fell at/below ambient) while the other did not, which is
+        # either a mis-anchored window or a room too noisy to trust either
+        # way -- both route to the same retriable finding, never the wiring
+        # hard stop.
+        delta_implausible = step_gap_db > DELTA_IMPLAUSIBLE_GAP_DB
 
         # Gain-solve reference: full-band peak, NOT the ambient-subtracted level.
         peak_lo = _peak_dbfs(lo_samples)
@@ -594,9 +590,10 @@ def _solve_role_gain(
       both erring LOUD: wide rows near a sweep's edge inherit the row's
       full level, and the table stops at 12 kHz (room noise there is below
       every lower band anyway).
-    * **pilot SNR** — MEASURE's leading pilot pair fails when its quiet
-      side's in-band SNR falls under ``PILOT_MIN_SNR_DB``; applied to every
-      role as a floor so it stays correct even if the composer moves the pair.
+    * **pilot SNR** — keeps the quiet side of MEASURE's leading pilot pair
+      over ``PILOT_MIN_SNR_DB`` in its band, where room noise moves its step
+      by under half ``LINEARITY_TOLERANCE_DB``; applied to every role as a
+      floor so it stays correct even if the composer moves the pair.
     * **capture floor** — ``DRIVER.peak_too_low_dbfs``, a TRIPWIRE not a
       shippable bound: if it wins, both other arms have resolved below an
       unmeasurable level, so the solve is REFUSED (falls back to
