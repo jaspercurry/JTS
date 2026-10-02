@@ -73,20 +73,6 @@ def _recorded_write_calls(monkeypatch) -> list[str]:
     return calls
 
 
-def test_the_apply_write_that_creates_the_way_back_is_fsynced(monkeypatch):
-    _seed_round_state(previous_candidate=False)
-    calls = _recorded_write_calls(monkeypatch)
-
-    v2state.observe_apply_success(
-        "fp-stage-1", previous_candidate_fingerprint="fp-previous",
-    )
-
-    assert calls == ["chmod", "fsync", "replace", "fsync"]
-    assert (
-        v2state.load_v2_state()["previous_candidate_fingerprint"] == "fp-previous"
-    )
-
-
 def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
     conductor, state = _stage_1(monkeypatch)
     assert state["round_receipt"] is None

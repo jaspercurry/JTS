@@ -90,11 +90,11 @@ def status_payload() -> dict[str, Any]:
 
     While a capture holds the microphone, its reader thread shares this
     process (#5632). So the slow blocks — the setup report with its two
-    graph compiles, the banked-round timing and the receipt ledger — come
-    from the run's first answer, and ``snapshot_at`` says when that was
-    read. The run's own receipt and packet show in the first answer after
-    the run ends, which is also when the graphs it loads are restored. An
-    apply changes the applied record, which ends the reuse.
+    graph compiles and the banked-round timing — come from the run's first
+    answer, and ``snapshot_at`` says when that was read. The run's own
+    packet shows in the first answer after the run ends, which is also when
+    the graphs it loads are restored. An apply changes the applied record,
+    which ends the reuse.
     """
     global _run_snapshot
     applied = load_applied_baseline_profile_state()
@@ -134,7 +134,7 @@ def status_payload() -> dict[str, Any]:
     try:
         from .correction_crossover_v2_status import crossover_v2_status_block
 
-        v2_block = crossover_v2_status_block(controllability=snapshot["controllability"] if snapshot else False)
+        v2_block = crossover_v2_status_block()
     except (OSError, RuntimeError, TypeError, ValueError):
         logger.warning("crossover v2 status block unavailable", exc_info=True)
         v2_block = None
@@ -144,7 +144,7 @@ def status_payload() -> dict[str, Any]:
     if snapshot is None:
         _run_snapshot = None if run is None else {
             "key": (run, identity), "at": payload.get("generated_at"), "setup": payload["setup"],
-            "timing": payload["timing"], "controllability": (v2_block or {}).get("controllability"),
+            "timing": payload["timing"],
         }
     logger.debug(
         "crossover status active=%s drivers=%d summed=%d",

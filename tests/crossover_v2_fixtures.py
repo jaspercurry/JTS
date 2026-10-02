@@ -865,7 +865,6 @@ def _production_host_seams(monkeypatch, tmp_path):
     monkeypatch.setattr(v2host, "secrets", SimpleNamespace(
         token_hex=lambda _: "minted_by_this_stage", token_urlsafe=v2host.secrets.token_urlsafe))
     monkeypatch.setattr(v2host, "_resolve_prepare_wired_mic", fake_measurement_mic)
-    from jasper.active_speaker import model_error_store
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 
     preset = load_active_speaker_preset()
@@ -923,9 +922,6 @@ def _production_host_seams(monkeypatch, tmp_path):
         lambda safety_profile, fingerprint: 6.0,
     )
     monkeypatch.delenv(ACTIVE_PLAYBACK_DEVICE_ENV, raising=False)
-    monkeypatch.setenv(
-        model_error_store.STATE_PATH_ENV, str(tmp_path / "model_errors.json")
-    )
     monkeypatch.setattr(
         v2evidence, "open_v2_evidence_store",
         lambda topology: (_AcceptingStore(tmp_path / "bundle"), "bundle-test"),

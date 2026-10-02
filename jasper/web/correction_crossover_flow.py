@@ -173,9 +173,8 @@ def handle_reset(
     # (round-1 finding #4). Start-over means "restart the measurement" — the
     # applied crossover keeps playing via the legacy applied-crossover contract,
     # so this only resets the guided journey, not what the speaker is emitting.
-    # SELECTIVE (gate ruling): while a candidate is applied, the reset preserves
-    # `applied` + `pre_apply_profile` — the stash carrying the way back's
-    # pointer — a full clear would strand the household on the applied graph.
+    # SELECTIVE: while a candidate is applied, the reset keeps `applied` and
+    # `attempts_loop` (``reset_v2_journey_state``).
     from .correction_crossover_v2_state import reset_v2_journey_state
 
     reset_v2_journey_state()

@@ -24,12 +24,9 @@ import pytest
 
 from jasper.active_speaker.crossover_declaration import (
     CROSSOVER_BELOW_DECLARED_FLOOR,
-    CROSSOVER_DECLARATION_CHANGE_KIND,
-    CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION,
     CrossoverBelowDeclaredFloor,
     CrossoverGeometry,
     assert_crossover_honours_declared_floor,
-    change_to_record,
     declaration_change_for_candidate,
     declared_crossover_geometry,
     matching_declared_candidate_index,
@@ -263,36 +260,6 @@ def test_a_frequency_inside_the_declared_tolerance_is_the_same_corner():
     assert declaration_change_for_candidate(
         source_preset=_preset(_region(fc_hz=2500.04)), design_draft=_draft()
     ) is None
-
-
-# --- the record the accept persists ------------------------------------------
-
-
-def test_the_record_names_what_the_accept_applied_and_displaced():
-    """The record :func:`change_to_record` writes, for one known change.
-
-    The envelope mirrors :data:`~jasper.active_speaker.crossover_v2.driver_prescription.
-    DRIVER_PRESCRIPTION_KIND`'s shape: a reader handed this record can tell
-    what it is without guessing from its field names alone. The change moves
-    both corner and slope, and the draft keeps the household's own "LR"
-    spelling, so every ``applied_*`` field differs from its ``previous_*`` twin.
-    """
-    change = declaration_change_for_candidate(
-        source_preset=_preset(_region(fc_hz=2750.0, order=2)),
-        design_draft=_draft(filter_type="LR"),
-    )
-    assert change is not None
-    assert change_to_record(change) == {
-        "kind": CROSSOVER_DECLARATION_CHANGE_KIND,
-        "artifact_schema_version": CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION,
-        "between_roles": ["woofer", "tweeter"],
-        "applied_hz": 2750.0,
-        "previous_hz": 2500.0,
-        "applied_filter_type": "Linkwitz-Riley",
-        "previous_filter_type": "LR",
-        "applied_slope_db_per_octave": 12.0,
-        "previous_slope_db_per_octave": 24.0,
-    }
 
 
 # --- the hearing-safety boundary ---------------------------------------------

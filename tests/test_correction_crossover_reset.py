@@ -161,12 +161,9 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
         v2state.set_state_path_for_tests(None)
 
 
-def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
-    """Gate ruling (W6.10 should-fix): Start-over while a candidate is APPLIED
-    must preserve `applied` + `previous_candidate_fingerprint` — the way
-    back's pointer — while clearing the journey fields so the envelope serves
-    the clean start screen. A full clear here would strand the household on
-    the applied graph with no way back."""
+def test_handle_reset_while_applied_keeps_applied(monkeypatch, tmp_path):
+    """Start-over while a candidate is APPLIED keeps `applied` and clears the
+    journey fields, so the envelope serves the clean start screen."""
     from jasper.web import correction_crossover_v2_status as v2status
 
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
@@ -178,7 +175,6 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
             "candidate": {"fingerprint": "fp-new"},
             "failure": {"code": "verify_crossover_region"},
             "gain_plan_db": {"woofer": -6.0},
-            "previous_candidate_fingerprint": "fp-prior",
         })
         _reset_scaffold(monkeypatch)
 
@@ -187,10 +183,8 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         assert status == 200
         state = v2state.load_v2_state()
         assert state is not None
-        # The way back's pointers preserved…
         assert state["applied"] is True
-        assert state["previous_candidate_fingerprint"] == "fp-prior"
-        # …journey fields cleared, so the envelope lands on the clean start
+        # Journey fields cleared, so the envelope lands on the clean start
         # screen (phase derives to the microphone check).
         assert state["accepted_phases"] == []
         assert state["candidate"] is None

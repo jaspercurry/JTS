@@ -292,7 +292,7 @@ def _v2_apply(v2: Any) -> None:
         "candidate": {"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT},
         "applied": False,
     })
-    v2state.observe_apply_success(_APPLIED_CANDIDATE_FINGERPRINT)
+    v2state.observe_apply_success({"fingerprint": _APPLIED_CANDIDATE_FINGERPRINT})
 
 
 def _new_session_first_persist(v2: Any) -> None:

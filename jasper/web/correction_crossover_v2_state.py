@@ -11,12 +11,11 @@ from jasper.active_speaker.crossover_v2 import durable_state as v2durable
 
 import json
 import logging
-import math
 import threading
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.active_speaker.crossover_v2.coordinator import (
@@ -25,9 +24,6 @@ from jasper.active_speaker.crossover_v2.coordinator import (
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker import driver_base_trim
 from jasper.platform.log_event import log_event
-
-if TYPE_CHECKING:
-    from jasper.active_speaker.model_error_store import ModelErrorStoreSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +39,8 @@ _state_path_override: Path | None = None
 #: Sized like the DSP writer lock (``jasper.dsp_control.dsp_apply``).
 STATE_LOCK_TIMEOUT_S = 10.0
 #: The wait for a write past a commit point (a graph already live, a session
-#: already over): losing that write costs the way back, and a live holder
-#: writes in milliseconds. It stays well under the apply route's 60 s
-#: ``run_async`` budget, which it runs inside.
+#: already over), which a live holder makes in milliseconds. It stays well
+#: under the apply route's 60 s ``run_async`` budget, which it runs inside.
 POST_COMMIT_STATE_LOCK_TIMEOUT_S = 20.0
 
 
@@ -102,30 +97,7 @@ def save_v2_state(state: Mapping[str, Any], *, durable: bool = False) -> None:
     Atomic is not durable. :func:`~jasper.platform.atomic_io.atomic_write_text` writes a
     tempfile and renames, so a concurrent reader never sees a partial file —
     but without ``durable=True`` nothing has told the kernel to put those bytes
-    on the platter, and a power cut can lose the whole write while leaving the
-    speaker's DSP graph changed.
-
-    **The rule for choosing (#2291): durable where power loss would lose the
-    way-back pointer or falsify a receipt; cheap everywhere else.** Two writes
-    qualify — one per half of that rule:
-
-    * :func:`observe_apply_success`, which owns
-      ``previous_candidate_fingerprint``, the only pointer the way back
-      resolves its target from. It is created in the
-      same moment the new graph goes live, so a lost write leaves a corrected
-      speaker with no recorded way back.
-    * the RECEIPT identity, written by :func:`persist_conductor_state` — but
-      **only on a persist that carries a new one**. A receipt lives in the
-      write-once evidence bundle, so losing the pointer to it leaves an
-      immutable record nothing can find: the "falsifies a receipt" half.
-
-    Everything else stays cheap on purpose, including
-    :func:`persist_conductor_state`'s ordinary path — it runs after every
-    consumed capture, and an fsync per capture buys nothing that the next
-    capture's write does not already redo. :func:`reset_v2_journey_state`
-    PRESERVES the pointer, so losing its write leaves the richer previous
-    state — the pointer survives either way, which is why it is not on the
-    durable list.
+    on the platter, and a power cut can lose the whole write.
     """
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
@@ -202,21 +174,10 @@ def clear_v2_state() -> None:
             )
 
 
-def attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
-    """The store-owned floor and current model-error count for one conductor.
-
-    The host performs the I/O at conductor construction; the conductor
-    receives values and a writer seam, and the attempts kernel remains pure.
-    """
-    from jasper.active_speaker.model_error_store import store_snapshot
-
-    return store_snapshot()
-
-
 def reset_v2_journey_state() -> None:
-    """Clear the journey; keep the playing graph's proof and reset disclosure."""
+    """Clear the journey; keep the applied flag and the round-ordinal epoch."""
     # One hold across the read and the write: an apply between them would
-    # otherwise lose the way-back pointer it just wrote durably.
+    # otherwise lose the record it just wrote.
     with v2_state_locked():
         state = load_v2_state()
         if state is None:
@@ -238,9 +199,7 @@ def reset_v2_journey_state() -> None:
                  "verify_priors": None, "evidence": None,
                  ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
         if applied:
-            for key in ("attempts_loop", "previous_candidate_fingerprint", "previous_candidate_displaced_by", "previous_applied_profile",
-                        "accepted_sound_revision", "accepted_sound_declaration_change", "accepted_sound_candidate_fingerprint"):
-                clean[key] = state.get(key)
+            clean["attempts_loop"] = state.get("attempts_loop")
         save_v2_state(clean)
         log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
                   else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
@@ -251,87 +210,16 @@ def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:
             lambda: camilla.get_config_file_path(best_effort=False))
 
 
-def observe_apply_success(
-    candidate_fingerprint: str,
-    *,
-    previous_candidate_fingerprint: str | None = None,
-    expected_post_apply_offset_db: float = 0.0,
-    selected_candidate: Mapping[str, Any] | None = None,
-    previous_applied_profile: Mapping[str, Any] | None = None,
-) -> None:
-    """Persist the completed apply and its displaced candidate together."""
+def observe_apply_success(selected_candidate: Mapping[str, Any] | None) -> None:
+    """Record the completed apply and the candidate it installed."""
     state = load_v2_state() or {}
     if selected_candidate is not None:
         state["candidate"] = dict(selected_candidate)
     state["applied"] = True
-    state["previous_applied_profile"] = dict(previous_applied_profile) if previous_applied_profile else None
-    # Do NOT blindly clear an existing
-    # failure code. In the ordinary happy path it is already None (MEASURE's
-    # own accept clears it before the conductor ever triggers auto-apply) —
-    # but a terminal session-death code (a Stop, a capture timeout) can
-    # land while the apply transaction is in flight. If the stop lands first,
-    # clobbering it here would erase the evidence that the household
-    # stopped even though the crossover genuinely got applied (this call
-    # proves it) — the envelope needs BOTH facts to render an honest
-    # "applied, but you stopped it" screen instead of a false "nothing
-    # happened" or a false "start over, nothing changed."
-    # The reverse race (a stop landing AFTER this call persists) is already
-    # handled: persist_conductor_state preserves ``applied`` once it
-    # observes it, for the same session.
-    state["previous_candidate_fingerprint"] = (
-        previous_candidate_fingerprint
-        if isinstance(previous_candidate_fingerprint, str)
-        and previous_candidate_fingerprint
-        else None
-    )
-    # The pointer's PAIRING: the identity of the apply that recorded it —
-    # this one, named by the candidate it installed. The automatic revert
-    # fires only when this equals the candidate the round displaced the prior
-    # with (one equality, checked at the seam), which is what refuses a
-    # pointer inherited from an OLDER apply (#2559's staleness class) and —
-    # because the revert's own success re-stamps this to ``None`` — a second
-    # automatic revert inside the [revert…next-apply] window (the ping-pong).
-    # Re-stamped by every successful apply, exactly like the pointer above.
-    state["previous_candidate_displaced_by"] = (
-        str(candidate_fingerprint) if candidate_fingerprint else None
-    )
-    offset_db = float(expected_post_apply_offset_db)
-    state["expected_post_apply_offset_db"] = (
-        round(offset_db, 3) if math.isfinite(offset_db) else 0.0
-    )
-    # fsync'd (#2291). This write CREATES the way-back pointer, and it happens
-    # after the new graph is already live on the speaker: a power cut that
-    # loses it leaves a corrected speaker with no recorded way back.
-    save_v2_state(state, durable=True)
-    log_event(
-        logger,
-        "correction.crossover_v2_applied",
-        expected_post_apply_offset_db=state["expected_post_apply_offset_db"],
-    )
-
-
-#: The one shape a recorded review decision takes, and its only value.
-#:
-#: ``decision`` is a word rather than a bool because the fact being recorded is
-#: WHICH answer the household gave, and a bool names only one of them.
-REVIEW_DECISION_DECLINED = "declined"
-
-
-def review_declined(state: Mapping[str, Any] | None) -> bool:
-    """Read a legacy decline against its candidate fingerprint."""
-    if not isinstance(state, Mapping):
-        return False
-    decision = state.get("review_decision")
-    if not isinstance(decision, Mapping):
-        return False
-    if str(decision.get("decision") or "") != REVIEW_DECISION_DECLINED:
-        return False
-    candidate = state.get("candidate")
-    current = (
-        str(candidate.get("fingerprint") or "")
-        if isinstance(candidate, Mapping) else ""
-    )
-    return str(decision.get("candidate_fingerprint") or "") == current
+    # ``failure`` stays as found: a run's terminal code (a Stop, a capture
+    # timeout) can land while this apply is in flight, and the record needs
+    # both facts.
+    save_v2_state(state)
 
 
 def resolve_measurement_level_trims(
@@ -400,7 +288,7 @@ def persist_conductor_state(
     from jasper.active_speaker.crossover_v2.round_inputs import CAPTURE_STATE_FILENAME  # lazy: capture snapshot
 
     # One hold from reading the state being replaced to writing its successor:
-    # a write between them (an apply's way-back pointer) would otherwise be lost.
+    # a write between them (an apply's record) would otherwise be lost.
     with v2_state_locked():
         prior = load_v2_state() or {}
         built = build_conductor_state(

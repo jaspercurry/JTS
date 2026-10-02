@@ -15,7 +15,7 @@ from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.candidate_bank import CandidateBankRefusal, bank_candidate, find_banked_candidate, load_applied_candidate
 from jasper.active_speaker.candidate_parts import candidate_from_applied_profile, candidate_from_design_draft
 from jasper.active_speaker.crossover_declaration import (
-    CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, change_to_record, declaration_change_for_candidate,
+    CrossoverBelowDeclaredFloor, assert_crossover_honours_declared_floor, declaration_change_for_candidate,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
 from jasper.active_speaker.design_draft import load_design_draft
@@ -92,22 +92,19 @@ async def apply_candidate(
             async with baseline_apply.load_composed_graph(text, source="active_speaker_baseline_apply", profile=prepared,
                     load_config=load_config, get_current_config_path=get_current_config_path) as (applied, profile):
                 with v2state.v2_state_locked(timeout_s=v2state.POST_COMMIT_STATE_LOCK_TIMEOUT_S):
-                    v2state.observe_apply_success(expected, selected_candidate=summary, previous_applied_profile=incumbent,
-                        previous_candidate_fingerprint=((incumbent or {}).get("source") or {}).get("measured_candidate_fingerprint"), expected_post_apply_offset_db=offset)
-                    update: dict[str, Any] = {"status": "unchanged"}
-                    if change:
-                        try:
-                            saved = apply_measured_crossover_geometry(
-                                between_roles=change.between_roles, configured=change.configured, selected=change.selected)
-                            state = v2state.load_v2_state() or {}
-                            state.update(accepted_sound_revision=saved["revision"], accepted_sound_declaration_change=change_to_record(change), accepted_sound_candidate_fingerprint=expected)
-                            v2state.save_v2_state(state, durable=True)
-                            update = {"status": "updated"}
-                        except Exception as exc:  # noqa: BLE001
-                            update = {"status": "failed", "code": getattr(exc, "code", None) or getattr(exc, "reason", None) or type(exc).__name__, "error": str(exc)}
-                            log_event(logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
+                    v2state.observe_apply_success(summary)
+                update: dict[str, Any] = {"status": "unchanged"}
+                if change:
+                    try:
+                        apply_measured_crossover_geometry(
+                            between_roles=change.between_roles, configured=change.configured, selected=change.selected)
+                        update = {"status": "updated"}
+                    except Exception as exc:  # noqa: BLE001
+                        update = {"status": "failed", "code": getattr(exc, "code", None) or getattr(exc, "reason", None) or type(exc).__name__, "error": str(exc)}
+                        log_event(logger, "correction.crossover_v2_declaration_update", level=logging.WARNING, **update)
                 result = await baseline_apply.apply_result(topology, profile, apply_state=applied)
-            log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha)
+            log_event(logger, "correction.crossover_v2_apply", status="applied", candidate_fingerprint=expected, config_sha256=sha,
+                      expected_post_apply_offset_db=round(offset, 3))
             return {**result, "declaration_update": update, "expected_post_apply_offset_db": round(offset, 3)}
         except (CandidateBankRefusal, CrossoverV2Refused, MeasurementGraphRefused,
                 MeasuredCrossoverCandidateError, ActiveSpeakerConfigError, CrossoverBelowDeclaredFloor) as exc:

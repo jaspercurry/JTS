@@ -21,7 +21,7 @@ from jasper.cli.doctor import active_speaker as doctor
 from jasper.platform.doctor_contract import check_row
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.platform.json_fields import parse_utc_iso
-from jasper.web import correction_crossover_v2_status as v2status, sound_active_speaker
+from jasper.web import sound_active_speaker
 from tests.test_correction_crossover_v2_endpoints import _seed_baseline_apply_environment
 
 import pytest
@@ -294,8 +294,7 @@ def test_applied_identity_change_is_disclosed_without_parking_review(ready, appl
 
 
 @pytest.mark.parametrize("record", ["absent", "applied", "legacy"])
-@pytest.mark.parametrize("session_applied", [False, True])
-def test_applied_identity_is_shared_by_status_commissioning_and_doctor(monkeypatch, record, session_applied):
+def test_applied_identity_is_shared_by_commissioning_and_doctor(monkeypatch, record):
     applied = {**_applied_anchor(), "candidate_fingerprint": "e17afd20" * 8,
                "source": {"measured_candidate_fingerprint": "48a805ab" * 8}}
     applied["config"]["sha256"] = "7edfa758981e" + "a" * 52
@@ -306,16 +305,11 @@ def test_applied_identity_is_shared_by_status_commissioning_and_doctor(monkeypat
     elif record == "legacy":
         applied = {"status": "applied", "candidate_fingerprint": "unrelated-profile-id"}
         expected = dict.fromkeys(expected)
-    monkeypatch.setattr(v2status, "load_applied_baseline_profile_state", lambda: applied)
-    monkeypatch.setattr(v2status.v2state, "load_v2_state", lambda: {"session_id": "fresh", "applied": session_applied})
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: applied)
     monkeypatch.setattr(doctor.evidence, "active_speaker_setup_status", lambda: {
         "protected_profile": {"layer_a_binding": {"matches": True}} if applied else None,
     })
     assert applied_identity(applied) == expected
-    block = v2status.crossover_v2_status_block()
-    assert block["applied_identity"] == expected
-    assert block["applied"] is session_applied
     view =build_commissioning_view(_topology(), applied_profile=applied)["applied_profile"]
     assert {"candidate" if key == "candidate_fingerprint" else key: view[key]
             for key in ("candidate_fingerprint", "record", "config_path", "applied_at")} == (
