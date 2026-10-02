@@ -411,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_args.add_argument("--repeats", type=int, help="takes per pose and configuration")
     run_args.add_argument("--driver", help="play only this output (woofer, woofer:rear) at the preset's poses for its role")
     run_args.add_argument("--mover", choices=MOVERS)
-    run_args.add_argument("--dry-run", action="store_true", help="read local facts and print preflight; run on the speaker with a loopback --base-url")
+    run_args.add_argument("--dry-run", action="store_true", help="read local facts, admit each take's graph as the run would, and print preflight; run on the speaker with a loopback --base-url")
     run = sub.add_parser("run", parents=[run_args], help="run a plan; optionally wait and bank its packet")
     presets = ", ".join(available_presets())
     run.add_argument("--program", help=f"a preset ({presets}); a program name runs its first preset")

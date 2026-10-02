@@ -122,6 +122,8 @@ class PreflightFacts:
     output_volume: Mapping[str, float | bool] = field(default_factory=dict)
     #: Each driver's program-path ``cap_dbfs`` and ``cap_source`` (ADR-0382).
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: The conductor context these facts were read from; ``None`` when it could not be resolved.
+    context: Any = None
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,8 @@ class PreflightReport:
     spl_ceiling_db_spl: float | None
     rung_admission: Mapping[str, Any] = field(default_factory=dict)
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: A dry run's take check: the distinct take graphs it admitted and the fader it composed at.
+    take_admission: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def blocking(self) -> bool:
@@ -166,6 +170,7 @@ class PreflightReport:
             "live_admission": list(LIVE_ADMISSION),
             "rung_admission": dict(self.rung_admission),
             "driver_caps": {target: dict(cap) for target, cap in self.driver_caps.items()},
+            **({"take_admission": dict(self.take_admission)} if self.take_admission else {}),
         }
 
 

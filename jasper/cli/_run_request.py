@@ -9,6 +9,7 @@ import json
 
 from jasper.active_speaker.angle_capture import AngleCaptureRequest
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED
+from jasper.active_speaker.dry_run_takes import admit_dry_run_takes
 from jasper.active_speaker.measurement_programs import near_field_drivers
 from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
 from jasper.active_speaker.run_request import REQUEST_KEYS, RunRequest, resolve_plan
@@ -50,4 +51,9 @@ def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
     else:
         source = RunRequest.from_mapping(json.loads(args.request) if args.request else stated)
     plan, levels = resolve_plan(source, targets=lambda: near_field_drivers(load_output_topology()))
-    return preflight_levels(plan, _facts(plan, args), levels)
+    facts = _facts(plan, args)
+    report = preflight_levels(plan, facts, levels)
+    # Only a dry run composes its takes; the page's preflight and a run's start never do (#6113).
+    if args.dry_run and facts.context is not None and not report.blocking:
+        return admit_dry_run_takes(report, facts.context)
+    return report
