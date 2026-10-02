@@ -143,21 +143,16 @@ ALIGNMENT_FLAT_MINIMUM_EPSILON_DB = 0.25
 
 ALIGNMENT_ESTIMATED_FLAT_SUM = "flat_sum_estimate"
 ALIGNMENT_COMMITTED_SUMMED_FIT = "summed_fit_committed"
-ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION = "explicit_prescription_committed"
-ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR = "explicit_prescription_held_after_low_snr"
 ALIGNMENT_SAVED_TIMING = "saved_timing"
 TIMING_MEASURED = "measured"
 TIMING_NEEDS_MEASUREMENT = "needs_measurement"
 TIMING_SAVED = "saved"
-TIMING_AUTHORED = "authored"
 TIMING_ESTIMATE = "estimate"
-#: Commitments where the flat-sum objective chose the POLARITY — necessary but
-#: not sufficient for :attr:`AlignmentPairSelection.polarity_agrees_with_sum`,
-#: which checks :attr:`~AlignmentPairSelection.polarity_pinned` first.
+#: Commitments where the flat-sum objective chose the POLARITY: the ones
+#: :attr:`AlignmentPairSelection.polarity_agrees_with_sum` answers for.
 _FLAT_SUM_POLARITY_OBJECTIVES = frozenset({
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT,
-    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
 })
 #: Verdict at which a branch stops being evidence a polarity flip may rest on
 #: (the ALIGNMENT decision class, 35 dB ``DRIVER.alignment_snr_ok_db``, no
@@ -450,8 +445,6 @@ class MeasurementPriors:
     measure_excited_band_hz: tuple[float, float] | None = None
     alignment_delay_bounds_us: tuple[float, float] | None = None
     applied_alignment: AppliedAlignment | None = None
-    explicit_alignment_delay_us: float | None = None
-    explicit_alignment_polarity_sign: int | None = None
     mic_tier: str | None = None
     # Host-evaluated transfers: the kernel may not import jasper.active_speaker.
     measurement_protection_response_by_role: Mapping[
@@ -724,9 +717,8 @@ class CrossoverCandidate:
     #: Carried from :attr:`AlignmentPairSelection.polarity_agrees_with_sum`.
     #: ``None`` means no flat sum ever answered it.
     polarity_agrees_with_sum: bool | None = None
-    #: Did the REQUEST hold the polarity axis, rather than a measurement?
-    #: Carried from :attr:`AlignmentPairSelection.polarity_pinned` — not
-    #: derivable from the other two fields here.
+    #: Always ``False``: no analysis takes a request's polarity pin. The
+    #: analysis JSON and the evidence packet still carry the field.
     polarity_pinned: bool = False
     #: The ripple polish's SIGNED trim excursion, dB, when REJECTED; ``None``
     #: when nothing was thrown away. Distinguishes a rejected polish from an

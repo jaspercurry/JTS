@@ -24,7 +24,6 @@ from __future__ import annotations
 import io
 import json
 import logging
-import math
 import re
 import secrets
 import threading
@@ -38,7 +37,6 @@ import pytest
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.crossover_v2 import capture_plan
-from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     CrossoverV2Refused,
     REASON_REGISTRY,
@@ -53,7 +51,6 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
 from jasper.active_speaker.crossover_v2.spatial import (
     POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
-    POSITION_ROLE_XOVR,
 )
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.crossover_v2.capture_source import (
@@ -88,20 +85,6 @@ from tests.crossover_v2_fixtures import (
 from jasper.web import correction_capture, correction_handlers
 
 
-#: The bearings the target run is specified in — the whole point of the tier, so
-#: they are written down here ONCE as the acceptance criterion and everything
-#: else in this file derives from the product code.
-#:
-#: These are the SEQUENCE of stops in walk order, not the SET of angles served —
-#: an angle can appear twice because two adjacent stops share a pose. Stage 2
-#: opens on two of them since the 2026-08-24 geometry ruling: VERIFY's anchor at
-#: the mark, whose sweep the tracking verdict consumes, and then the first pose
-#: of ``CLOUD_VERIFY_POSE_PROMPTS``, whose sweep joins the post-apply GROUP. The
-#: microphone does not move between them.
-STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
-STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
-
-
 # Production refuses a session with no volume owner; stand one up.
 pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
@@ -122,28 +105,7 @@ def _entry(degrees, role=POSITION_ROLE_ONAX):
 # --------------------------------------------------------------------------- #
 
 
-def test_the_angle_is_derived_from_the_offset_and_signed_by_the_bearing():
-    for prompt in capture_plan.CLOUD_POSITION_PROMPTS + capture_plan.LATERAL_POSE_PROMPTS:
-        if prompt.role == POSITION_ROLE_XOVR:
-            continue
-        degrees = position_angle_deg(prompt)
-        if prompt.offset_cm == 0:
-            assert degrees == 0
-            continue
-        # LEFT rows read negative, RIGHT rows positive — checked against the
-        # row's rendered word, which is the thing a reader would trust.
-        assert ("LEFT" in prompt.headline) == (degrees < 0)
-        assert ("RIGHT" in prompt.headline) == (degrees > 0)
-        # The magnitude really is the bearing to that offset, not a table.
-        expected = round(
-            math.degrees(
-                math.atan2(prompt.offset_cm / 100.0, spatial.MARK_DISTANCE_M)
-            )
-        )
-        assert abs(degrees) == expected
-
-
-def test_an_unsigned_lateral_pose_is_refused_as_loudly_as_a_vertical_one():
+def test_an_unsigned_lateral_pose_is_refused():
     """S4b. A pose built by hand with an offset and NO side must not read back
     as 0°, "already on the design axis": a driver would be told to stay put for
     a capture the plan believed was 75 cm off-axis, and the evidence would
@@ -158,17 +120,7 @@ def test_an_unsigned_lateral_pose_is_refused_as_loudly_as_a_vertical_one():
     with pytest.raises(CrossoverV2FlowError, match="declares no side"):
         position_angle_deg(unsigned)
     # An at-mark pose is unsigned too, and that one is genuinely 0°.
-    assert position_angle_deg(capture_plan.LATERAL_MARK_PROMPT) == 0
-
-
-def test_a_vertical_pose_has_no_bearing_and_says_so():
-    """Silently answering 0° would aim a positioner at the mark while the plan
-    believed it had sampled the crossover axis."""
-    vertical = next(
-        p for p in capture_plan.CLOUD_POSITION_PROMPTS if p.role == POSITION_ROLE_XOVR
-    )
-    with pytest.raises(CrossoverV2FlowError, match="no horizontal bearing"):
-        position_angle_deg(vertical)
+    assert position_angle_deg(capture_plan.CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0))) == 0
 
 
 # --------------------------------------------------------------------------- #

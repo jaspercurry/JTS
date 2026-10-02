@@ -932,7 +932,6 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         capture = SimpleNamespace(take_answer=take_answer, bundle_dir=store.bundle_dir)
         conductor = (_conductor(FakeSeams(), index_phase_map={1: program.phase}) if recording is None else
                      _conductor(FakeSeams(), index_phase_map={1: PHASE_LATERAL},
-                                lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
                                 lateral_prompts=(angle_capture.resolve_request(request)[0].prompt,)))
         refs: dict[str, Any] = {}
         conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))

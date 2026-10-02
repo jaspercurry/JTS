@@ -298,18 +298,12 @@ def test_each_stage_binds_its_own_sessions_check_publisher(
     assert payload["gain_plan_db"] == {"woofer": -11.0}
 
 
-def test_persisted_verify_priors_carries_only_measurement_context(monkeypatch):
-    _conductor, state = _stage_1(monkeypatch)
-
-    assert set(state["verify_priors"]) == {"predicted_sum", "pilot_transfer_reference"}
-
-
 def test_persisted_payload_top_level_keys_are_the_whole_bridge(monkeypatch):
     conductor, stage_1_state = _stage_1(monkeypatch)
 
     assert set(stage_1_state) == _PERSISTED_TOP_LEVEL_KEYS
     built = v2durable.build_conductor_state(conductor, {}, failure_code=None)
-    assert set(built.state) == _PERSISTED_TOP_LEVEL_KEYS - {
+    assert set(built) == _PERSISTED_TOP_LEVEL_KEYS - {
         "kind",
         "schema_version",
         "updated_at",

@@ -14,10 +14,8 @@ human or an arm moves the microphone.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field, replace
 from itertools import groupby
-from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
@@ -46,13 +44,11 @@ from ..measurement_programs import (
 from ..round_copy import millimetres
 from .contracts import (
     POSITION_AXIS_HORIZONTAL,
-    POSITION_AXIS_VERTICAL,
     CrossoverV2FlowError,
 )
 from .journey import (
     PHASE_CHECK,
     PHASE_MEASURE,
-    PHASE_VERIFY,
 )
 from .programs import (
     SessionExcitation,
@@ -63,10 +59,7 @@ from .programs import (
 from .measure_spec import MeasureSpec, branch_channels_for, solo_target
 from .spatial import (
     MARK_DISTANCE_M,
-    POSITION_ROLE_OFFAX,
     POSITION_ROLE_ONAX,
-    POSITION_ROLE_XOVR,
-    POSITION_ROLES,
     PositionGeometry,
 )
 from .sweep_spec import build_crossover_sweep_spec
@@ -131,21 +124,14 @@ CAPTURE_PLAN_TARGET = 3
 
 
 # --------------------------------------------------------------------------- #
-# position-group choreography
+# position prompts
 # --------------------------------------------------------------------------- #
-#
-# docs/historical/linearization-campaign-2026-07.md fundamental 1: N≈8-12 gated
-# sweeps at guided positions, ≥10 cm spread for HF null decorrelation and
-# ≥~30 cm spread to support the LF edge.
 
 
-# The offset class that carries fundamental 1's LF edge: at or past this
-# distance a move is "wide". :attr:`CloudPositionPrompt.wide` is computed from
-# this constant rather than hand-set per row, so narrowing a wide prompt's
-# distance moves the derived group floors with it.
+# docs/historical/linearization-campaign-2026-07.md fundamental 1: a spread of
+# ~30 cm or more supports the LF edge. At or past this distance a move is
+# "wide" (:attr:`CloudPositionPrompt.wide`).
 WIDE_OFFSET_MIN_CM = 30.0
-# The shortest prompted move that still decorrelates HF nulls.
-MIN_CLOUD_OFFSET_CM = 10.0
 
 
 def format_position_distance(offset_cm: float) -> str:
@@ -160,7 +146,7 @@ def format_position_distance(offset_cm: float) -> str:
 
 @dataclass(frozen=True)
 class CloudPositionPrompt:
-    """One prompted mic move in a position group.
+    """One prompted mic move.
 
     ``detail`` may be empty; ``text`` re-joins headline and detail for the
     durable evidence sidecar. ``offset_cm`` is the pose's SIDEWAYS displacement
@@ -179,12 +165,10 @@ class CloudPositionPrompt:
     offset_cm: float = 0.0
     role: str = POSITION_ROLE_ONAX
     #: Which side of the design axis a LATERAL row sits on: ``-1`` LEFT,
-    #: ``+1`` RIGHT, ``0`` for an at-mark or vertical row. Set by :func:`_pose`
-    #: from the row's own ``side`` bearing, never by hand.
+    #: ``+1`` RIGHT, ``0`` for an at-mark or vertical row.
     lateral_sign: int = 0
     #: Which side of mark HEIGHT a row sits on: ``-1`` BELOW, ``+1`` ABOVE,
-    #: ``0`` for a row that asks for no raise or lower. Set by :func:`_pose`
-    #: from the row's own ``updown`` bearing.
+    #: ``0`` for a row that asks for no raise or lower.
     vertical_sign: int = 0
     #: How far above (or below) mark height the row asks for, in centimetres.
     #: Separate from ``offset_cm`` because a compound row moves two different
@@ -222,17 +206,8 @@ class CloudPositionPrompt:
         return f"{self.headline} {self.detail}".strip() if self.detail else self.headline
 
 
-# Horizontal bearing convention: negative is LEFT of the design axis, positive
-# is RIGHT, as seen from the microphone looking at the speaker — the viewpoint
-# the prompt copy is written from.
-_LATERAL_SIGNS = {"LEFT": -1, "RIGHT": 1}
-
-# Elevation convention: negative is BELOW mark height, positive is ABOVE. The
-# words are the ``updown`` slot ``_VERTICAL_POSE`` fills.
-_VERTICAL_SIGNS = {"BELOW": -1, "ABOVE": 1}
-
-# Inverted, for copy generated FROM a sign rather than parsed into one.
-_VERTICAL_WORDS = {sign: word for word, sign in _VERTICAL_SIGNS.items()}
+# Elevation words, from a sign: negative is BELOW mark height, positive is ABOVE.
+_VERTICAL_WORDS = {-1: "BELOW", 1: "ABOVE"}
 
 
 def elevation_clause(elevation_deg: int) -> str:
@@ -248,186 +223,6 @@ def elevation_clause(elevation_deg: int) -> str:
     return f"{abs(elevation_deg)}° {word} mark height"
 
 
-def _pose(
-    template: str,
-    offset_cm: float,
-    role: str,
-    detail: str = "",
-    **bearing: str,
-) -> CloudPositionPrompt:
-    """One table row: an ABSOLUTE pose whose copy is generated from its number.
-
-    ``template`` carries a ``{d}`` slot filled by
-    :func:`format_position_distance`, so a row's stated distance and its
-    ``offset_cm`` cannot drift apart. Its pose's bearing is ``atan(offset /
-    mark distance)`` in whole degrees, the tangent ``angle_capture.pose_at_angle``
-    inverts: ±7° at 12 cm, ±22° at 40 cm. Refuses at import time below
-    :data:`MIN_CLOUD_OFFSET_CM`, with ``ValueError`` rather than
-    :class:`CrossoverV2FlowError` because the table is built while this module
-    is still executing and that class is not defined yet.
-    """
-    if float(offset_cm) < MIN_CLOUD_OFFSET_CM:
-        raise ValueError(
-            f"a prompted cloud move must be at least {MIN_CLOUD_OFFSET_CM:g} cm "
-            f"to decorrelate HF nulls, got {offset_cm:g} cm"
-        )
-    if role not in POSITION_ROLES:
-        raise ValueError(
-            f"cloud position role must be one of {POSITION_ROLES}, got {role!r}"
-        )
-    vertical_sign = _VERTICAL_SIGNS.get(str(bearing.get("updown") or ""), 0)
-    lateral_sign = _LATERAL_SIGNS.get(str(bearing.get("side") or ""), 0)
-    degrees = round(math.degrees(math.atan2(float(offset_cm) / 100.0, MARK_DISTANCE_M)))
-    return CloudPositionPrompt(
-        headline=template.format(
-            d=format_position_distance(offset_cm), **bearing
-        ),
-        detail=detail,
-        offset_cm=offset_cm,
-        role=role,
-        # Every row names exactly one direction word, so its single
-        # ``offset_cm`` is the one displacement it moved and the other axis
-        # keeps the neutral 0.
-        lateral_sign=lateral_sign,
-        vertical_sign=vertical_sign,
-        vertical_offset_cm=offset_cm if vertical_sign else 0.0,
-        pose=Pose(lateral_sign * degrees, vertical_sign * degrees),
-    )
-
-
-# Every wide row's supporting clause: stepping in as you go out keeps the path
-# length about equal to the mark's, the precondition any later position-pair
-# level comparison needs.
-_WIDE_LATERAL_DETAIL = (
-    "Step a little toward the speaker as you go out, so you stay about as far "
-    "from it as the mark is, and keep the microphone pointed at it."
-)
-_VERTICAL_DETAIL = "Keep the microphone pointed at the speaker."
-
-# The prompt table, in the order a group walks it.
-#
-# Every row is an ABSOLUTE pose measured from the mark, never a delta on the
-# previous one, and the actor is the microphone rather than any one device
-# (#1806). Copy stays hardware-blind: nothing that assumes a particular cabinet.
-#
-# ONE ordered table serves both groups — the pre-apply group takes ``[:N - 1]``
-# and the post-apply group ``[:M - 1]`` — so the first two wide moves sit at
-# offsets 3 and 4 (1-based) rather than at the end, where a shorter group would
-# never reach them. Reordering this table moves two derived numbers
-_LATERAL_POSE = "Move the microphone {d} to the {side} of the mark, at mark height."
-_VERTICAL_POSE = "Move the microphone back over the mark, {d} {updown} mark height."
-
-CLOUD_POSITION_PROMPTS: tuple[CloudPositionPrompt, ...] = (
-    _pose(_LATERAL_POSE, 12.0, POSITION_ROLE_ONAX, side="LEFT"),
-    _pose(_LATERAL_POSE, 12.0, POSITION_ROLE_ONAX, side="RIGHT"),
-    _pose(
-        _LATERAL_POSE, 40.0, POSITION_ROLE_OFFAX,
-        side="LEFT", detail=_WIDE_LATERAL_DETAIL,
-    ),
-    _pose(
-        _LATERAL_POSE, 40.0, POSITION_ROLE_OFFAX,
-        side="RIGHT", detail=_WIDE_LATERAL_DETAIL,
-    ),
-    _pose(
-        _VERTICAL_POSE, 12.0, POSITION_ROLE_XOVR,
-        updown="ABOVE", detail=_VERTICAL_DETAIL,
-    ),
-    _pose(
-        _VERTICAL_POSE, 12.0, POSITION_ROLE_XOVR,
-        updown="BELOW", detail=_VERTICAL_DETAIL,
-    ),
-    _pose(_LATERAL_POSE, 25.0, POSITION_ROLE_ONAX, side="LEFT"),
-    _pose(_LATERAL_POSE, 25.0, POSITION_ROLE_ONAX, side="RIGHT"),
-    _pose(
-        _LATERAL_POSE, 60.0, POSITION_ROLE_OFFAX,
-        side="LEFT", detail=_WIDE_LATERAL_DETAIL,
-    ),
-    _pose(
-        _VERTICAL_POSE, 40.0, POSITION_ROLE_XOVR,
-        updown="ABOVE", detail=_VERTICAL_DETAIL,
-    ),
-    _pose(
-        _VERTICAL_POSE, 40.0, POSITION_ROLE_XOVR,
-        updown="BELOW", detail=_VERTICAL_DETAIL,
-    ),
-)
-
-# --- lateral evidence ------------------------------------------------------- #
-#
-# The lateral walk reuses the table above's ±12 cm and ±40 cm left/right moves,
-# selected by PREDICATE rather than slice index so reordering that table cannot
-# silently swap which poses the walk asks for.
-_LATERAL_POSE_OFFSETS_CM = (12.0, 40.0)
-
-# The walk opens and closes at the mark. Both rows bypass ``_pose`` because a
-# 0 cm move cannot clear :data:`MIN_CLOUD_OFFSET_CM`, and they exist to
-# CORRELATE with each other rather than to decorrelate. The anchor MEASURE at
-# the same spot is not a substitute: its evidence is composed to the configured
-# crossover when analyzed, while a pose is kept neutral.
-LATERAL_MARK_PROMPT = CloudPositionPrompt(
-    headline="Leave the microphone on the mark — one more sweep from here.",
-    detail="Nothing to move yet.",
-    offset_cm=0.0,
-    role=POSITION_ROLE_ONAX,
-    pose=Pose(0, 0),
-)
-LATERAL_MARK_RETURN_PROMPT = CloudPositionPrompt(
-    headline="Last one: put the microphone back on the mark.",
-    detail="Same spot, same height, pointed at the speaker.",
-    offset_cm=0.0,
-    role=POSITION_ROLE_ONAX,
-    pose=Pose(0, 0),
-)
-
-# The four SIDE poses both angle walks are made of, derived from the cloud table
-# by predicate (see ``_LATERAL_POSE_OFFSETS_CM``).
-_SIDE_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = tuple(
-    prompt for prompt in CLOUD_POSITION_PROMPTS
-    if prompt.role != POSITION_ROLE_XOVR
-    and float(prompt.offset_cm) in _LATERAL_POSE_OFFSETS_CM
-)
-
-LATERAL_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
-    (LATERAL_MARK_PROMPT,)
-    + _SIDE_POSE_PROMPTS
-    + (LATERAL_MARK_RETURN_PROMPT,)
-)
-
-# The derivation above must yield exactly one LEFT and one RIGHT at each
-# declared offset, bracketed by the two at-mark poses: a lopsided walk's
-# left/right disagreement term is meaningless.
-if len(LATERAL_POSE_PROMPTS) != 2 * len(_LATERAL_POSE_OFFSETS_CM) + 2:
-    raise ValueError(
-        "the lateral walk must derive exactly one LEFT and one RIGHT pose at "
-        f"each of {_LATERAL_POSE_OFFSETS_CM} cm, bracketed by the two at-mark "
-        f"poses, got {len(LATERAL_POSE_PROMPTS)} poses"
-    )
-
-# --- the POST-APPLY walk's own pose set -------------------------------------- #
-#
-# The design axis is a MEMBER of this walk, not just the anchor in front of it:
-# VERIFY's anchor is consumed by the tracking
-# verdict and never joins the group, so without this row the post-apply group
-# banks no on-axis position record at all.
-#
-# Derived from the same ``_SIDE_POSE_PROMPTS`` the lateral walk uses, so an edit
-# to the shared offsets moves both walks together, and vertical-free BY
-# clamping. The at-mark row bypasses ``_pose`` because a 0 cm move cannot clear
-# :data:`MIN_CLOUD_OFFSET_CM`; that floor is a property of the group, and the
-# four sides beside this row carry the whole ±7/±22 spread the combine needs.
-VERIFY_MARK_PROMPT = CloudPositionPrompt(
-    headline="Stay on the mark — one sweep from here first.",
-    detail="Same spot, same height, pointed at the speaker.",
-    offset_cm=0.0,
-    role=POSITION_ROLE_ONAX,
-    pose=Pose(0, 0),
-)
-
-CLOUD_VERIFY_POSE_PROMPTS: tuple[CloudPositionPrompt, ...] = (
-    (VERIFY_MARK_PROMPT,) + _SIDE_POSE_PROMPTS
-)
-
-
 def position_angle_deg(prompt: CloudPositionPrompt) -> int:
     """The signed horizontal bearing of one lateral pose, in WHOLE degrees: its
     pose's, so ``-7`` is 7° LEFT of the design axis. Whole degrees because the
@@ -436,26 +231,15 @@ def position_angle_deg(prompt: CloudPositionPrompt) -> int:
     #2932 is open: a bearing is a TANGENT construction, which puts the capsule at
     ``mark / cos(θ)`` rather than a constant radius — treat the bearing as sound
     and the equidistance claim as unverified.
-
-    Refuses a :data:`POSITION_ROLE_XOVR` row rather than returning ``0``, which
-    would aim a positioner at the mark while the plan believed it had sampled
-    the crossover axis.
     """
-    if prompt.role == POSITION_ROLE_XOVR:
-        raise CrossoverV2FlowError(
-            "a vertical position has no horizontal bearing: an external "
-            "positioner cannot raise or lower the microphone, so an "
-            f"externally positioned walk must contain no {POSITION_ROLE_XOVR} "
-            "pose"
-        )
     if float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0:
         # An off-axis pose that declared no side would multiply out to 0° —
         # "already on the design axis" — and bank an offset the microphone
         # never had.
         raise CrossoverV2FlowError(
             f"a lateral position {float(prompt.offset_cm):g} cm off the mark "
-            "declares no side, so it has no signed bearing — build it through "
-            "_pose (or set lateral_sign) rather than letting it read as 0°"
+            "declares no side, so it has no signed bearing — set lateral_sign "
+            "rather than letting it read as 0°"
         )
     return prompt.pose.azimuth_deg
 
@@ -478,13 +262,6 @@ def position_geometry(prompt: CloudPositionPrompt) -> PositionGeometry:
     never a ``0`` that would read as "on the design axis".
     """
     elevation = position_elevation_deg(prompt)
-    if prompt.role == POSITION_ROLE_XOVR:
-        return PositionGeometry(
-            axis=POSITION_AXIS_VERTICAL,
-            degrees=None,
-            mark_distance_m=prompt.mark_distance_m,
-            vertical_deg=elevation,
-        )
     unsigned = float(prompt.offset_cm) != 0.0 and prompt.lateral_sign == 0
     return PositionGeometry(
         axis=POSITION_AXIS_HORIZONTAL,
@@ -579,15 +356,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
         return "Hold the microphone at the head centre of the listening position, at ear height."
     height = "" if up else ", at ear height"
     return f"Move the microphone {' and '.join(moves)} the head centre{height}."
-
-
-# Capture-plan index → phase, the fallback for a session constructed with no
-# explicit ``index_phase_map``. APPLYING is a control-page phase with no
-# capture, so it has no index. Frozen because a shared module-level default an
-# in-place mutation would corrupt for every later session.
-DEFAULT_INDEX_PHASE_MAP: Mapping[int, str] = MappingProxyType(
-    {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
-)
 
 
 # --------------------------------------------------------------------------- #
@@ -705,21 +473,6 @@ def position_screen_keys(
 def summed_sweep_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
     low, high = measurement_band_hz(roles)
     return max(SUMMED_SWEEP_BAND_HZ[0], low), min(SUMMED_SWEEP_BAND_HZ[1], high)
-
-
-def verify_pose_table(
-    verify_prompts: Sequence[CloudPositionPrompt] | None = None,
-) -> tuple[CloudPositionPrompt, ...]:
-    """The post-apply walk's pose set — the caller's, or the runbook default.
-
-    ONE resolver, so the plan, the index→phase map and the session's own
-    ``_cloud_prompt`` cannot read three different tables. ``None`` is the
-    ratified :data:`CLOUD_VERIFY_POSE_PROMPTS`.
-    """
-    return (
-        CLOUD_VERIFY_POSE_PROMPTS if verify_prompts is None
-        else tuple(verify_prompts)
-    )
 
 
 def wall_clock_ceiling_s(capture_target: int) -> float:

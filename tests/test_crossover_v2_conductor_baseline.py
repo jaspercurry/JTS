@@ -2,18 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: live-attempts loop, happy path, predicted-ripple disclosure (G1)."""
+"""Conductor W5a: happy path, predicted-ripple disclosure (G1)."""
 
 from __future__ import annotations
 
 
 import numpy as np
 import pytest
-from jasper.active_speaker.crossover_v2 import contracts
-from jasper.active_speaker.crossover_v2 import durable_state
-from jasper.active_speaker.crossover_v2.durable_state import (
-    PROVENANCE_REALIZED, AttemptIntegrity, AttemptRecord,
-)
 from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, back_off_gain
 from jasper.active_speaker.crossover_v2.alignment_prescription import alignment_delay_search_bounds_us
 from jasper.active_speaker.crossover_v2.journey import (
@@ -33,52 +28,6 @@ from tests.crossover_v2_fixtures import (
     _preset,
     _run_phase,
 )
-
-
-def test_the_banked_sitting_survives_the_durable_state_round_trip():
-    """A stamp the persistence layer drops is a stamp that never fired.
-
-    The whole #2081 hazard lives across a restart — the predecessor is read
-    back out of the state file "Start over" preserved — so the field has to
-    make the round trip, not just exist in memory.
-    """
-    record = AttemptRecord(
-        attempt_id="candidate-a",
-        metric=contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        provenance=PROVENANCE_REALIZED,
-        sitting_id="the_session_that_measured_it",
-        integrity=AttemptIntegrity(comparable=True),
-        grade_db=1.0,
-    )
-    assert record.to_dict()["sitting_id"] == "the_session_that_measured_it"
-
-    restored = durable_state.attempt_history_from_state(
-        {"attempts_loop": {"history": [record.to_dict()]}}
-    )
-    assert [item.sitting_id for item in restored] == [
-        "the_session_that_measured_it",
-    ]
-
-
-def test_a_pre_2081_persisted_row_restores_as_unrecorded_not_as_a_match():
-    """Every shipped speaker's history looks like this on the upgrade deploy.
-
-    Two such rows must not compare equal as one sitting — the restore has to
-    hand the kernel the value it refuses on, which is what makes the upgrade
-    stop claiming rather than claim something it cannot support.
-    """
-    legacy_row = {
-        "attempt_id": "candidate-old",
-        "metric": contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-        "provenance": PROVENANCE_REALIZED,
-        "integrity": {"comparable": True, "reasons": []},
-        "grade_db": 4.0,
-    }
-    restored = durable_state.attempt_history_from_state(
-        {"attempts_loop": {"history": [legacy_row]}}
-    )
-    assert len(restored) == 1
-    assert restored[0].sitting_id == ""
 
 
 #

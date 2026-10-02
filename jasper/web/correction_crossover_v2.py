@@ -162,18 +162,9 @@ def prepare_v2_session(
     from jasper.active_speaker.crossover_v2_flow import (  # lazy: avoid measurement-stack import cost on unused paths
         CrossoverV2Session,
     )
-    from jasper.active_speaker.crossover_v2.durable_state import (  # lazy: avoid measurement-stack import cost on unused paths
-        attempt_history_from_state,
-    )
 
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
-    from jasper.active_speaker.crossover_v2.journey import (
-        LATERAL_CONSUMER_FORWARD_MODEL,
-    )
-    from jasper.active_speaker.crossover_v2.durable_state import (  # lazy: avoid measurement-stack import cost on unused paths
-        V2ConductorSnapshot,
-    )
 
     if "tier" in raw or "stage" in raw or isinstance(raw.get("plan"), Mapping) is isinstance(raw.get("request"), Mapping):
         raise CrossoverV2Refused("A run request or an inline plan is required", code="program_plan_shape_invalid")
@@ -226,19 +217,6 @@ def prepare_v2_session(
     lateral_prompts = tuple(capture.resolved(request).prompt
         for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
     evidence_store, _bundle_id = v2evidence.open_v2_evidence_store(context.topology)
-    prior_raw = v2state.load_v2_state()
-    prior_snapshot = (
-        V2ConductorSnapshot(
-            session_id=str(prior_raw.get("session_id") or ""),
-            accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
-            applied=bool(prior_raw.get("applied")),
-            gain_plan_db=prior_raw.get("gain_plan_db"),
-            measure_gain_ceiling_db=prior_raw.get("measure_gain_ceiling_db"),
-            attempt_history=attempt_history_from_state(prior_raw),
-        )
-        if isinstance(prior_raw, Mapping)
-        else None
-    )
 
     acknowledgement_binding = secrets.token_urlsafe(24)
     signals = RunSignals()
@@ -292,8 +270,7 @@ def prepare_v2_session(
         seams = bind_v2_stage_seams(
             evidence_store=evidence_store, refs=refs, publish_check=publish_check,
         )
-        conductor = CrossoverV2Session.hydrate(
-            prior_snapshot,
+        conductor = CrossoverV2Session(
             session_id=session_id,
             source_preset=context.preset,
             roles_bands=context.roles_bands,
@@ -305,9 +282,7 @@ def prepare_v2_session(
             session_volume_db=probe_fader_db(context.driver_caps_dbfs),
             seams=seams,
             index_phase_map=stage1_index_phase,
-            post_apply_verifies=False,
             driver_spacing_m=context.driver_spacing_m,
-            lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
             lateral_prompts=lateral_prompts,
             measure_specs_by_index=engine_measure_specs,
             measurement_protection_sections_by_role=protection_sections,

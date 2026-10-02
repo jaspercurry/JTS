@@ -90,15 +90,13 @@ def test_the_configured_path_priors_are_all_present_or_all_absent():
         fc_hz=FC_HZ, source_preset=PRESET,
         protection_sections_by_role=PROTECTION,
         ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None, explicit_alignment_delay_us=None,
-        explicit_alignment_polarity_sign=None,
+        applied_alignment=None,
     )
     without = priors.measure_priors(
         fc_hz=FC_HZ, source_preset=PRESET,
         protection_sections_by_role=None,
         ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None, explicit_alignment_delay_us=None,
-        explicit_alignment_polarity_sign=None,
+        applied_alignment=None,
     )
 
     present = (
@@ -156,8 +154,7 @@ def test_measure_priors_asks_the_owner_rather_than_re_spelling_it():
         fc_hz=FC_HZ, source_preset=PRESET,
         protection_sections_by_role=PROTECTION,
         ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None, explicit_alignment_delay_us=None,
-        explicit_alignment_polarity_sign=None,
+        applied_alignment=None,
     )
 
     assert got.candidate_required_band_hz_by_role == (
@@ -213,7 +210,7 @@ def _wired_conductor(**kwargs):
     return flow.CrossoverV2Session(
         session_id=SESSION, source_preset=PRESET, roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
-        seams=FakeSeams().seams(), driver_spacing_m=0.15, **kwargs,
+        seams=FakeSeams().seams(), index_phase_map={1: "measure"}, driver_spacing_m=0.15, **kwargs,
     )
 
 

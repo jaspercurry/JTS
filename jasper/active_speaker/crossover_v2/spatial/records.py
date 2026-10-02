@@ -179,11 +179,12 @@ def analysis_curve_records(analysis: Any, program: Any) -> list[dict[str, Any]]:
 #
 #   ONAX  — inside the design-axis window (lateral offset < WIDE_OFFSET_MIN_CM)
 #   OFFAX — out at the coverage edge (lateral offset >= WIDE_OFFSET_MIN_CM)
-#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on
+#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on;
+#           ``angle_capture.pose_at_angle``, the only prompt builder, never
+#           assigns it
 #
-# A CONSUMER MUST NOT ASSUME a cloud carries every role: roles come from the
-# walked PREFIX of the table, and a short walk stops before the first vertical
-# move. An absent role is unsampled, never null evidence.
+# A CONSUMER MUST NOT ASSUME a walk carries every role. An absent role is
+# unsampled, never null evidence.
 POSITION_ROLE_ONAX = "onax"
 POSITION_ROLE_OFFAX = "offax"
 POSITION_ROLE_XOVR = "xovr"

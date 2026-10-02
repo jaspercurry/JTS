@@ -11,6 +11,7 @@ from tests.crossover_v2_fixtures import _inline_spec
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import capture_dispatch, refusal_copy
 from jasper.active_speaker.round_copy import coverage_lines
+from jasper.active_speaker.crossover_v2.capture_plan import CloudPositionPrompt
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.active_speaker.crossover_v2.planning import analysis_json
@@ -1230,7 +1231,8 @@ def test_each_take_is_read_through_the_window_its_pose_picks_in_every_phase(monk
     it about 40 dB down, and a room, bass or rear take anywhere else is gated
     (ADR-0400)."""
     fakes = FlowSeams()
-    conductor = _conductor(fakes, index_phase_map={1: phase}, gain_plan_db={"woofer": -20.0, "tweeter": -26.0})
+    conductor = _conductor(fakes, index_phase_map={1: phase}, gain_plan_db={"woofer": -20.0, "tweeter": -26.0},
+                           lateral_prompts=(CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0)),))
     records = SimpleNamespace(enrich=None, after_bank=None)
     monkeypatch.setattr(correction_run_host, "load_declared_geometry", lambda: None)
     correction_run_host.bind_plan_analysis(conductor, records, evidence={},

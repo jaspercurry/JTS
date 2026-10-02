@@ -2,15 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: commission tiers, the retake/confirm contract, and the courtesy-tone prelude."""
+"""Conductor W5a: the courtesy-tone prelude, the play transaction and the inline spec."""
 
 from __future__ import annotations
 
 import asyncio
-import re
 import pytest
 import yaml
-from dataclasses import replace
 from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -21,14 +19,8 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
     CAPTURE_ENTRY_MARGIN_MS,
-    CLOUD_POSITION_PROMPTS,
-    MIN_CLOUD_OFFSET_CM,
-    WIDE_OFFSET_MIN_CM,
     _program_duration_ms,
-    _pose,
-    format_position_distance,
 )
-from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_ONAX, POSITION_ROLES
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE, BASE_STIMULUS_PEAK_DBFS,
     build_check_program, build_measure_program,
@@ -41,71 +33,6 @@ from tests.crossover_v2_fixtures import (
     _dummy_program,
     _roles,
 )
-
-
-# --- commission tiers + the retake/confirm contract (flow-simplification) ----
-
-
-def test_cloud_prompts_state_numeric_absolute_poses():
-    """Every prompt is real household copy, states its distance NUMERICALLY in
-    both units, and states a COMPLETE pose measured from the mark.
-
-    RE-DERIVED, not merely relaxed. The pin this replaces asserted the opposite
-    (`" cm" not in prompt.text`) under a comment citing "the S0 owner ruling:
-    hand-widths and forearms, never centimetres" — the 2026-07-25 studio
-    ruling. Two later owner rulings superseded it, and the assertion is now
-    what THEY require rather than what the old one banned:
-
-    * 2026-07-28 field session, issue #1805 — "drop body-part units — prompts
-      should use inches and/or meters". So numeric units must be PRESENT and
-      body-part units ABSENT; deleting the old assertion would have left the
-      new rule unpinned, and leaving it would have made the suite assert a rule
-      the owner has withdrawn.
-    * 2026-07-29 field session, issue #1806 — poses must be absolute, never a
-      delta on ambiguous prior state, and the actor is "the microphone" rather
-      than the phone (a household may measure with a laptop or a USB mic).
-    """
-    for prompt in CLOUD_POSITION_PROMPTS:
-        assert prompt.headline.strip()
-        text = prompt.text
-        lowered = text.lower()
-        # #1805: numbers, in both units, on every prompted move.
-        assert " in (" in text and " cm)" in text, text
-        assert re.search(r"\d+ in \(\d+ cm\)", text), text
-        # …and no body-part unit anywhere in the copy.
-        for banned in ("hand-width", "hand width", "forearm", "arm's length"):
-            assert banned not in lowered, text
-        # #1806: an absolute pose names the mark it is measured from, and the
-        # microphone rather than the phone.
-        assert "mark" in lowered, text
-        assert "microphone" in lowered, text
-        assert "phone" not in lowered.replace("microphone", ""), text
-        # …and carries a role the attribution stage can read.
-        assert prompt.role in POSITION_ROLES
-
-
-def test_wide_is_derived_from_the_offset_not_hand_set():
-    """The wide-offset guarantee survives a copy edit because ``wide`` is
-    COMPUTED from the row's distance.
-
-    Before the distances became data, a row could say "a forearm's length" and
-    carry ``wide=True`` independently — two facts that could disagree. Now
-    narrowing the copy narrows the flag.
-    """
-    for prompt in CLOUD_POSITION_PROMPTS:
-        assert prompt.wide == (prompt.offset_cm >= WIDE_OFFSET_MIN_CM)
-        assert prompt.offset_cm >= MIN_CLOUD_OFFSET_CM
-        # The stated distance IS the carried distance — the copy is generated
-        # from the number, so these cannot drift.
-        assert format_position_distance(prompt.offset_cm) in prompt.headline
-    narrowed = replace(CLOUD_POSITION_PROMPTS[2], offset_cm=WIDE_OFFSET_MIN_CM - 1)
-    assert narrowed.wide is False
-    # …and the HF floor is ENFORCED at table-build time, not documented: a row
-    # too short to decorrelate anything is a session minute spent on nothing.
-    with pytest.raises(ValueError):
-        _pose("Move it {d}", MIN_CLOUD_OFFSET_CM - 1, POSITION_ROLE_ONAX)
-    with pytest.raises(ValueError):
-        _pose("Move it {d}", 40.0, "sideways")
 
 
 def _courtesy_prelude_ms() -> float:

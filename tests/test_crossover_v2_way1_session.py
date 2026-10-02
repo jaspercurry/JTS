@@ -81,6 +81,7 @@ def test_a_three_role_session_is_still_refused():
             driver_caps_dbfs={"full_range": 0.0},
             session_volume_db=-20.0,
             seams=FakeSeams().seams(),
+            index_phase_map={},
         )
 
 

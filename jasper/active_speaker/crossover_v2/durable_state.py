@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,204 +18,27 @@ from .journey import PHASE_MEASURE
 from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
-MAX_ATTEMPT_HISTORY = 4
-PROVENANCE_REALIZED = "realized"
-
-
-@dataclass(frozen=True)
-class AttemptIntegrity:
-    comparable: bool
-    reasons: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"comparable": self.comparable, "reasons": list(self.reasons)}
-
-
-@dataclass(frozen=True)
-class AttemptRecord:
-    attempt_id: str
-    metric: str
-    provenance: str
-    integrity: AttemptIntegrity
-    sitting_id: str = ""
-    repeats_used: int = 1
-    grade_db: float | None = None
-    n_graded_bins: int | None = None
-    curve_refs: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if not self.attempt_id:
-            raise ValueError("AttemptRecord.attempt_id must be non-empty")
-        if not self.metric:
-            raise ValueError("AttemptRecord.metric must be non-empty")
-        if self.provenance not in {"model-graded", PROVENANCE_REALIZED}:
-            raise ValueError(f"unknown provenance {self.provenance!r}")
-        if self.repeats_used < 1:
-            raise ValueError("repeats_used must be at least 1")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "attempt_id": self.attempt_id,
-            "metric": self.metric,
-            "provenance": self.provenance,
-            "sitting_id": self.sitting_id,
-            "integrity": self.integrity.to_dict(),
-            "repeats_used": self.repeats_used,
-            "grade_db": self.grade_db,
-            "n_graded_bins": self.n_graded_bins,
-            "curve_refs": list(self.curve_refs),
-        }
 
 
 DEFAULT_V2_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_v2_state.json")
 
 __all__ = [
     "DEFAULT_V2_STATE_PATH",
-    "MAX_PERSISTED_SUM_POINTS",
-    "ConductorState",
     "V2ConductorSnapshot",
-    "attempt_history_from_state",
     "build_conductor_state",
     "candidate_summary",
 ]
 
 
 @dataclass(frozen=True)
-class ConductorState:
-    state: dict[str, Any]
-    durable: bool
-
-
-@dataclass(frozen=True)
 class V2ConductorSnapshot:
-    """Durable phase state, bound to the capture session (§5.6).
-
-    Persisted under the session's commissioning run;
-    :meth:`CrossoverV2Session.hydrate` keeps the accepted phases only when the
-    current session matches, because mic position is unverifiable across
-    sessions.
-    """
+    """The session's phase state, bound to its capture session (§5.6)."""
 
     session_id: str
     accepted_phases: tuple[str, ...] = ()
-    applied: bool = False
     gain_plan_db: Mapping[str, float] | None = None
     measure_gain_ceiling_db: Mapping[str, float] | None = None
-    candidate_fingerprint: str | None = None
     session_phases: tuple[str, ...] = ()
-    attempt_history: tuple[AttemptRecord, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "session_id": self.session_id,
-            "accepted_phases": list(self.accepted_phases),
-            "applied": self.applied,
-            "gain_plan_db": dict(self.gain_plan_db) if self.gain_plan_db else None,
-            "measure_gain_ceiling_db": dict(self.measure_gain_ceiling_db or {}),
-            "candidate_fingerprint": self.candidate_fingerprint,
-            "session_phases": list(self.session_phases),
-            "attempt_history": [item.to_dict() for item in self.attempt_history],
-        }
-
-
-MAX_PERSISTED_SUM_POINTS = 512
-
-
-def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
-    """Persist-time reduction of the full-resolution predicted-sum curve to at
-    most :data:`MAX_PERSISTED_SUM_POINTS`.
-
-    Routed through
-    :func:`~jasper.audio_measurement.spatial_combine.decimate_curve_to_analysis_grid`,
-    the same block-average owner that grades this curve, so every persisted
-    point is a genuine local mean in linear power rather than one raw bin
-    (#1858). A verify-only re-arm feeds an already-persisted curve back through
-    here, so such a curve is block-averaged again and comes out coarser; the
-    household's next MEASURE replaces it.
-    """
-    if predicted_sum is None:
-        return None
-    freqs, mags = predicted_sum
-    n = len(freqs)
-    if n == 0:
-        return None
-    import numpy as np
-
-    from jasper.audio_measurement.spatial_combine import (  # lazy: spatial analysis import cost
-        decimate_curve_to_analysis_grid,
-    )
-
-    grid, curve_db = decimate_curve_to_analysis_grid(
-        np.asarray(freqs, dtype=float),
-        np.asarray(mags, dtype=float),
-        max_bins=MAX_PERSISTED_SUM_POINTS,
-    )
-    return {
-        "freqs_hz": [float(f) for f in grid],
-        "magnitude_db": [float(m) for m in curve_db],
-    }
-
-
-def attempt_history_from_state(raw: Any) -> tuple[AttemptRecord, ...]:
-
-    loop = raw.get("attempts_loop") if isinstance(raw, Mapping) else None
-    rows = loop.get("history") if isinstance(loop, Mapping) else None
-    if not isinstance(rows, list):
-        return ()
-    restored: list[AttemptRecord] = []
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        integrity = row.get("integrity")
-        if not isinstance(integrity, Mapping):
-            continue
-        try:
-            record = AttemptRecord(
-                attempt_id=str(row.get("attempt_id") or ""),
-                metric=str(row.get("metric") or ""),
-                provenance=str(row.get("provenance") or ""),
-                sitting_id=str(row.get("sitting_id") or ""),
-                integrity=AttemptIntegrity(
-                    comparable=integrity.get("comparable") is True,
-                    reasons=tuple(
-                        str(reason)
-                        for reason in integrity.get("reasons", ())
-                        if isinstance(reason, str) and reason
-                    ),
-                ),
-                repeats_used=(
-                    int(row["repeats_used"])
-                    if isinstance(row.get("repeats_used"), int)
-                    and not isinstance(row.get("repeats_used"), bool)
-                    else 1
-                ),
-                grade_db=_attempt_optional_float(row.get("grade_db")),
-                n_graded_bins=(
-                    _attempt_optional_positive_int(row.get("n_graded_bins"))
-                ),
-                curve_refs=tuple(
-                    str(ref)
-                    for ref in row.get("curve_refs", ())
-                    if isinstance(ref, str) and ref
-                ),
-            )
-        except (TypeError, ValueError, OverflowError):
-            continue
-        restored.append(record)
-    return tuple(restored[-MAX_ATTEMPT_HISTORY:])
-
-
-def _attempt_optional_float(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    number = float(value)
-    return number if math.isfinite(number) else None
-
-
-def _attempt_optional_positive_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return None
-    return value
 
 
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
@@ -388,7 +210,7 @@ def build_conductor_state(
     failure_refusals: Sequence[str] = (),
     failure_detail: str = "",
     failure_roles: Sequence[str] = (),
-) -> ConductorState:
+) -> dict[str, Any]:
     """The whole document one persist writes, over the one it is replacing.
 
     ``prior`` is the state currently on disk (``{}`` when there is none); the
@@ -401,36 +223,18 @@ def build_conductor_state(
     """
 
     snap = conductor.snapshot()
-    if (
-        prior.get("applied") is False
-        and prior.get("session_id") == snap.session_id
-        and snap.applied
-    ):
-        conductor.note_restore_observed()
-        snap = conductor.snapshot()
+    same_session = prior.get("session_id") == snap.session_id
     # Every MEASURE-scoped carry keys on the phases this document records (#4806).
     runs_measure = PHASE_MEASURE in snap.session_phases
-    if hasattr(snap, "attempt_history"):
-        attempts_loop_state: dict[str, Any] | None = {
-            "history": [
-                item.to_dict() for item in (getattr(snap, "attempt_history", ()) or ())
-            ],
-        }
-    else:
-        prior_attempts = prior.get("attempts_loop")
-        attempts_loop_state = (
-            dict(prior_attempts) if isinstance(prior_attempts, Mapping) else None
-        )
     state: dict[str, Any] = {
         "session_id": snap.session_id,
         "accepted_phases": list(snap.accepted_phases),
         "session_phases": list(snap.session_phases),
-        "applied": snap.applied,
+        "applied": prior.get("applied") is True and same_session,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(
             getattr(snap, "measure_gain_ceiling_db", None) or {}
         ),
-        "attempts_loop": attempts_loop_state,
         "candidate": None,
         "sound_design_revision": (
             getattr(conductor, "sound_design_revision", None)
@@ -452,44 +256,14 @@ def build_conductor_state(
             if failure_code
             else None
         ),
-        "verify_priors": {
-            "predicted_sum": _decimate_sum(conductor.measure_predicted_sum),
-            "pilot_transfer_reference": None,
-        },
         "evidence": dict(evidence) if evidence else None,
     }
-    if not runs_measure:
-        prior_reference = (prior.get("verify_priors") or {}).get(
-            "pilot_transfer_reference"
-        )
-        if isinstance(prior_reference, Mapping):
-            state["verify_priors"]["pilot_transfer_reference"] = dict(prior_reference)
-    if prior.get("applied") is True and prior.get("session_id") == snap.session_id:
-        state["applied"] = True
-    if state["candidate"] is None and isinstance(prior.get("candidate"), Mapping):
-        if prior.get("session_id") == snap.session_id or (
-            prior.get("applied") is True and not runs_measure
-        ):
-            state["candidate"] = dict(prior["candidate"])
-    if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping):
-        if prior.get("session_id") == snap.session_id:
-            state["evidence"] = dict(prior["evidence"])
-    for key in ("previous_applied_profile", "accepted_sound_candidate_fingerprint"):
-        if key in prior:
-            state[key] = prior[key]
-    state["previous_candidate_fingerprint"] = prior.get(
-        "previous_candidate_fingerprint"
-    )
-    state["previous_candidate_displaced_by"] = prior.get(
-        "previous_candidate_displaced_by"
-    )
-    state["expected_post_apply_offset_db"] = prior.get("expected_post_apply_offset_db")
-    for key in ("accepted_sound_revision", "accepted_sound_declaration_change"):
-        state[key] = (
-            prior.get(key)
-            if prior.get("accepted_sound_candidate_fingerprint") or not runs_measure
-            else None
-        )
+    if isinstance(prior.get("candidate"), Mapping) and (
+        same_session or (prior.get("applied") is True and not runs_measure)
+    ):
+        state["candidate"] = dict(prior["candidate"])
+    if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping) and same_session:
+        state["evidence"] = dict(prior["evidence"])
     state["round_receipt"] = prior.get("round_receipt")
     state[ROUND_ORDINAL_EPOCH_STATE_KEY] = round_ordinal_epoch_from_state(prior)
-    return ConductorState(state, False)
+    return state

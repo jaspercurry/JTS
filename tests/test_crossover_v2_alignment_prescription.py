@@ -3,10 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Covers the request gate (shape, provenance, and the one derivation of the
-bound), the aligner's commitment of a prescribed delay, the single-owner claim
-end to end into the emitted graph and its proof, the receipt's
-provenance, and — the control that matters most — that a session with no
-prescription selects exactly what it selected before.
+bound), the analysis publish site, the single-owner claim end to end into the
+emitted graph and its proof, and the receipt's provenance.
 
 The numbers in the candidate-set tests are the series-2 diagnosis's,
 deliberately: the harness exists to measure those candidates, and a test
@@ -17,7 +15,6 @@ control candidate cannot be expressed as a prescription at all.
 from __future__ import annotations
 
 import dataclasses
-import logging
 
 import numpy as np
 import pytest
@@ -49,17 +46,12 @@ from jasper.active_speaker.measured_crossover_candidate import (
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR,
-    ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION,
     ALIGNMENT_OK,
     AlignmentEstimate,
     MeasurementPriors,
     half_period_us,
-    polarity_label,
 )
-from jasper.audio_measurement.program_analysis.dispatch import _build_candidate
 
-from tests._log_events import event_fields
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_audio_measurement_program_analysis import (
     SR,
@@ -503,108 +495,18 @@ def test_the_old_unprefixed_names_colliding_with_blend_prescription_are_gone():
 
 
 # --------------------------------------------------------------------------- #
-# 4. The aligner commits the prescription — exactly, and says so
+# 4. The analysis publishes the selection's own answer
 # --------------------------------------------------------------------------- #
 
 
-def _lr4_branches(fc_hz=FC_HZ, n_bins=4097, f_max_hz=24_000.0):
-    """The same complementary LR4 pair the selector suite uses."""
-    freqs = np.linspace(0.0, f_max_hz, n_bins)
-    s = 1j * freqs / fc_hz
-    butter2 = s * s + np.sqrt(2.0) * s + 1.0
-    return freqs, (1.0 / butter2) ** 2, ((s * s) / butter2) ** 2
-
-
-def _overlapping_branches() -> tuple[np.ndarray, np.ndarray]:
-    """Two BAND-LIMITED driver IRs whose passbands overlap across Fc.
-
-    Bare impulses will not do, and finding that out is what a mutation harness
-    is for: two full-band deltas sum to a magnitude the residual delay barely
-    moves (three distinct dB values across the whole curve), so a test asserting
-    "these two candidates predict identically" passed even with the anchor
-    withdrawal switched OFF. Band-limited branches that actually overlap
-    make the summed magnitude a real function of the residual, which is
-    the only way the withdrawal's consequence is observable at all.
-    """
-    return (
-        _band_impulse(200, 150.0, 6000.0, 1.0, n=8192),
-        _band_impulse(211, 300.0, 20000.0, 0.7, n=8192),
-    )
-
-
-def _low_snr_candidate_at(prescribed_us: float):
-    """One candidate off a real capture the SNR verdict refused for alignment."""
-    woofer_ir, tweeter_ir = _overlapping_branches()
-    alignment = AlignmentEstimate(
-        delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-        polarity="normal", polarity_sign=1, confidence=0.9, status=ALIGNMENT_OK,
-        anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
-    )
-    return _build_candidate(
-        woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
-        alignment, None,
-        alignment_delay_bounds_us=(0.0, 1100.0),
-        branch_snr_insufficient=True,
-        explicit_alignment_delay_us=prescribed_us,
-    )
-
-
-def test_the_low_snr_arm_withdraws_the_anchor_and_its_model_goes_arm_blind():
-    """Low-SNR prescriptions cannot trust the measured arrival anchor."""
-    a, (freqs_a, pred_a) = _low_snr_candidate_at(-350.0)
-    b, (freqs_b, pred_b) = _low_snr_candidate_at(-550.0)
-
-    # Both committed their own candidate, exactly…
-    assert (a.delay_us, b.delay_us) == (-350.0, -550.0)
-    assert a.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
-    # …the withdrawal fired, so neither model carries a residual…
-    assert a.snap_delta_us != pytest.approx(0.0, abs=1e-9)
-    # …and the prediction is therefore identical across two different
-    # candidates.
-    assert np.array_equal(freqs_a, freqs_b)
-    assert np.array_equal(pred_a, pred_b)
-
-
-def test_a_trusted_capture_keeps_its_residual_so_its_model_tracks_the_arm():
-    """The other side of the same membership, and why it is not symmetric.
-
-    On a capture that PASSED its SNR verdict the anchor is trustworthy, so the
-    prescription's commitment stays out of the declared-polarity set and its
-    model carries ``prescribed − anchor``. Two candidates then predict
-    differently — the pre-apply net the low-SNR candidate above does without.
-    """
-    woofer_ir, tweeter_ir = _overlapping_branches()
-
-    def _at(prescribed_us):
-        alignment = AlignmentEstimate(
-            delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-            polarity="normal", polarity_sign=1, confidence=0.9,
-            status=ALIGNMENT_OK,
-            anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
-        )
-        return _build_candidate(
-            woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
-            alignment, None,
-            alignment_delay_bounds_us=(0.0, 1100.0),
-            explicit_alignment_delay_us=prescribed_us,
-        )
-
-    a, (_fa, pred_a) = _at(-350.0)
-    b, (_fb, pred_b) = _at(-550.0)
-    assert a.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    assert b.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    assert not np.array_equal(pred_a, pred_b)
-
-
-def _analyzed(prescribed_us: float | None, polarity_sign: int | None = None):
-    """A REAL published :class:`ProgramAnalysis`, prescription and all.
+def _analyzed():
+    """A REAL published :class:`ProgramAnalysis`.
 
     Through ``analyze_program_capture`` rather than ``_build_candidate``: the
     two-owner defect this pins lived at the PUBLISH site, one function further
-    out, so a test that stopped at the candidate could not see it — and did
-    not, for one mutation round. The branches are inverted relative to each
-    other, so correlation reads the seed as inverted and the flat sum has a
-    real disagreement available to it.
+    out, so a test that stopped at the candidate could not see it. The branches
+    are inverted relative to each other, so correlation reads the seed as
+    inverted and the flat sum has a real disagreement available to it.
     """
     from jasper.audio_measurement.program import build_measure_program
     from jasper.audio_measurement.program_analysis import (
@@ -624,11 +526,7 @@ def _analyzed(prescribed_us: float | None, polarity_sign: int | None = None):
     )
     return analyze_program_capture(
         program, capture, SR,
-        priors=MeasurementPriors(
-            crossover_fc_hz=2000.0,
-            explicit_alignment_delay_us=prescribed_us,
-            explicit_alignment_polarity_sign=polarity_sign,
-        ),
+        priors=MeasurementPriors(crossover_fc_hz=2000.0),
         geometry=MeasurementGeometry(),
     )
 
@@ -637,112 +535,16 @@ def test_the_publish_site_carries_the_selections_answer_not_its_own():
     """The two-owner defect, pinned where it actually lived.
 
     ``_analyze_measure`` re-derived this cross-check against a single
-    objective while the selection used the widened rule, so a PRESCRIBED round
-    published ``None`` — "never asked" — to every durable surface while the
-    journal said the comparison ran. Asserted on the published estimate, and
-    against the candidate the same analysis carries, so the two cannot drift
-    apart again without this failing.
+    objective while the selection used the widened rule. Asserted on the
+    published estimate, and against the candidate the same analysis carries, so
+    the two cannot drift apart again without this failing.
     """
-    automatic = _analyzed(None)
+    automatic = _analyzed()
     assert automatic.alignment.polarity_agrees_with_sum is not None
     assert (
         automatic.alignment.polarity_agrees_with_sum
         is automatic.candidate.polarity_agrees_with_sum
     )
-
-    prescribed = _analyzed(-450.0)
-    assert prescribed.candidate.alignment_objective == (
-        ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION
-    )
-    # The published answer is a real comparison, never "never asked"…
-    assert prescribed.alignment.polarity_agrees_with_sum is None
-    # …and it is the SAME object the selection produced.
-    assert (
-        prescribed.alignment.polarity_agrees_with_sum
-        is prescribed.candidate.polarity_agrees_with_sum
-    )
-
-
-def test_an_arm_that_asked_nothing_publishes_none_not_a_false_agreement():
-    """The other direction of the same honesty.
-
-    On the low-SNR candidate the polarity is the DECLARATION, not a flat-sum
-    result, so no comparison happened — and recording "correlation agreed"
-    because nothing disagreed with it is the dishonesty the field exists to
-    avoid.
-    """
-    candidate, _predicted = _low_snr_candidate_at(-450.0)
-    assert candidate.alignment_objective == ALIGNMENT_COMMITTED_EXPLICIT_AFTER_LOW_SNR
-    assert candidate.polarity_agrees_with_sum is None
-
-
-@pytest.mark.parametrize(
-    ("pinned_sign", "word"), [(1, POLARITY_KEEP), (-1, POLARITY_INVERT)],
-)
-def test_a_pinned_basin_reaches_the_candidate_as_the_graphs_polarity_field(
-    pinned_sign, word,
-):
-    """End to end, through the REAL analysis, to the field the graph applies.
-
-    ``_analyzed`` runs ``analyze_program_capture`` on a synthesized capture
-    whose branches are inverted relative to each other, so the automatic answer
-    is a real result rather than a default — and the pin has to survive every
-    hop from the prior to
-    :func:`~jasper.active_speaker.crossover_v2.alignment_prescription.alignment_to_candidate_fields`,
-    which is where the measurement frame's word becomes the candidate's action.
-
-    The prescribed delay rides through unchanged in both cases, which is what
-    makes this a pin on the BASIN rather than on the whole alignment.
-    """
-    analysis = _analyzed(-450.0, polarity_sign=pinned_sign)
-
-    assert analysis.alignment.polarity_sign == pinned_sign
-    assert analysis.alignment.polarity == polarity_label(pinned_sign)
-    # …and the published agreement is honestly absent, one hop from every
-    # durable surface that reads it.
-    assert analysis.alignment.polarity_agrees_with_sum is None
-
-    _magnitude, _role, polarity = alignment_to_candidate_fields(
-        analysis, roles=("woofer", "tweeter"),
-    )
-    assert polarity == word
-
-
-@pytest.mark.parametrize("pinned_sign", (1, -1))
-def test_a_pinned_basin_reaches_the_household_row_as_an_instruction(pinned_sign):
-    """The pin survives into the frozen evidence the review screen is built from.
-
-    #2607 S3 reopened by a new route: the household row words a polarity as
-    "Inverted (measured)" unless something tells it otherwise, and a pinned
-    round commits the same ``explicit_prescription_committed`` an unpinned
-    prescription does — so the objective cannot be that something. The bit is,
-    and it has two hops to survive before any screen sees it: the carry onto the
-    candidate, and the freeze into ``analysis_json``. Either one silently
-    dropped puts "measured" over an operator's instruction.
-
-    Asserted on the REAL analysis, so both hops are exercised; the projection
-    from here to the payload is pinned in ``tests/test_crossover_envelope_v2.py``
-    and the copy itself in ``tests/js/crossover_polarity_provenance_test.mjs``.
-    """
-    from jasper.active_speaker.crossover_v2.planning import analysis_json
-
-    analysis = _analyzed(-450.0, polarity_sign=pinned_sign)
-    assert analysis.candidate.polarity_pinned is True
-    assert analysis_json(analysis)["polarity_pinned"] is True
-
-
-def test_an_unpinned_round_is_not_labelled_an_instruction():
-    """The control, and the half that keeps the fix scoped.
-
-    An unpinned prescription commits the SAME objective, so a fix keyed off the
-    objective would have reworded every prescribed round. This is what fails if
-    the bit ever starts being inferred rather than carried.
-    """
-    from jasper.active_speaker.crossover_v2.planning import analysis_json
-
-    analysis = _analyzed(-450.0)
-    assert analysis.candidate.polarity_pinned is False
-    assert analysis_json(analysis)["polarity_pinned"] is False
 
 
 def test_a_rejected_ripple_polish_reaches_the_durable_candidate_evidence(monkeypatch):
@@ -769,7 +571,7 @@ def test_a_rejected_ripple_polish_reaches_the_durable_candidate_evidence(monkeyp
         _pa.dispatch, "solve_ripple_optimal_trim",
         lambda *a, **kw: (kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"]),
     )
-    analysis = _analyzed(-450.0)
+    analysis = _analyzed()
     rejected = analysis.candidate.ripple_polish_rejected_delta_db
     # Asserted, never skipped-if-absent: this fixture's ripple band straddles Fc
     # so the polish genuinely runs, and a conditional skip here would turn a
@@ -779,116 +581,6 @@ def test_a_rejected_ripple_polish_reaches_the_durable_candidate_evidence(monkeyp
     assert analysis_json(analysis)["ripple_polish_rejected_delta_db"] == pytest.approx(
         excursion_db
     )
-
-
-def test_an_unpinned_analysis_still_solves_its_own_basin():
-    """The control for the pair above, and the regression pin for today.
-
-    Same capture, same prescribed delay, no pin: the objective still answers the
-    polarity question and still publishes an agreement. If the pin had leaked a
-    default into the automatic path, this is what would go ``None``.
-    """
-    analysis = _analyzed(-450.0)
-
-    assert analysis.alignment.polarity_agrees_with_sum is None
-
-
-def test_the_selection_event_names_the_prescribed_delay(caplog):
-    """The second disclosure surface: ``prescribed_delay_us`` on the selection
-    line is what makes "this round's delay was prescribed, not searched"
-    greppable in a journal.
-
-    ``None`` on every ordinary round is half the contract — a field that were
-    always present would not separate the two — so both are asserted.
-    """
-    freqs, W, T = _lr4_branches()
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
-    del freqs, W, T
-
-    def _emit(prescribed):
-        alignment = AlignmentEstimate(
-            delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-            polarity="normal", polarity_sign=1, confidence=0.9,
-            status=ALIGNMENT_OK,
-            anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
-        )
-        caplog.clear()
-        with caplog.at_level(logging.INFO):
-            _build_candidate(
-                woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
-                alignment, None,
-                alignment_delay_bounds_us=(0.0, 1100.0),
-                explicit_alignment_delay_us=prescribed,
-            )
-        return event_fields(caplog, "program_analysis.alignment_selection")
-
-    assert _emit(-450.0)["prescribed_delay_us"] == "-450.0"
-
-    # logfmt renders an absent value as `null`, not `None`.
-    assert _emit(None)["prescribed_delay_us"] == "null"
-
-
-def test_the_selection_event_names_the_prescribed_basin(caplog):
-    """The deciding value for a basin sweep, on the line that decided it.
-
-    Three states, because two would not separate them: ``null`` when no
-    prescription was made at all (matching its delay sibling, so a non-null
-    value stays greppable as "prescribed"), ``unpinned`` when a prescription
-    left the basin to the objective, and the basin itself when one was pinned.
-
-    Spelled in the analysis frame so the three polarity fields on this ONE line
-    — ``seed_polarity``, ``prescribed_polarity``, ``polarity`` — read in one
-    vocabulary and can be compared by eye. The request's own word (keep/invert)
-    is what the receipt banks, and is asserted where the receipt is.
-    """
-    woofer_ir = np.zeros(8192)
-    tweeter_ir = np.zeros(8192)
-    woofer_ir[1000] = 1.0
-    tweeter_ir[1011] = 1.0
-
-    def _emit(prescribed, polarity_sign):
-        alignment = AlignmentEstimate(
-            delay_us=-650.0, raw_delay_us=-650.0, parallax_us=0.0,
-            polarity="normal", polarity_sign=1, confidence=0.9,
-            status=ALIGNMENT_OK,
-            anchor_delay_us=-3 / 48_000 * 1e6, snapped_delay_us=None,
-        )
-        caplog.clear()
-        with caplog.at_level(logging.INFO):
-            _build_candidate(
-                woofer_ir, tweeter_ir, 48_000, 16_384, FC_HZ, "woofer", "tweeter",
-                alignment, None,
-                alignment_delay_bounds_us=(0.0, 1100.0),
-                explicit_alignment_delay_us=prescribed,
-                explicit_alignment_polarity_sign=polarity_sign,
-            )
-        return event_fields(caplog, "program_analysis.alignment_selection")
-
-    assert _emit(None, None)["prescribed_polarity"] == "null"
-    assert _emit(-450.0, None)["prescribed_polarity"] == "unpinned"
-
-    inverted = _emit(-450.0, -1)
-    assert inverted["prescribed_polarity"] == "inverted"
-    # The pin decided the commitment, and the line says so: the agreement is
-    # honestly absent rather than claiming a comparison.
-    assert inverted["polarity"] == "inverted"
-    assert inverted["polarity_agrees_with_sum"] == "null"
-
-    assert _emit(-450.0, 1)["prescribed_polarity"] == "normal"
-
-
-# --------------------------------------------------------------------------- #
-# 5. The control: no prescription changes nothing
-# --------------------------------------------------------------------------- #
-
-
-def test_the_prior_defaults_to_absent():
-    """A construction site that predates this field runs the automatic path."""
-    assert MeasurementPriors().explicit_alignment_delay_us is None
-    assert MeasurementPriors().explicit_alignment_polarity_sign is None
 
 
 # --------------------------------------------------------------------------- #
