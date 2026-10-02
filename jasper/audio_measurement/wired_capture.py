@@ -250,7 +250,7 @@ class WiredSplMonitor:
             # A row mean is the same pairwise sum as a lone period's mean: bit-identical values.
             mean_squares = squares.reshape(len(sizes), -1).mean(axis=1)
         else:
-            mean_squares = [part.mean() for part in np.split(squares, np.cumsum(sizes)[:-1])]
+            mean_squares = np.asarray([part.mean() for part in np.split(squares, np.cumsum(sizes)[:-1])])
         frames = 0
         for size, mean_square in zip(sizes, mean_squares):
             frames += size
