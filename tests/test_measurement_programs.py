@@ -501,6 +501,24 @@ def test_a_program_name_resolves_to_its_first_preset() -> None:
         "rear": "rear/express", "nearfield": "nearfield/each"}
 
 
+@pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
+def test_a_programs_first_plan_is_its_own_at_a_layout_its_preset_offers(program) -> None:
+    first = mp.first_plan(program)
+
+    assert first.purpose == program and first.layout in mp.preset(first.preset).layouts
+    if program != mp.PURPOSE_REAR:
+        assert first == mp.preset(program)
+
+
+def test_the_rear_program_starts_with_the_pair_model_at_the_mark() -> None:
+    """The playbook's Seat loop banks the pair model first; the rear program's default preset
+    stays the summed one a trial of candidates walks."""
+    first = mp.first_plan("rear")
+
+    assert (first.preset, first.layout, first.regime) == ("rear/pair", "speaker_mark", mp.REGIME_BRANCHES)
+    assert mp.preset("rear").preset == "rear/express"
+
+
 @pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM), ("bass", mp.PURPOSE_BASS)])
 def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> None:
     cloud = mp.run_preset(program, "seat_cloud")

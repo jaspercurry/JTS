@@ -90,6 +90,9 @@ class TuningProgram:
     run_headline: str
     #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
     trial: tuple[tuple[str, str], ...]
+    #: The ``(preset, layout)`` the measure page offers first, where the program's first measurement is not
+    #: its default preset's (the playbook's loop for it); none: the default preset at its default layout.
+    start: tuple[str, str] | None = None
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
@@ -126,7 +129,7 @@ _PROGRAM_SECTIONS = (
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
         "Measure the rear woofer", "rear",
         run_headline="JTS is measuring how the rear woofer shapes the sound in front of and behind the speaker. Follow the step below.",
-        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
+        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")), start=("rear/pair", "speaker_mark"),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
         branches_clear_own=True,
     ),
@@ -662,6 +665,12 @@ def preset(name: str) -> Preset:
     if found is None:
         raise UnknownPresetError(name, available_presets())
     return found
+
+
+def first_plan(program: str) -> Preset:
+    """The plan the measure page offers first for a program: its row's ``start``, else its default preset."""
+    start = next((row.start for row in _PROGRAM_SECTIONS if row.purpose == program), None)
+    return run_preset(*start) if start else preset(program)
 
 
 def layouts_without_arm(name: str) -> tuple[str, ...]:

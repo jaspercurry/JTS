@@ -1154,7 +1154,7 @@ def test_a_near_field_round_moves_no_tuning_reader(tmp_path):
     round of every tuning program and the rear-pair level match stay the pair
     round's."""
     pair = pair_round(tmp_path)
-    (pair / "packet.json").write_text(json.dumps({"preset": "rear/pair"}))
+    (pair / "packet.json").write_text(json.dumps({"preset": "rear/pair", "sets": [{"takes": [{"selected": True}]}]}))
     near = bank_seat_round(pair.parent, name="nearfield")
     source, store = _round_source(near)
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]

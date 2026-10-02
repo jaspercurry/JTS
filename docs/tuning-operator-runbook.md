@@ -8,7 +8,7 @@ Register the wired microphone with `jasper-mic-calibration` and confirm its seri
 
 First run `jasper-crossover-prescriber status` without a round. Read `applied`,
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
-`last_banked` keeps the latest round per applicable program: `round_id`, `round_dir`,
+`last_banked` keeps the latest round per applicable program that kept a take: `round_id`, `round_dir`,
 `banked_at`, `status`, and `stale`. `stale: true` means its applied identity differs or it was
 banked at or before the last apply; only current rounds guide the next action.
 With a current-identity round, all applicable layers applied, and none stale,

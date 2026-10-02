@@ -280,15 +280,16 @@ def banked_rounds(
 
 def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
     """The programs a banked packet counts for: its own, and room when it carries room views.
-    A round whose every take plays one driver alone counts for none but reference: it holds
-    no take its program's next step reads, until #5696 (ADR-0360 §2)."""
+    A round that kept no take counts for none. A round whose every take plays one driver
+    alone counts for none but reference: it holds no take its program's next step reads,
+    until #5696 (ADR-0360 §2)."""
     try:
         purpose = run_purpose(packet.get("preset"))
     except ValueError:
         return ()
-    one_driver = [bool((take.get("pose") or {}).get("driver"))
-                  for group in packet.get("sets") or () for take in group.get("takes") or ()]
-    if purpose != PURPOSE_REFERENCE and one_driver and all(one_driver):
+    takes = [take for group in packet.get("sets") or () for take in group.get("takes") or ()]
+    if not any(take.get("selected") for take in takes) or (
+            purpose != PURPOSE_REFERENCE and all((take.get("pose") or {}).get("driver") for take in takes)):
         return ()
     return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
 

@@ -9,6 +9,7 @@ from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope
 from jasper.active_speaker.round_copy import RUN_ENDED
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
 from jasper.active_speaker.measurement_view import round_choices
+from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from tests.crossover_v2_fixtures import _roles
 
 from jasper.active_speaker import applied_tune, baseline_profile, commissioning_coordinator as coordinator
@@ -317,15 +318,32 @@ def test_applied_identity_is_shared_by_commissioning_and_doctor(monkeypatch, rec
     assert check_row(doctor.check_active_speaker_applied_graph()).get("applied_identity") == expected
 
 
-@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/each"])
-def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
+def _plannable(monkeypatch, next_program):
+    """The measure page's inputs for a cardioid speaker whose next program is ``next_program``."""
     roles = tuple(_roles())
-    context = SimpleNamespace(roles_bands=roles, driver_caps_dbfs={r.role: 0.0 for r in roles}, fc_hz=2500,
-                              driver_sweep_duration_limits_s={r.role: 10.0 for r in roles},
-                              driver_bands={r.role: r.band for r in roles}, safety_profile={}, role_targets={})
+    targets = {r.role: r.band for r in roles} | {"woofer:rear": FrequencyBand(150.0, 6000.0)}
+    context = SimpleNamespace(roles_bands=roles, driver_caps_dbfs=dict.fromkeys(targets, 0.0), fc_hz=2500,
+                              driver_sweep_duration_limits_s=dict.fromkeys(targets, 10.0),
+                              driver_bands=targets, safety_profile={}, role_targets={})
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context", lambda *a, **kw: context)
     monkeypatch.setattr(coordinator, "load_commissioning_view", lambda: {
-        "next_action": {"program": "speaker"}, "programs": RUNNABLE_PROGRAMS, "near_field_drivers": ("tweeter", "woofer")})
+        "next_action": {"program": next_program}, "programs": RUNNABLE_PROGRAMS,
+        "near_field_drivers": ("tweeter", "woofer", "woofer:rear")})
+
+
+@pytest.mark.parametrize("program,default_id", [
+    ("rear", "rear/pair@speaker_mark"), ("speaker", "speaker/mark"), ("room", "room/seat")])
+def test_the_page_offers_the_next_programs_first_plan(monkeypatch, program, default_id):
+    """The rear tune starts from the pair model banked at the mark (the playbook's Seat loop), not from the
+    rear program's default preset; the other programs start at theirs."""
+    _plannable(monkeypatch, program)
+    choices = round_choices({}, "")
+    assert [choice["id"] for choice in choices if choice["default"]] == [default_id]
+
+
+@pytest.mark.parametrize("selected_id", ["rear/express", "speaker/mark", "nearfield/each"])
+def test_finished_round_names_the_next_pose_set(monkeypatch, selected_id):
+    _plannable(monkeypatch, "speaker")
     status = {"active": True, "setup": {"active": True, "status": "ready"},
               "capture": {"status": "complete", "run": {"status": "complete", "poses": 1}}}
     choices = round_choices(status, selected_id)
