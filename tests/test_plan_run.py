@@ -2193,7 +2193,8 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     """A ladder holds the room once and finishes each pose. Its first rung
     probes and finds its level, and each rung plays its step under it at every
     pose (ADR-0403 §4). A rung's retake plays again in place, up to its pose's
-    retries, with no new placement (#6113)."""
+    retries, with no new placement (#6113). Only the first rung's first take,
+    with its probe, announces the run (ADR-0417)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
@@ -2227,6 +2228,8 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [
         (0, 0.0), *(rung for rung, status in zip(rungs, statuses) for _ in range(1 + replays * (status == "partial")))]
     assert fakes.play.calls[0]["spec"].level_probe
+    assert {(call["position_deg"], call["level_db"]) for call in fakes.play.calls
+            if call["spec"].courtesy_prelude} == {(0, 0.0), (0, _LADDER_FOUND_DB)}
     assert len(gate.grants) == (1 if partial == "stop" else 2)
     assert sum(result.mic_moves for result in results) == len(gate.grants)
     assert all(result.finalized for result in results)

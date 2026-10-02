@@ -107,6 +107,9 @@ class MeasureSpec:
     #: caps less it (ADR-0359, ADR-0407). Only the composition seam sets it, from the
     #: take's own graph.
     bass_reserve_db: Mapping[str, float] | None = None
+    #: Whether this take plays the courtesy prelude: its run's first take
+    #: (:func:`~.capture_plan.announce_run`). A level probe never plays it (ADR-0417).
+    courtesy_prelude: bool = False
 
     def __post_init__(self) -> None:
         if self.stimulus is not None:

@@ -18,7 +18,9 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CAPTURE_ENTRY_MARGIN_MS, announce_run, build_inline_session_spec,
+)
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.measurement_analysis import BankedMeasurement
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_evidence, bass_take
@@ -160,16 +162,17 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     request = request_for_preset(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
+    # The run's only take announces it (ADR-0417).
     played = compose_plan_program(SimpleNamespace(excitation=excitation, set_program=lambda *args: None),
-                                  capture.spec, None, context=context)
-    assert round(played.total_samples / played.sample_rate_hz * 1000) == 20199
+                                  announce_run([capture.spec])[0], None, context=context)
+    assert round(played.total_samples / played.sample_rate_hz * 1000) == 23799
     plan = build_inline_session_spec(
         [(capture.spec, capture.resolved(request).prompt, "trial")],
         roles_bands=excitation.roles, fc_hz=excitation.fc_hz, safety_profile=safety, role_targets=targets,
         acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
     assert plan.capture_target == 1
-    assert plan.entries[0].duration_ms == 20199 + CAPTURE_ENTRY_MARGIN_MS
+    assert plan.entries[0].duration_ms == 23799 + CAPTURE_ENTRY_MARGIN_MS
 
 
 @pytest.mark.parametrize("floor", [20, 30])

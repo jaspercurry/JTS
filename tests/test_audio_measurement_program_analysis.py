@@ -3691,11 +3691,8 @@ def test_check_gain_plan_uses_peak_referenced_level_not_ambient_subtracted():
 #
 # The shipped CHECK program is 12 s of ambient silence at [0, 12 s) followed
 # IMMEDIATELY by the courtesy prelude — 0.6 s of -18 dBFS beeps at
-# [12.0, 12.6) s (`courtesy_prelude_for_phase(journey.PHASE_CHECK)` is True.
-# The name is qualified because that rule is asked of the SESSION phase — the
-# `jasper.active_speaker.crossover_v2.journey` family — and not of
-# `program.PROGRAM_PHASE_CHECK`, the stimulus phase this file imports. CHECK
-# opens stage 1, so it is one of the phases that keeps the prelude). A
+# [12.0, 12.6) s (CHECK opens its run, so it keeps the prelude:
+# `capture_plan.announce_run`). A
 # window whose end is computed from the CLAMPED start walks forward onto those
 # beeps on a capture that began late. Measured on that shipped geometry over a
 # and by ~5.9 s late the window had slid onto the PILOTS (-23.18 dBFS), which

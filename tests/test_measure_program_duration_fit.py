@@ -421,7 +421,7 @@ def test_the_production_composer_admits_the_shape_it_actually_plays():
             session_volume_db=sv,
             fc_hz=1600.0,
             sweep_duration_limits_s=sweep_duration_limits_s,
-        ).measure_program({role: caps[role] for role in caps})
+        ).measure_program({role: caps[role] for role in caps}, courtesy_prelude=False)
 
     refused = _admit(topology, profile, targets, _measure({}), sv)
     assert not refused.allowed

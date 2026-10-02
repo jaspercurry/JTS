@@ -1330,8 +1330,8 @@ def _measure_program(*, courtesy_prelude: bool = False):
     which segment is longest, and ``sweep_w`` stays that either way.
 
     ``courtesy_prelude`` defaults False because production MEASURE composes it
-    that way (``courtesy_prelude_for_phase`` -- a per-position capture does not
-    open a session). ``_SHIPPING_PROGRAMS`` asks for True, which is the ONE
+    that way (a MEASURE take never opens its run: ``capture_plan.announce_run``).
+    ``_SHIPPING_PROGRAMS`` asks for True, which is the ONE
     thing that entry ever varied; this is the single builder for both so the
     two cannot drift into two different "MEASURE shapes".
     """

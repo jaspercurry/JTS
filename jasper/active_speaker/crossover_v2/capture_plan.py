@@ -53,7 +53,6 @@ from .journey import (
 from .programs import (
     SessionExcitation,
     compose_target_program,
-    courtesy_prelude_for_phase,
     measurement_band_hz,
 )
 from .measure_spec import MeasureSpec, branch_channels_for, solo_target
@@ -68,6 +67,12 @@ from .refusal_copy import CrossoverV2Refused
 logger = logging.getLogger(__name__)
 
 
+def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
+    """A run announces itself once: its first take carries the courtesy prelude,
+    after the level probe that may open it (#1677, ADR-0417)."""
+    return tuple(replace(spec, courtesy_prelude=index == 0) for index, spec in enumerate(specs))
+
+
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
@@ -80,9 +85,8 @@ def build_inline_session_spec(
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
                                  [candidate_id for _, _, candidate_id in captures], measurements_per_pose)
     entries = []
-    for index, (spec, prompt, _) in enumerate(captures, 1):
-        phase = spec.program_phase
-        prelude = courtesy_prelude_for_phase(phase)
+    for index, (spec, prompt) in enumerate(zip(announce_run([spec for spec, _, _ in captures]), prompts), 1):
+        phase, prelude = spec.program_phase, spec.courtesy_prelude
         if solo_target(spec):
             assert excitation is not None
             program = compose_target_program(excitation, spec)  # never played; duration only

@@ -34,12 +34,7 @@ from jasper.audio_measurement.ramp import MAX_STEP_DB
 from jasper.audio_measurement.branch_program import build_branch_program
 
 from .measure_spec import branch_channels_for, solo_target
-from .journey import (
-    PHASE_CHECK,
-    PHASE_MEASURE,
-    PHASE_TIMING,
-    PHASE_VERIFY,
-)
+from .journey import PHASE_CHECK
 
 # --------------------------------------------------------------------------- #
 # level policy
@@ -64,11 +59,6 @@ DRIVER_TAKE_CEILING_DBFS = 0.0
 #: The two pilot levels are this far apart (matches the CHECK behavioral check).
 PILOT_LEVEL_DELTA_DB = abs(DEFAULT_PILOT_LEVELS_DB[1] - DEFAULT_PILOT_LEVELS_DB[0])
 
-#: The phases whose take carries the courtesy prelude (#1677). No env/config switch.
-COURTESY_PRELUDE_PHASES = frozenset(
-    {PHASE_CHECK, PHASE_VERIFY, PHASE_TIMING}
-)
-
 
 def leading_pilot_role(roles: Sequence[RoleBand]) -> str:
     """The role whose solved gain the leading pilot pair rides — the lowest."""
@@ -78,11 +68,6 @@ def leading_pilot_role(roles: Sequence[RoleBand]) -> str:
 def pilot_gains(hi_gain_db: float) -> tuple[float, float]:
     """The ``(lo, hi)`` pilot pair at a given level, delta preserved."""
     return (hi_gain_db - PILOT_LEVEL_DELTA_DB, hi_gain_db)
-
-
-def courtesy_prelude_for_phase(phase: str) -> bool:
-    """Announce a session, not every take (#1677)."""
-    return phase in COURTESY_PRELUDE_PHASES
 
 
 def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float) -> float:
@@ -138,13 +123,13 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None,
                          caps_dbfs=_reserved_caps(excitation, spec))
     backoff = _stimulus_backoff_db(spec, stimulus_dbfs)
-    prelude = courtesy_prelude_for_phase(spec.program_phase)
     if spec.stimulus is not None:
         from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
 
-        return build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile,
-                                  role_targets=role_targets, extra_backoff_db=backoff, courtesy_prelude=prelude)
-    return excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s, courtesy_prelude=prelude)
+        return build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile, role_targets=role_targets,
+                                  extra_backoff_db=backoff, courtesy_prelude=spec.courtesy_prelude)
+    return excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s,
+                                     courtesy_prelude=spec.courtesy_prelude)
 
 
 def _solo_take(excitation: SessionExcitation, spec: Any) -> tuple[RoleBand, float, int]:
@@ -189,7 +174,7 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
         sweep_duration_limits_s={band.role: excitation.sweep_duration_limits_s[band.role]},
         downstream_gain_db=excitation.session_volume_db,
         leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=band.role,
-        courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase), channels=channels,
+        courtesy_prelude=spec.courtesy_prelude, channels=channels,
     )
 
 
@@ -325,7 +310,7 @@ class SessionExcitation:
         """This session's pilot pair."""
         return pilot_gains(hi_gain_db)
 
-    def check_program(self, *, extra_backoff_db: float = 0.0,
+    def check_program(self, *, courtesy_prelude: bool, extra_backoff_db: float = 0.0,
                       scope_gains_db: Mapping[str, float] | None = None) -> ExcitationProgram:
         """Probe at the summed base, with paired backoff for the graph and retries."""
         summed_base = self._summed_gain()
@@ -344,11 +329,11 @@ class SessionExcitation:
             self.roles,
             downstream_gain_db=self.session_volume_db,
             role_base_peak_dbfs=role_base,
-            courtesy_prelude=courtesy_prelude_for_phase(PHASE_CHECK),
+            courtesy_prelude=courtesy_prelude,
         )
 
     def measure_program(
-        self, gain_plan_db: Mapping[str, float], *, extra_backoff_db: float = 0.0,
+        self, gain_plan_db: Mapping[str, float], *, courtesy_prelude: bool, extra_backoff_db: float = 0.0,
     ) -> ExcitationProgram:
         """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE
         and fitted to each role's duration limit.
@@ -373,15 +358,14 @@ class SessionExcitation:
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gains[self.leading_pilot_role]),
             leading_pilot_role=self.leading_pilot_role,
-            courtesy_prelude=courtesy_prelude_for_phase(PHASE_MEASURE),
+            courtesy_prelude=courtesy_prelude,
         )
 
     def verify_program(
         self, *, courtesy_prelude: bool, extra_backoff_db: float = 0.0, sweep_s: float | None = None,
         leading_pilots: bool = True,
     ) -> ExcitationProgram:
-        """The mono summed sweep, bounded by every driven role's cap and duration,
-        announced as the take's own phase says (:func:`courtesy_prelude_for_phase`)."""
+        """The mono summed sweep, bounded by every driven role's cap and duration."""
         gain = self._summed_gain(extra_backoff_db)
         band = measurement_band_hz(self.roles)
         return build_verify_program(
@@ -418,9 +402,10 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
         return compose_target_program(excitation, spec, stimulus_dbfs)
     if spec.program_phase == PHASE_CHECK:
         fallback = CHECK_PROBE_BACKOFF_DB if spec.scope_gains_db is None else 0.0
-        program = excitation.check_program(extra_backoff_db=fallback)
+        program = excitation.check_program(courtesy_prelude=spec.courtesy_prelude, extra_backoff_db=fallback)
         peak = max(segment.gain_db for segment in program.stimulus_segments())
         return excitation.check_program(
+            courtesy_prelude=spec.courtesy_prelude,
             extra_backoff_db=fallback + (0.0 if stimulus_dbfs is None else max(0.0, peak - stimulus_dbfs)),
             scope_gains_db=spec.scope_gains_db)
     if spec.graph_scope == "drivers":
@@ -430,7 +415,7 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
         if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
             delta = stimulus_dbfs - max(gains.values())
             gains = {role: gain + delta for role, gain in gains.items()}
-        return excitation.measure_program(gains)
+        return excitation.measure_program(gains, courtesy_prelude=spec.courtesy_prelude)
     program = compose_summed_program(excitation, spec, stimulus_dbfs,
                                      safety_profile=safety_profile, role_targets=role_targets)
     if spec.graph_scope == "candidate_branches":
