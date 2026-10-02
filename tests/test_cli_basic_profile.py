@@ -105,8 +105,6 @@ def test_review_reports_the_fingerprint_and_that_nothing_is_carried(capsys):
         "delay_ms": 0.35,
         "inverted": True,
     }
-    # A pure read: the route's POST arm COMPILES, rewriting the baseline YAML
-    # the CamillaDSP statefile may still select. Review must never send one.
     assert opener.posts() == []
     assert opener.paths() == ["http://127.0.0.1" + cli.REVIEW_PATH]
     assert [request.get_header("Host") for request in opener.requests] == ["jts3.local"]

@@ -198,27 +198,6 @@ def snapclient_argv(
 
     Channel selection (which of L/R/mono this client plays) is a CamillaDSP
     or outputd concern and is intentionally NOT decided here.
-
-    ``active_endpoint`` (the ACTIVE follower, plus the active leader's own
-    drivers) DISABLES the ``dac_content`` ChannelPick on this box: CamillaDSP
-    owns both the channel-pick and the ``2->N`` split (Layer A), so outputd just
-    runs its normal active sink fed by camilla.
-
-    THE ARMED BRANCH WRITES A BLANK ``JASPER_OUTPUTD_CONTENT_BRIDGE``, and every
-    other branch OMITS the key. outputd refuses the marker beside a DECLARED
-    bridge of any value, and its ``env_optional`` read counts blank as
-    undeclared — so blank is what overrides the ``shm_ring`` that
-    ``jasper-fanin-coupling-auto`` writes into the FIRST env layer on every pass.
-    Omitting the key there leaves that value standing and parks the daemon at
-    EX_CONFIG under ``RestartPreventExitStatus=78``. The unarmed branches must
-    NOT write blank: without the marker outputd reads this key with ``env_str``,
-    whose blank is a value it parks on, so they inherit layer 1 verbatim.
-
-    Active-mode TTS stays upstream of the crossover in fan-in. The outputd TTS
-    mixer is stereo-only and post-crossover; on an active lane a 2-way speaker is
-    also "2 channels", so arming that socket would send full-range assistant
-    audio to the tweeter. Active endpoints therefore clear the outputd TTS socket
-    along with the dac_content lane.
     """
     # cfg.leader_addr is passed VERBATIM to snapclient --host. The bond wizard
     # mints it as a STABLE mDNS .local handle (the leader's JASPER_HOSTNAME), not

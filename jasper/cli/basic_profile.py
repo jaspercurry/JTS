@@ -130,7 +130,6 @@ def _print_facts(summary: Mapping[str, Any]) -> None:
 
 
 def _cmd_review(wizard: WizardClient, args: argparse.Namespace) -> int:
-    # One GET: the route's POST arm compiles and applies, so nothing here sends one.
     status, profile = wizard.get_json(REVIEW_PATH)
     if status != 200 or not isinstance(profile, dict):
         lost = f"{f'HTTP {status}' if status else 'no response'}: {str(profile).strip()[:200]}"

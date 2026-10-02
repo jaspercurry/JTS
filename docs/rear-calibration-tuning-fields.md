@@ -17,9 +17,8 @@ An authored `electrical_dsp` document enters as the `rear_calibration`
 section of a `jts_prescription` document. `jasper-crossover-prescriber
 compose` banks it onto the document's `base` (`saved` or a fingerprint); the existing
 baseline-profile apply (`jasper-round apply <fingerprint>`) is the only
-path that carries a banked candidate onto the box, and the wizard's
-editing panel calls that same judge/compose/apply path in-process rather
-than writing around it. See [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md).
+path that carries a banked candidate onto the box.
+See [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md).
 `jasper-round-views rear-fit` fits the branch filters: it turns an
 `acoustic_targets` document into branches on one banked `rear/pair` take's
 measured woofers. Its `--help` carries the inputs.
