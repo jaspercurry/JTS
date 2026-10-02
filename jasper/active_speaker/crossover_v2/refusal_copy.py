@@ -1298,7 +1298,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
         REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so this measurement did not play.",
-        "placement_required": "Confirm the microphone position before taking another measurement.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
         "cancelled": "The measurement was stopped before it finished.",
