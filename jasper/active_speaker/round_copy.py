@@ -16,6 +16,8 @@ from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_S
 from .movers import MOVER_ARM
 
 CHOOSE_PROGRAM = "Start a measurement round when you are ready."
+#: The headline of a walk that no tuning program's row words (``TuningProgram.run_headline``).
+RUN_UNDER_WAY = "JTS is measuring. Follow the step below."
 RUN_ENDED = "The round is complete. No more sound plays until a new round starts."
 PLACE_MICROPHONE = "Place the microphone. Confirm it is placed to play this pose's measurements."
 #: What a play at one driver's pose is doing: its level probe, or a take at the level it found (ADR-0365).
@@ -171,3 +173,13 @@ def packet_lines(directory: str) -> list[str]:
     except (OSError, ValueError, KeyError):
         return []
     return coverage_lines(packet, manifest)
+
+
+def status_lines(facts: Mapping[str, Any], *, pending: Mapping[str, Any] | bool = False) -> list[str]:
+    """What a run's published ``facts`` say, for the page and the console: its banked round's coverage once it has one."""
+    if facts.get("round_dir"):
+        lines = packet_lines(facts["round_dir"])
+        if lines:
+            return lines
+        facts = {**facts, "packet_error": "packet_unreadable"}
+    return round_lines(facts, pending=pending)

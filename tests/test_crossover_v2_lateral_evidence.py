@@ -145,14 +145,6 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
         "crossover_v2": {"phase": phase},
     })
     assert env["screen"] == "measure"
-    verdict = env["verdict_text"]
-    # Movement-appropriate: MEASURE's keep-still instruction would be wrong
-    # while the household walks poses, and the cloud's explanation is about a
-    # different question (telling the speaker apart from the room).
-    assert "still" not in verdict.lower()
-    assert "apart from the room" not in verdict.lower()
-    assert "either side of the mark" in verdict
-    assert "back on it" in verdict  # the walk ends at the mark
     # The stepper is genuinely past step 1.
     steps = {s["id"]: s["status"] for s in env["steps"]}
     assert steps["microphone_check"] == "done"

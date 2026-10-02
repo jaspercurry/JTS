@@ -155,6 +155,10 @@ def test_every_registry_row_offers_a_next_action_except_a_silent_auto_retry():
     ("measurement_captures_missing", "measure_again"),
     ("dsp_replay_window_unavailable", "choose_window"),
     ("bass_replay_manifest_predates_adr_0359", "render_again"),
+    ("set_required", "name_set"),
+    ("round_take_selection_required", "name_take"),
+    # Measuring again cannot give a take an impulse for the role (ADR-0397 item 4).
+    ("round_role_not_recorded", "name_take"),
     (evidence_reasons.REASON_COVERAGE_SHORT, "measure_common_band"),
 ])
 def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):

@@ -86,6 +86,8 @@ class TuningProgram:
     description: str
     measure_label: str
     applied_name: str
+    #: What the measurement page's headline says while a walk of this program plays.
+    run_headline: str
     #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
     trial: tuple[tuple[str, str], ...]
     preview: tuple[int, str, tuple[str, ...]] | None = None
@@ -112,13 +114,19 @@ _PROGRAM_SECTIONS = (
          CandidateField("blend_correction", list)),
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
         "Driver linearization and crossover", "Measure each driver and refine its response and crossover.",
-        "Measure the baseline", "driver", trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend", "topology")),
+        "Measure the baseline", "driver",
+        run_headline=("JTS is measuring from a few spots either side of the mark, and then back on it — follow the "
+                      "step below. Moving the microphone is what shows how the speaker's drivers hand over to each "
+                      "other away from the middle."),
+        trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend", "topology")),
     ),
     TuningProgram(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
         (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
         "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
-        "Measure the rear woofer", "rear", trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
+        "Measure the rear woofer", "rear",
+        run_headline="JTS is measuring how the rear woofer shapes the sound in front of and behind the speaker. Follow the step below.",
+        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
         branches_clear_own=True,
     ),
@@ -126,6 +134,8 @@ _PROGRAM_SECTIONS = (
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 4),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
+        run_headline=("JTS is playing a bass sweep at each spot, in steps from loud to quiet, to see how far the bass "
+                      "can extend within the driver's limits. Follow the step below."),
         trial=(("bass/axis", "bass_axis"), ("bass/axis", "seat_express")), graph_evidence=True,
         clears=("room_correction",), base_clears_own=True,
     ),
@@ -133,6 +143,7 @@ _PROGRAM_SECTIONS = (
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 3, envelope=(*_VERSIONED, "rationale")),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
         "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
+        run_headline="JTS is measuring the sound at each listening spot, to see what the room does to it. Follow the step below.",
         trial=(("room/seat", "seat_express"), ("room/seat", "room_quick")), preview=(1, "room", ("room",)),
     ),
 )

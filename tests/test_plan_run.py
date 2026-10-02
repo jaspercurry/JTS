@@ -9,7 +9,7 @@ import asyncio
 import json
 import math
 from copy import deepcopy
-from itertools import count, takewhile
+from itertools import count, groupby, takewhile
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from unittest.mock import AsyncMock, Mock
@@ -20,10 +20,13 @@ import pytest
 from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
-from jasper.active_speaker.run_levels import LevelRun, level_ladder, preflight_levels, prepare_level_captures, run_levels
-from jasper.active_speaker.measurement_programs import (
-    Pose, Preset, preset, run_preset,
+from jasper.active_speaker.run_levels import (
+    LEVEL_OFFSETS_DB, LevelRun, ladder_captures, level_ladder, preflight_levels, prepare_level_captures, run_levels,
 )
+from jasper.active_speaker.measurement_programs import (
+    PROGRAM_ROWS, Pose, Preset, preset, run_preset, run_purpose,
+)
+from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import capture_dispatch
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -1452,7 +1455,7 @@ async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals
     return result, fakes.play.calls, windows
 
 
-async def _ladder_found(monkeypatch, request, *, caps, chain_db):
+async def _ladder_found(monkeypatch, request, *, caps, chain_db, gate=None):
     """A ladder on a fake chain whose first rung finds its level through a door
     that states caps; the other rungs play at the level stated to them. Answers
     the ladder's signals, its rungs' results and plays, and each level window."""
@@ -1467,8 +1470,8 @@ async def _ladder_found(monkeypatch, request, *, caps, chain_db):
         door = _chain_door(fakes, manifest, caps, chain_db, finds=plan.level.level_db is None)
         return LevelRun(manifest, door, _run_chain_analysis, _accept_unlevelled, prepare_level_captures(plan))
 
-    results = await run_levels(ladder, hold=nullcontext(SimpleNamespace()), prepare=prepare, gate=AnsweredGate(),
-                               aborts=_ABORTS, signals=signals)
+    results = await run_levels(ladder, hold=nullcontext(SimpleNamespace()), prepare=prepare,
+                               gate=AnsweredGate() if gate is None else gate, aborts=_ABORTS, signals=signals)
     return signals, results, fakes.play.calls, windows
 
 
@@ -1640,6 +1643,36 @@ def test_a_ladder_plays_only_under_the_level_its_first_rung_found(monkeypatch, s
     assert (len(results), signals.stop.is_set() and signals.stop_reason) == (rungs, not found and REASON_LEVEL_UNSOLVED)
     assert windows == ([0.0, -9.0, -14.0, -9.0, -14.0] if found else [0.0])
     assert summed == pytest.approx([79.0, 74.0] if found else [], abs=0.02)
+
+
+@pytest.mark.parametrize(("levels", "stated", "rungs"), [
+    ("auto", None, len(LEVEL_OFFSETS_DB)), (None, (-20.0, -25.0), 2), (None, None, 1)],
+    ids=["the preset's whole ladder", "the steps a plan states", "no ladder"])
+def test_a_ladder_plays_each_placements_captures_at_every_rung(levels, stated, rungs):
+    """A ladder finishes a placement's captures at each rung before the microphone moves (``run_levels``)."""
+    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"), levels=stated)
+    captures = prepare_level_captures(request)
+
+    played = ladder_captures(request, levels, captures)
+
+    by_place = [list(group) for _, group in groupby(captures, key=lambda capture: capture.stop.pose.place)]
+    assert len(by_place) == 3 and all(len(group) == 2 for group in by_place)
+    assert list(played) == [capture for group in by_place for _ in range(rungs) for capture in group]
+
+
+def test_a_ladders_frames_name_the_program_the_page_words_them_by(monkeypatch):
+    """A ladder's own frames replace the run's facts, so each names the program whose headline the page shows."""
+    request, gate = _ladder_plans()["mark first"], AnsweredGate()
+    asyncio.run(_ladder_found(monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0},
+                              chain_db={"bearing": 100.0, "close": 110.0}, gate=gate))
+
+    frames = [frame for frame in gate.progress if frame.get("status") == "running"]
+    assert frames and {frame["program"] for frame in frames} == {request.program}
+    page = build_crossover_envelope_v2({
+        "active": True, "setup": {"active": True, "status": "ready"}, "crossover_v2": {"phase": "lateral"},
+        "capture": {"status": "awaiting_capture", "run": frames[-1]}})
+    assert page["verdict_text"] == next(
+        row.run_headline for row in PROGRAM_ROWS if row.purpose == run_purpose(request.program))
 
 
 def test_a_first_seat_spot_reads_at_most_76_db_over_a_lift(monkeypatch):

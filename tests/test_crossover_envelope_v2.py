@@ -13,7 +13,7 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     _PHASE_STEP,
     build_crossover_envelope_v2,
 )
-from jasper.active_speaker.measurement_programs import preset
+from jasper.active_speaker.measurement_programs import PROGRAM_ROWS, preset
 from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.active_speaker.wizard_client import SESSION_PATH
 from jasper.audio_measurement.timing_verification import timing_verification
@@ -24,7 +24,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_VERIFY_INCONCLUSIVE,
     reason_message,
 )
-from jasper.active_speaker.round_copy import RUN_ENDED, round_lines
+from jasper.active_speaker.round_copy import RUN_ENDED, RUN_UNDER_WAY, round_lines
 
 V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
 
@@ -297,6 +297,27 @@ def test_measure_phase_is_phone_driven():
     assert env["screen"] == "measure"
     assert env["next_action"] is None
     assert _step_statuses(env)["measure"] == "active"
+
+
+def _lateral_headline(program: str | None) -> str:
+    run = {} if program is None else {"program": program}
+    status = {**_status(phase="lateral"), "capture": {"status": "awaiting_capture", "run": run}}
+    return build_crossover_envelope_v2(status)["verdict_text"]
+
+
+@pytest.mark.parametrize("row", PROGRAM_ROWS, ids=lambda row: row.purpose)
+def test_a_walks_headline_is_the_run_programs_own(row):
+    """Every take but the speaker's per-driver ones walks in the lateral phase, so the run's program words it."""
+    assert _lateral_headline(preset(row.purpose).preset) == row.run_headline
+
+
+def test_no_two_programs_share_a_headline():
+    assert len({row.run_headline for row in PROGRAM_ROWS}) == len(PROGRAM_ROWS)
+
+
+@pytest.mark.parametrize("program", [None, "", "nearfield/each"])
+def test_a_walk_no_program_owns_gets_the_neutral_headline(program):
+    assert _lateral_headline(program) == RUN_UNDER_WAY
 
 
 def _candidate_summary(**overrides) -> dict:

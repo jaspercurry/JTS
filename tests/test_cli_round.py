@@ -19,6 +19,7 @@ import signal
 import urllib.error
 from dataclasses import replace
 from functools import partial
+from itertools import groupby
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -30,7 +31,7 @@ from jasper.active_speaker import baseline_apply
 from jasper.audio_routes import output_topology_store
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.active_speaker import arm_walk as aw, bundles, candidate_bank, graph_safety, preflight_live, round_bank, round_packet, wizard_client as wc
-from jasper.active_speaker import commissioning_coordinator, measurement_view
+from jasper.active_speaker import commissioning_coordinator, measurement_view, plan_run, round_copy
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop
 from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.bundles import mark_state
@@ -53,6 +54,7 @@ from jasper.active_speaker.measurement_programs import (
 )
 from jasper.active_speaker.preflight import PreflightReport
 from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
+from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
@@ -786,6 +788,25 @@ def test_commands_print_composed_measurement_lines(capsys, monkeypatch, verb):
         assert _unwrapped(json.loads(output.out)) == progress
 
 
+@pytest.mark.parametrize("verb", ["status", "wait"])
+def test_commands_list_a_banked_rounds_coverage_as_the_page_does(capsys, monkeypatch, verb):
+    """A refused round's live facts count no unmeasured measurement, and its banked packet lists
+    the spots it did not measure: the console prints the lines the page prints for it."""
+    progress = {"status": "complete", "round_dir": "round-1", "takes": 0, "not_measured": 0}
+    covered = ["first covered spot", "second covered spot"]
+    monkeypatch.setattr(round_copy, "packet_lines", lambda directory: covered if directory == "round-1" else [])
+    client = SimpleNamespace(run_status=lambda run_id: (200, progress))
+    if verb == "status":
+        assert cli._cmd_status(client, SimpleNamespace(run="run-1")) == 0
+    else:
+        monkeypatch.setattr(cli, "wait_for_round", lambda *a, on_progress, **kw: (
+            on_progress(progress), {"status": "terminal", "captured": False})[1])
+        assert cli._cmd_wait(client, SimpleNamespace(run="run-1", timeout=1)) == 1
+    printed = capsys.readouterr().err.splitlines()
+    assert printed[:len(covered)] == covered == measurement_view.round_status({"run": progress})
+    assert not set(round_lines(progress)) & set(printed)
+
+
 @pytest.mark.parametrize("verb", ["status", "placed", "stop", "wait"])
 def test_named_run_never_reads_or_releases_a_different_run(verb, monkeypatch, capsys):
     opener = _run_opener({"status": "running"})
@@ -924,6 +945,22 @@ def test_wait_banks_and_returns_packet(preflight_ready, bank_trial, monkeypatch,
                     **({"views": views} if verbose else {})}
 
 
+def test_wait_prints_a_banked_rounds_coverage_once(monkeypatch, capsys, tmp_path):
+    """The run's last progress block is the page's coverage lines, so the banked summary does not repeat them."""
+    covered = ["first covered spot", "second covered spot"]
+    banked = round_bank.BankedRound(tmp_path, {"manifest": "run_manifest.json", "views": []})
+    monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: banked)
+    monkeypatch.setattr(cli, "_round_session_dir", lambda run: str(tmp_path))
+    monkeypatch.setattr(round_copy, "packet_lines", lambda directory: covered)
+    monkeypatch.setattr(cli, "packet_lines", lambda directory: covered)
+    monkeypatch.setattr(cli, "speaker_url", lambda path: f"http://jts3.local{path}")
+    opener = _run_opener({"status": "complete", "run": {"status": "complete", "round_dir": str(tmp_path)}})
+
+    assert cli.main(["wait", "--run", "run-1", "--timeout", "0"], opener=opener) == 0
+
+    assert [line for line in capsys.readouterr().err.splitlines() if line in covered] == covered
+
+
 @pytest.mark.parametrize("stage", ["prescription_sources", "prescription_contracts"])
 @pytest.mark.parametrize("error,reason", [
     (RoundSetRefused("round_set_unknown"), "round_set_unknown"),
@@ -1053,6 +1090,56 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     assert AngleCaptureRequest.from_mapping(published) == by_door.plan == by_cli.plan
     assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
     assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
+
+
+@pytest.mark.parametrize("choice_id, takes", [("bass/axis@seat_express", 12), ("room/seat", 3)])
+def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, choice_id, takes):
+    """A level ladder plays each placement's captures at every rung (``run_levels``). The page's plan and
+    the session's own first facts (what the awaiting-join screen prints) preview those takes from one
+    schedule: their count, and their sweeps' seconds, with the moves and the probe once."""
+    topology, context = mono_output_topology(), _inline_context()
+    context = with_rear_target(replace(context, topology=topology,
+                                       driver_bands={role.role: role.band for role in context.roles_bands}))
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
+                        lambda *_args, **_kwargs: context)
+    monkeypatch.setattr(commissioning_coordinator, "load_commissioning_view", lambda: {
+        "programs": RUNNABLE_PROGRAMS, "near_field_drivers": near_field_drivers(topology),
+        "next_action": {"program": "speaker"}})
+    previewed: list = []
+    preview = plan_run.preview_schedule
+
+    def spy(*args):
+        previewed.append((args, preview(*args)))
+        return previewed[-1][1]
+
+    monkeypatch.setattr(plan_run, "preview_schedule", spy)
+    body = next(c for c in measurement_view.round_choices({}, choice_id) if c["id"] == choice_id)["action"]["body"]
+    (_, priced, _), page = previewed[0][0], previewed[0][1]
+    request, levels = resolve_plan(RunRequest.from_mapping(body["request"]), targets=lambda: near_field_drivers(topology))
+    report = preflight_levels(request, ready_facts(request), levels)
+    rungs = report.admissible if isinstance(report, LevelLadder) else (report,)
+    played = [(capture.stop, capture.repeat) for _, group in groupby(report.plan.stops, key=lambda stop: stop.pose.place)
+              for stops in [tuple(group)] for planned in rungs
+              for capture in prepare_level_captures(replace(planned.plan, stops=stops), roles_bands=context.roles_bands)]
+    assert [(capture.stop, capture.repeat) for capture in priced] == played
+    one = preview(request, plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands), context)
+    assert page["measurements_per_pose"] == [len(rungs) * count for count in one["measurements_per_pose"]]
+    sweeps_s = sum(row["seconds"] for pose in one["pose_sweeps"] for row in pose)
+    assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"] + (len(rungs) - 1) * sweeps_s)
+    assert len(rungs) == (len(LEVEL_OFFSETS_DB) if choice_id.startswith("bass") else 1)
+
+    monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+    monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
+    monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _topology: (store, store.session_id))
+
+    session = v2host.prepare_v2_session(body, status={}, run_async=None, camilla_factory=None)
+
+    published = session.position_gate.published()["run"]
+    assert published["measurements"] == sum(page["measurements_per_pose"]) == takes
+    assert published["measurements_per_pose"] == page["measurements_per_pose"]
+    assert published["estimated_seconds"] == pytest.approx(page["estimated_seconds"])
 
 
 _PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair",

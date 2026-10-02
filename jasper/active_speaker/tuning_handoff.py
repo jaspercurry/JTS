@@ -13,8 +13,8 @@ from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQU
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.excitation_safety_plan import _role_sensitivities
 from jasper.active_speaker.measurement_programs import (
-    PROGRAM_ENTRIES, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, layouts_without_arm, offered_here,
-    preset,
+    PROGRAM_ENTRIES, PURPOSE_REAR, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, layouts_without_arm,
+    offered_here, preset,
 )
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
@@ -33,6 +33,13 @@ NO_APPLIED_BASELINE = "no_applied_baseline"
 #: ``EnvironmentFile=`` and /opt/jasper/.venv is not on the default PATH.
 _BIN = "/opt/jasper/.venv/bin"
 _PRESCRIBER = f"sudo {_BIN}/jasper-crossover-prescriber"
+
+#: The axis that unmutes a rear seed for a fresh speaker's first rear tune; the contract's seed ships muted (#5928 TB10).
+REAR_FIRST_TUNE_VARY = "rear_calibration.rear_muted=false"
+#: A sentence only one program's prompt carries, after its row's words.
+PROGRAM_NOTES = {
+    PURPOSE_REAR: f"A fresh speaker's first rear tune varies rear_muted=false (--vary {REAR_FIRST_TUNE_VARY}), because its rear seed is muted.",
+}
 
 
 def catalog_command(program: str) -> str:
@@ -163,6 +170,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str, lay
         "Re-run room after any upstream change.",
         f"Program: {entry['title']}",
         entry["description"],
+        *((PROGRAM_NOTES[program_id],) if program_id in PROGRAM_NOTES else ()),
         f"Run: sudo {_BIN}/jasper-round run --program {program_id}" + (f" --layout {layout}" if layout else ""),
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
