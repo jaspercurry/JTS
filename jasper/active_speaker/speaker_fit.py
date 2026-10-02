@@ -147,11 +147,11 @@ def _filters_finite(fit: LinearizationFit) -> bool:
 
 
 def speaker_fit(
-    inputs: RoundInputs, manifest: Mapping[str, Any], set_id: str, take_id: str | None = None,
+    inputs: RoundInputs, manifest: Mapping[str, Any], set_id: str | None, take_id: str | None = None,
     *, budget: Mapping[str, Any] | None = None,
     clouds_by_set: Mapping[str, CloudFitTerms] | None = None, sources: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    selected = resolve_set(inputs, set_id, manifest=manifest)
+    selected = resolve_set(inputs, set_id, take=take_id, manifest=manifest)
     take_id = selected.take_id(take_id)
     record = next(take for take in selected.takes if take["take_id"] == take_id)
     program = ExcitationProgram.from_dict(record["program"])

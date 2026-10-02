@@ -362,6 +362,29 @@ def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys):
     assert answer["reason"] in REASON_REGISTRY
 
 
+def test_a_take_names_the_set_that_holds_it_kept_or_not(two_sets):
+    root, manifest = two_sets
+    inputs = round_inputs(root)
+    for group in manifest["sets"]:
+        for take in group["takes"]:
+            assert resolve_set(inputs, take=take["take_id"]).set_id == group["set_id"]
+
+
+def test_a_take_two_sets_hold_needs_the_set_named_among_those_that_hold_it(two_sets):
+    """A take that recorded two roles is a row in the set of each, so it cannot say which."""
+    root, manifest = two_sets
+    first, second = manifest["sets"]
+    shared = first["takes"][0]
+    third = {**first, "set_id": "third", "takes": [{**take, "take_id": f"third-{take['take_id']}"} for take in first["takes"]]}
+    sets = [first, {**second, "takes": [*second["takes"], shared]}, third]
+
+    with pytest.raises(RoundSetRefused) as refused:
+        resolve_set(round_inputs(root), take=shared["take_id"], manifest={**manifest, "sets": sets})
+
+    assert refused.value.reason == "set_required"
+    assert [row["set_id"] for row in refused.value.detail["sets"]] == [first["set_id"], second["set_id"]]
+
+
 @pytest.mark.parametrize("poses,selected,requested,expected", [
     ([(0, 0), (15, 0)], [True, True], None, "take-0"),
     ([(15, 0), (0, 0)], [True, True], None, "take-1"),

@@ -592,12 +592,17 @@ def set_choices(sets: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def resolve_set(
-    inputs: RoundInputs, set_id: str | None = None, *, manifest: Mapping[str, Any] | None = None,
+    inputs: RoundInputs, set_id: str | None = None, *, take: str | None = None,
+    manifest: Mapping[str, Any] | None = None,
 ) -> SetTakes:
     """Resolve the executor's set without rebuilding its identity (ADR-0299).
     Its takes are the manifest's rows, as given; a reader of a take's facts
-    joins them (:meth:`SetTakes.with_records`, ADR-0395)."""
+    joins them (:meth:`SetTakes.with_records`, ADR-0395). With no ``set_id``, a
+    ``take`` names the set that holds it; a take two sets hold (one per role it
+    recorded) still needs the set named."""
     sets = view_sets(read_run_manifest(inputs, manifest=manifest))
+    if set_id is None and take is not None:
+        sets = [row for row in sets if any(held["take_id"] == take for held in row["takes"])] or sets
     if set_id is None and files_by_set(sets):
         raise RoundSetRefused(SET_REQUIRED, sets=set_choices(sets))
     matches = [row for row in sets if set_id is None or row["set_id"] == set_id]

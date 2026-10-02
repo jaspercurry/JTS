@@ -103,7 +103,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("--scope", required=True, choices=("round", "take"),
                         help="round: each band's spread across poses, gate by gate; take: one take through each gate")
     add_set_argument(parser)
-    parser.add_argument("--take", help="selected take ID within the set; required for take scope")
+    parser.add_argument("--take", help="selected take ID, which names its set; required for take scope")
     parser.add_argument("--role", help=("take scope: the recorded response to read, summed or a target "
                                          "such as woofer:rear; default: the set's own"))
     parser.add_argument("--candidate", help="round scope: candidate ID")

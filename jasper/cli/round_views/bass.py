@@ -74,7 +74,7 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
         key = inputs.session_dir.resolve()
         if key not in manifests:
             manifests[key] = read_run_manifest(inputs)
-        selected = resolve_set(inputs, set_id, manifest=manifests[key]).with_records(
+        selected = resolve_set(inputs, set_id, take=take_id, manifest=manifests[key]).with_records(
             inputs.session_dir, every_take=take_id is not None)
         take_id = selected.take_id(take_id)
         path = bass_view_path(inputs, selected.set_id, manifests[key])
