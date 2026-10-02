@@ -798,7 +798,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     # See ADR-0371
     "room_not_banked": ReasonSpec(
-        "room_not_banked", TEMPLATE_HARD_STOP, 0, "", "This round banked no room measurement.",
+        "room_not_banked", TEMPLATE_HARD_STOP, 0, "", "This round banked no room measurement for this set.",
         own_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
     ),
     **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
