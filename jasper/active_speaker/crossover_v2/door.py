@@ -82,10 +82,9 @@ class OpenMeasurementDoor:
 async def isolation_hold(
     *, graph: Any, camilla_factory: Callable[[], Any], action: str,
     volume_state_path: str | Path | None = None,
-    wall_clock_ceiling_s: float | None = None, gate_owner: str | None = None,
-    plan: Any = None,
+    wall_clock_ceiling_s: float | None = None, plan: Any = None,
 ) -> AsyncIterator[IsolationHold]:
-    from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER, measurement_window  # lazy: coordinator boundary
+    from jasper.runtime.measurement_window import measurement_window  # lazy: coordinator boundary
     from ..session_volume_plan import (  # lazy: live plan binding
         DEFAULT_SESSION_VOLUME_STATE_PATH, SessionVolumePlan, live_measurement_session,
     )
@@ -104,8 +103,7 @@ async def isolation_hold(
     # write like any other.
     # Where jasper-voice runs, a voice pause the window cannot hold, at entry or on
     # renewal, ends the run into the restore below (#5925, comment 5921678274).
-    async with measurement_window(gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner,
-                                  require_voice_pause=not voice_parked_no_mic()):
+    async with measurement_window(require_voice_pause=not voice_parked_no_mic()):
         await plan.enforce_ceiling(volume_door)
         body_error: BaseException | None = None
         try:
