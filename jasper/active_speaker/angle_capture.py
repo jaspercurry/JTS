@@ -654,9 +654,8 @@ def pose_at_angle(pose: Pose) -> CloudPositionPrompt:
     construction on the orthogonal axis (``vertical_offset_cm``,
     :func:`position_elevation_deg`).
 
-    ``role`` is DERIVED from :data:`WIDE_OFFSET_MIN_CM`, not chosen, reproducing the
-    shipped table's own assignment (12/25 cm rows ``onax``, 40/60 cm ``offax``) from the
-    SIDEWAYS offset alone.
+    ``role`` is DERIVED from :data:`WIDE_OFFSET_MIN_CM` and the SIDEWAYS offset alone,
+    not chosen.
 
     The copy is stated as the ANGLE for BOTH movers: this seam asks the angle question
     of the REQUEST and the advance question of the MOVER, reusing
@@ -688,9 +687,7 @@ def _sign_of(degrees: int) -> int:
 
 
 def _offset_cm_at(degrees: int, distance_m: float = MARK_DISTANCE_M) -> float:
-    """The cm displacement one bearing names, in the mark's own plane; a cloud-table
-    row's bearing is read back through its inverse (``capture_plan._pose``).
-    """
+    """The cm displacement one bearing names, in the mark's own plane."""
     return 100.0 * distance_m * math.tan(math.radians(abs(degrees)))
 
 
