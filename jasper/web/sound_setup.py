@@ -75,11 +75,6 @@ from . import sound_speaker_setup
 from .sound_active_speaker import (
     OutputHardwareRequestConflict,
     _cardioid_compare_payload,
-    _active_speaker_commissioning_view_payload,
-    _active_speaker_driver_research_request_payload,
-    _active_speaker_finish_commissioning_payload,
-    _active_speaker_rear_calibration_bank_payload,
-    _active_speaker_rear_calibration_validate_payload,
     _output_topology_payload,
     _repin_output_topology_payload,
     _reset_output_topology_payload,
@@ -90,13 +85,9 @@ from .sound_active_speaker import (
 # Builders are resolved by name so route calls use the current module binding.
 from .sound_active_speaker import (  # noqa: F401 - resolved by name
     _active_speaker_baseline_profile_payload,
-    _active_speaker_crossover_preview_payload,
-    _active_speaker_design_draft_payload,
-    _active_speaker_rear_calibration_seed_payload,
     _active_speaker_tuning_handoff_payload,
 )
 
-from .sound_design_draft import _active_speaker_design_draft_save_payload
 from .sound_profile_apply import (
     _EQ_CARRIER_NOT_PROBED,
     _apply_profile,
@@ -244,17 +235,8 @@ _GET_ROUTES = {
     "/": None,
     "/setup": None,
     "/state": None,
-    "/active-speaker/commissioning-view": None,
     "/output-topology": ("_output_topology_payload", "sound.output_topology"),
     "/cardioid-compare": ("_cardioid_compare_payload", "sound.cardioid_compare"),
-    "/active-speaker/design-draft": (
-        "_active_speaker_design_draft_payload",
-        "sound.active_speaker_design_draft",
-    ),
-    "/active-speaker/crossover-preview": (
-        "_active_speaker_crossover_preview_payload",
-        "sound.active_speaker_crossover_preview",
-    ),
     "/active-speaker/baseline-profile": (
         "_active_speaker_baseline_profile_payload",
         "sound.active_speaker_baseline_profile",
@@ -262,10 +244,6 @@ _GET_ROUTES = {
     "/active-speaker/tuning-handoff": (
         "_active_speaker_tuning_handoff_payload",
         "sound.active_speaker_tuning_handoff",
-    ),
-    "/active-speaker/rear-calibration/seed": (
-        "_active_speaker_rear_calibration_seed_payload",
-        "sound.active_speaker_rear_calibration_seed",
     ),
 }
 
@@ -385,21 +363,6 @@ def _make_handler(
                         self._send_json, e, logger=logger, event=event,
                     )
                 return
-            if path == "/active-speaker/commissioning-view":
-                try:
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_commissioning_view_payload(
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                except Exception as e:  # noqa: BLE001
-                    send_route_failure(
-                        self._send_json, e, logger=logger,
-                        event="sound.active_speaker_commissioning_view",
-                    )
-                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -457,36 +420,6 @@ def _make_handler(
                         error = result.get("error") or result.get("stderr")
                         payload["error"] = str(error or "hardware apply failed")
                     self._send_json(payload, status=200 if result.get("ok") else 502)
-                    return
-                if path == "/active-speaker/design-draft":
-                    try:
-                        self._send_json(_active_speaker_design_draft_save_payload(raw))
-                    except OSError as e:
-                        send_route_failure(
-                            self._send_json, e, logger=logger,
-                            event="sound.active_speaker_design_draft_save",
-                            error=type(e).__name__,
-                        )
-                    return
-                if path == "/active-speaker/driver-research-request":
-                    self._send_json(
-                        _active_speaker_driver_research_request_payload(raw)
-                    )
-                    return
-                if path == "/active-speaker/baseline-profile/save-and-apply":
-                    self._send_json(
-                        asyncio.run(
-                            _active_speaker_finish_commissioning_payload(
-                                camilla_factory=camilla_factory,
-                            )
-                        )
-                    )
-                    return
-                if path == "/active-speaker/rear-calibration/validate":
-                    self._send_json(_active_speaker_rear_calibration_validate_payload(raw))
-                    return
-                if path == "/active-speaker/rear-calibration/bank":
-                    self._send_json(_active_speaker_rear_calibration_bank_payload(raw))
                     return
                 if path == "/output-topology":
                     try:
@@ -798,11 +731,6 @@ def _make_handler(
         "/settings": Handler._dispatch_post_route,
         "/volume-floor/audition": Handler._dispatch_post_route,
         "/volume-floor/stop": Handler._dispatch_post_route,
-        "/active-speaker/design-draft": Handler._dispatch_post_route,
-        "/active-speaker/driver-research-request": Handler._dispatch_post_route,
-        "/active-speaker/rear-calibration/validate": Handler._dispatch_post_route,
-        "/active-speaker/rear-calibration/bank": Handler._dispatch_post_route,
-        "/active-speaker/baseline-profile/save-and-apply": Handler._dispatch_post_route,
         "/output-topology": Handler._dispatch_post_route,
         "/output-topology/reset": Handler._dispatch_post_route,
         "/output-topology/repin": Handler._dispatch_post_route,

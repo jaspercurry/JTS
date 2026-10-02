@@ -68,7 +68,6 @@ def build_commissioning_view(
     *,
     design_draft: Mapping[str, Any] | None = None,
     crossover_preview: Mapping[str, Any] | None = None,
-    commission: Mapping[str, Any] | None = None,
     startup_load: Mapping[str, Any] | None = None,
     baseline_profile: Mapping[str, Any] | None = None,
     calibration_level: Mapping[str, Any] | None = None,
@@ -123,12 +122,10 @@ def build_commissioning_view(
                   "endpoint": SPEAKER_SETUP_PAGE_PATH, "method": "GET", "body": {}}
     elif not values_ready:
         status = "needs_driver_safety_profile" if design_ready and preview_ready else "needs_driver_values"
-        action = {"id": "save_driver_values", "label": "Save values", "enabled": True,
-                  "endpoint": "./active-speaker/design-draft", "method": "POST", "body": {}}
+        action = {"id": "save_driver_values", "label": "Save values", "enabled": True}
     else:
         status = "ready_to_save_profile" if review_ready else "blocked"
-        action = {"id": "save_baseline_profile", "label": "Save to speaker", "enabled": review_ready,
-                  "endpoint": "./active-speaker/baseline-profile/save-and-apply", "method": "POST", "body": {}}
+        action = {"id": "save_baseline_profile", "label": "Save to speaker", "enabled": review_ready}
     return {
         "artifact_schema_version": 1, "kind": COORDINATOR_KIND, "status": status,
         "steps": steps, "current_step": current, "next_action": action, "programs": programs,
@@ -145,20 +142,12 @@ def build_commissioning_view(
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
         "test_level": dict((calibration_level or {}).get("test_signal") or {}),
-        "runtime": {"commission": dict(commission or {}), "startup_load": dict(startup_load or {})},
+        "runtime": {"startup_load": dict(startup_load or {})},
     }
 
 
-def load_commissioning_view(
-    topology: OutputTopology | None = None,
-    *,
-    commission: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Share commissioning inputs between /sound/ and the crossover envelope.
-
-    A caller that omits ``commission`` silently degrades the view; ``None``
-    composes identical steps.
-    """
+def load_commissioning_view(topology: OutputTopology | None = None) -> dict[str, Any]:
+    """Share commissioning inputs between /sound/ and the crossover envelope."""
     from jasper.active_speaker.applied_tune import compile_commissioning_profile  # lazy: import cost (graph compilation)
     from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state  # lazy: import cost
     from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds  # lazy: reader imports baseline
@@ -178,7 +167,6 @@ def load_commissioning_view(
         topology,
         design_draft=design_draft,
         crossover_preview=preview,
-        commission=commission,
         startup_load={"state": load_startup_load_state()},
         baseline_profile=baseline,
         calibration_level=calibration_level,

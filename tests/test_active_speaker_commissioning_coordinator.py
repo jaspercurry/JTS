@@ -120,9 +120,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     if reason_code is not None:
         assert view["next_action"]["reason_code"] == reason_code
     assert "command" not in view["next_action"]
-    if action == "save_baseline_profile":
-        assert view["next_action"]["body"] == {}
-    elif action == "copy_prompt":
+    if action == "copy_prompt":
         assert view["next_action"]["round_dir"] == recent[program]["round_dir"]
     elif action == "declare_speaker":
         assert view["next_action"]["endpoint"] == SPEAKER_SETUP_PAGE_PATH
