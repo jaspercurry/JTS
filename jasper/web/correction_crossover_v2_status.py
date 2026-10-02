@@ -7,9 +7,8 @@
 The derivations live in
 :mod:`jasper.active_speaker.crossover_envelope_v2`'s status-projection
 section, which may not import this layer. This module supplies the answers
-only the web host holds — the loaded state, the volume plan, the review
-decision, the applied record — and shapes what comes back into
-``status["crossover_v2"]``.
+only the web host holds — the loaded state, the volume plan, the applied
+record — and shapes what comes back into ``status["crossover_v2"]``.
 
 """
 
@@ -41,9 +40,7 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         needs_recovery = True  # unreadable volume state fails closed
     identity = applied_identity(load_applied_baseline_profile_state())
     return {
-        "phase": _projection.crossover_v2_phase(
-            state, review_declined=v2state.review_declined(state),
-        ),
+        "phase": _projection.crossover_v2_phase(state, review_declined=False),
         # save_v2_state stamps transitions; polls must not create a second clock (#1947).
         "updated_at": (state or {}).get("updated_at"),
         "applied": bool((state or {}).get("applied")),

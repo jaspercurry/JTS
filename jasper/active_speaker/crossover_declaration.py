@@ -56,13 +56,10 @@ from .declaration_vocabulary import (
 
 __all__ = [
     "CROSSOVER_BELOW_DECLARED_FLOOR",
-    "CROSSOVER_DECLARATION_CHANGE_KIND",
-    "CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION",
     "CrossoverBelowDeclaredFloor",
     "CrossoverDeclarationChange",
     "CrossoverGeometry",
     "assert_crossover_honours_declared_floor",
-    "change_to_record",
     "declaration_change_for_candidate",
     "declared_crossover_geometry",
     "matching_declared_candidate_index",
@@ -89,13 +86,6 @@ _PROTECTED_ROLE = "tweeter"
 #: half of a hearing-safety refusal: the operator sentence may be reworded,
 #: this may not.
 CROSSOVER_BELOW_DECLARED_FLOOR = "crossover_below_declared_protection_floor"
-
-#: The document version :func:`change_to_record` writes.
-CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION = 1
-
-#: The ``kind`` discriminator: this record describes a Sound-declaration
-#: write, not a prescription.
-CROSSOVER_DECLARATION_CHANGE_KIND = "jts_crossover_declaration_change"
 
 
 class CrossoverBelowDeclaredFloor(ValueError):
@@ -271,26 +261,6 @@ def declaration_change_for_candidate(
     return CrossoverDeclarationChange(
         between_roles=between_roles, configured=configured, selected=selected
     )
-
-
-def change_to_record(change: CrossoverDeclarationChange) -> dict[str, Any]:
-    """One change as the plain JSON the review state persists.
-
-    ``applied_*`` is what the accept put into ``/sound``; ``previous_*`` is what
-    it displaced.
-    """
-
-    return {
-        "artifact_schema_version": CROSSOVER_DECLARATION_CHANGE_SCHEMA_VERSION,
-        "kind": CROSSOVER_DECLARATION_CHANGE_KIND,
-        "between_roles": [change.between_roles[0], change.between_roles[1]],
-        "applied_hz": float(change.selected.fc_hz),
-        "previous_hz": float(change.configured.fc_hz),
-        "applied_filter_type": change.selected.filter_type,
-        "previous_filter_type": change.configured.filter_type,
-        "applied_slope_db_per_octave": float(change.selected.slope_db_per_octave),
-        "previous_slope_db_per_octave": float(change.configured.slope_db_per_octave),
-    }
 
 
 def assert_crossover_honours_declared_floor(preset: Any) -> None:

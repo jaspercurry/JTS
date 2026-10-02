@@ -698,7 +698,7 @@ def test_apply_completes_a_plan_without_verify():
         "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
         "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
     })
-    v2state.observe_apply_success("candidate")
+    v2state.observe_apply_success({"fingerprint": "candidate"})
     assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE
 
 
@@ -946,7 +946,7 @@ def test_observe_apply_success_marks_the_state_applied():
         "candidate": {"fingerprint": "fp-1"},
         "applied": False,
     })
-    v2state.observe_apply_success("fp-1")
+    v2state.observe_apply_success({"fingerprint": "fp-1"})
     assert v2state.load_v2_state()["applied"] is True
 
 
@@ -974,21 +974,6 @@ def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
                 "verify": {"claims": {"residual_db": bad}},
             })
         assert v2state.load_v2_state() == good
-
-
-def test_observe_apply_success_records_the_way_back_pointer():
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": "fp-1"},
-        "applied": False,
-    })
-    v2state.observe_apply_success("fp-1", previous_candidate_fingerprint="fp-prev")
-    assert v2state.load_v2_state()["previous_candidate_fingerprint"] == "fp-prev"
-    # The speaker's first-ever apply has nothing to point back to, and a
-    # later apply that displaced a non-measured profile clears the pointer.
-    v2state.observe_apply_success("fp-1", previous_candidate_fingerprint=None)
-    assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
 
 
 def test_start_over_while_applied_keeps_the_attempt_history():
@@ -2184,9 +2169,8 @@ def test_alternative_apply_loads_exact_candidate_then_records_sound(
         "LinkwitzRileyLowpass": (2750.0, 4),
         "LinkwitzRileyHighpass": (2750.0, 4),
     }
-    state = v2state.load_v2_state()
-    assert state["accepted_sound_revision"] == 2
-    assert state["applied"] is True
+    assert load_design_draft()["revision"] == 2
+    assert v2state.load_v2_state()["applied"] is True
 
 
 def test_a_below_floor_apply_is_refused_before_sound_is_written(
@@ -2241,9 +2225,7 @@ def test_a_below_floor_apply_is_refused_before_sound_is_written(
     # so there is nothing for a household to undo and nothing for the next
     # measurement session to read as its configured crossover.
     assert draft["revision"] == 1
-    state = v2state.load_v2_state() or {}
-    assert state.get("accepted_sound_revision") is None
-    assert state["applied"] is False
+    assert (v2state.load_v2_state() or {})["applied"] is False
 
 
 def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
@@ -2297,11 +2279,9 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
     assert draft["manual_settings"]["crossover_candidates"][0][
         "frequency_hz"
     ] == 2500
-    # Byte-for-byte the pre-seam behaviour: an as-declared apply writes Sound
-    # nothing, so the revision never moves and there is no inverse to record.
+    # An as-declared apply writes Sound nothing, so the revision never moves.
     assert draft["revision"] == 1
     state = v2state.load_v2_state() or {}
-    assert state.get("accepted_sound_revision") is None
     # The control that keeps this test honest: the contrary record was STILL
     # there while the apply ran. A refactor that cleared it earlier would make
     # every assertion above pass for a reason this test is not about.
@@ -2432,10 +2412,7 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
 
     * the declared offset is the emitter's OWN delta (here −6 dB, read off the
       applied profile, not a constant);
-    * the commanded session volume is completely untouched;
-    * it is durable BEFORE ``observe_apply_success`` returns — that call sets
-      the ``applied`` flag which releases VERIFY's deferred hold, and the
-      probe seam reads the offset off the same state one capture later.
+    * the commanded session volume is completely untouched.
     """
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     candidate = _boosting_candidate(preset, boost_db=6.0)
@@ -2464,17 +2441,13 @@ def test_apply_declares_its_level_move_and_never_touches_the_volume(
     # here: what this test pins is that the DECLARED number is the emitter's
     # own, whatever the charge rule of the day makes it.
     assert payload["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
-    # Durable, and readable through the very seam the conductor's probe uses.
-    assert v2state.load_v2_state()["expected_post_apply_offset_db"] == _APPLY_OFFSET_DB
     # The speaker's commanded level did not move. This is the safety claim.
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
 
 
-def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_path):
-    """An apply the seam refused changed no graph, so there is no move to
-    declare — and the probe seam must keep reporting "nothing known" (0.0)
-    rather than an offset from a transaction that never landed."""
+def test_a_blocked_apply_moves_no_level(monkeypatch, tmp_path):
+    """An apply the seam refused changed no graph, so nothing moves the level."""
     from tests.test_active_speaker_baseline_profile import _research
 
     topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
@@ -2504,50 +2477,8 @@ def test_a_blocked_apply_declares_no_offset_and_moves_no_level(monkeypatch, tmp_
         _apply({"expected_candidate_fingerprint": candidate.fingerprint, "candidate": candidate.to_dict()},
                _bg_run_async, _FakeApplyAndVolumeCam)
     assert refused.value.code == "measurement_candidate_speaker_mismatch"
-    assert "expected_post_apply_offset_db" not in v2state.load_v2_state()
     assert _FakeApplyAndVolumeCam.vol == -20.0
     assert plan.measurement_volume_db == -20.0
-
-
-def test_the_declared_offset_survives_persist_conductor_state(monkeypatch, tmp_path):
-    """The durable seam BETWEEN the writer and the reader (#1811 blocker).
-
-    ``observe_apply_success`` writes the offset and the probe's seam reads it,
-    and both halves were pinned — but nothing crossed the
-    ``persist_conductor_state`` call that happens on every capture in between.
-    It rebuilds the state from a fresh dict literal, so the offset was erased
-    on every single call while ``applied`` survived: the CLOUD_VERIFY probe
-    (the one with the spatial arm AND rollback authority) would have graded
-    the apply's own headroom charge blind and could roll a healthy correction
-    back, and every "Try again" re-arm — which persists under a brand-new
-    session id — would have been blind too.
-    """
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    candidate = _boosting_candidate(preset, boost_db=6.0)
-    _open_session_volume_plan(household_db=-6.0)
-    v2state.save_v2_state({
-        "session_id": "cap_run6",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
-    _apply(
-        {
-            "expected_candidate_fingerprint": candidate.fingerprint,
-            "candidate": candidate.to_dict(),
-        },
-        _bg_run_async,
-        _FakeApplyAndVolumeCam,
-    )
-    offset = v2state.load_v2_state()["expected_post_apply_offset_db"]
-    assert offset == _APPLY_OFFSET_DB
-
-    # One more capture in the SAME session, then the re-arm's brand-new one.
-    for session_id in ("cap_run6", "cap_rearm"):
-        v2state.persist_conductor_state(
-            _StubConductor(session_id), failure_code=None,
-        )
-        assert v2state.load_v2_state()["expected_post_apply_offset_db"] == offset, session_id
 
 
 class _StubConductor:
@@ -2586,23 +2517,17 @@ def test_only_a_rebind_without_measure_carries_the_measure_scoped_keys():
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
-    """The drift guard for a bug class that has now shipped THREE times.
-
-    ``persist_conductor_state`` rebuilds the durable state from a fresh dict
-    literal, so any key whose value comes from ``observe_apply_success`` —
-    which the conductor neither produces nor reads — is erased unless a
-    carry-forward line exists for it. That has been a P0 for
-    the way-back stash (W6.12), for ``cloud`` (PR-4 B1), and for
-    ``expected_post_apply_offset_db`` (#1811).
+    """``persist_conductor_state`` rebuilds the durable state from a fresh dict
+    literal, so any key whose value comes from the apply path — which the
+    conductor neither produces nor reads — is erased unless a carry-forward
+    line exists for it.
 
     The host-owned set is derived MECHANICALLY rather than listed: a key is
     host-owned when the apply path gives it a value and a persist driven by
     the conductor ALONE (empty prior, nothing to carry) cannot regenerate one.
-    A fourth such key fails this test the moment it is written, without anyone
-    having to remember to extend a list.
-
-    The re-arm's brand-new session id is the hard case, and the one all three
-    bugs hit, so that is what this crosses.
+    A new such key fails this test the moment it is written, without anyone
+    having to remember to extend a list. A brand-new session id is the hard
+    case, so that is what this crosses.
     """
     # (1) What a persist can rebuild from the conductor alone, with an empty
     # prior so nothing can be carried forward.
@@ -2618,22 +2543,14 @@ def test_every_host_owned_apply_key_survives_persist_conductor_state():
         "session_id": "s1", "applied": False,
         "accepted_phases": [PHASE_MEASURE], "candidate": {"fingerprint": "fp"},
     })
-    v2state.observe_apply_success(
-        "fp",
-        previous_candidate_fingerprint="fp-prior-measured",
-        expected_post_apply_offset_db=-22.458,
-    )
+    v2state.observe_apply_success({"fingerprint": "fp"})
     after_apply = dict(v2state.load_v2_state() or {})
     host_owned = {
         key for key, value in after_apply.items()
         if value is not None and key not in from_conductor_alone
     }
-    # The derivation must actually see the class's keys — a guard that derives
-    # an empty set proves nothing.
-    assert "expected_post_apply_offset_db" in host_owned
-    assert "previous_candidate_fingerprint" in host_owned
-    # The way-back pointer's pairing — the automatic revert's arming fact.
-    assert "previous_candidate_displaced_by" in host_owned
+    # A guard that derives an empty set proves nothing.
+    assert "candidate" in host_owned
 
     # (3) Cross the seam under the re-arm's BRAND-NEW session id.
     v2state.persist_conductor_state(_StubConductor("cap_rearm"), failure_code=None)
@@ -2651,19 +2568,19 @@ from jasper.web import correction_crossover_v2_state as v2state
 v2state.set_state_path_for_tests(sys.argv[1])
 print("started", flush=True)
 with v2state.v2_state_locked():
-    v2state.observe_apply_success("cand_new", previous_candidate_fingerprint="new")
+    v2state.observe_apply_success({"fingerprint": "new"})
 """
 
 
-def _apply_recording_a_new_pointer() -> None:
+def _apply_recording_a_new_candidate() -> None:
     with v2state.v2_state_locked():
-        v2state.observe_apply_success("cand_new", previous_candidate_fingerprint="new")
+        v2state.observe_apply_success({"fingerprint": "new"})
 
 
 def _start_apply(apart: str, state_path: Path) -> Callable[[float], bool]:
     """Start an apply in another thread or process; answer whether it ended."""
     if apart == "thread":
-        thread = threading.Thread(target=_apply_recording_a_new_pointer)
+        thread = threading.Thread(target=_apply_recording_a_new_candidate)
         thread.start()
 
         def thread_ended(timeout: float) -> bool:
@@ -2691,11 +2608,11 @@ def _start_apply(apart: str, state_path: Path) -> Callable[[float], bool]:
     pytest.param(lambda: v2state.reset_v2_journey_state(), id="reset"),
     pytest.param(lambda: v2state.persist_conductor_state(_StubConductor("s1"), failure_code=None), id="persist"),
 ])
-def test_an_apply_landing_inside_a_state_rewrite_keeps_its_way_back_pointer(monkeypatch, tmp_path, rewrite, apart):
+def test_an_apply_landing_inside_a_state_rewrite_keeps_its_record(monkeypatch, tmp_path, rewrite, apart):
     """A rewrite reads the state and writes a successor built from that read.
-    An apply in another thread or web process that records its way-back
-    pointer between the two must not lose it."""
-    v2state.save_v2_state({"session_id": "s1", "applied": True, "previous_candidate_fingerprint": "old"})
+    An apply in another thread or web process that records its candidate
+    between the two must not lose it."""
+    v2state.save_v2_state({"session_id": "s1", "applied": True, "candidate": {"fingerprint": "old"}})
     applies: list[Callable[[float], bool]] = []
     read = v2state.load_v2_state
 
@@ -2711,7 +2628,7 @@ def test_an_apply_landing_inside_a_state_rewrite_keeps_its_way_back_pointer(monk
 
     [apply_ended] = applies
     assert apply_ended(10)
-    assert read()["previous_candidate_fingerprint"] == "new"
+    assert read()["candidate"] == {"fingerprint": "new"}
 
 
 def test_a_state_rewrite_refuses_by_code_while_another_process_holds_the_state(monkeypatch, tmp_path, caplog):
@@ -2816,69 +2733,15 @@ def _prior_measured_candidate(preset):
     )
 
 
-def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
+def test_a_second_apply_keeps_the_first_candidates_file_and_promotes_its_own(
     monkeypatch, tmp_path,
 ):
-    """W6.12 P0 regression shape: the way-back pointer must survive the
-    deferred VERIFY that always auto-arms right after every apply.
-
-    Drives handle_v2_apply TWICE in sequence, both through the production
-    seam (not seeded state) — a v2-written prior profile ("run 1"), then a
-    v2 apply over it ("run 2 over run 1"), matching the round-4 hardware
-    differential. The historical drop was never in
-    ``handle_v2_apply``/``observe_apply_success`` (both prove correct here);
-    it was that ``persist_conductor_state`` built a fresh state dict that
-    never carried the stash forward, so the deferred VERIFY that auto-arms
-    after every apply (the verify-only prepare mints a NEW capture session id
-    and immediately calls ``persist_conductor_state`` to "rebind" it — see
-    its own call site) wiped the just-recorded pointer. This test reproduces
-    that exact rebind call (a real ``CrossoverV2Session``, not a mock)
-    between each apply and the next, and pins that the pointer survives
-    it."""
-    from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
-    from jasper.active_speaker.crossover_v2_flow import (
-        CrossoverV2Session,
-        V2FlowSeams,
-        V2RecordPublishers,
-    )
-
-    from tests.crossover_v2_fixtures import CAPS, FC_HZ, SESSION_VOLUME_DB, _roles
-
-    topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
+    """#1666: each apply lands on its own source-fingerprinted sibling, and the
+    canonical config is a promoted COPY of whichever candidate applied last."""
+    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     config_path = tmp_path / "active_speaker_baseline.yml"
 
-    def _simulate_deferred_verify_rearm(*, verify_session_id: str) -> None:
-        """Exactly what the verify-only prepare's ``_open`` does: mint a fresh
-        conductor bound to a NEW capture session id, applied=True, and
-        immediately persist it ("Keep the durable candidate/applied facts;
-        rebind the session id.") — the real production seam this regression
-        traces to, not a synthetic stand-in."""
-        conductor = CrossoverV2Session(
-            session_id=verify_session_id,
-            source_preset=preset,
-            roles_bands=_roles(),
-            fc_hz=FC_HZ,
-            driver_caps_dbfs=CAPS,
-            session_volume_db=SESSION_VOLUME_DB,
-            seams=V2FlowSeams(
-                analyze=lambda *a, **k: None,
-                records=V2RecordPublishers(check=lambda *a, **k: None),
-            ),
-            driver_spacing_m=0.15,
-            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-            applied=True,
-            index_phase_map={1: PHASE_VERIFY},
-        )
-        v2state.persist_conductor_state(conductor, failure_code=None)
-
-    # --- run 1: a v2-written apply, no pre-existing profile to restore to ---
     run1_candidate = _prior_measured_candidate(preset)
-    v2state.save_v2_state({
-        "session_id": "cap_run1",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": run1_candidate.fingerprint},
-        "applied": False,
-    })
     run1_payload = _apply(
         {
             "expected_candidate_fingerprint": run1_candidate.fingerprint,
@@ -2888,32 +2751,12 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
         _FakeApplyCam,
     )
     assert run1_payload["status"] == "applied", run1_payload.get("issues")
-    # #1666: run 1 (the speaker's first-ever apply) lands on its own
-    # source-fingerprinted sibling too, not config_path directly -- read the
-    # stable reference value from run 1's own reported path. The successful
-    # apply's promote step means config_path (canonical) also currently
-    # holds these same bytes, as a COPY.
     run1_config_text = Path(
         run1_payload["profile"]["config"]["path"]
     ).read_text(encoding="utf-8")
     assert config_path.read_text(encoding="utf-8") == run1_config_text
-    # The speaker's first-ever apply displaced no measured candidate.
-    assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
 
-    # The deferred VERIFY always auto-arms right after an apply — reproduce
-    # its rebind-and-persist before the household ever reaches run 2.
-    _simulate_deferred_verify_rearm(verify_session_id="verify_of_run1")
-    assert v2state.load_v2_state()["applied"] is True
-    assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
-
-    # --- run 2 over run 1: also v2-written, through the SAME production seam ---
     run2_candidate = _run6_measured_candidate(preset)
-    v2state.save_v2_state({
-        **v2state.load_v2_state(),
-        "session_id": "cap_run2",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": run2_candidate.fingerprint},
-    })
     run2_payload = _apply(
         {
             "expected_candidate_fingerprint": run2_candidate.fingerprint,
@@ -2923,78 +2766,14 @@ def test_second_apply_way_back_pointer_survives_the_deferred_verify_rearm(
         _FakeApplyCam,
     )
     assert run2_payload["status"] == "applied", run2_payload.get("issues")
-    # run 1's own sibling file is never clobbered by run 2's apply...
     assert Path(
         run1_payload["profile"]["config"]["path"]
     ).read_text(encoding="utf-8") == run1_config_text
-    # ...but canonical is a promoted COPY of whichever candidate applied most
-    # recently (#1666), so it now tracks run 2, not run 1.
     run2_config_text = Path(
         run2_payload["profile"]["config"]["path"]
     ).read_text(encoding="utf-8")
     assert config_path.read_text(encoding="utf-8") == run2_config_text
     assert run2_config_text != run1_config_text
-
-    state_after_run2_apply = v2state.load_v2_state()
-    assert (
-        state_after_run2_apply.get("previous_candidate_fingerprint")
-        == run1_candidate.fingerprint
-    )
-
-    # The P0 assertion: run 2's own deferred VERIFY rebind must NOT wipe the
-    # pointer — this is exactly where the stash went null before the fix.
-    _simulate_deferred_verify_rearm(verify_session_id="verify_of_run2")
-    state_after_verify_rearm = v2state.load_v2_state()
-    assert state_after_verify_rearm["applied"] is True
-    assert (
-        state_after_verify_rearm.get("previous_candidate_fingerprint")
-        == run1_candidate.fingerprint
-    )
-
-
-def test_start_over_while_applied_keeps_the_way_back_pointers(
-    monkeypatch, tmp_path,
-):
-    """W6.10 gate should-fix: apply the prior crossover, apply a measured
-    candidate over it, Start-over (reset_v2_journey_state — what handle_reset
-    calls under the v2 flow). The reset must serve the clean start screen
-    WITHOUT unlinking `applied` + `previous_candidate_fingerprint` — the way
-    back's only durable pointer."""
-    _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
-    prior_candidate = _prior_measured_candidate(preset)
-    prior_cam = _FakeApplyCam()
-    prior_payload = _apply({"expected_candidate_fingerprint": prior_candidate.fingerprint, "candidate": prior_candidate.to_dict()},
-                           _bg_run_async, lambda: prior_cam)
-    assert prior_payload["status"] == "applied", prior_payload.get("issues")
-
-    run8_candidate = _run6_measured_candidate(preset)
-    v2state.save_v2_state({
-        "session_id": "cap_run8",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": run8_candidate.fingerprint},
-        "applied": False,
-    })
-    apply_payload = _apply(
-        {
-            "expected_candidate_fingerprint": run8_candidate.fingerprint,
-            "candidate": run8_candidate.to_dict(),
-        },
-        _bg_run_async,
-        _FakeApplyCam,
-    )
-    assert apply_payload["status"] == "applied", apply_payload.get("issues")
-
-    # Start-over while applied — the selective journey reset.
-    v2state.reset_v2_journey_state()
-
-    state = v2state.load_v2_state()
-    assert state is not None
-    assert state["applied"] is True
-    assert state["previous_candidate_fingerprint"] == prior_candidate.fingerprint
-    assert state["accepted_phases"] == []
-    assert state["candidate"] is None
-    # The envelope serves the clean start screen…
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_CHECK
 
 
 def test_v2_session_start_ensures_preview_and_survives_start_over_then_reapply(
@@ -3157,7 +2936,7 @@ def test_check_evidence_artifact_tolerates_a_plan_without_solves():
 
 def _bank_candidate(monkeypatch, tmp_path, candidate) -> None:
     """Publish ``candidate`` into a bundle bank, at the path its minting capture
-    session would have used — the artifact the automatic way back republishes."""
+    session would have used."""
     root = tmp_path / "bank-sessions"
     path = (
         root / "bundleprior00" / "evidence" / "v1" / "artifacts"
@@ -3169,11 +2948,9 @@ def _bank_candidate(monkeypatch, tmp_path, candidate) -> None:
 
 
 def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
-    """Apply the household's pre-existing crossover, then a v2 measured
-    candidate over it — the state a household is in when VERIFY arms. Returns
-    the durable v2 state's Undo anchor. The prior candidate is also banked, as
-    its own measure session would have left it, so the automatic way back can
-    republish it."""
+    """Apply the household's pre-existing crossover, banked as its own measure
+    session would have left it, then a v2 measured candidate over it. Returns
+    the prior candidate's fingerprint."""
     _topology, preset = _seed_baseline_apply_environment(monkeypatch, tmp_path)
     prior_candidate = _prior_measured_candidate(preset)
     _bank_candidate(monkeypatch, tmp_path, prior_candidate)
@@ -3183,12 +2960,6 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     assert prior_payload["status"] == "applied", prior_payload.get("issues")
 
     candidate = _run6_measured_candidate(preset)
-    v2state.save_v2_state({
-        "session_id": "cap_apply",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "candidate": {"fingerprint": candidate.fingerprint},
-        "applied": False,
-    })
     apply_payload = _apply(
         {
             "expected_candidate_fingerprint": candidate.fingerprint,
@@ -3198,10 +2969,7 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
         _FakeApplyCam,
     )
     assert apply_payload["status"] == "applied", apply_payload.get("issues")
-
-    pointer = (v2state.load_v2_state() or {}).get("previous_candidate_fingerprint")
-    assert pointer, "the apply must record the displaced measured candidate"
-    return pointer
+    return prior_candidate.fingerprint
 
 
 @pytest.mark.parametrize("record", ["absent", "applied", "legacy", "pruned"])
@@ -3624,7 +3392,7 @@ def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected
         assert not events
 
 
-def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch, tmp_path):
+def test_a_restore_by_fingerprint_moves_the_declaration_back(monkeypatch, tmp_path):
     from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.active_speaker.crossover_preview import build_crossover_preview
     from jasper.active_speaker.design_draft import load_design_draft
@@ -3647,11 +3415,10 @@ def test_restore_uses_the_saved_sound_inverse_and_the_previous_trial(monkeypatch
     v2state.reset_v2_journey_state()
     restored = v2apply.handle_v2_apply({"expected_candidate_fingerprint": previous.fingerprint},
                                      _bg_run_async, lambda: cam)
-    assert restored["status"] == "applied"
-    state = v2state.load_v2_state()
-    assert state["accepted_sound_revision"] == 3
-    assert state["accepted_sound_candidate_fingerprint"] == previous.fingerprint
-    assert state["accepted_sound_declaration_change"]["previous_hz"] == 2750.
+    assert (restored["status"], restored["declaration_update"]) == ("applied", {"status": "updated"})
+    draft = load_design_draft()
+    assert draft["revision"] == 3
+    assert draft["manual_settings"]["crossover_candidates"][0]["frequency_hz"] == 2500
 
 
 def test_a_measure_only_session_resolves_to_review_never_done():
