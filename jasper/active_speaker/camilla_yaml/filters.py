@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.platform.biquad import SHELF_BIQUAD_TYPES, FilterSpec, PeqFilter
-from jasper.audio_routes.camilla_emit import emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
+from jasper.audio_routes.camilla_emit import emit_delay_filter, emit_gain_filter, emit_linkwitz_riley, emit_peaking_biquad, fmt
 from jasper.audio_routes.camilla_stereo_prefix import emit_filter_spec
 from jasper.platform.speaker_layout import SUB_CROSSOVER_ORDER
 
@@ -80,16 +80,6 @@ class ProgramHeadroomExhausted(ActiveSpeakerConfigError):
         self.charge_db = charge_db
         self.evidence = {"program_headroom_spent_db": charge_db, "max_program_headroom_db": MAX_PROGRAM_HEADROOM_DB,
                          "binding": PROGRAM_HEADROOM_BINDING}
-
-
-def _emit_delay_filter(name: str, delay_ms: float = 0.0) -> list[str]:
-    return [
-        f"  {name}:",
-        "    type: Delay",
-        "    parameters:",
-        f"      delay: {fmt(delay_ms)}",
-        "      unit: ms",
-    ]
 
 
 def _emit_limiter_filter(
@@ -171,7 +161,7 @@ def _emit_filter_definitions(
                 freq_hz=protective_freq,
                 order=4,
             ))
-        lines.extend(_emit_delay_filter(driver_delay_name(role)))
+        lines.extend(emit_delay_filter(driver_delay_name(role), delay_ms=0.0))
         lines.extend(emit_gain_filter(
             driver_mute_name(role),
             STARTUP_MUTE_GAIN_DB,
@@ -547,7 +537,7 @@ def _emit_baseline_driver_definitions(
         delay_ms = _correction_value(corrections, role, "delay_ms", 0.0)
         gain_db = _correction_value(corrections, role, "gain_db", 0.0)
         inverted = _correction_bool(corrections, role, "inverted")
-        lines.extend(_emit_delay_filter(driver_delay_name(role), delay_ms=delay_ms))
+        lines.extend(emit_delay_filter(driver_delay_name(role), delay_ms=delay_ms))
         lines.extend(emit_gain_filter(
             driver_baseline_gain_name(role),
             gain_db,
@@ -747,7 +737,7 @@ def _emit_commissioning_filter_definitions(
     # The delay lane: definitions only for the roles the caller named.
     #
     # ONE `fmt` pass over the raw microsecond value and no intermediate
-    # rounding — `_emit_delay_filter` formats through `jasper.audio_routes.camilla_emit.fmt`,
+    # rounding — `emit_delay_filter` formats through `jasper.audio_routes.camilla_emit.fmt`,
     # which IS `delay_graph.quantized_delay_ms`'s implementation, so a proof
     # recomputing from the same `delay_us` matches by construction.
     delays = dict(measurement_delays_us or {})
@@ -779,7 +769,7 @@ def _emit_commissioning_filter_definitions(
                 raise ActiveSpeakerConfigError(
                     f"measurement delay for {role!r} is not finite: {delay_us!r}"
                 )
-            lines.extend(_emit_delay_filter(
+            lines.extend(emit_delay_filter(
                 driver_delay_name(role), delay_ms=value / 1000.0,
             ))
     for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
@@ -817,7 +807,7 @@ def _emit_commissioning_filter_definitions(
                 order=4,
             ))
         if protection_sections_by_role is None:
-            lines.extend(_emit_delay_filter(driver_delay_name(role)))
+            lines.extend(emit_delay_filter(driver_delay_name(role), delay_ms=0.0))
         lines.extend(_emit_limiter_filter(
             driver_limiter_name(role),
             clip_limit_db=limiter_clip_limit_db,

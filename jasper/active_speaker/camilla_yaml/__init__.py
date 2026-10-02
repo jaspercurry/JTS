@@ -80,7 +80,6 @@ from .filters import (
     _emit_baseline_filter_definitions as _emit_baseline_filter_definitions,
     _emit_bass_management_hp_definition as _emit_bass_management_hp_definition,
     _emit_commissioning_filter_definitions as _emit_commissioning_filter_definitions,
-    _emit_delay_filter as _emit_delay_filter,
     _emit_driver_linearization_definitions as _emit_driver_linearization_definitions,
     _emit_filter_definitions as _emit_filter_definitions,
     _emit_limiter_filter as _emit_limiter_filter,
