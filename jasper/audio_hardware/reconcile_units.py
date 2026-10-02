@@ -159,14 +159,6 @@ def gate_role_services(run: Pass) -> None:
 
 
 def park_output_audio(run: Pass) -> None:
-    if run.no_restart:
-        run.log(
-            "output_park_skip",
-            output_dac_id=run.output_dac_id,
-            recognized=int(run.output_dac_recognized),
-            no_restart=1,
-        )
-        return
     systemctl_call(run, "--no-block", "stop", VOICE_UNIT, OUTPUTD_UNIT, quiet=True)
     systemctl_call(run, "reset-failed", VOICE_UNIT, OUTPUTD_UNIT, quiet=True)
     run.log(
@@ -194,8 +186,6 @@ def install_profile(path: str) -> str:
 
 
 def restart_audio_if_needed(run: Pass) -> None:
-    if run.no_restart:
-        return
     profile = install_profile(run.install_profile_file)
     if profile == "full":
         systemctl_call(run, "stop", VOICE_UNIT, quiet=True, timeout=None)
@@ -228,14 +218,6 @@ def restart_outputd_only(run: Pass) -> None:
     detection stays up across the restart instead of being deafened for
     ~10-15 s on a routine /sources/ toggle (#1257).
     """
-    if run.no_restart:
-        run.log(
-            "outputd_only_restart_skip",
-            output_dac_id=run.output_dac_id,
-            output_dac_card=run.output_dac_card,
-            no_restart=1,
-        )
-        return
     bounce(run, OUTPUTD_UNIT, "restart")
     run.log(
         "outputd_only_restarted",
@@ -245,8 +227,6 @@ def restart_outputd_only(run: Pass) -> None:
 
 
 def restart_route_runtime_if_needed(run: Pass) -> None:
-    if run.no_restart:
-        return
     if run.route_fanin_changed:
         bounce(run, FANIN_UNIT, "restart")
     run.log(
@@ -266,12 +246,9 @@ def kick_fanin_coupling_auto(run: Pass, dac_changed: int, render_moved: int) -> 
     oneshot, so each external event causes at most one follow-up pass and
     the pair cannot ping-pong.
     """
-    if run.no_restart:
-        result = "skipped_no_restart"
-    else:
-        # Refused while an install owns the core-graph window (#5470).
-        rc = systemctl_call(run, "--no-block", "start", COUPLING_AUTO_UNIT, quiet=True)
-        result = "started" if rc == 0 else "start_failed"
+    # Refused while an install owns the core-graph window (#5470).
+    rc = systemctl_call(run, "--no-block", "start", COUPLING_AUTO_UNIT, quiet=True)
+    result = "started" if rc == 0 else "start_failed"
     run.log(
         "coupling_kick",
         result=result,
@@ -281,15 +258,6 @@ def kick_fanin_coupling_auto(run: Pass, dac_changed: int, render_moved: int) -> 
 
 
 def start_outputd_if_recognized(run: Pass) -> None:
-    if run.no_restart:
-        run.log(
-            "outputd_start_skip",
-            output_dac_id=run.output_dac_id,
-            output_dac_card=run.output_dac_card,
-            recognized=1,
-            no_restart=1,
-        )
-        return
     bounce(run, OUTPUTD_UNIT, "start")
     run.log(
         "outputd_start_requested",

@@ -576,7 +576,7 @@ def test_runtime_env_writes_both_lane_keys_from_the_accepted_endpoint(
         f"{OUTPUTD_RING_PATH_ENV_VAR}={stale_path}\n"
     )
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(target))
-    run = audio_hardware_reconcile.Pass(reason="test", print_env=False, no_restart=True)
+    run = audio_hardware_reconcile.Pass(reason="test", print_env=False)
     run.observed = audio_hardware_reconcile.ObservedOutput(kind=kind)
     run.output_dac_recognized = recognized
     run.output_dac_id = (

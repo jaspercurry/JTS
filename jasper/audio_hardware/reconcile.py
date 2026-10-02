@@ -110,11 +110,10 @@ class Pass:
     run in; each step lives in the ``reconcile_*`` module of its concern.
     """
 
-    def __init__(self, *, reason: str, print_env: bool, no_restart: bool) -> None:
+    def __init__(self, *, reason: str, print_env: bool) -> None:
         env = os.environ
         self.reason = reason
         self.print_env = print_env
-        self.no_restart = no_restart
         self.signalled = ""
         self.proc_asound = env.get("JASPER_PROC_ASOUND", DEFAULT_PROC_ASOUND_PATH)
         self.model_path = env.get("JASPER_PI_MODEL_FILE", DEFAULT_MODEL_PATH)
@@ -506,11 +505,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print shell-quoted role variables for install.sh; mutates nothing",
     )
-    parser.add_argument(
-        "--no-restart",
-        action="store_true",
-        help="update files and service enablement but restart nothing",
-    )
     return parser
 
 
@@ -540,13 +534,12 @@ def main(argv: list[str] | None = None) -> int:
     run = Pass(
         reason=args.reason,
         print_env=args.print_env,
-        no_restart=args.no_restart,
     )
     previous = _install_signal_traps(run)
     status = 1
     try:
         status = run.execute()
-        if status == 0 and not (run.print_env or run.no_restart):
+        if status == 0 and not run.print_env:
             try:
                 publish_reconcile_inputs(run)
             except (OSError, ValueError):

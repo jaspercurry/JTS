@@ -46,7 +46,6 @@ SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 
 REASON="manual"
 PRINT_ENV=0
-NO_RESTART=0
 CHECK_CHANGED=0
 OBSERVED_AT_PASS_START=""
 INPUTS_AT_PASS_START=""
@@ -58,7 +57,6 @@ outputd_park_identity() {
 }
 
 retry_outputd_after_repair() {
-    [[ "$NO_RESTART" != "1" ]] || return 0
     [[ -n "$OUTPUTD_PARK_AT_PASS_START" ]] || return 0
     [[ "$(outputd_park_identity)" == "$OUTPUTD_PARK_AT_PASS_START" ]] || return 0
     "$SYSTEMCTL" reset-failed jasper-outputd.service
@@ -137,12 +135,10 @@ log_event() {
 }
 
 # Fingerprinted AFTER the pass's own writes, so the next call over an untouched
-# box hashes equal and skips. --no-restart is excluded: it leaves units
-# deliberately un-reconciled, so it is not a state a later call may skip
-# against. Never fails the pass. Deleting this file forces a full pass.
+# box hashes equal and skips. Never fails the pass. Deleting this file forces a
+# full pass.
 write_reconcile_stamp() {
     local fingerprint=""
-    [[ "$NO_RESTART" != "1" ]] || return 0
     [[ -d "${RECONCILE_STAMP_PATH%/*}" ]] || return 0
     if [[ -e "$RECONCILE_DEGRADED_MARKER" ]]; then
         log_event "stamp_skipped" "reason=probe_unavailable"
@@ -172,8 +168,7 @@ write_reconcile_stamp() {
 # --changed gets the prose because only --changed is this script's.
 usage() {
     cat <<'EOF'
-Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env]
-                                       [--no-restart] [--changed]
+Usage: jasper-audio-hardware-reconcile [--reason TEXT] [--print-env] [--changed]
 
 --changed performs no mutations: it exits 0 when a pass is needed and 1 when the
   inputs match the stamp the last successful pass left (systemd ExecCondition).
@@ -224,7 +219,6 @@ while (( index < $# )); do
             continue
             ;;
         --print-env) PRINT_ENV=1 ;;
-        --no-restart) NO_RESTART=1 ;;
         --changed) CHECK_CHANGED=1 ;;
         -h|--help)
             usage
@@ -305,9 +299,7 @@ fi
 # abort in the window before the first state write (an OOM kill, TimeoutStartSec)
 # would otherwise leave a predecessor's stamp valid and the retry would be
 # condition-skipped and report success.
-if [[ "$NO_RESTART" != "1" ]]; then
-    OUTPUTD_PARK_AT_PASS_START="$(outputd_park_identity)" || OUTPUTD_PARK_AT_PASS_START=""
-fi
+OUTPUTD_PARK_AT_PASS_START="$(outputd_park_identity)" || OUTPUTD_PARK_AT_PASS_START=""
 INPUTS_AT_PASS_START="$(cat -- "$RECONCILE_INPUTS_PATH" 2>/dev/null)" || INPUTS_AT_PASS_START=""
 OBSERVED_AT_PASS_START="$(reconcile_observed_digest 2>/dev/null)" || OBSERVED_AT_PASS_START=""
 rm -f -- "$RECONCILE_STAMP_PATH" "$RECONCILE_DEGRADED_MARKER"

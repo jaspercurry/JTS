@@ -289,7 +289,6 @@ def _run_shim(
     (
         (True, "exit 0\n", ("--reason", "test"), 0, None, True),
         (True, "exit 7\n", ("--reason", "test"), 7, "old", False),
-        (True, "exit 0\n", ("--reason", "test", "--no-restart"), 0, "old", False),
         (
             True,
             'printf "new\\n" > "$JASPER_OUTPUTD_RECONCILE_PARK_STATE.next"\n'
@@ -312,7 +311,6 @@ def _run_shim(
     ids=(
         "success",
         "failure",
-        "no-restart",
         "replaced-during-pass",
         "new-during-pass",
     ),
@@ -1726,7 +1724,6 @@ def test_help_publishes_no_event_because_reading_usage_is_not_a_pass(
     assert result.returncode == 0, result.stderr
     assert "--changed" in result.stdout
     assert "--print-env" in result.stdout
-    assert "--no-restart" in result.stdout
     assert _event_names(result.stderr) == [], result.stderr
 
 
@@ -1795,7 +1792,7 @@ def test_reading_usage_survives_an_interpreter_that_cannot_start(
     )
 
     assert result.returncode == 0, result.stderr
-    _assert_states(result.stdout, "--changed", "--print-env", "--no-restart")
+    _assert_states(result.stdout, "--changed", "--print-env")
 
 
 def _signal_self(signum: int):
@@ -2023,7 +2020,7 @@ def test_reconcile_dac8x_width_two_graph_arms_the_active_ring(
 ):
     args: tuple[str, ...]
     if graph_kind == "active-leader":
-        args = ("--reason", "outputd-failure", "--no-restart")
+        args = ("--reason", "test")
         graph_env = _active_leader_graph_env(tmp_path, channels=2)
     else:
         args = ("--reason", "test")
@@ -2077,8 +2074,7 @@ def test_reconcile_active_leader_without_a_legal_endpoint_stays_stereo(
         tmp_path,
         listing,
         "--reason",
-        "outputd-failure",
-        "--no-restart",
+        "test",
         extra_env=_active_leader_graph_env(
             tmp_path,
             channels=channels,
@@ -3270,7 +3266,7 @@ def test_the_note_prefix_the_reconciler_matches_is_the_one_the_validator_emits(
     assert rc == 0, out
     assert out.startswith("ok note="), out
     # The reconciler's own reader of that prefix, over the same literal.
-    run = reconcile_module.Pass(reason="test", print_env=False, no_restart=False)
+    run = reconcile_module.Pass(reason="test", print_env=False)
     run.outputd_env_stage = str(tmp_path / "candidate.env")
     with (
         mock.patch(
@@ -4042,7 +4038,6 @@ _STUB_MODES: dict[str, tuple[dict[str, Any], int, bool, str | None]] = {
     "clean": ({}, 0, True, None),
     "first-pass": ({"body": 'cp "$JASPER_SAVED_INPUTS" "${JASPER_OUTPUT_HARDWARE_STATE_PATH%/*}/reconcile.inputs"'}, 0, False, "inputs_changed"),
     "invalid-list": ({}, 0, False, "inputs_changed"),
-    "no-restart": ({}, 0, False, None),
     "print-env": ({}, 0, False, None),
     "pass-fails": ({"rc": 78}, 78, False, None),
     "card-moves-mid-pass": (
@@ -4080,7 +4075,6 @@ _STUB_MODES: dict[str, tuple[dict[str, Any], int, bool, str | None]] = {
         pytest.param("clean", "build", 0, id="new-build-runs"),
         pytest.param("first-pass", None, 0, id="first-list-needs-hardware-snapshot"),
         pytest.param("invalid-list", None, 0, id="invalid-prior-list-cannot-stamp"),
-        pytest.param("no-restart", None, 0, id="no-restart-leaves-no-stamp"),
         pytest.param("print-env", None, 0, id="print-env-leaves-no-stamp"),
         pytest.param("pass-fails", None, 0, id="failed-pass-left-no-stamp"),
         pytest.param("card-moves-mid-pass", None, 0, id="mid-pass-hotplug-no-stamp"),
@@ -4121,7 +4115,7 @@ def test_changed_check_skips_only_after_a_successful_pass_over_the_same_inputs(
         APPLE_LISTING,
         "--reason",
         "seed",
-        *([f"--{mode}"] if mode in {"no-restart", "print-env"} else []),
+        *([f"--{mode}"] if mode == "print-env" else []),
         initial_boot_config=boot_config,
         extra_env={**common, **stub_env},
     )
