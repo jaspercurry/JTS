@@ -143,9 +143,9 @@ def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
         evidence.update(level_bound_gain_db=level.loudest.gain_db, level_bound_db_spl=level.loudest.level_db)
     if probe and (shortfall := solved - level.peak_dbfs) > 0:
         evidence["level_shortfall_db"] = shortfall
-    fault, charge = (None, "replay") if probe else (reasons.REASON_LEVEL_OFF_TARGET, "speaker")
-    return TakeVerdict(False, fault=fault, next="retake_louder" if level.gap_db > 0 else "retake_quieter",
-                       charge=charge, next_gain_db=solved, evidence=evidence)
+    return TakeVerdict(False, fault=None if probe else reasons.REASON_LEVEL_OFF_TARGET,
+                       next="retake_louder" if level.gap_db > 0 else "retake_quieter",
+                       charge="replay" if probe else "speaker", next_gain_db=solved, evidence=evidence)
 
 
 def _pilots_heard(analysis: ProgramAnalysis) -> bool | None:

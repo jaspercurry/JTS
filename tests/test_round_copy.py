@@ -6,8 +6,8 @@ import re
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    CAPTURE_QUALITY_REFUSAL_CODES, REASON_CAPTURE_OVERRUN, REASON_CLIPPED, REASON_LEVEL_OFF_TARGET,
-    REASON_LEVEL_UNSOLVED, REASON_RETRIES_SPENT, REASON_SNR_FLOOR, TRANSIENT_AUTO_RETRY_CODES, refusal_copy_for,
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_CAPTURE_OVERRUN, REASON_CLIPPED, REASON_LEVEL_UNSOLVED,
+    REASON_RETRIES_SPENT, REASON_SNR_FLOOR, TRANSIENT_AUTO_RETRY_CODES, refusal_copy_for,
 )
 from jasper.active_speaker import round_copy
 from jasper.active_speaker.round_copy import (
