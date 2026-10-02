@@ -806,7 +806,9 @@ def test_a_saved_base_judge_reads_the_applied_profile_state_once(saved_tune, mon
     monkeypatch.setattr(prescription_document_mod, "load_applied_baseline_profile_state",
                         lambda: (reads.append(1), applied)[1])
 
-    prescription_document_mod.bank_section("driver", None, rationale="Read the state once.")
+    base, state = prescription_document_mod.saved_base()
+    prescription_document_mod.judge_prescription_document(
+        prescription_document_mod.saved_document({"driver": {}}, "Read the state once."), base=base, base_profile=state)
 
     assert len(reads) == 1
 

@@ -362,16 +362,6 @@ def reset_prescription_document(
     return saved_document(sections, "Reset the applied tuning layers.")
 
 
-def bank_section(name: str, section: Any, *, rationale: str) -> MeasuredCrossoverCandidate:
-    """Judge ONE authored section on the applied baseline, as a ``base: saved`` document does.
-
-    The candidate is composed and returned, never banked and never applied.
-    """
-    base, base_profile = saved_base()
-    return judge_prescription_document(saved_document({name: section if isinstance(section, dict) else {}}, rationale),
-                                       base=base, base_profile=base_profile)
-
-
 def judge_prescription_document(raw: Any, *, base: BankedCandidate,
                                evidence: PrescriptionEvidence | None = None,
                                base_profile: Mapping[str, Any] | None = None) -> MeasuredCrossoverCandidate:
