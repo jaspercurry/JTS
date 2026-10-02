@@ -286,7 +286,6 @@ def check_content_transport_coherence() -> CheckResult:
     """
     from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
     from jasper.platform.paths import crossover_statefile
-    from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.dsp_control.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
@@ -295,7 +294,9 @@ def check_content_transport_coherence() -> CheckResult:
         dac_content_marker_contradicted,
         dac_content_ring_served,
         outputd_bridge_is_ring,
+        outputd_ring_path_for,
         resolve_outputd_ring_path,
+        ring_active_endpoint_armed,
     )
 
     label = "content transport coherence"
@@ -374,20 +375,21 @@ def check_content_transport_coherence() -> CheckResult:
             label, "ok", f"{pair}; no central ring path to read",
             reason=REASON_RING_PATH_NOT_CENTRAL_RING,
         )
-    # The SUBJECT stays outputd.env's own keys: the marker and the ring path are
-    # single-writer keys of that file, and `outputd_ring_path_for` is contracted
-    # on one snapshot of the file being reconciled — the per-run memo instead
-    # of a second read (ADR-0233 rule 4).
+    # The SUBJECT stays outputd.env's own keys, read from the per-run memo
+    # rather than a second read (ADR-0233 rule 4). The marker and the path move
+    # in one write, so no pass in flight explains a crossed pair.
     own_outputd_env = evidence.outputd_env() or {}
     carried = resolve_outputd_ring_path(own_outputd_env.get(OUTPUTD_RING_PATH_ENV_VAR))
-    derived = outputd_ring_path_for(own_outputd_env)
+    derived = outputd_ring_path_for(ring_active_endpoint_armed(own_outputd_env))
     if carried != derived:
-        return _crossed_transport_pair(
+        return CheckResult(
             label,
-            REASON_RING_PATH_LAGS_MARKER,
-            f"{OUTPUTD_RING_PATH_ENV_VAR}={carried} but this box's endpoint "
-            f"marker derives {derived}; outputd refuses that pair at startup "
-            "(exit 78, no restart)",
+            "fail",
+            f"CROSSED TRANSPORT PAIR: {OUTPUTD_RING_PATH_ENV_VAR}={carried} but "
+            f"this box's endpoint marker needs {derived}; outputd refuses that "
+            "pair at startup (exit 78, no restart). Rewrite both: sudo "
+            "systemctl start jasper-audio-hardware-reconcile.",
+            reason=REASON_RING_PATH_LAGS_MARKER,
         )
     if parked:
         return CheckResult(

@@ -55,6 +55,7 @@ from jasper.dsp_control.fanin_coupling import (
     DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     DEFAULT_OUTPUTD_RING_PATH,
     OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+    OUTPUTD_RING_PATH_ENV_VAR,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_QUEUELIMIT,
@@ -76,8 +77,6 @@ from jasper.audio_routes.output_topology_store import save_output_topology
 REPO = Path(__file__).resolve().parent.parent
 RING_CONF = REPO / "deploy/alsa/conf.d/60-jts-ring.conf"
 OUTPUTD_CONFIG_RS = REPO / "rust/jasper-outputd/src/config.rs"
-
-
 
 
 def _topology(groups, routing=None, *, device_id="hifiberry_dac8x", outputs=8):
@@ -395,10 +394,6 @@ def test_the_active_device_name_is_spelled_identically_everywhere():
     assert f"pcm.{RING_ACTIVE_PLAYBACK_DEVICE} {{" in conf
     assert ring_conf.RING_ACTIVE_CONF_PCM == RING_ACTIVE_PLAYBACK_DEVICE
     assert OUTPUTD_ACTIVE_RING_PLAYBACK_DEVICE == RING_ACTIVE_PLAYBACK_DEVICE
-    assert (
-        reconcile_outputd_lane.RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
-        == RING_ACTIVE_PLAYBACK_DEVICE
-    )
     # The Rust side names the PATH, not the PCM (it never resolves ALSA names).
     assert (
         f'DEFAULT_ACTIVE_SHM_RING_PATH: &str = "{DEFAULT_OUTPUTD_ACTIVE_RING_PATH}"'
@@ -611,9 +606,12 @@ def test_runtime_env_writes_both_lane_keys_from_the_accepted_endpoint(
     tmp_path, monkeypatch, kind, recognized, endpoint, lane, marker,
 ):
     target = tmp_path / "outputd.env"
+    expected_path = DEFAULT_OUTPUTD_ACTIVE_RING_PATH if marker else DEFAULT_OUTPUTD_RING_PATH
+    stale_path = DEFAULT_OUTPUTD_RING_PATH if marker else DEFAULT_OUTPUTD_ACTIVE_RING_PATH
     target.write_text(
         f"JASPER_OUTPUTD_ACTIVE_LANE={'0' if lane else '1'}\n"
         f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={'0' if marker else '1'}\n"
+        f"{OUTPUTD_RING_PATH_ENV_VAR}={stale_path}\n"
     )
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(target))
     run = audio_hardware_reconcile.Pass(reason="test", print_env=False, no_restart=True)
@@ -632,6 +630,10 @@ def test_runtime_env_writes_both_lane_keys_from_the_accepted_endpoint(
     values = read_env_file(target)
     assert values["JASPER_OUTPUTD_ACTIVE_LANE"] == lane
     assert values[OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR] == marker
+    # The ring path moves in the SAME write: outputd refuses a marker whose
+    # path has not followed it (exit 78), and this pass restarts outputd
+    # before the coupling pass runs.
+    assert values[OUTPUTD_RING_PATH_ENV_VAR] == expected_path
     assert not reconcile_outputd_lane.apply_audio_runtime_env(run)
 
 
@@ -700,32 +702,6 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
         ).name,
     }
     assert produced == set(TRANSPORT_SHAPES)
-
-
-def test_a_crossed_ring_path_is_the_first_arm_waypoint_not_a_refusal():
-    """The pair is REPORTED before the daemon bails — as a waypoint, not an error.
-
-    outputd's allowlist still refuses the crossed pair at its own startup; that
-    is the fail-closed floor and it is untouched. What this layer reports is a
-    ring PATH lagging its MARKER, and a lag is not a contradiction: the path is
-    the marker's projection, with one derivation and one writer, so the state is
-    always one pass from converged. Reporting it as an error refused the marker
-    whose absence was the only reason the path had not moved — the deadlock that
-    took jts.local's DSP graph down on 2026-08-21.
-
-    ``errors`` must be CLEAN here, or the reconciler still exits 78.
-    """
-    from jasper.audio_control.transport_coherence import transport_coherence_report
-
-    crossed = {
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1",
-        "JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring",
-        "JASPER_OUTPUTD_SHM_RING_PATH": DEFAULT_OUTPUTD_RING_PATH,
-    }
-    report = transport_coherence_report(outputd_env=crossed)
-    assert any("FIRST-ARM waypoint" in n for n in report.notes), report
-    assert any(DEFAULT_OUTPUTD_ACTIVE_RING_PATH in n for n in report.notes), report
-    assert report.errors == (), report
 
 
 def test_a_ring_device_under_an_off_ring_plan_is_reported_not_ignored():
@@ -2170,29 +2146,17 @@ def _derived_marker(graph_yaml, topology, *, cap=8):
 def _outputd_env(
     *,
     marker: str | None,
-    ring_path: str | None = None,
     content_bridge: str | None = None,
 ) -> str:
     lines = ["JASPER_OUTPUTD_SINK=single_alsa", "JASPER_OUTPUTD_ACTIVE_LANE=1"]
     if marker is not None:
         lines.append(f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}")
-    if ring_path is not None:
-        lines.append(f"JASPER_OUTPUTD_SHM_RING_PATH={ring_path}")
     if content_bridge is not None:
         # Ring A and the post-DSP ring are ONE coupling, so a box on the
         # ``shm_ring`` coupling always carries the matching bridge. Modelling a
         # ring-coupled box without it describes a state no writer produces.
         lines.append(f"JASPER_OUTPUTD_CONTENT_BRIDGE={content_bridge}")
     return "\n".join(lines) + "\n"
-
-
-def _ring_path_written(actions):
-    from jasper.dsp_control.fanin_coupling import OUTPUTD_RING_PATH_ENV_VAR
-
-    for action in actions:
-        if action.action == "set" and action.key == OUTPUTD_RING_PATH_ENV_VAR:
-            return action.value
-    return None
 
 
 def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
@@ -2210,7 +2174,6 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     ladder follows it.
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
-    from jasper.fanin.coupling_reconcile import _outputd_actions
 
     topology = _active_topology("mono", "active_2_way")
     preset = _mono_two_way_preset()
@@ -2261,14 +2224,6 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
 
     # --- Step 2: the hardware reconciler derives the marker FROM that graph.
     assert _derived_marker(ring_graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
-
-    # --- Step 3: the coupling reconciler converges the ring PATH. ---------
-    # The unarmed stub is dropped first: from here the marker is a REAL value
-    # the previous step wrote into outputd.env, and step 3 must read that file
-    # rather than a predicate this test is holding down.
-    monkeypatch.undo()
-    actions = _outputd_actions(_outputd_env(marker="1"))
-    assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
 
 def _coherence_errors(*, capture, playback, outputd_env=None):
@@ -2350,60 +2305,21 @@ def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
     assert any(RETIRED_ALOOP_PLAYBACK_DEVICE in err for err in retired), retired
 
 
-def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():
-    """Walk the ladder's INTERMEDIATE states — the ones a crash can strand a box in.
-
-    The bar is not "each step works"; it is that no state BETWEEN two steps
-    plays the wrong audio. Each intermediate is either coherent (a working
-    pairing) or silence (outputd refuses to attach and parks loudly). The
-    seeder walk banked the acoustic half — every branch of the graph seeder on
-    a real roleful topology lands on the roleful graph or on ring zero-fill
-    silence, never on a full-range flat graph — so what is pinned here is the
-    PAIRING that decides which of those two a box gets.
-
-    State A (after step 1, before step 2): the graph names the ring and the
-    marker is absent. outputd reads snd-aloop while
-    CamillaDSP writes a ring nobody reads — SILENCE, and the ALSA lane outputd
-    reads is simply unwritten. Not wrong audio.
-
-    State B (after step 2, before step 3): marker set, ring path not converged.
-    outputd's allowlist is scoped to the ShmRing bridge, so under ``direct`` the
-    marker grants nothing and the box keeps working on snd-aloop. That scoping
-    is E1/vN1, and it is what makes this state benign rather than a park.
-
-    State C (step 3, marker set): coherent by construction, because the path is
-    DERIVED from the marker rather than preserved.
-    """
-    from jasper.fanin.coupling_reconcile import _outputd_actions
-
-    coherent = _outputd_actions(_outputd_env(marker="1"))
-    assert _ring_path_written(coherent) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-
-    # The state the blocker described — arming an UNMARKED box — cannot name the
-    # active ring at all, so it cannot produce the crossed pair that made outputd
-    # admit-then-park. It resolves the stereo ring, which a roleful graph never
-    # names, so the box lands on silence rather than on a full-range program
-    # reaching a compression driver.
-    unmarked = _outputd_actions(_outputd_env(marker=""))
-    assert _ring_path_written(unmarked) != DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-
-
 def _run_validate_outputd_env(
     tmp_path,
     *,
     graph_yaml: str,
     topology,
     marker: str | None,
-    ring_path: str | None = None,
     content_bridge: str | None = None,
     dac_id: str = "hifiberry_dac8x",
 ) -> tuple[int, str]:
     """Run the REAL validator the audio-hardware reconciler runs.
 
     ``validate_outputd_env_stage`` calls exactly this function over these six
-    paths. It is the layer the ladder walks above do NOT touch — they call
-    ``_outputd_actions`` and the marker derivation directly — which is why all
-    four of them passed while the real ladder deadlocked at step 2 on jts3.
+    paths. It is the layer the ladder walks above do NOT touch — they call the
+    emit and the marker derivation directly — which is why they passed while
+    the real ladder deadlocked at step 2 on jts3.
     """
     from jasper.audio_control.audio_runtime_plan import validate_outputd_env
 
@@ -2417,9 +2333,7 @@ def _run_validate_outputd_env(
     base_env.write_text(f"JASPER_AUDIO_DAC_ID={dac_id}\n", encoding="utf-8")
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
-        _outputd_env(
-            marker=marker, ring_path=ring_path, content_bridge=content_bridge
-        ),
+        _outputd_env(marker=marker, content_bridge=content_bridge),
         encoding="utf-8",
     )
     ok, lines = validate_outputd_env(
@@ -2463,7 +2377,6 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     checked.
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
-    from jasper.fanin.coupling_reconcile import _outputd_actions
     from jasper.fanin.ring_readiness import (
         LoadedCamillaGraph,
         ring_edge_width_ready,
@@ -2504,7 +2417,8 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # --- Step 2: the marker derives from that same graph. ------------------
     assert _derived_marker(ring_graph, topology) == RING_ACTIVE_PLAYBACK_DEVICE
 
-    # --- ARM-2: marker set, ring path not yet converged. The jts3 state. ---
+    # --- ARM-2: marker set (its writer moves the ring path in the same
+    # write). The candidate validates with no note.
     rc, out = _run_validate_outputd_env(
         tmp_path,
         graph_yaml=ring_graph,
@@ -2512,11 +2426,7 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
         marker="1",
     )
     assert rc == 0, out
-    assert out.startswith("ok note="), out
-    # The marker has moved and its ring-path projection has not: the pair's own
-    # writer converges it on its next pass, and the note names that pass.
-    assert "FIRST-ARM waypoint" in out, out
-    assert "jasper-fanin-coupling-reconcile shm_ring" in out, out
+    assert "note=" not in out, out
 
     # --- Step 3, preflight: the width gate reads the graph step 1 wrote. ---
     # The gate resolves the wire from the box's SAVED topology, so this walk
@@ -2542,10 +2452,6 @@ def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     # without inspecting this end is the defect, not the wording.
     assert f"loaded CamillaDSP graph (playback {RING_ACTIVE_PLAYBACK_DEVICE})" in detail
     assert "was NOT one of them" not in detail
-
-    # --- Step 3: with step 2's marker on disk, the path converges. ---------
-    actions = _outputd_actions(_outputd_env(marker="1"))
-    assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
 
 def test_the_stereo_ring_under_an_off_ring_plan_still_fails_the_validator(
@@ -2584,93 +2490,16 @@ def test_the_stereo_ring_under_an_off_ring_plan_still_fails_the_validator(
     assert "note=" not in out, out
 
 
-def _first_arm_on_a_stereo_ring_box(tmp_path, capsys, monkeypatch, *, graph_yaml=None):
-    """Drive the validator over the FIRST-ARM state of a previously-stereo box.
-
-    A box that already ran the full-range stereo ring resolves the ACTIVE-ring
-    shape the instant the marker arms, while the ring PATH — written by the OTHER
-    reconciler, which runs after — still carries Ring B's file.
-
-    ``load_topology_for_wire`` is pinned to the topology under test: the ACTIVE
-    ring's width is the one per-topology axis of that shape, so a box with no
-    saved topology would be answering about a different speaker.
-    """
-
-    topology = _active_topology("mono", "active_2_way")
-    monkeypatch.setattr(
-        "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: topology
-    )
-    if graph_yaml is None:
-        graph_yaml = _emit_active_baseline(
-            _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE, topology=topology
-        )
-    return _run_validate_outputd_env(
-        tmp_path,
-        graph_yaml=graph_yaml,
-        topology=topology,
-        marker="1",
-        ring_path=DEFAULT_OUTPUTD_RING_PATH,
-        content_bridge="shm_ring",
-    )
-
-
-def test_the_first_arm_of_a_box_already_on_the_stereo_ring_clears_the_validator(
-    tmp_path, capsys, monkeypatch
+def test_an_armed_marker_over_a_graph_off_the_active_ring_fails(
+    tmp_path, monkeypatch
 ):
-    """The jts.local deadlock (2026-08-21), walked through the REAL validator.
+    """A marker armed over a graph that is not on the active ring is refused.
 
-    Loading a valid roleful startup graph on a previously-passive dual-Apple
-    composite wedged two reconcilers against each other. The marker's writer
-    (``jasper-audio-hardware-reconcile``) validates its own candidate here,
-    BEFORE the path's writer has run; the candidate is the live ``outputd.env``
-    copied forward plus the newly-armed marker, so it carried Ring B's path. The
-    validator refused, the reconciler exited 78, and ``jasper-camilla``'s
-    then-``Requires=`` on that unit took the DSP graph down — which also disabled the
-    box's own rollback, because rollback needs the websocket of the daemon the
-    refusal had just killed.
-
-    Neither half could move first: the path is DERIVED from the marker
-    (``outputd_ring_path_for``) and the marker was gated on the path. This
-    asserts the loop is open — the candidate validates, so the marker lands —
-    and then that the very next pass of the path's own writer converges the pair.
-    """
-    rc, out = _first_arm_on_a_stereo_ring_box(tmp_path, capsys, monkeypatch)
-
-    assert rc == 0, out
-    assert out.startswith("ok note="), out
-    assert "FIRST-ARM waypoint" in out, out
-    # The note names the state, why it is silence rather than wrong audio, and
-    # the one command that converges it. An operator standing here reads this
-    # line out of the journal as event=audio_hardware_reconcile.outputd_env_note.
-    assert DEFAULT_OUTPUTD_RING_PATH in out, out
-    assert "outputd refuses the pair" in out, out
-    assert "jasper-fanin-coupling-reconcile shm_ring" in out, out
-
-    # ...and the pass that note names actually converges the pair, from the
-    # marker this validation just allowed to be written.
-    from jasper.fanin.coupling_reconcile import _outputd_actions
-
-    actions = _outputd_actions(_outputd_env(marker="1", ring_path=DEFAULT_OUTPUTD_RING_PATH)
-    )
-    assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-
-
-def test_a_crossed_ring_pair_over_a_graph_off_the_active_ring_still_fails(
-    tmp_path, capsys, monkeypatch
-):
-    """The crossed-pair refusal is scoped, not removed.
-
-    Same armed marker and same stale Ring B path as the first-arm walk above —
-    the ONE difference is the loaded graph, which here plays the full-range
-    stereo ring instead of the active one. That is not a rung of any ladder: a
-    first arm loads the roleful graph BEFORE the marker is derived from it, so a
-    marker armed over a graph that is not on the active ring means nothing is
-    writing the ring outputd would be pointed at, and converging the path would
-    aim outputd at a ring with no writer.
-
-    This is why the first-arm note is safe to proceed on: it never stands alone
-    on a wrecked box. The device comparison in the same branch still returns an
-    ERROR, and the reconciler still refuses.
+    That is not a rung of any ladder: a first arm loads the roleful graph BEFORE
+    the marker is derived from it, so a marker armed over a graph that plays the
+    full-range stereo ring means nothing is writing the ring outputd would be
+    pointed at. The device comparison returns an ERROR, and the reconciler
+    refuses.
     """
     stereo_ring_graph = (
         "devices:\n"
@@ -2683,52 +2512,25 @@ def test_a_crossed_ring_pair_over_a_graph_off_the_active_ring_still_fails(
         "    type: Alsa\n"
         f"    device: {RING_PLAYBACK_DEVICE}\n"
     )
+    # The ACTIVE ring's width is the one per-topology axis of that shape, so the
+    # wire resolver answers about the topology under test.
+    topology = _active_topology("mono", "active_2_way")
+    monkeypatch.setattr(
+        "jasper.fanin.ring_readiness.load_topology_for_wire", lambda: topology
+    )
 
-    rc, out = _first_arm_on_a_stereo_ring_box(
-        tmp_path, capsys, monkeypatch, graph_yaml=stereo_ring_graph
+    rc, out = _run_validate_outputd_env(
+        tmp_path,
+        graph_yaml=stereo_ring_graph,
+        topology=topology,
+        marker="1",
+        content_bridge="shm_ring",
     )
 
     assert rc == 1, out
     assert RING_PLAYBACK_DEVICE in out, out
     assert RING_ACTIVE_PLAYBACK_DEVICE in out, out
-    # A refusal, not a note dressed up as one: the caller keys on the exit code,
-    # and `ok note=` is what tells it to proceed.
     assert not out.startswith("ok note="), out
-
-
-def test_the_unarmed_ring_path_projection_never_carries_the_active_file_forward():
-    """The DISARM direction of the same pair, which used to be sticky.
-
-    ``outputd_ring_path_for`` is the pair's only derivation, and the biconditional
-    it serves runs both ways: the active ring file may be read only by an armed
-    endpoint, exactly as an armed endpoint may read only that file. Preserving
-    whatever the key held on the unarmed side meant a box whose marker was
-    cleared while the coupling stayed ``shm_ring`` — the active-lane decision
-    losing its hardware proof — kept pointing outputd at a ring whose writer had
-    just been stood down, and every later pass preserved it again. Nothing
-    converged, so the crossed pair became permanent in that direction.
-
-    Falling back to Ring B's default is what makes the projection TOTAL: whichever
-    half moved last, ONE pass of this reconciler converges the other. That is the
-    recovery path for an interrupted transition, and it is why the waypoint above
-    can be a note rather than a refusal.
-    """
-    from jasper.fanin.coupling_reconcile import _outputd_actions
-
-    stuck = _outputd_actions(_outputd_env(marker="", ring_path=DEFAULT_OUTPUTD_ACTIVE_RING_PATH),
-    )
-    assert _ring_path_written(stuck) == DEFAULT_OUTPUTD_RING_PATH
-
-    # An operator's own Ring B path is still honoured — the fallback is scoped to
-    # the ONE file the allowlist reserves, not to every non-default value.
-    custom = _outputd_actions(_outputd_env(marker="", ring_path="/dev/shm/operator.ring")
-    )
-    assert _ring_path_written(custom) == "/dev/shm/operator.ring"
-
-    # ...and the armed side is unchanged: it discards whatever the key held.
-    armed = _outputd_actions(_outputd_env(marker="1", ring_path="/dev/shm/operator.ring"),
-    )
-    assert _ring_path_written(armed) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
 
 def _reemit_harness(monkeypatch, tmp_path, *, classification=None, yaml_text="graph: 1\n"):
@@ -2960,65 +2762,6 @@ def test_baseline_reemit_publishes_atomically(monkeypatch, tmp_path):
     assert [c for c in calls if c[0] == str(h.artifact)], calls
     # ...and durably, because these bytes are the box's next boot graph.
     assert calls[0][1].get("durable") is True
-
-
-def test_the_crossed_pair_is_unreachable_from_the_reconciler():
-    """The crossed state the allowlist exists to refuse is now unconstructible.
-
-    Before the convergence, ``_outputd_actions`` PRESERVED whatever ring path
-    the file carried, so an armed box could be handed the stereo ring's path —
-    the exact pair outputd bails on. Deriving the path from the marker means the
-    reconciler cannot emit that pair for any input text, checked here against
-    the PR's own Python-side coherence twin rather than by re-stating the rule.
-    """
-    from jasper.dsp_control.fanin_coupling import TRANSPORT_SHM_RING_ACTIVE
-    from jasper.audio_control.transport_coherence import (
-        transport_coherence_report,
-        transport_topology_for_coupling,
-    )
-    from jasper.fanin.coupling_reconcile import _outputd_actions
-    from jasper.dsp_control.fanin_coupling import (
-        OUTPUTD_RING_PATH_ENV_VAR,
-    )
-
-    # Hostile input: the file already names the STEREO ring while the marker
-    # says armed. The old code preserved that value verbatim.
-    hostile = _outputd_env(marker="1", ring_path=DEFAULT_OUTPUTD_RING_PATH)
-    actions = _outputd_actions(hostile)
-    assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH, (
-        "an armed box was handed the stereo ring's path — this is the pair "
-        "outputd bails on at startup (exit 78, silent speaker)"
-    )
-
-    # ...and the env the reconciler produces passes the coherence twin that
-    # mirrors outputd's startup allowlist, so the reconciler cannot commit what
-    # the daemon would refuse to start on.
-    converged = {
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1",
-        OUTPUTD_RING_PATH_ENV_VAR: _ring_path_written(actions),
-        "JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring",
-    }
-    plan = transport_topology_for_coupling(outputd_env=converged)
-    assert plan.name == TRANSPORT_SHM_RING_ACTIVE
-    errors = transport_coherence_report(
-        outputd_env=converged,
-        camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
-    ).errors
-    assert not [e for e in errors if "may read only" in e], errors
-
-    # ...and the CROSSED pair the reconciler can no longer produce IS still
-    # reported by that twin — a positive control, so the clean result above is
-    # evidence the crossing is absent rather than evidence the check is inert.
-    # It is reported as the FIRST-ARM waypoint rather than as a refusal: the
-    # comparison is the same one, and only its disposition moved, because a
-    # refusal there blocks the writer that converges the pair.
-    crossed = dict(converged, **{OUTPUTD_RING_PATH_ENV_VAR: DEFAULT_OUTPUTD_RING_PATH})
-    crossed_report = transport_coherence_report(
-        outputd_env=crossed,
-        camilla_devices={"playback_device": RING_ACTIVE_PLAYBACK_DEVICE},
-    )
-    assert [n for n in crossed_report.notes if "FIRST-ARM waypoint" in n], crossed_report
-    assert crossed_report.errors == (), crossed_report
 
 
 # --------------------------------------------------------------------------

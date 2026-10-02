@@ -12,9 +12,10 @@ captures via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to
 Ring B (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or,
 on a roleful box whose active endpoint is armed, to the ACTIVE ring
 (active-content.ring) via ``jts_ring_active_playback``. The post-DSP end is
-declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path
-in outputd.env, whose single writer is ``_outputd_actions``. Ring A needs no
-declaration — fan-in fills it unconditionally.
+declared in outputd.env by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` (set by
+``_outputd_actions``) and the ring's path (written by
+``jasper-audio-hardware-reconcile`` with the endpoint marker). Ring A needs
+no declaration — fan-in fills it unconditionally.
 
 NO FALLBACK. A step that fails reports ``ok=False`` and the box PARKS visibly
 through :mod:`jasper.control.transport_eligibility`; recovery from a bad deploy is
@@ -31,7 +32,7 @@ import argparse
 import asyncio
 import fcntl
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 import os
 import sys
 import time
@@ -43,19 +44,14 @@ from jasper.control import camilla_topology_gate_state, restart_broker
 from jasper.platform.atomic_io import flock_held
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.runtime.output_topology_runtime import GROUPING_RECONCILE_UNIT
-from jasper.platform.env_file import env_value, read_value
+from jasper.platform.env_file import read_value
 from jasper.fanin.coupling_auto import converge_usb_combo
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
 from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
-    DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
-    DEFAULT_OUTPUTD_RING_PATH,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-    OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-    OUTPUTD_RING_PATH_ENV_VAR,
     RING_SLOTS_ENV_VAR,
-    resolve_outputd_ring_path,
 )
 from jasper.platform.log_event import log_event
 # The single writer of ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the
@@ -558,19 +554,8 @@ def _converge_ring(
 
     outputd_snapshot = read_snapshot(outputd_env_path)
 
-    outputd_new_text, changed = _apply_actions(
+    _, changed = _apply_actions(
         outputd_snapshot.text, _outputd_actions(outputd_snapshot.text)
-    )
-    # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
-    # values so first-writing an absent key (which resolves to the same default)
-    # is not mistaken for a heal. The pair is crossed for a bounded window by
-    # construction (its two halves have two writers), so logging the heal is
-    # what keeps that window observable.
-    ring_path_before = resolve_outputd_ring_path(
-        read_value(outputd_snapshot.text, OUTPUTD_RING_PATH_ENV_VAR)
-    )
-    ring_path_converged = (
-        outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
     )
 
     # A write failure aborts BEFORE any daemon op so we never bounce a daemon
@@ -579,9 +564,7 @@ def _converge_ring(
     # stale pre-lock text, so a concurrent writer's key is preserved.
     if changed:
         try:
-            outputd_new_text, _ = _write_env_actions(
-                outputd_snapshot.path, _outputd_actions
-            )
+            _write_env_actions(outputd_snapshot.path, _outputd_actions)
         except OSError as e:
             log_event(
                 logger,
@@ -593,18 +576,6 @@ def _converge_ring(
                 level=logging.ERROR,
             )
             return CouplingResult(ok=False, changed=False, detail=str(e))
-
-    if ring_path_converged:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="ring_path_converged",
-            reason=reason,
-            was=ring_path_before,
-            now=outputd_ring_path_for(outputd_new_text),
-        )
-
-    _sync_process_env_for_emit(outputd_new_text)
 
     fanin_snapshot = read_snapshot(env_path)
     files_cleared = _delete_stale_ring_files(reason, fanin_snapshot.text)
@@ -992,97 +963,22 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     return deleted
 
 
-def outputd_ring_path_for(outputd_env: str | Mapping[str, str]) -> str:
-    """The ring file outputd must read, derived from the endpoint marker.
-
-    ONE writer for the path half of outputd's ring-path/marker biconditional.
-    Armed -> the ACTIVE ring's file; unarmed -> the operator's custom Ring B
-    path if they set one, else the canonical Ring B default.
-
-    The marker is read from ONE already-read snapshot of outputd.env — raw
-    text or an equivalent parsed mapping — rather than from the file on disk,
-    so the path derived and the marker it derives from cannot straddle a
-    concurrent hardware reconcile and emit a crossed pair.
-
-    The asymmetry is deliberate: an operator's custom path is honoured on the
-    STEREO ring and ignored on the ACTIVE one. There is exactly one legal
-    active-ring file — outputd's allowlist compares against that named constant
-    — so "preserving" a custom value there could only produce the crossed pair
-    the allowlist refuses.
-
-    TOTAL INTO THE LEGAL SET, in BOTH directions: the armed branch discards
-    whatever the key held, and the unarmed branch equally refuses to CARRY
-    FORWARD the active ring's own file. Preserving it on the unarmed side would
-    make the disarm direction STICKY — a box whose marker cleared while the
-    coupling stayed ``shm_ring`` would keep pointing outputd at a ring whose only
-    writer stood down.
-    """
-    armed = fanin_coupling.ring_active_endpoint_armed(
-        {
-            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: env_value(
-                outputd_env, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
-            )
-            or ""
-        }
-    )
-    if armed:
-        return DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-    carried = resolve_outputd_ring_path(
-        env_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
-    )
-    if carried == DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
-        return DEFAULT_OUTPUTD_RING_PATH
-    return carried
-
-
-def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
+def _outputd_actions(_outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     """The COMPLETE set of reconciler-owned outputd.env actions for the ring.
 
-    Sets ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's
-    path — content.ring, or active-content.ring on an armed roleful box. The
-    ring's slot count is outputd's own compiled-in constant, not env-set here.
-    The two rings move together: fan-in's Ring A capture (fanin.env) and
-    outputd's post-DSP ring bridge (here) are ONE coupling, and a split leaves
-    one end reading or writing a ring nobody serves.
-
-    **The ring PATH converges from the endpoint MARKER, it is not preserved.**
-    The marker is the FACT (written by ``jasper-audio-hardware-reconcile`` from
-    the accepted active-lane decision) and the path is its PROJECTION, derived by
-    :func:`outputd_ring_path_for`. A preserve-else-stereo default would write the
-    full-range Ring B path onto an armed box, and outputd would refuse the pair
-    at startup.
-
-    THIS RUNS ON EVERY PASS, before the transition-vs-confirm split, so it is
-    also the pair's RECOVERY: whichever half moved last, one pass converges the
-    other. The two halves have different writers and cannot move in one write, so
-    the pair is legitimately crossed between them;
-    :func:`jasper.audio_control.transport_coherence.transport_coherence_report` reports that
-    window as a note rather than a contradiction.
+    Sets ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring``. The ring's slot count is
+    outputd's own compiled-in constant, not env-set here. The two rings move
+    together: fan-in's Ring A capture (fanin.env) and outputd's post-DSP ring
+    bridge (here) are ONE coupling, and a split leaves one end reading or
+    writing a ring nobody serves. The post-DSP ring's PATH is not set here:
+    ``jasper-audio-hardware-reconcile`` writes it with the endpoint marker it
+    follows.
     """
     return (
         RuntimeEnvAction(
             "set", OUTPUTD_CONTENT_BRIDGE_ENV_VAR, OUTPUTD_CONTENT_BRIDGE_SHM_RING
         ),
-        RuntimeEnvAction(
-            "set",
-            OUTPUTD_RING_PATH_ENV_VAR,
-            outputd_ring_path_for(outputd_text),
-        ),
     )
-
-
-def _sync_process_env_for_emit(outputd_text: str) -> None:
-    """Make the in-process Camilla re-emit see the env we just persisted.
-
-    Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
-    content-source keys the files now carry so the immediate camilla re-emit names
-    the right devices for any reader. The ring PATH comes from
-    :func:`outputd_ring_path_for`, the same single derivation the persisted
-    write uses, so the in-process env can never carry a different ring than the
-    file just written.
-    """
-    os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    os.environ[OUTPUTD_RING_PATH_ENV_VAR] = outputd_ring_path_for(outputd_text)
 
 
 @dataclass(frozen=True)

@@ -557,6 +557,18 @@ def resolve_outputd_ring_path(raw_path: str | None) -> str:
     return value or DEFAULT_OUTPUTD_RING_PATH
 
 
+def outputd_ring_path_for(armed: bool) -> str:
+    """The ring file outputd must read: the ACTIVE ring's when the endpoint
+    marker is armed, else Ring B's.
+
+    outputd refuses every other pairing at startup (exit 78), so the marker's
+    writer writes this path in the same write as the marker. The ALSA ring
+    config (``deploy/alsa/conf.d/60-jts-ring.conf``) fixes both files, so no
+    other path has a writer.
+    """
+    return DEFAULT_OUTPUTD_ACTIVE_RING_PATH if armed else DEFAULT_OUTPUTD_RING_PATH
+
+
 def capture_kwargs_for_coupling() -> dict[str, object]:
     """Return the ``emit_sound_config`` capture kwargs for the ring.
 

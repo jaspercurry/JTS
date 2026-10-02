@@ -36,7 +36,7 @@ from jasper.dsp_control.fanin_coupling import (
     OUTPUTD_RING_PATH_ENV_VAR,
 )
 from tests._lock_holder import spawn_lock_holder
-from tests._log_events import event_field_maps, event_fields, event_records
+from tests._log_events import event_fields, event_records
 from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.audio_routes.output_topology_store import save_output_topology
 
@@ -166,7 +166,7 @@ def _reconcile(
     )
 
 
-def test_convergence_preserves_coexisting_keys_and_custom_outputd_ring_path(
+def test_convergence_preserves_coexisting_keys(
     tmp_path, _ring_assets_present
 ):
     fanin_env = _write(
@@ -175,8 +175,7 @@ def test_convergence_preserves_coexisting_keys_and_custom_outputd_ring_path(
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
-        "JASPER_CAMILLA_CHUNKSIZE=256\n"
-        f"{OUTPUTD_RING_PATH_ENV_VAR}=/run/custom/content.ring\n",
+        "JASPER_CAMILLA_CHUNKSIZE=256\n",
     )
     _, ro, rf, rc = _recorder()
 
@@ -193,11 +192,6 @@ def test_convergence_preserves_coexisting_keys_and_custom_outputd_ring_path(
     assert "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096" in fanin_body
     assert "# operator note" in fanin_body
     assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_body
-    # The convergence preserves the operator's custom Ring B path.
-    assert (
-        read_value(outputd_body, OUTPUTD_RING_PATH_ENV_VAR)
-        == "/run/custom/content.ring"
-    )
 
 
 def test_env_write_failure_aborts_before_daemon_ops(tmp_path, monkeypatch):
@@ -1156,8 +1150,9 @@ def test_convergence_deletes_a_stale_on_disk_ring_before_the_spine(tmp_path, mon
 def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
     """outputd.env text already at the coherent shm_ring set (Ring B bridge).
 
-    Matches exactly what ``_outputd_actions(shm_ring)`` writes, so a reconcile with
-    the fanin.env already at shm_ring sees ``changed=False`` and takes the CONFIRM
+    Carries the bridge ``_outputd_actions`` writes and the Ring B path the
+    hardware reconcile writes on an unarmed box, so a reconcile with the
+    fanin.env already at shm_ring sees ``changed=False`` and takes the CONFIRM
     path — the branch the defect-A CONFIRM-path fix exercises.
 
     ALSO carries ``JASPER_OUTPUTD_CONTENT_FORMAT=S32_LE`` — the key
@@ -1173,7 +1168,6 @@ def _coherent_shm_ring_outputd_text(*, period_frames: int = 128) -> str:
         DEFAULT_OUTPUTD_RING_PATH,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-        OUTPUTD_RING_PATH_ENV_VAR,
     )
 
     return (
@@ -1846,77 +1840,3 @@ def test_crash_budget_units_are_broker_reset_failed_permitted():
     assert "reset-failed" in rb.ALLOWED_VERBS
     for unit in cr._CRASH_BUDGET_UNITS:
         assert rb._unit_allowed_for_verb(unit, "reset-failed") is True, unit
-
-
-def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
-    tmp_path, monkeypatch, caplog
-):
-    """RECOVERY for the marker/path pair: one pass, either direction, observable.
-
-    The pair's two halves have two writers and cannot move in one write — the
-    marker's writer (``jasper-audio-hardware-reconcile``) runs first and kicks
-    this one. So a crossed pair is a normal bounded window, not a wreck, and what
-    makes it bounded is that ``_outputd_actions`` derives the path from the
-    marker on EVERY pass, before the transition-vs-confirm split.
-
-    Both directions are walked, because each was a separate stall:
-
-    * ARM (jts.local, 2026-08-21) — marker armed, path still Ring B. The
-      validator refused this, so the pass that would converge it never ran.
-    * DISARM — marker cleared while the coupling stayed ``shm_ring``. The
-      unarmed derivation used to preserve whatever the key held, so the active
-      ring's path survived every later pass and nothing ever converged.
-
-    The heal is logged rather than silent: a box that had been refusing outputd's
-    attach has just stopped, and the journal has to say when.
-    """
-    from jasper.dsp_control.fanin_coupling import (
-        DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
-        DEFAULT_OUTPUTD_RING_PATH,
-        OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
-        OUTPUTD_RING_PATH_ENV_VAR,
-    )
-
-    def _pass(marker: str, ring_path: str) -> tuple[str, list[dict[str, str]]]:
-        # monkeypatch.setenv first so the reconciler's in-process env sync is
-        # unwound at teardown rather than leaking into the next test.
-        monkeypatch.setenv(OUTPUTD_RING_PATH_ENV_VAR, ring_path)
-        fanin_env = _write(tmp_path / "fanin.env", "")
-        outputd_env = _write(
-            tmp_path / "outputd.env",
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n"
-            f"{OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR}={marker}\n"
-            f"{OUTPUTD_RING_PATH_ENV_VAR}={ring_path}\n",
-        )
-        _calls, ro, rf, rc = _recorder()
-        caplog.clear()
-        with caplog.at_level(logging.INFO):
-            _reconcile(
-                fanin_env=fanin_env,
-                outputd_env=outputd_env,
-                restart_outputd=ro,
-                restart_fanin=rf,
-                reconcile_camilla=rc,
-            )
-        converged = event_field_maps(
-            caplog, "fanin.coupling_reconcile", result="ring_path_converged"
-        )
-        return outputd_env.read_text(encoding="utf-8"), converged
-
-    armed_text, armed_converged = _pass("1", DEFAULT_OUTPUTD_RING_PATH)
-    assert (
-        f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_ACTIVE_RING_PATH}" in armed_text
-    ), armed_text
-    (armed_fields,) = armed_converged
-    assert armed_fields["was"] == DEFAULT_OUTPUTD_RING_PATH
-
-    cleared_text, cleared_converged = _pass("", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
-    assert (
-        f"{OUTPUTD_RING_PATH_ENV_VAR}={DEFAULT_OUTPUTD_RING_PATH}" in cleared_text
-    ), cleared_text
-    (_cleared_fields,) = cleared_converged
-
-    # ...and an already-converged box does NOT claim a heal. Without this the
-    # event would fire on every pass and mean nothing.
-    _steady_text, steady_converged = _pass("1", DEFAULT_OUTPUTD_ACTIVE_RING_PATH)
-    assert steady_converged == []
