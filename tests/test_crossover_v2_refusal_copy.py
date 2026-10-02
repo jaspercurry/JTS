@@ -162,6 +162,16 @@ def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):
     assert (spec.code, spec.next_action and spec.next_action["id"]) == (code, action)
 
 
+@pytest.mark.parametrize("code, template, action", [
+    # The commissioning stop stays a stop no retry clears (non-negotiable 1); its copy names the room as a cause.
+    (refusal_copy.REASON_SPL_CEILING_EXCEEDED, refusal_copy.TEMPLATE_HARD_STOP, "speaker_setup"),
+    (refusal_copy.REASON_LEVEL_UNSOLVED, refusal_copy.TEMPLATE_SESSION_RESTART, "restart_session"),
+])
+def test_a_stop_with_no_action_of_its_own_offers_its_templates(code, template, action):
+    spec = refusal_copy.REASON_REGISTRY[code]
+    assert (spec.template, spec.retry_budget, spec.own_action, spec.next_action["id"]) == (template, 0, None, action)
+
+
 #: The web failure screen shows a hard stop's action as a link, so each link names the page its label names.
 @pytest.mark.parametrize("code, href", [
     ("tweeter_unprotected", "/sound/speaker/"), ("delay_graph_proof_failed", "/sound/speaker/"),
