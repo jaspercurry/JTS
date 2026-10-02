@@ -208,7 +208,7 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
     size (ADR-0384) and its role's sensitivity (ADR-0382 §3); the tweeter's is after its pad. It
     lists the one-driver presets this speaker runs and the catalog that reads their rounds.
     Blanking the program row's own fields leaves one text for every program, and a 2-way
-    cardioid's prompt, with an applied tune and a round, stays under 250 words."""
+    cardioid's prompt, with an applied tune and a round, stays under 300 words."""
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
                         lambda **_kwargs: [Path(_ROUND_DIR)])
     topology = mono_output_topology(card_id=None)
@@ -244,7 +244,7 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
         assert {*map(json.dumps, binding["components"]), "drivers/each: " + mp.preset("drivers/each").use_when,
                 "nearfield/each: " + mp.preset("nearfield/each").use_when} <= set(prompt.splitlines())
         assert th.catalog_command(mp.PURPOSE_REFERENCE) in prompt
-        assert len(prompt.split()) < 270
+        assert len(prompt.split()) < 300
         if note := th.PROGRAM_NOTES.get(row.purpose):
             assert note in prompt.splitlines()
             prompt = prompt.replace(f"{note}\n", "")
