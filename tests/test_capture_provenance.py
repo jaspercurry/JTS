@@ -28,8 +28,6 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.capture_provenance import (
-    GRAPH_KIND_APPLIED,
-    GRAPH_KIND_PROGRAM_ROUTING,
     CaptureProvenance,
     CaptureProvenanceRecorder,
     observe_capture_provenance,
@@ -50,6 +48,7 @@ from jasper.audio_measurement.program import (
 from tests._log_events import event_field_maps, event_fields, event_records
 
 PROVENANCE_LOGGER = "jasper.active_speaker.capture_provenance"
+GRAPH_KIND = "tuning_measurement"
 
 # The durable anchor the statefile points at. It is the SAME string whichever
 # graph is actually running — that is the whole defect.
@@ -182,7 +181,7 @@ class _FakePlan:
 
 def test_take_consumes_so_a_second_capture_never_inherits_the_first() -> None:
     recorder = CaptureProvenanceRecorder()
-    recorded = CaptureProvenance(graph_kind=GRAPH_KIND_PROGRAM_ROUTING)
+    recorded = CaptureProvenance(graph_kind=GRAPH_KIND)
     recorder.record(recorded)
 
     assert recorder.take() is recorded
@@ -204,7 +203,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
     observed = asyncio.run(
         observe_capture_provenance(
             cam=cam,
-            graph_kind=GRAPH_KIND_PROGRAM_ROUTING,
+            graph_kind=GRAPH_KIND,
             program=program,
             phase=PHASE_CHECK,
             artifact=artifact,
@@ -218,7 +217,7 @@ def test_every_field_comes_from_its_live_owner() -> None:
     assert block["main_volume_db"] == -27.5
     # The plan object's held volume, not the value the play seam was bound with.
     assert block["session_volume_db"] == -20.0
-    assert block["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
+    assert block["graph"]["kind"] == GRAPH_KIND
     assert block["graph"]["config_path"] == ANCHOR_PATH
     assert block["graph"]["fingerprint"]
     assert json_fingerprint(block["graph"]["config"]) == block["graph"]["fingerprint"]
@@ -246,7 +245,7 @@ def test_the_fingerprint_is_the_running_graph_not_the_config_path() -> None:
         return asyncio.run(
             observe_capture_provenance(
                 cam=_FakeCam(active_raw=active_raw),
-                graph_kind=GRAPH_KIND_APPLIED,
+                graph_kind=GRAPH_KIND,
                 program=program,
                 phase=PHASE_CHECK,
             )
@@ -265,7 +264,7 @@ def test_an_unreadable_surface_nulls_only_itself_and_names_itself_once(caplog) -
         observed = asyncio.run(
             observe_capture_provenance(
                 cam=cam,
-                graph_kind=GRAPH_KIND_APPLIED,
+                graph_kind=GRAPH_KIND,
                 program=_program(),
                 phase=PHASE_CHECK,
                 volume_plan=_FakePlan(),
@@ -289,7 +288,7 @@ def test_a_closed_session_volume_is_an_answer_not_an_unreadable_field(caplog) ->
         observed = asyncio.run(
             observe_capture_provenance(
                 cam=_FakeCam(),
-                graph_kind=GRAPH_KIND_APPLIED,
+                graph_kind=GRAPH_KIND,
                 program=_program(),
                 phase=PHASE_CHECK,
                 volume_plan=_FakePlan(measurement_volume_db=None),
@@ -309,14 +308,14 @@ def test_a_raising_surface_cannot_escape_into_the_capture(caplog) -> None:
         observed = asyncio.run(
             observe_capture_provenance(
                 cam=_Exploding(),
-                graph_kind=GRAPH_KIND_PROGRAM_ROUTING,
+                graph_kind=GRAPH_KIND,
                 program=_program(),
                 phase=PHASE_CHECK,
             )
         )
 
     assert observed.graph_fingerprint is None
-    assert observed.graph_kind == GRAPH_KIND_PROGRAM_ROUTING
+    assert observed.graph_kind == GRAPH_KIND
     fields = event_fields(caplog, "active_speaker.capture_provenance")
     assert fields["unreadable"] == "graph.fingerprint"
 
@@ -341,7 +340,7 @@ def test_an_unforeseen_exception_type_still_cannot_reach_the_capture(
             provenance_mod.record_capture_provenance(
                 recorder,
                 open_cam=_FakeCam,
-                graph_kind=GRAPH_KIND_APPLIED,
+                graph_kind=GRAPH_KIND,
                 program=_program(),
                 phase=PHASE_CHECK,
             )
@@ -366,7 +365,7 @@ def test_no_recorder_is_a_silent_no_op_not_a_provenance_failure(caplog) -> None:
             record_capture_provenance(
                 None,
                 open_cam=lambda: opened.append("cam") or _FakeCam(),
-                graph_kind=GRAPH_KIND_APPLIED,
+                graph_kind=GRAPH_KIND,
                 program=_program(),
                 phase=PHASE_CHECK,
             )
@@ -399,7 +398,7 @@ def test_resolving_the_cam_or_the_plan_happens_inside_the_belt(
         asyncio.run(
             record_capture_provenance(
                 recorder,
-                graph_kind=GRAPH_KIND_APPLIED,
+                graph_kind=GRAPH_KIND,
                 program=_program(),
                 phase=PHASE_CHECK,
                 **kwargs,

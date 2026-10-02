@@ -887,32 +887,7 @@ def load_design_draft(
     raw = _read_design_draft(_design_draft_path(path))
     if raw["status"] in ("not_saved", "unreadable"):
         return raw
-    # Files written before the request artefact and its digests were deleted
-    # (ADR-0323 §1) still carry them; they never reach the served document.
-    raw.pop("driver_research_request", None)
-    research = raw.get("driver_research")
-    if isinstance(research, dict):
-        research.pop("request_fingerprint", None)
-        research.pop("result_fingerprint", None)
-    # Same rule for the deleted per-channel ``protection_status``: this draft's
-    # topology is stored verbatim and reaches ``crossover_preview_fingerprint``,
-    # so a file written before the delete would move the declaration fingerprint
-    # that banks driver trims. Remove once every box has re-saved its draft.
-    stored_topology = raw.get("topology")
-    for group in _stored_items(stored_topology, "speaker_groups"):
-        for channel in _stored_items(group, "channels"):
-            channel.pop("protection_status", None)
     return design_draft_view(raw, topology=topology) if computed else raw
-
-
-def _stored_items(container: Any, key: str) -> list[dict[str, Any]]:
-    """The mapping members of ``container[key]``, tolerating any stored shape."""
-    if not isinstance(container, dict):
-        return []
-    value = container.get(key)
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
 
 
 def _read_design_draft(target: Path) -> dict[str, Any]:

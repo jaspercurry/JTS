@@ -21,7 +21,6 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker.capture_provenance import (
-    GRAPH_KIND_APPLIED,
     CaptureProvenance,
     volume_fields_agree,
 )
@@ -289,7 +288,7 @@ def test_the_drift_copy_names_the_observation_and_never_a_cause():
 
 def _provenance(main: Any, session: Any) -> CaptureProvenance:
     return CaptureProvenance(
-        graph_kind=GRAPH_KIND_APPLIED, main_volume_db=main, session_volume_db=session,
+        graph_kind="tuning_measurement", main_volume_db=main, session_volume_db=session,
     )
 
 

@@ -279,8 +279,8 @@ def build_operator_notes(draft: Mapping[str, Any] | None) -> dict[str, Any]:
     """Gather one draft's operator-typed prose into one labelled artifact.
 
     Takes the design draft as it sits on disk — a raw mapping, not a loaded
-    draft — because an older banked bundle can hold a carrier that loading
-    would drop. Absent prose is an absent KEY: ``build_notes``,
+    draft — because an older banked bundle can hold a carrier no live writer
+    produces. Absent prose is an absent KEY: ``build_notes``,
     ``drivers`` and ``declared_context`` appear only when they carry something.
     """
     draft = draft if isinstance(draft, Mapping) else {}

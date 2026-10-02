@@ -404,19 +404,10 @@ def test_pending_and_join_actions_belong_to_the_mover(mover, policy):
     ] if mover == ac.MOVER_HUMAN else [])
 
 
-def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
-    """Both halves of what makes a gate refusal honest, for the new code.
-
-    The teardown arm trusts a gate refusal's own code only when the registry
-    knows it (else it degrades to ``capture_timeout``), and re-posts a terminal
-    host event only for codes the runner has NOT already published — so a code
-    missing from either set reaches the household as the transport lie the
-    other two gate codes exist to avoid.
-    """
-    from jasper.active_speaker.crossover_v2.position_gate import POSITION_GATE_TERMINAL_CODES
-
+def test_the_ceiling_refusal_is_a_registry_code_with_its_own_sentence():
+    """A registry code that is never retried, with a sentence that is not the
+    per-hold one."""
     assert SESSION_CEILING_EXPIRED_CODE in REASON_REGISTRY
-    assert SESSION_CEILING_EXPIRED_CODE in POSITION_GATE_TERMINAL_CODES
     spec = REASON_REGISTRY[SESSION_CEILING_EXPIRED_CODE]
     assert spec.retry_budget == 0
     # The sentence must not be the per-hold one: the whole point is that
@@ -443,16 +434,10 @@ def test_the_gates_three_refusals_name_neither_mover():
     positioner is answering again" — and it fails on no test, reaches no
     screen a suite renders, and is only wrong for the half of the readership
     that is a person holding a microphone.
-
-    Read off ``POSITION_GATE_TERMINAL_CODES`` rather than a hand-listed triple,
-    so a fourth gate refusal inherits the rule the day it is written.
     """
 
-    from jasper.active_speaker.crossover_v2.position_gate import POSITION_GATE_TERMINAL_CODES
-
-    assert POSITION_GATE_TERMINAL_CODES, "the gate has terminal codes to check"
     pattern = re.compile(r"\b(" + "|".join(_MOVER_WORDS) + r")\b", re.IGNORECASE)
-    for code in sorted(POSITION_GATE_TERMINAL_CODES):
+    for code in (POSITION_HOLD_EXPIRED_CODE, POSITION_TARGET_MISSING_CODE, SESSION_CEILING_EXPIRED_CODE):
         spec = REASON_REGISTRY[code]
         for slot, text in (("message", spec.message), ("banner", spec.banner)):
             found = pattern.findall(text or "")

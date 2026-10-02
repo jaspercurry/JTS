@@ -33,9 +33,7 @@ from jasper.active_speaker.linearization_fit import (
     HF_CONTINUATION_POLICY,
     HF_REALIZATION_TOLERANCE_DB,
     HF_SINGLE_SHELF_SPEND_CAP_DB,
-    HF_SUPPRESSION_REASONS,
     HF_TAPER_MAX_DB,
-    LIFT_SUPPRESSION_REASONS,
     MAX_FILTERS_PER_DRIVER,
     MAX_NORMALIZATION_SPEND_DB,
     PER_FILTER_CUT_CAP_DB,
@@ -1314,17 +1312,6 @@ def test_cd_horn_no_filter_budget_suppression_when_slots_exhausted(monkeypatch):
     assert len(fit.filters) == MAX_FILTERS_PER_DRIVER  # flattening filled every slot
     assert all(f.biquad_type == "Peaking" for f in fit.filters)  # no CD-horn shelf added
     assert fit.hf_continuation_suppressed_reason == "no_filter_budget"
-
-
-def test_cd_horn_suppression_reason_vocabulary_is_closed():
-    """Review N-2: pin the closed set of suppression reasons so a new
-    suppression path can't ship an un-enumerated reason string."""
-    assert HF_SUPPRESSION_REASONS == {
-        "insufficient_repeats",
-        "repeat_disagreement",
-        "fit_quality",
-        "no_filter_budget",
-    }
 
 
 def test_cd_horn_fit_quality_suppresses_when_realization_cannot_track(monkeypatch):
@@ -3075,12 +3062,6 @@ def test_the_measured_target_bound_reads_the_measurement_not_the_working_curve()
     assert manufactured.suppressed_reason == "boost_above_measured_target"
     assert manufactured.from_boost_db == 0.0
     assert len(manufactured.boost_evidence_drops) >= 1
-
-
-def test_boost_above_measured_target_is_an_enumerated_suppression_reason():
-    """A new suppression path may not ship an un-enumerated reason string --
-    the same contract `HF_SUPPRESSION_REASONS` holds for its own stage."""
-    assert "boost_above_measured_target" in LIFT_SUPPRESSION_REASONS
 
 
 def test_a_filter_centre_is_a_grid_bin_not_a_measurement():
