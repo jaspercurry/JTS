@@ -319,8 +319,8 @@ def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
     programs: tuple[str, ...] = RUNNABLE_PROGRAMS, include_stale: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Latest packet per program within a bounded window; by default only a round no layer it played
-    has changed under since it was banked. ``stale_by`` names the programs whose layer did."""
+    """Latest packet per program within a bounded window, by default only a current one; ``stale_by``
+    names the programs whose layer changed under a stale one (:func:`_stale_by`)."""
     found: dict[str, dict[str, Any]] = {}
     for directory, packet, banked_at in banked_rounds(session_dir, limit=limit):
         for name in (name for name in packet_purposes(packet) if name in programs):

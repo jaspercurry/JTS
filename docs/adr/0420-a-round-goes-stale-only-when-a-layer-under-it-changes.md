@@ -53,8 +53,8 @@
     a speaker round, which is the speaker program's own layer.
   - The rule needs no clock: when an earlier layer is restored, the rounds banked under it are
     current again.
-  - A round banked before this has no layer fingerprints, so it reads stale (no backward
-    support).
+  - A round banked before this has no layer fingerprints, so a round of a program in the stack
+    reads stale (no backward support).
   - An emitter change that compiles the same snapshot to a different graph stales nothing.
   - Rejected: `tuning_scope_fingerprint` of the applied graph as the compared identity. Each layer
     change moves the graph, so the graph cannot tell which layer changed. Also, the output trim
