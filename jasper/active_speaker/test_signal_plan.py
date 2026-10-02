@@ -47,22 +47,13 @@ DRIVER_SWEEP_DURATIONS_S = {
 }
 DEFAULT_DRIVER_SWEEP_DURATION_S = 6.0
 MAX_TWEETER_SWEEP_DURATION_S = 4.0
-SUMMED_SWEEP_DURATION_S = 8.0
 
-# The capture page's deadline begins at ``armed`` and includes transport
-# polling, the controlled ambient interval, DSP setup, the sweep, and post-roll.
-# A 45-second, 48 kHz mono PCM16 WAV is about 4.32 MB, so the old 3 MiB browser
-# bridge cap could reject a completely legal capture after the user waited for
-# it.  Five MiB covers the protocol deadline plus WAV framing/post-roll while
-# remaining far below the correction host's 32 MiB generic upload ceiling.
-CROSSOVER_CAPTURE_HARD_TIMEOUT_S = 45.0
-CROSSOVER_CAPTURE_PLAY_COMPLETION_MARGIN_S = 5.0
-CROSSOVER_CAPTURE_PLAY_DEADLINE_S = (
-    CROSSOVER_CAPTURE_HARD_TIMEOUT_S
-    - CROSSOVER_CAPTURE_PLAY_COMPLETION_MARGIN_S
-)
+# Bounds a capture WAV upload. The longest production capture (MEASURE) fits
+# under it with margin, pinned by tests/test_audio_measurement_program.py, and
+# it stays far below the correction host's 32 MiB generic upload ceiling
+# (``correction_runtime.MAX_WAV_BODY_BYTES``).
 CROSSOVER_CAPTURE_MAX_WAV_BYTES = 5 * 1024 * 1024
-CROSSOVER_CAPTURE_LOCATOR_WINDOW_S = CROSSOVER_CAPTURE_HARD_TIMEOUT_S + 1.0
+
 
 def driver_sweep_duration_s(role: str) -> float:
     """Return the protected measurement-sweep duration for ``role``.

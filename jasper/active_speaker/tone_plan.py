@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared tone-artifact vocabulary, timing bounds, and preset loading."""
+"""Active-speaker preset loading."""
 
 from __future__ import annotations
 
@@ -13,12 +13,7 @@ from pathlib import Path
 from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 
 
-TONE_PLAN_KIND = "jts_active_speaker_tone_plan"
 DEFAULT_PRESET_RESOURCE = "presets/epique_e150he44_eminence_f110m8_safe_v1.json"
-DEFAULT_TONE_DURATION_MS = 300
-MIN_TONE_DURATION_MS = 100
-MAX_TONE_DURATION_MS = 500
-DEFAULT_TONE_RAMP_MS = 20
 
 
 def load_active_speaker_preset(
