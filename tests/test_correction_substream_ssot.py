@@ -34,7 +34,7 @@ Two checks:
      beside the sweep/playback kernel specifically so the socket-activated
      modules never pay for ``numpy``. That promise had no test until a
      reviewer demonstrated the gap empirically: adding
-     ``from .playback import play_wav as play_wav`` to
+     ``from .playback import play_verified_wav as play_verified_wav`` to
      ``jasper/audio_measurement/__init__.py`` drags ``numpy`` into all four
      consumers while check 1 above — and every other guard in this
      repo — stayed green, because none of them execute the consumers' import

@@ -52,48 +52,30 @@ def _artifact_identity(
     )
 
 
-async def test_play_wav_uses_stable_argv_and_returns_completion(
+async def _play(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+    *,
+    alsa_device: str = "test_pcm",
+    timeout_s: float = 1.0,
+) -> playback.PlaybackResult:
     wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-    calls = []
-
-    async def create(*args, **kwargs):
-        calls.append((args, kwargs))
-        return _ExitedProcess()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-    caplog.set_level(logging.INFO, logger=playback.logger.name)
-
-    result = await playback.play_wav(
-        wav_path,
-        alsa_device="test_pcm",
-        timeout_s=2.0,
-    )
-
-    assert calls[0][0] == (
-        "aplay",
-        "-D",
-        "test_pcm",
-        "-q",
-        str(wav_path),
-    )
-    assert calls[0][1]["stdout"] is asyncio.subprocess.DEVNULL
-    assert result == playback.PlaybackResult(
-        wav_path=wav_path,
-        alsa_device="test_pcm",
-        returncode=0,
-    )
-    fields = event_fields(caplog, "audio_measurement.playback")
-    assert fields["result"] == "completed"
+    with wave.open(str(wav_path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\0\0" * 8_000)
+    async with playback.verified_wav_source(
+        tmp_path, _artifact_identity(wav_path),
+    ) as source:
+        return await playback.play_verified_wav(
+            source, alsa_device=alsa_device, timeout_s=timeout_s,
+        )
 
 
 async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     wav_path = tmp_path / "stimulus.wav"
     with wave.open(str(wav_path), "wb") as wav:
@@ -111,6 +93,7 @@ async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
         return _ExitedProcess()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    caplog.set_level(logging.INFO, logger=playback.logger.name)
     async with playback.verified_wav_source(tmp_path, artifact) as source:
         source_fd = source.fd
         wav_path.unlink()
@@ -120,9 +103,15 @@ async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
             timeout_s=2.0,
         )
 
-    assert calls[0][0][-1] == f"/proc/self/fd/{source_fd}"
+    assert calls[0][0] == (
+        "aplay", "-D", "test_pcm", "-q", f"/proc/self/fd/{source_fd}",
+    )
+    assert calls[0][1]["stdout"] is asyncio.subprocess.DEVNULL
     assert calls[0][1]["pass_fds"] == (source_fd,)
-    assert result.wav_path == wav_path
+    assert result == playback.PlaybackResult(
+        wav_path=wav_path, alsa_device="test_pcm", returncode=0,
+    )
+    assert event_fields(caplog, "audio_measurement.playback")["result"] == "completed"
 
 
 async def test_verified_wav_emits_immutable_snapshot_despite_in_place_mutation(
@@ -420,13 +409,10 @@ async def test_verified_wav_directory_close_failure_closes_open_file(
         os.fstat(file_fds[-1])
 
 
-async def test_play_wav_timeout_is_typed_and_reaped(
+async def test_timeout_is_typed_and_reaped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     class Process:
         stderr = None
 
@@ -452,11 +438,7 @@ async def test_play_wav_timeout_is_typed_and_reaped(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
 
     with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            wav_path,
-            alsa_device="test_pcm",
-            timeout_s=0.001,
-        )
+        await _play(tmp_path, timeout_s=0.001)
 
     assert caught.value.code is playback.PlaybackFailureCode.TIMEOUT
     assert caught.value.cleanup_state is (
@@ -465,14 +447,11 @@ async def test_play_wav_timeout_is_typed_and_reaped(
     assert process.killed is True
 
 
-async def test_play_wav_unconfirmed_cleanup_is_bounded_and_observable(
+async def test_unconfirmed_cleanup_is_bounded_and_observable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     class Process:
         stderr = None
         returncode = None
@@ -497,14 +476,7 @@ async def test_play_wav_unconfirmed_cleanup_is_bounded_and_observable(
     caplog.set_level(logging.WARNING, logger=playback.logger.name)
 
     with pytest.raises(playback.PlaybackError) as caught:
-        await asyncio.wait_for(
-            playback.play_wav(
-                wav_path,
-                alsa_device="test_pcm",
-                timeout_s=0.001,
-            ),
-            timeout=0.2,
-        )
+        await asyncio.wait_for(_play(tmp_path, timeout_s=0.001), timeout=2.0)
 
     assert caught.value.code is playback.PlaybackFailureCode.TIMEOUT
     assert caught.value.cleanup_state is (
@@ -519,9 +491,6 @@ async def test_process_wait_failure_is_not_suppressed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     class Process:
         stderr = None
         returncode = None
@@ -538,24 +507,17 @@ async def test_process_wait_failure_is_not_suppressed(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
 
     with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            wav_path,
-            alsa_device="test_pcm",
-            timeout_s=1.0,
-        )
+        await _play(tmp_path)
 
     assert caught.value.code is playback.PlaybackFailureCode.WAIT_FAILED
     assert isinstance(caught.value.__cause__, RuntimeError)
     assert str(caught.value.__cause__) == "wait backend broke"
 
 
-async def test_play_wav_nonzero_diagnostic_is_bounded(
+async def test_nonzero_diagnostic_is_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     async def create(*_args, **kwargs):
         assert kwargs["stderr"] is asyncio.subprocess.PIPE
         return _ExitedProcess(returncode=7, stderr=b"x" * 20_000 + b"TAIL")
@@ -563,11 +525,7 @@ async def test_play_wav_nonzero_diagnostic_is_bounded(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
 
     with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            wav_path,
-            alsa_device="test_pcm",
-            timeout_s=1.0,
-        )
+        await _play(tmp_path)
 
     error = caught.value
     assert error.code is playback.PlaybackFailureCode.PROCESS_FAILED
@@ -576,14 +534,11 @@ async def test_play_wav_nonzero_diagnostic_is_bounded(
     assert len(error.diagnostic_tail.encode()) <= playback._DIAGNOSTIC_TAIL_BYTES
 
 
-async def test_play_wav_startup_failure_is_typed(
+async def test_startup_failure_is_typed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     async def create(*_args, **_kwargs):
         raise FileNotFoundError("aplay missing")
 
@@ -591,11 +546,7 @@ async def test_play_wav_startup_failure_is_typed(
     caplog.set_level(logging.WARNING, logger=playback.logger.name)
 
     with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            wav_path,
-            alsa_device="test_pcm",
-            timeout_s=1.0,
-        )
+        await _play(tmp_path)
 
     assert caught.value.code is playback.PlaybackFailureCode.START_FAILED
     assert isinstance(caught.value.__cause__, FileNotFoundError)
@@ -603,65 +554,28 @@ async def test_play_wav_startup_failure_is_typed(
     assert fields["failure_code"] == "start_failed"
 
 
-async def test_play_wav_refuses_missing_file_before_spawn(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    called = False
-
-    async def create(*_args, **_kwargs):
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
-
-    with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            tmp_path / "missing.wav",
-            alsa_device="test_pcm",
-            timeout_s=1.0,
-        )
-
-    assert caught.value.code is playback.PlaybackFailureCode.MISSING_FILE
-    assert called is False
-
-
 @pytest.mark.parametrize("alsa_device", ["", "  "])
-async def test_play_wav_rejects_empty_device(
+async def test_empty_device_is_refused(
     tmp_path: Path,
     alsa_device: str,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            wav_path,
-            alsa_device=alsa_device,
-            timeout_s=1.0,
-        )
+        await _play(tmp_path, alsa_device=alsa_device)
     assert caught.value.code is playback.PlaybackFailureCode.INVALID_REQUEST
 
 
 @pytest.mark.parametrize("timeout_s", [0.0, -1.0, float("inf"), float("nan")])
-async def test_play_wav_rejects_invalid_timeout(
+async def test_invalid_timeout_is_refused(
     tmp_path: Path,
     timeout_s: float,
 ) -> None:
-    wav_path = tmp_path / "sweep.wav"
-    wav_path.write_bytes(b"RIFF")
-
     with pytest.raises(playback.PlaybackError) as caught:
-        await playback.play_wav(
-            wav_path,
-            alsa_device="test_pcm",
-            timeout_s=timeout_s,
-        )
+        await _play(tmp_path, timeout_s=timeout_s)
     assert caught.value.code is playback.PlaybackFailureCode.INVALID_REQUEST
 
 
 def test_neutral_surface_requires_owner_policy() -> None:
-    play_signature = inspect.signature(playback.play_wav)
+    play_signature = inspect.signature(playback.play_verified_wav)
 
     assert play_signature.parameters["alsa_device"].default is inspect.Parameter.empty
     assert not hasattr(playback, "DEFAULT_ALSA_DEVICE")
@@ -683,8 +597,6 @@ def test_shared_playback_holds_no_powerful_host_reference() -> None:
 @pytest.mark.parametrize("reaped", [True, False])
 async def test_wav_cancel_reports_observed_child_cleanup(tmp_path, monkeypatch, reaped):
     started, stopped = asyncio.Event(), asyncio.Event()
-    wav = tmp_path / "stimulus.wav"
-    wav.write_bytes(b"RIFF")
 
     class Process:
         stderr = None
@@ -705,7 +617,7 @@ async def test_wav_cancel_reports_observed_child_cleanup(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(playback, "_PROCESS_CLEANUP_TIMEOUT_S", 0.01)
-    task = asyncio.create_task(playback.play_wav(wav, alsa_device="null", timeout_s=10))
+    task = asyncio.create_task(_play(tmp_path, alsa_device="null", timeout_s=10))
     await wait_signalled(started, "process wait() started", producer=task)
     task.cancel()
     with pytest.raises(playback.WavPlaybackCancelled) as error:

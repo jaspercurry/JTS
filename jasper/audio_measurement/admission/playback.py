@@ -40,7 +40,6 @@ class PlaybackFailureCode(str, Enum):
     """Closed failure vocabulary for a WAV emission attempt."""
 
     INVALID_REQUEST = "invalid_request"
-    MISSING_FILE = "missing_file"
     START_FAILED = "start_failed"
     TIMEOUT = "timeout"
     WAIT_FAILED = "wait_failed"
@@ -110,8 +109,7 @@ class PlaybackError(RuntimeError):
     @property
     def observation(self) -> PlaybackObservation:
         before_spawn = self.code in {
-            PlaybackFailureCode.INVALID_REQUEST, PlaybackFailureCode.MISSING_FILE,
-            PlaybackFailureCode.START_FAILED,
+            PlaybackFailureCode.INVALID_REQUEST, PlaybackFailureCode.START_FAILED,
         }
         return PlaybackObservation(
             emission="not_started" if before_spawn else "possible",
@@ -776,39 +774,6 @@ async def verified_wav_source(
             _preserve_primary_cleanup_failure(primary, cleanup)
 
 
-def validate_wav_playback_request(
-    wav_path: str | Path,
-    *,
-    alsa_device: str,
-    timeout_s: float,
-) -> tuple[Path, float]:
-    """Validate legacy path-based WAV inputs without emitting audio."""
-
-    path = Path(wav_path)
-    timeout = validate_wav_playback_control(
-        path,
-        alsa_device=alsa_device,
-        timeout_s=timeout_s,
-    )
-    if not path.is_file():
-        log_event(
-            logger,
-            "audio_measurement.playback",
-            operation="wav",
-            result="failed",
-            failure_code=PlaybackFailureCode.MISSING_FILE.value,
-            device=alsa_device,
-            level=logging.WARNING,
-        )
-        raise PlaybackError(
-            f"WAV not found: {path}",
-            code=PlaybackFailureCode.MISSING_FILE,
-            wav_path=path,
-            alsa_device=alsa_device,
-        )
-    return path, timeout
-
-
 def validate_wav_playback_control(
     path: Path,
     *,
@@ -863,9 +828,8 @@ async def _play_wav_source(
         process_kwargs: dict[str, Any] = {
             "stdout": asyncio.subprocess.DEVNULL,
             "stderr": asyncio.subprocess.PIPE,
+            "pass_fds": pass_fds,
         }
-        if pass_fds:
-            process_kwargs["pass_fds"] = pass_fds
         proc = await asyncio.create_subprocess_exec(
             "aplay",
             "-D",
@@ -1012,28 +976,6 @@ async def _play_wav_source(
         alsa_device=alsa_device,
         returncode=0,
         diagnostic_tail=diagnostic,
-    )
-
-
-async def play_wav(
-    wav_path: str | Path,
-    *,
-    alsa_device: str,
-    timeout_s: float,
-) -> PlaybackResult:
-    """Emit one already-admitted legacy path WAV and wait until it is reaped."""
-
-    path, timeout = validate_wav_playback_request(
-        wav_path,
-        alsa_device=alsa_device,
-        timeout_s=timeout_s,
-    )
-    return await _play_wav_source(
-        path,
-        spawn_path=str(path),
-        pass_fds=(),
-        alsa_device=alsa_device,
-        timeout_s=timeout,
     )
 
 
