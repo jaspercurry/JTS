@@ -57,7 +57,9 @@ async def _play(
     *,
     alsa_device: str = "test_pcm",
     timeout_s: float = 1.0,
+    bound_s: float | None = None,
 ) -> playback.PlaybackResult:
+    """Play a real WAV through the verified door; ``bound_s`` time-boxes only the play."""
     wav_path = tmp_path / "sweep.wav"
     with wave.open(str(wav_path), "wb") as wav:
         wav.setnchannels(1)
@@ -67,9 +69,10 @@ async def _play(
     async with playback.verified_wav_source(
         tmp_path, _artifact_identity(wav_path),
     ) as source:
-        return await playback.play_verified_wav(
+        play = playback.play_verified_wav(
             source, alsa_device=alsa_device, timeout_s=timeout_s,
         )
+        return await (play if bound_s is None else asyncio.wait_for(play, timeout=bound_s))
 
 
 async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
@@ -476,7 +479,7 @@ async def test_unconfirmed_cleanup_is_bounded_and_observable(
     caplog.set_level(logging.WARNING, logger=playback.logger.name)
 
     with pytest.raises(playback.PlaybackError) as caught:
-        await asyncio.wait_for(_play(tmp_path, timeout_s=0.001), timeout=2.0)
+        await _play(tmp_path, timeout_s=0.001, bound_s=0.2)
 
     assert caught.value.code is playback.PlaybackFailureCode.TIMEOUT
     assert caught.value.cleanup_state is (
