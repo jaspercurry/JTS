@@ -92,7 +92,7 @@ def _isolate_household_secret(monkeypatch, tmp_path):
 def _explicit_passive_output_topology(monkeypatch, tmp_path):
     """Give unrelated control-route tests explicit output permission."""
 
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     topology_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))

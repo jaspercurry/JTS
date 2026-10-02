@@ -79,7 +79,7 @@ from jasper.sound.profile import (
 )
 from tests.test_active_speaker_audition import ACTIVE_PCM, LINEARIZATION, _applied_profile
 from tests.test_active_speaker_measured_crossover_candidate import _room_correction
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 
 FLAT = SoundProfile()
 #: One household save: a bass lift on a Simple band, one advanced band taken

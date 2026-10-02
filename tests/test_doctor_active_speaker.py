@@ -44,7 +44,7 @@ def _blocker_bearing_roleful_topology():
     """A roleful topology whose tweeter has no DAC output assigned."""
     from dataclasses import replace
 
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     return replace(
@@ -68,7 +68,7 @@ def _incomplete_passive_topology():
     """A passive stereo layout whose right channels have no DAC output."""
     from dataclasses import replace
 
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     complete = _full_range_stereo()
     return replace(
@@ -106,20 +106,20 @@ def _stage_corrupt_topology(monkeypatch, tmp_path):
 
 
 def _stage_complete_passive_layout(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     _save_topology(monkeypatch, tmp_path, _full_range_stereo())
 
 
 def _stage_unreadable_statefile(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     _save_topology(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "gone-statefile.yml"))
 
 
 def _stage_missing_config(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     _save_topology(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
     statefile = tmp_path / "statefile.yml"
@@ -128,13 +128,13 @@ def _stage_missing_config(monkeypatch, tmp_path):
 
 
 def _stage_unconfigured_parked(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     _stage_parked(monkeypatch, tmp_path, _topology([]))
 
 
 def _stage_roleful_parked(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     _stage_parked(monkeypatch, tmp_path, _active_topology("mono", "active_2_way"))
 
@@ -148,13 +148,14 @@ def _stage_incomplete_passive_parked(monkeypatch, tmp_path):
 
 
 def _stage_complete_passive_still_parked(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     _stage_parked(monkeypatch, tmp_path, _full_range_stereo())
 
 
 def _stage_flat_graph_without_a_layout(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _flat_yaml, _topology
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+    from tests.active_speaker_fixtures import _topology
 
     _point_at_topology_and_config(
         monkeypatch, tmp_path, _topology([]), _flat_yaml(), "outputd-cutover.yml",
@@ -162,7 +163,8 @@ def _stage_flat_graph_without_a_layout(monkeypatch, tmp_path):
 
 
 def _stage_flat_graph_on_a_tweeter_layout(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import _active_topology, _flat_yaml
+    from tests.test_active_speaker_runtime_contract import _flat_yaml
+    from tests.active_speaker_fixtures import _active_topology
 
     _point_at_topology_and_config(
         monkeypatch,
@@ -174,11 +176,8 @@ def _stage_flat_graph_on_a_tweeter_layout(monkeypatch, tmp_path):
 
 
 def _stage_staged_active_startup(monkeypatch, tmp_path):
-    from tests.test_active_speaker_runtime_contract import (
-        _active_topology,
-        _active_yaml,
-        _staged_metadata,
-    )
+    from tests.test_active_speaker_runtime_contract import _active_yaml, _staged_metadata
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     config = _point_at_topology_and_config(

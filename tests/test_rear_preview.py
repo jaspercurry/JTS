@@ -29,7 +29,7 @@ from jasper.audio_measurement.rear_evidence import confident_arrival_gap_s, grad
 from jasper.cli import crossover_prescriber
 from jasper.cli._refusal import EXIT_UNREADABLE
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_prescription_document import document
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_round_views_rear import (

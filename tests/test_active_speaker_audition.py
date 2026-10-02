@@ -44,7 +44,8 @@ from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
 from jasper.sound.profile import SimpleEq
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology, _dynamic_bass_descriptor
+from tests.test_active_speaker_runtime_contract import _dynamic_bass_descriptor
+from tests.active_speaker_fixtures import _active_topology
 
 ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 

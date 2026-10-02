@@ -20,63 +20,10 @@ from jasper.active_speaker.output_contract import (
 )
 from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 
-# Reuse the topology builders from the main runtime-contract suite.
-from tests.test_active_speaker_runtime_contract import (
-    _active_topology,
-    _full_range_mono,
-    _full_range_stereo,
-    _subwoofer_topology,
+from tests.active_speaker_fixtures import (
+    _dual_apple_stereo, _active_topology, _full_range_mono, _full_range_stereo, _subwoofer_topology,
     _topology,
 )
-
-
-def _dual_apple_stereo() -> OutputTopology:
-    """A composite (dual-Apple) stereo topology — child_devices present."""
-    return OutputTopology.from_mapping(
-        {
-            "artifact_schema_version": 1,
-            "kind": OUTPUT_TOPOLOGY_KIND,
-            "topology_id": "dual",
-            "name": "Dual Apple",
-            "status": "draft",
-            "hardware": {
-                "device_id": "dual_apple_usb_c_dac_4ch",
-                "device_label": "Dual Apple",
-                "physical_output_count": 4,
-                "child_devices": [
-                    {
-                        "child_id": "a",
-                        "device_id": "apple_usb_c_dongle",
-                        "device_label": "Apple A",
-                        "physical_output_indexes": [0, 1],
-                    },
-                    {
-                        "child_id": "b",
-                        "device_id": "apple_usb_c_dongle",
-                        "device_label": "Apple B",
-                        "physical_output_indexes": [2, 3],
-                    },
-                ],
-            },
-            "speaker_groups": [
-                {
-                    "id": "left",
-                    "label": "Left",
-                    "kind": "left",
-                    "mode": "full_range_passive",
-                    "channels": [{"role": "full_range", "physical_output_index": 0}],
-                },
-                {
-                    "id": "right",
-                    "label": "Right",
-                    "kind": "right",
-                    "mode": "full_range_passive",
-                    "channels": [{"role": "full_range", "physical_output_index": 2}],
-                },
-            ],
-            "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
-        }
-    )
 
 
 # --- Ring-B eligibility ------------------------------------------------------

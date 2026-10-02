@@ -1020,7 +1020,7 @@ def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
     the helper would be pinned to a constant. This runs the real classifier over
     a real roleful topology.
     """
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     topology = _active_topology("mono", "active_2_way")
     monkeypatch.setattr(

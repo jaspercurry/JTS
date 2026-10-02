@@ -42,7 +42,7 @@ from jasper.dsp_control.output_topology_observation import (
     repin_composite_child_serials,
 )
 from jasper.audio_routes.output_topology_store import load_output_topology, new_topology_draft
-from tests.test_active_speaker_runtime_contract import _active_topology, _full_range_stereo
+from tests.active_speaker_fixtures import _active_topology, _full_range_stereo
 from tests.output_topology_fixtures import (
     _dual_apple_hardware,
     _dual_apple_observation,

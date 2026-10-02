@@ -14,7 +14,7 @@ from importlib import import_module
 from pathlib import Path
 
 import pytest
-from tests.test_plan_run import banked_program_baselines  # noqa: F401
+from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F401
 
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
@@ -236,6 +236,7 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
         {"target_id": "mono:woofer:rear", "physical_output_index": 2, **woofer_facts},
     ]
     templates = set()
+    monkeypatch.setattr(arm_walk, "_arm_discovered", [])
     monkeypatch.setattr(arm_walk.TurntableMover, "available", lambda self: True)
     for row in mp.PROGRAM_ROWS:
         handoff = th.build_tuning_handoff(commissioning_view=view, design_draft=draft, program_id=row.purpose)

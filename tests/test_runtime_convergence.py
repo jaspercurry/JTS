@@ -36,8 +36,9 @@ from jasper.audio_routes.output_topology_store import (
     save_output_topology,
 )
 from tests.test_active_speaker_runtime_contract import (
-    _active_yaml, _flat_yaml, _staged_metadata, _topology, _under_charged_boosted_baseline,
+    _active_yaml, _flat_yaml, _staged_metadata, _under_charged_boosted_baseline,
 )
+from tests.active_speaker_fixtures import _topology
 
 
 class _Controller:

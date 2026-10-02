@@ -34,7 +34,7 @@ from jasper.audio_routes.output_topology_store import save_output_topology
 @pytest.fixture(autouse=True)
 def _saved_passive_layout(tmp_path, monkeypatch):
     """Runtime coupling tests exercise a flat DAC graph intentionally."""
-    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+    from tests.active_speaker_fixtures import _full_range_stereo
 
     path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))

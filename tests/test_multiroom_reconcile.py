@@ -520,13 +520,13 @@ _MAIN_ROUTING = {"main_left_group_id": "left", "main_right_group_id": "right"}
 
 
 def _topology_passive_stereo():
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     return _topology(_mains(), _MAIN_ROUTING)
 
 
 def _topology_subwoofer_with_passive_mains():
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     groups = _mains() + [
         {"id": "sub", "label": "Sub", "kind": "subwoofer", "mode": "subwoofer",
@@ -536,13 +536,13 @@ def _topology_subwoofer_with_passive_mains():
 
 
 def _topology_protected_full_range():
-    from tests.test_active_speaker_runtime_contract import _topology
+    from tests.active_speaker_fixtures import _topology
 
     return _topology(_mains(protected=True), _MAIN_ROUTING)
 
 
 def _topology_active_2way():
-    from tests.test_active_speaker_runtime_contract import _active_topology
+    from tests.active_speaker_fixtures import _active_topology
 
     return _active_topology("stereo", "active_2_way")
 

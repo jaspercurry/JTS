@@ -27,6 +27,8 @@ from jasper.dsp_control import ring_conf
 from jasper.platform import ring_header
 from jasper.platform.env_file import read_env_file
 
+from tests.active_speaker_fixtures import _active_group, _subwoofer_topology as subwoofer_topology
+
 from .doctor_test_support import record_active_dac
 from .transport_camilla_fixtures import (
     RETIRED_ALOOP_CAPTURE_DEVICE,
@@ -97,34 +99,6 @@ def _topology(groups, routing=None, *, device_id="hifiberry_dac8x", outputs=8):
     })
 
 
-def _active_group(kind: str, mode: str, start: int) -> dict:
-    roles = ("woofer", "tweeter") if mode == "active_2_way" else (
-        "woofer",
-        "mid",
-        "tweeter",
-    )
-    channels = []
-    for offset, role in enumerate(roles):
-        channel = {
-            "role": role,
-            "physical_output_index": start + offset,
-            "identity_verified": True,
-        }
-        if role == "tweeter":
-            channel.update({
-                "startup_muted": True,
-                "protection_required": True,
-            })
-        channels.append(channel)
-    return {
-        "id": kind,
-        "label": f"{kind.title()} speaker",
-        "kind": kind,
-        "mode": mode,
-        "channels": channels,
-    }
-
-
 def _active_topology(layout: str, mode: str):
     """A roleful (active-crossover) topology — the shape that HAS an active ring."""
     if layout == "mono":
@@ -154,19 +128,7 @@ def _full_range_stereo():
 
 
 def _subwoofer_topology():
-    """Roleful, but a single output — below the ring layout's 2-channel floor."""
-    return _topology(
-        [
-            {
-                "id": "sub",
-                "label": "Subwoofer",
-                "kind": "subwoofer",
-                "mode": "subwoofer",
-                "channels": [{"role": "subwoofer", "physical_output_index": 0}],
-            }
-        ],
-        {"subwoofer_group_ids": ["sub"]},
-    )
+    return subwoofer_topology(device_label="hifiberry_dac8x")
 
 
 def _apple_dongle_shipped_default():

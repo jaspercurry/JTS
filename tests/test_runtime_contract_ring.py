@@ -21,12 +21,7 @@ from jasper.sound.camilla_yaml import (
     emit_flat_outputd_cutover_config,
 )
 
-# Reuse the topology builders from the main runtime-contract suite.
-from tests.test_active_speaker_runtime_contract import (
-    _active_topology,
-    _full_range_stereo,
-    _subwoofer_topology,
-)
+from tests.active_speaker_fixtures import _active_topology, _full_range_stereo, _subwoofer_topology
 
 
 def test_ring_stereo_program_channels_agrees_with_the_ring_a_declaration():

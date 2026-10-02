@@ -38,7 +38,8 @@ from jasper.active_speaker.runtime_contract import (
 from jasper.active_speaker.staging import driver_commission_audible_evidence
 
 from tests.test_active_speaker_profile import _two_way_preset
-from tests.test_active_speaker_runtime_contract import _active_topology, _active_yaml
+from tests.test_active_speaker_runtime_contract import _active_yaml
+from tests.active_speaker_fixtures import _active_topology
 
 
 def classify_camilla_graph(*args, **kwargs):

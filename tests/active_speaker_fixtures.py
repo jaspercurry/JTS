@@ -29,6 +29,147 @@ from jasper.audio_routes.output_topology import (
 )
 
 
+def _topology(groups: list[dict], routing: dict | None = None, *,
+              device_label: str = "HiFiBerry DAC8x") -> OutputTopology:
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "bench",
+        "name": "Bench speaker",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": device_label,
+            "physical_output_count": 8,
+            "card_id": "DAC8",
+        },
+        "speaker_groups": groups,
+        "routing": routing or {},
+    })
+
+
+def _full_range_stereo() -> OutputTopology:
+    return _topology(
+        [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 1}],
+            },
+        ],
+        {"main_left_group_id": "left", "main_right_group_id": "right"},
+    )
+
+
+def _full_range_mono() -> OutputTopology:
+    return _topology(
+        [
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            }
+        ],
+        {"mono_group_id": "mono"},
+    )
+
+
+def _active_group(kind: str, mode: str, start: int) -> dict:
+    roles = ("woofer", "tweeter") if mode == "active_2_way" else (
+        "woofer",
+        "mid",
+        "tweeter",
+    )
+    channels = []
+    for offset, role in enumerate(roles):
+        channel = {
+            "role": role,
+            "physical_output_index": start + offset,
+            "identity_verified": True,
+        }
+        if role == "tweeter":
+            channel.update({
+                "startup_muted": True,
+                "protection_required": True,
+            })
+        channels.append(channel)
+    return {
+        "id": kind,
+        "label": f"{kind.title()} speaker",
+        "kind": kind,
+        "mode": mode,
+        "channels": channels,
+    }
+
+
+def _active_topology(layout: str, mode: str) -> OutputTopology:
+    if layout == "mono":
+        return _topology([_active_group("mono", mode, 0)], {"mono_group_id": "mono"})
+    step = 2 if mode == "active_2_way" else 3
+    return _topology(
+        [_active_group("left", mode, 0), _active_group("right", mode, step)],
+        {"main_left_group_id": "left", "main_right_group_id": "right"},
+    )
+
+
+def _subwoofer_topology(*, device_label: str = "HiFiBerry DAC8x") -> OutputTopology:
+    return _topology(
+        [
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [{"role": "subwoofer", "physical_output_index": 0}],
+            }
+        ],
+        {"subwoofer_group_ids": ["sub"]},
+        device_label=device_label,
+    )
+
+
+def _dual_apple_stereo() -> OutputTopology:
+    """Composite (dual-Apple) stereo: L on output 0, R on output 2."""
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "dual",
+        "name": "Dual Apple",
+        "status": "draft",
+        "hardware": {
+            "device_id": "dual_apple_usb_c_dac_4ch",
+            "device_label": "Dual Apple",
+            "physical_output_count": 4,
+            "child_devices": [
+                {"child_id": "a", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple A", "physical_output_indexes": [0, 1]},
+                {"child_id": "b", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple B", "physical_output_indexes": [2, 3]},
+            ],
+        },
+        "speaker_groups": [
+            {"id": "left", "label": "Left", "kind": "left",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 0}]},
+            {"id": "right", "label": "Right", "kind": "right",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 2}]},
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
 def driver_domain_graph(preset, *, playback_device, program_channel, pair_trim_db=0.0,
                         bass_extension=None, **kwargs):
     """Relocate a baseline for verifier tests, preserving its text-mutation seams."""

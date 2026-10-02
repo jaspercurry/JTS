@@ -68,7 +68,7 @@ from tests.run_manifest_fixture import write_manifest
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, tuning_profile as tuning_profile, _room_candidate
 from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
-from tests.test_active_speaker_runtime_contract import _active_topology
+from tests.active_speaker_fixtures import _active_topology
 from tests.test_preflight import ready_facts
 from tests.test_arm_walk import (
     FakeMover, FakeSession, FakeWalkClock, LiveThen, _COMPLETE, _STOPPED,
