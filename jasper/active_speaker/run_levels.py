@@ -182,7 +182,6 @@ async def run_levels(
                             "spl": {key: finite_float(raw_spl.get(key)) for key in (
                                 "loudest_half_second_db_spl", "max_window_db_spl", "ceiling_db_spl")},
                             "run_stimulus": {"stimulus_id": basis["stimulus_id"],
-                                             "wav_sha256": basis["stimulus_wav_sha256"],
                                              "peak_dbfs": basis["stimulus_peak_dbfs"]}})
                         return bound.analyze(record)
 

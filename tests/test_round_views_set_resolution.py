@@ -281,7 +281,6 @@ def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_pa
     {"capture_setup": {"calibration": {"calibration_id": "other-mic"}}},
     {"capture_calibration": {"applied": True, "calibration_id": "same-mic", "curve_fingerprint": "changed-curve"}},
     {"capture_device": {"card": "other-card"}},
-    {"provenance": {"stimulus": {"wav_sha256": "other-program"}}},
     {"level_db": -35.0},
     {"stimulus_dbfs": -20.0},
     {"program": {"stimulus_id": "changed-gains"}}, {"stimulus_id": "stamped"}, {"stimulus_id": None},

@@ -18,6 +18,10 @@
      `MeasureSpec.courtesy_prelude`. The run that finds the fader applies it, so a ladder announces
      on its first rung's first take only. The capture plan budgets the prelude on that entry.
   3. Every composer plays the prelude when the spec says, and only then. No phase list remains.
+  4. A take keys its run-manifest set and compares with other takes on the stimulus it measures:
+     `program.take_stimulus_id`, its program's `stimulus_id` less the prelude, and the stimulus
+     shape likewise. A take record's `stimulus_id` names that id. The stimulus WAV hash keys no set
+     and no comparison; the record's provenance keeps it, and the program keeps its played id.
 - **Consequences:**
   - CHECK announces a speaker or tournament run with no trial; the timing take announces one with a
     trial; the first summed, branch, bass or driver take announces every other run. Bass, driver
@@ -25,6 +29,11 @@
   - A retake of the first take plays the prelude again, so the take keeps one program.
   - The level path does not change: a take's probe, fader, level, admission, SPL watch and verdict
     are the same with or without its prelude.
+  - The take that announces a run shares its sets with the run's other takes, so the room, rear
+    and bass views keep the run's first pose, and take 2's level-drift check keeps take 1 as its
+    reference.
+  - Every set fingerprint moves once, because the WAV hash leaves the capture basis. A round banked
+    before this change keeps the sets its manifest stored.
   - Summed and branch takes after the first get a new `stimulus_id` and `stimulus_shape_id`, so a
     comparison with a take banked before this change reports `basis_status: incompatible` (a
     report, not a refusal). Such a take also reads its bass-band noise over 1 s of quiet, not 3 s.

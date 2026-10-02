@@ -22,7 +22,7 @@ from .round_view_artifacts import ARTIFACT_BY_VIEW
 CHANGE_FIELDS = {
     "candidate": GRAPH_FIELDS,
     "volume": ("level_db",),
-    "demand": ("stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_wav_sha256", "stimulus_id"),
+    "demand": ("stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_id"),
     "diagnostic": (),
 }
 
