@@ -18,12 +18,12 @@ from __future__ import annotations
 import http
 import json
 import logging
-import subprocess
 from io import BytesIO
 from pathlib import Path
 
 import pytest
 
+from jasper.net import wifi
 from jasper.web import _common, wifi_setup
 from tests._log_events import event_fields, event_records, leaked_lines
 from tests._web_test_helpers import assert_canonical_page, make_real_handler
@@ -102,143 +102,6 @@ def test_wifi_page_has_no_server_form():
     assert "<form" not in out
 
 
-# --------------------------------------------------------------------------
-# Backend behaviour preserved (nmcli mocked)
-# --------------------------------------------------------------------------
-
-
-def _completed(args, returncode=0, stdout="", stderr=""):
-    return subprocess.CompletedProcess(args=args, returncode=returncode, stdout=stdout, stderr=stderr)
-
-
-def test_gather_state_shape(monkeypatch):
-    # No real nmcli: every probe returns a clean "wifi adapter present, radio
-    # on, no ethernet, not connected, no saved" world.
-    def fake_run(cmd, *, timeout=10, log_argv=True):
-        fields = cmd[cmd.index("-f") + 1] if "-f" in cmd else ""
-        if fields == "TYPE":
-            return _completed(cmd, stdout="wifi\n")
-        if fields == "TYPE,STATE":
-            return _completed(cmd, stdout="wifi:connected\n")  # no ethernet row
-        if cmd[:3] == ["nmcli", "radio", "wifi"]:
-            return _completed(cmd, stdout="enabled\n")
-        return _completed(cmd, stdout="")
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-    st = wifi_setup.gather_state()
-    assert set(st) == {
-        "adapterPresent", "radioOn", "hasEthernet",
-        "lockoutRisk", "current", "saved",
-    }
-    assert st["adapterPresent"] is True
-    assert st["radioOn"] is True
-    assert st["hasEthernet"] is False
-    assert st["lockoutRisk"] == "high"
-
-
-def test_connect_new_rolls_back_on_failure(monkeypatch):
-    """The lockout-critical path: a failed connect must (a) delete the broken
-    new profile and (b) bring the previously-active profile back up."""
-    calls = []
-
-    monkeypatch.setattr(
-        wifi_setup, "_current_wifi",
-        lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
-    )
-    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-
-    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
-        calls.append(list(cmd))
-        if "connect" in cmd:
-            # connect attempt fails with a non-SSID-lookup error
-            return _completed(cmd, returncode=4, stderr="Error: Connection activation failed.")
-        return _completed(cmd, returncode=0, stdout="")
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-
-    ok, msg = wifi_setup.connect_new("BadNet", "secretpw")
-    assert ok is False
-    # broken profile deleted (didn't exist before) ...
-    assert any(c[:4] == ["nmcli", "connection", "delete", "BadNet"] for c in calls)
-    # ... and the previous profile brought back up.
-    assert any("connection" in c and "up" in c and "HomeNet" in c for c in calls)
-    assert "HomeNet" in msg
-
-
-def test_connect_new_reactivates_same_profile_on_failure(monkeypatch):
-    """A failed reconnect can leave the already-active profile deactivated.
-
-    Rollback must therefore reactivate it even when its profile name matches
-    the requested SSID.
-    """
-    calls = []
-    monkeypatch.setattr(
-        wifi_setup,
-        "_current_wifi",
-        lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
-    )
-    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: True)
-
-    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
-        calls.append(list(cmd))
-        if "connect" in cmd:
-            return _completed(cmd, returncode=4, stderr="Error: Connection activation failed.")
-        return _completed(cmd)
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-
-    ok, message = wifi_setup.connect_new("HomeNet", "secretpw")
-
-    assert ok is False
-    assert calls == [
-        [
-            "nmcli",
-            "--wait",
-            str(wifi_setup._CONNECT_WAIT),
-            "--ask",
-            "device",
-            "wifi",
-            "connect",
-            "HomeNet",
-        ],
-        [
-            "nmcli",
-            "--wait",
-            str(wifi_setup._ROLLBACK_WAIT),
-            "connection",
-            "up",
-            "HomeNet",
-        ],
-    ]
-    assert message.endswith("Restored previous network (HomeNet).")
-
-
-def test_connect_new_worst_path_matches_declared_timeout_ceiling(monkeypatch):
-    """Drive the real serialized fail path without sleeping: current-profile
-    reads, profile lookup, visible + hidden attempts, cleanup, and rollback."""
-    timeouts: list[int] = []
-
-    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
-        timeouts.append(timeout)
-        if cmd[-3:] == ["connection", "show", "--active"]:
-            return _completed(cmd, stdout="Home:uuid:wifi:wlan0\n")
-        if "connect" in cmd:
-            return _completed(
-                cmd,
-                returncode=4,
-                stderr="Error: No network with SSID 'MissingNet' found.",
-            )
-        return _completed(cmd, returncode=1, stderr="failed")
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-
-    ok, _ = wifi_setup.connect_new("MissingNet", "secretpw")
-
-    assert ok is False
-    assert timeouts == [5, 5, 5, 5, 5, 45, 45, 10, 30]
-    assert sum(timeouts) == wifi_setup.CONNECT_NEW_TIMEOUT_CEILING
-
-
 def test_wifi_ui_copy_matches_three_minute_proxy_contract() -> None:
     source = (
         Path(__file__).resolve().parents[1]
@@ -251,115 +114,6 @@ def test_wifi_ui_copy_matches_three_minute_proxy_contract() -> None:
     assert source.count("up to 3 minutes including rollback") == 1
     assert "full switch and recovery attempt can take " in source
     assert "up to 3 minutes" in source
-
-
-def test_readable_nmcli_error_scrubs_echoed_psk():
-    # nmcli can echo the submitted password back in error text; it must
-    # never survive into the string that is logged AND returned to the
-    # browser. Both scrub patterns: literal PSK and `password <arg>`.
-    psk = "hunter2secret"
-    proc = _completed(
-        ["nmcli"], returncode=4,
-        stderr=f"Error: 802-11-wireless-security.psk: '{psk}' invalid; password {psk}",
-    )
-    msg = wifi_setup._readable_nmcli_error(proc, psk)
-    assert psk not in msg
-    assert "<redacted>" in msg
-
-
-def test_readable_nmcli_error_scrubs_password_token_without_literal():
-    # Even if we don't have the literal PSK, `password <arg>` echo is masked.
-    proc = _completed(
-        ["nmcli"], returncode=4, stderr="Error: password abc123def not accepted",
-    )
-    msg = wifi_setup._readable_nmcli_error(proc, None)
-    assert "abc123def" not in msg
-    assert "password <redacted>" in msg
-
-
-def test_connect_new_scrubs_psk_from_returned_message(monkeypatch):
-    psk = "TopSecretWifiPass"
-    monkeypatch.setattr(
-        wifi_setup, "_current_wifi",
-        lambda: {"profileName": "HomeNet", "ssid": "HomeNet"},
-    )
-    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-
-    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
-        if "connect" in cmd:
-            # nmcli echoes the PSK back in its failure text.
-            return _completed(
-                cmd, returncode=4,
-                stderr=f"Error: secrets were required but not provided: password {psk}",
-            )
-        return _completed(["nmcli"])
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-
-    ok, msg = wifi_setup.connect_new("MyNet", psk)
-    assert ok is False
-    assert psk not in msg
-
-
-def test_connect_new_never_puts_psk_on_argv(monkeypatch):
-    """Non-negotiable 3 (issue #4279 item 8): the PSK must never land on
-    nmcli's argv, where it is visible in /proc/<pid>/cmdline to root for
-    the connect window. It rides the child's stdin instead, paired with
-    `--ask`."""
-    psk = "hunter2-super-secret-psk"
-    captured: list[tuple[list[str], str | None]] = []
-
-    monkeypatch.setattr(wifi_setup, "_current_wifi", lambda: None)
-    monkeypatch.setattr(wifi_setup, "_profile_exists", lambda name: False)
-    monkeypatch.setattr(wifi_setup, "_stash_after_saved", lambda *a, **k: None)
-
-    def fake_run(cmd, *, timeout=10, log_argv=True, stdin_secret=None):
-        captured.append((list(cmd), stdin_secret))
-        return _completed(cmd, returncode=0)
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-
-    ok, _ = wifi_setup.connect_new("MyNet", psk)
-
-    assert ok is True
-    assert captured  # sanity: connect_new actually shelled out
-    for cmd, _secret in captured:
-        assert all(psk not in arg for arg in cmd)
-
-    connect_calls = [(cmd, secret) for cmd, secret in captured if "connect" in cmd]
-    assert connect_calls
-    for cmd, secret in connect_calls:
-        assert "--ask" in cmd
-        # ... and the mechanism that keeps it off argv actually got it.
-        assert secret == psk
-
-
-def test_run_nmcli_stdin_secret_reaches_child_not_log(caplog):
-    """Pins the real `subprocess.run` wiring the non-negotiable rests on:
-    every other test here monkeypatches `_run_nmcli` itself, so
-    `input=...` was never exercised against a real child process. `cat`
-    echoes stdin to stdout without ever taking the secret on its own
-    argv, standing in for nmcli's `--ask` prompt read."""
-    psk = "real-stdin-secret-psk"
-    caplog.set_level(logging.INFO, logger=wifi_setup.logger.name)
-
-    proc = wifi_setup._run_nmcli(["cat"], stdin_secret=psk)
-
-    assert leaked_lines(caplog, psk) == []
-    assert psk in proc.stdout
-
-
-def test_set_radio_passes_on_off(monkeypatch):
-    seen = []
-
-    def fake_run(cmd, *, timeout=10, log_argv=True):
-        seen.append(list(cmd))
-        return _completed(cmd, returncode=0)
-
-    monkeypatch.setattr(wifi_setup, "_run_nmcli", fake_run)
-    ok, _ = wifi_setup.set_radio(False)
-    assert ok is True
-    assert ["nmcli", "radio", "wifi", "off"] == seen[-1]
 
 
 # --------------------------------------------------------------------------
@@ -433,7 +187,7 @@ def test_get_root_renders_canonical_page():
 
 def test_get_state_returns_json(monkeypatch):
     monkeypatch.setattr(
-        wifi_setup, "gather_state",
+        wifi, "gather_state",
         lambda: {"adapterPresent": True, "radioOn": False, "hasEthernet": False,
                  "lockoutRisk": "high", "current": None, "saved": []},
     )
@@ -447,7 +201,7 @@ def test_get_state_backend_failure_returns_one_502(monkeypatch):
     def fail_state():
         raise RuntimeError("state unavailable")
 
-    monkeypatch.setattr(wifi_setup, "gather_state", fail_state)
+    monkeypatch.setattr(wifi, "gather_state", fail_state)
     h, captured = _make_request("/state")
 
     h.do_GET()
@@ -467,7 +221,7 @@ def test_get_state_response_disconnect_does_not_attempt_secondary_502(
 ):
     calls = []
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "gather_state",
         lambda: calls.append("state") or {"ok": True},
     )
@@ -508,7 +262,7 @@ def test_post_unknown_route_404s():
 def test_post_scan_runs_with_valid_csrf(monkeypatch):
     token = "t" * 64
     monkeypatch.setattr(
-        wifi_setup, "scan_networks_report",
+        wifi, "scan_networks_report",
         lambda: {"networks": [], "scan": {"ok": True, "degraded": False}},
     )
     h, cap = _make_request("/scan", body=b"{}", cookies="jts_csrf=" + token,
@@ -521,7 +275,7 @@ def test_post_scan_runs_with_valid_csrf(monkeypatch):
 def test_post_scan_preserves_body_agnostic_policy_for_invalid_json(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "scan_networks_report",
         lambda: calls.append("scan") or {
             "networks": [],
@@ -558,7 +312,7 @@ def test_post_connect_emits_one_redacted_action_event(
             assert (got_ssid, got_password, hidden) == (ssid, psk, True)
             return ok, backend_message
 
-        monkeypatch.setattr(wifi_setup, "connect_new", fake_connect_new)
+        monkeypatch.setattr(wifi, "connect_new", fake_connect_new)
     else:
         profile = "Saved Home"
         body = json.dumps({"name": profile}).encode()
@@ -567,7 +321,7 @@ def test_post_connect_emits_one_redacted_action_event(
             assert got_profile == profile
             return ok, backend_message
 
-        monkeypatch.setattr(wifi_setup, "connect_saved", fake_connect_saved)
+        monkeypatch.setattr(wifi, "connect_saved", fake_connect_saved)
 
     h, captured = _valid_post("/connect", body)
     h.do_POST()
@@ -597,19 +351,11 @@ def test_post_connect_emits_one_redacted_action_event(
 @pytest.mark.parametrize(
     "bad_password", ["line\nbreak", "carriage\rreturn", "both\r\ncombined", "nul\0byte"],
 )
-def test_post_connect_rejects_newline_password_before_connect_new(
+def test_post_connect_rejects_control_characters_before_nmcli(
     monkeypatch, bad_password,
 ):
-    """A PSK holding a line break or NUL would silently truncate at nmcli's
-    stdin (`--ask` reads one line). Reject it before connect_new ever runs,
-    with the 400 JSON shape /connect's other validation failures use."""
     calls = []
-
-    def fake_connect_new(*args, **kwargs):
-        calls.append((args, kwargs))
-        return True, "should not have been called"
-
-    monkeypatch.setattr(wifi_setup, "connect_new", fake_connect_new)
+    monkeypatch.setattr(wifi, "_run_nmcli", lambda *a, **k: calls.append((a, k)))
 
     body = json.dumps({"ssid": "HomeNet", "password": bad_password}).encode()
     h, captured = _valid_post("/connect", body)
@@ -624,7 +370,7 @@ def test_post_connect_rejects_newline_password_before_connect_new(
 def test_post_forget_emits_one_action_event(monkeypatch, caplog, ok):
     backend_message = "forget backend response detail"
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "forget",
         lambda name: (ok, backend_message),
     )
@@ -657,7 +403,7 @@ def test_post_radio_emits_one_action_event(
         calls.append(on)
         return ok, backend_message
 
-    monkeypatch.setattr(wifi_setup, "set_radio", fake_set_radio)
+    monkeypatch.setattr(wifi, "set_radio", fake_set_radio)
     caplog.set_level(logging.INFO, logger=wifi_setup.logger.name)
     body = json.dumps({"on": enabled}).encode()
 
@@ -692,7 +438,7 @@ def test_post_action_backend_exception_is_structured_and_generic(
     def fail_connect(_name):
         raise error
 
-    monkeypatch.setattr(wifi_setup, "connect_saved", fail_connect)
+    monkeypatch.setattr(wifi, "connect_saved", fail_connect)
     caplog.set_level(logging.ERROR, logger=wifi_setup.logger.name)
 
     h, captured = _valid_post("/connect", b'{"name":"Saved Home"}')
@@ -742,7 +488,7 @@ def test_post_radio_rejects_invalid_bodies_without_mutation(
     expected_reads,
 ):
     calls = []
-    monkeypatch.setattr(wifi_setup, "set_radio", lambda on: calls.append(on))
+    monkeypatch.setattr(wifi, "set_radio", lambda on: calls.append(on))
     h, captured = _valid_post("/radio", body)
     h.headers.replace_header("Content-Length", str(content_length))
     reader = _TrackingReader(body, fail=read_fails)
@@ -781,17 +527,17 @@ def test_post_response_disconnect_keeps_single_primary_action_event(
 ):
     backend_calls = []
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "connect_saved",
         lambda name: (backend_calls.append(("connect", name)) or (True, "ok")),
     )
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "forget",
         lambda name: (backend_calls.append(("forget", name)) or (True, "ok")),
     )
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "set_radio",
         lambda enabled: (
             backend_calls.append(("radio", enabled)) or (True, "ok")
@@ -851,7 +597,7 @@ def test_post_response_commit_guard_resets_for_keepalive(monkeypatch, caplog):
         backend_calls.append(enabled)
         return True, "ok"
 
-    monkeypatch.setattr(wifi_setup, "set_radio", fake_set_radio)
+    monkeypatch.setattr(wifi, "set_radio", fake_set_radio)
     caplog.set_level(logging.INFO, logger=wifi_setup.logger.name)
     h, captured = _valid_post("/radio", b'{"on":true}')
 
@@ -900,7 +646,7 @@ def test_post_connect_event_preserves_json_field_semantics(
 ):
     monkeypatch.setenv("JASPER_LOG_JSON", "1")
     monkeypatch.setattr(
-        wifi_setup,
+        wifi,
         "connect_saved",
         lambda name: (True, "connected"),
     )

@@ -263,6 +263,7 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_failure_detail.py"
       add_test_if_present "tests/test_doctor_core.py"
       add_test_if_present "tests/test_doctor_env.py"
+      add_test_if_present "tests/test_wifi.py"
       add_test_if_present "tests/test_web_wifi_setup.py"
       add_test_if_present "tests/test_voice_setup.py"
       add_test_if_present "tests/test_web_transit_setup.py"

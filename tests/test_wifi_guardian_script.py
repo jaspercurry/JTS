@@ -599,7 +599,7 @@ def test_guardian_recreates_open_network(tmp_path):
 def test_guardian_wrong_psk_fails_and_cleans_up_broken_profile(tmp_path):
     """A wrong PSK on stdin fails the way the wizard's does: nmcli's exit
     code, and the broken profile `connect` created BEFORE activating is
-    deleted (mirrors `wifi_setup.connect_new`), so boot retries don't
+    deleted (mirrors `wifi.connect_new`), so boot retries don't
     accumulate garbage."""
     psk = "wrong-synthetic-psk"
     proc, log = _run_guardian(

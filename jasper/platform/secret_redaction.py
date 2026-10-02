@@ -122,7 +122,7 @@ _KEY_VALUE_RE = re.compile(
 # `<redacted>` as a whole token (end, whitespace, or a quote next) —
 # mirroring `_AUTHORIZATION_RE`: re-matching the placeholder the literal
 # pass above already leaves on an echoed nmcli PSK (see
-# wifi_setup._readable_nmcli_error) would swallow a trailing quote off
+# net.wifi._readable_nmcli_error) would swallow a trailing quote off
 # the end of it. A secret merely glued onto the placeholder still redacts,
 # since only a token-ending `<redacted>` is skipped. An unmatched group
 # renders empty, so one template serves both shapes.
