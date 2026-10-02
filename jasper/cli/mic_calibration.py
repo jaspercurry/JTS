@@ -14,7 +14,8 @@ uncalibrated.
 ``fetch`` is the one verb that reaches the network. Both writing verbs file
 their result under ``configured_calibration_root()``, installed root-owned
 and group ``jasper`` (``install -d -m 2770 -g jasper``, deploy/install.sh);
-the login account is in neither, so they run under ``sudo``.
+the login account is in neither, so they run under ``sudo``, and so does
+``show``, which reads that result back.
 """
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ from ._refusal import (
     EXIT_WRITE_FAILED,
     answered,
     failed,
+    refuse_unreadable_paths,
 )
 
 #: Authority tier for the generated tool-menu index
@@ -201,6 +203,8 @@ def _cmd_show(_args: argparse.Namespace) -> int:
         path = household_mic_path()
         stored = read_household_mic(path=path)
         if stored is None:
+            if (refused := refuse_unreadable_paths([path])) is not None:
+                return refused
             return failed(
                 EXIT_REFUSED, REFUSE_NONE_REGISTERED,
                 f"no household microphone registered at {path}",

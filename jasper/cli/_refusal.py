@@ -23,7 +23,7 @@ import json
 import sys
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from ._report import render_report
 
@@ -201,6 +201,24 @@ def failed(
         reason, detail, exit_code=exit_code, status=STATUS_BY_CODE[exit_code],
         code=code, next_action=next_action, line=line,
     )
+
+
+def refuse_unreadable_paths(paths: Iterable[Path]) -> int | None:
+    """The refusal exit code when this user cannot read one of ``paths``, else ``None``.
+
+    Shared loaders suppress read faults, so a non-root run would otherwise answer from a speaker
+    that seems to hold nothing; drop this when they expose them.
+    """
+    for path in paths:
+        try:
+            with path.open("rb"):
+                pass
+        except PermissionError as exc:
+            return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
+                          code="local_state_unreadable")
+        except OSError:
+            pass
+    return None
 
 
 class StageFailed(Exception):

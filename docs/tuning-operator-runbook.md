@@ -6,7 +6,7 @@ Register the wired microphone with `jasper-mic-calibration` and confirm its seri
 
 ## The loop
 
-Run every tool as root on the speaker: `sudo /opt/jasper/.venv/bin/<tool>`, as the copied prompts do. The venv is not on an SSH session's `PATH`. Without `sudo`, `jasper-round`, `jasper-round-views`, `jasper-crossover-prescriber` and `jasper-audition` refuse `local_state_unreadable`, except for a verb that reads none of the speaker's state, such as `jasper-round stop`. The tool menu below shows each call without the prefix.
+Run every tool as root on the speaker: `sudo /opt/jasper/.venv/bin/<tool>`, as the copied prompts do. The venv is not on an SSH session's `PATH`. Without `sudo`, `jasper-round`, `jasper-round-views`, `jasper-crossover-prescriber`, `jasper-audition` and `jasper-mic-calibration show` refuse `local_state_unreadable`, except for a verb that reads none of the speaker's state, such as `jasper-round stop`. The tool menu below shows each call without the prefix.
 
 First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` without a round. Read `applied`,
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
