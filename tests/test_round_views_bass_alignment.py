@@ -5,6 +5,7 @@
 one bass take as played, read as the corner and Q a Linkwitz transform starts from."""
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -90,14 +91,23 @@ def ladder_round(root: Path, magnitude_db: list[float], rungs: int = 4) -> Path:
     return bundle
 
 
+def _states_its_quality(fit: dict, line: str) -> bool:
+    """A fit's band and its rms miss are fields of its answer, and its one line carries both."""
+    low, high = fit["band_hz"]
+    return 0 < low < high and fit["residual_db"] >= 0 and {
+        f"{low:g}", f"{high:g}", f"{fit['residual_db']:g}"} <= set(re.findall(r"[\d.]+", line))
+
+
 def test_each_driver_fits_at_its_nearest_placement_and_a_curve_that_cannot_place_its_corner_is_a_gap(
         tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 
     assert round_views.main(["bass-alignment", str(nearfield_round(tmp_path))]) == round_views.EXIT_OK
 
-    answer = json.loads(capsys.readouterr().out)
+    heard = capsys.readouterr()
+    answer = json.loads(heard.out)
     fits = {fit["role"]: fit for fit in answer["fits"]}
+    assert all(_states_its_quality(fits[role], heard.err) for role in ("woofer", "woofer:rear"))
     assert {role: (fit["distance_mm"], fit["take_ids"], fit["source_hz"], fit["source_q"])
             for role, fit in fits.items() if fit["status"] == "available"} == {
         "woofer": (15.0, ["w15"], pytest.approx(84.1, abs=0.2), pytest.approx(1.02, abs=0.02)),
@@ -136,8 +146,10 @@ def test_a_bass_takes_catalog_call_fits_its_curve_as_played_and_files_where_the_
 
     assert round_views.main(call["argv"][1:]) == round_views.EXIT_OK
 
-    answer = json.loads(capsys.readouterr().out)
+    heard = capsys.readouterr()
+    answer = json.loads(heard.out)
     fit, = answer["fits"]
+    assert _states_its_quality(fit, heard.err)
     assert (fit["role"], fit["take_ids"], fit["source_hz"], fit["source_q"]) == (
         "summed", ["b0"], pytest.approx(55.0, abs=0.2), pytest.approx(0.8, abs=0.02))
     assert (answer["subject"]["set_id"], answer["out"]) == ("bass", call["out"])

@@ -101,7 +101,8 @@ def _cmd(args: argparse.Namespace) -> int:
         args.command, schema=spec.schema, subject=read, parameters=parameters, out=written,
         fits=[{key: value for key, value in fit.items() if key not in _CURVES} for fit in fits],
         line="bass-alignment: " + "; ".join(
-            f"{fit['role']} {fit['source_hz']:g} Hz, Q {fit['source_q']:g}, rms {fit['residual_db']:g} dB"
+            f"{fit['role']} {fit['source_hz']:g} Hz, Q {fit['source_q']:g}, residual {fit['residual_db']:g} dB "
+            f"over {fit['band_hz'][0]:g}-{fit['band_hz'][1]:g} Hz"
             if fit["status"] == "available" else f"{fit['role']} {fit['reason']}" for fit in fits) + f" -> {written}",
     )
 
