@@ -42,8 +42,8 @@ def _put_in_session(wl, turn: _FakeTurn) -> None:
     wl._turns.state = State.SESSION
     wl._turns.turn = turn
     wl._turns.session_id = 7
-    wl._turns.user_speech_seen = True
-    wl._turns.input_ended = False
+    wl._turns.input.speech_seen = True
+    wl._turns.input.ended = False
 
     async def _noop(*_args, **_kwargs):
         return None

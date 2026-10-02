@@ -162,7 +162,7 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
         await wait_signalled(entered, "replay phase")
         # Mutating the rolling buffer cannot change the prefix frozen before acquisition.
         wl._pre_roll.clear()
-        anchor = wl._turns.started_at_loop
+        anchor = wl._turns.input.started_at
         for i in range(split):
             wl._acquire_buffer.append(frames[i], anchor + (i + 1) * (frame_sec + 1e-6))
         proceed.set()
@@ -176,12 +176,12 @@ async def test_input_endpoint_adapter_and_output_replay(provider, scenario):
             for i in range(split, len(frames)):
                 await wl._handle_session_frame(frames[i], captured_at=anchor + (i + 1) * (frame_sec + 1e-6))
                 if scenario == "pause" and i == 9 * repeats - 1:
-                    assert not wl._turns.input_ended
+                    assert not wl._turns.input.ended
             if scenario == "manual":
-                assert not wl._turns.input_ended
+                assert not wl._turns.input.ended
                 assert await wl.manual_session_end() == "OK"
                 assert await wl.manual_session_end() == "OK"
-            assert wl._turns.user_speech_seen is (scenario in {"quiet", "pause"})
+            assert wl._turns.input.speech_seen is (scenario in {"quiet", "pause"})
             audio, closes = _input_events(provider)
             assert closes - before_closes == int(scenario != "no_speech")
             uploaded = audio[len(before_audio):]
