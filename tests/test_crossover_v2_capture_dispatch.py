@@ -14,16 +14,18 @@ import pytest
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd, refusal_copy
 from jasper.active_speaker.alignment_evidence import round_alignment
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.measurement_programs import SPOT_LEVEL
+from jasper.active_speaker.measurement_programs import SEAT_LEVEL, SPOT_LEVEL
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.run_manifest import RunManifest
-from jasper.audio_measurement.wired_capture import WiredCaptureAnswer
+from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S, WiredCaptureAnswer
 from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.frame_ledger import FrameLedger
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
-from jasper.audio_measurement.program import RoleBand, build_level_probe_program, build_measure_program
+from jasper.audio_measurement.program import (
+    KIND_SWEEP, RoleBand, build_level_probe_program, build_measure_program,
+)
 from jasper.audio_measurement.program_analysis.model import (
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     AnchorEvidence, DriftEstimate, GainPlan, MeasurementPriors, ProgramAnalysis,
@@ -599,11 +601,11 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
 
 
 @pytest.mark.parametrize("gains,heard,floor,stopped_at,next_,gain,shortfall", [
-    # The burst playing when the stop fired may be cut: the loudest one before it solves.
+    # The burst playing when the stop fired may be cut: the highest one before it solves.
     ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 74.0), 40.0, 76.0, "retake_louder", -31.0, None),
     # A stop in the first burst leaves only it to solve from.
     ((-52.0,), (81.0,), 40.0, 76.0, "retake_quieter", -54.0, None),
-    # A room within 10 dB of the loudest burst is never solved from.
+    # A room within 10 dB of the highest burst is never solved from.
     ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, None, "fix_and_retake", None, None),
     # A probe that read no burst it holds is never kept.
     ((-52.0, -46.0), (), 40.0, 76.0, "fix_and_retake", None, None),
@@ -612,8 +614,8 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
 ])
 def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, floor, stopped_at, next_, gain,
                                                                 shortfall):
-    """A probe is solved once, from its loudest burst but the one its stop may have
-    cut, when that burst stands trusted over the room (ADR-0365)."""
+    """A probe is solved once, from its highest burst but the one its stop may have
+    cut, when that burst stands trusted over the room (ADR-0365, ADR-0411)."""
     program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20, 2000)), gains,
                                         sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
     levels = tuple(LevelReading(g, spl - 106.0, floor - 106.0) for g, spl in zip(gains, heard))
@@ -621,6 +623,66 @@ def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, fl
     verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, pose_level=SPOT_LEVEL)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_shortfall_db") == shortfall
+
+
+# jts3's seat probe at one spot (#6113): each burst reads its gain + 113.2 dB SPL over a
+# 46.7 dB room. With no frame count, a stopped probe leaves out its last reading.
+_SEAT_PROBE = {-60.0: 53.2, -54.0: 59.2, -48.0: 65.2, -42.0: 71.2}
+_SEAT_PROBE_GAINS = (-60.0, -54.0, -48.0, -42.0, -36.0, -30.0, -25.21)
+
+
+def _seat_probe_verdict(heard, stopped_in=None):
+    program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(30, 18000)), _SEAT_PROBE_GAINS,
+                                        sweep_band_hz=(30.0, 18000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
+    analysis = {}
+    if stopped_in is not None:
+        # The capture runs its post-roll past a stop a quarter into that burst.
+        bursts = [segment for segment in program.segments if segment.kind == KIND_SWEEP]
+        cut = next(burst for burst in bursts if burst.gain_db == stopped_in)
+        analysis = {"locations": tuple(replace(_loc(burst.segment_id), scheduled_start=burst.start_sample)
+                                       for burst in bursts),
+                    "frame_ledger": FrameLedger(cut.start_sample + cut.n_samples // 4
+                                                + int(WIRED_POST_ROLL_S * program.sample_rate_hz))}
+    levels = tuple(LevelReading(g, spl - 106.0, 46.7 - 106.0) for g, spl in heard.items())
+    spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, "stopped_at_db_spl": 76.0}
+    return cd.assess(_analysis(stimulus_levels=levels, **analysis), phase="measure", program=program, spl=spl,
+                     pose_level=SEAT_LEVEL)
+
+
+@pytest.mark.parametrize("heard,next_,gain,bound", [
+    (_SEAT_PROBE, "retake_louder", -40.2, None),
+    # A room sound read the -54 burst 6.78 dB loud: the solve moves 0.78 dB, not a step.
+    ({**_SEAT_PROBE, -54.0: 65.98}, "retake_louder", -40.98, -54.0),
+    # The top step left reads wrong low, 10.3 dB over the room: one step over the right level.
+    ({**_SEAT_PROBE, -42.0: 57.0, -36.0: 77.2}, "retake_louder", -34.2, -48.0),
+    # Two top steps read wrong low: one step over what the loudest reading solves.
+    ({**_SEAT_PROBE, -48.0: 55.0, -42.0: 57.0, -36.0: 77.2}, "retake_louder", -34.2, -54.0),
+    # A top step left within 10 dB of the room asks for the microphone again.
+    ({**_SEAT_PROBE, -42.0: 50.0, -36.0: 77.2}, "fix_and_retake", None, None),
+])
+def test_a_probe_solves_from_its_highest_step_never_a_step_over_its_loudest(heard, next_, gain, bound):
+    """A stopped probe solves from its highest step left, never more than one probe
+    step over what its loudest reading solves, and names that reading when it sets
+    the gain (ADR-0411)."""
+    verdict = _seat_probe_verdict(heard)
+    assert verdict.next == next_
+    assert verdict.next_gain_db == (None if gain is None else pytest.approx(gain))
+    assert verdict.evidence.get("level_bound_gain_db") == bound
+
+
+@pytest.mark.parametrize("heard,stopped_in,read", [
+    # The stop cut the -36 burst before it read: the full -42 burst stays and solves.
+    (_SEAT_PROBE, -36.0, 71.2),
+    # A room sound in the -54 burst then moves nothing.
+    ({**_SEAT_PROBE, -54.0: 65.98}, -36.0, 71.2),
+    # A burst the stop cut after it read is left out.
+    (_SEAT_PROBE, -42.0, 65.2),
+])
+def test_a_stopped_probe_leaves_out_only_the_burst_its_stop_cut(heard, stopped_in, read):
+    """Only the burst playing as the stop fired may have been cut short (ADR-0411)."""
+    verdict = _seat_probe_verdict(heard, stopped_in)
+    assert verdict.evidence["level_db_spl"] == pytest.approx(read)
+    assert verdict.next_gain_db == pytest.approx(-40.2)
 
 
 def test_run_host_passes_the_excitation_caps_and_preset_spl_stop_unchanged(monkeypatch):

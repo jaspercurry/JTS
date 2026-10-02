@@ -10,7 +10,9 @@ import logging
 from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
-from jasper.audio_measurement.program import KIND_PILOT, KIND_SWEEP, STIMULUS_KINDS, is_level_probe
+from jasper.audio_measurement.program import (
+    KIND_PILOT, KIND_SUMMED_SWEEP, KIND_SWEEP, STIMULUS_KINDS, is_level_probe,
+)
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
     INTEGRITY_CHECK_SWEEP_HEARD,
@@ -25,6 +27,8 @@ from jasper.audio_measurement.program_analysis.summary import (
 )
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
+from jasper.audio_measurement.ramp import MAX_STEP_DB
+from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
 from jasper.platform.control_client import read_output_volume
@@ -72,9 +76,11 @@ def level_drift_verdict(
 
 
 class _LevelTarget(NamedTuple):
-    """A play's loudest reading in dB SPL against its pose's target, and the peak it played at."""
+    """A play's highest step's reading in dB SPL and its loudest reading, against
+    its pose's target, and the peak it played at."""
 
     reading: LevelReading
+    loudest: LevelReading
     target_db_spl: float
     peak_dbfs: float
     rule: PoseLevel
@@ -84,12 +90,24 @@ class _LevelTarget(NamedTuple):
         return self.target_db_spl - self.reading.level_db
 
 
+def _stop_gain(analysis: ProgramAnalysis, program: ExcitationProgram) -> float | None:
+    """The gain of the burst a stopped probe was playing as it stopped: the last to
+    start before its capture's post-roll. ``None`` without a frame count (ADR-0411)."""
+    if analysis.frame_ledger is None:
+        return None
+    stopped = analysis.frame_ledger.received_frames - WIRED_POST_ROLL_S * program.sample_rate_hz
+    started = [(location.scheduled_start, program.segment(location.segment_id).gain_db)
+               for location in analysis.locations
+               if location.kind in (KIND_SWEEP, KIND_SUMMED_SWEEP) and location.scheduled_start <= stopped]
+    return max(started)[1] if started else None
+
+
 def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
                   program: ExcitationProgram | None, rule: PoseLevel) -> _LevelTarget | None:
-    """The play's loudest located sweep in dB SPL (ADR-0364), held to its pose's
-    target, never above the admission bound under its own stop (ADR-0361). A
-    stopped probe's last burst may have been cut short, so it reads only when no
-    burst before it does (ADR-0365)."""
+    """The play's highest located sweep in dB SPL and its loudest one (ADR-0364,
+    ADR-0411), held to its pose's target, never above the admission bound under its
+    own stop (ADR-0361). A stopped probe leaves out the burst its stop cut short,
+    unless it is the only one (ADR-0365, ADR-0411)."""
     spl = spl or {}
     sens_factor_db = finite_float(spl.get("sens_factor_db"))
     stop = finite_float(spl.get("ceiling_db_spl"))
@@ -97,25 +115,35 @@ def _level_target(analysis: ProgramAnalysis, spl: Mapping[str, Any] | None,
     if not analysis.stimulus_levels or sens_factor_db is None or stop is None or program is None or peak is None:
         return None
     to_spl = MicSensitivity(sens_factor_db).db_spl_from_dbfs
-    readings = sorted(analysis.stimulus_levels, key=lambda reading: reading.gain_db)
-    if spl.get("stopped_at_db_spl") is not None and len(readings) > 1:
+    readings = [replace(reading, level_db=to_spl(reading.level_db),
+                        floor_db=None if reading.floor_db is None else to_spl(reading.floor_db))
+                for reading in sorted(analysis.stimulus_levels, key=lambda reading: reading.gain_db)]
+    if (spl.get("stopped_at_db_spl") is not None and len(readings) > 1
+            and _stop_gain(analysis, program) in (None, readings[-1].gain_db)):
         readings.pop()
-    heard = max(readings, key=lambda reading: reading.level_db)
-    return _LevelTarget(replace(heard, level_db=to_spl(heard.level_db),
-                                floor_db=None if heard.floor_db is None else to_spl(heard.floor_db)),
+    return _LevelTarget(readings[-1], max(readings, key=lambda reading: reading.level_db),
                         min(rule.target_db_spl, spl_raise_bound_db_spl(stop) - rule.tolerance_db),
                         peak, rule)
 
 
 def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
-    """A retake at the gain that lands ``level`` just under its target (ADR-0364). A
-    probe's evidence names how far its take's ceiling holds it under that gain (ADR-0365)."""
-    solved = solve_gain(level.reading, target_db=level.target_db_spl,
-                        tolerance_db=level.rule.tolerance_db, max_raise_db=level.rule.max_raise_db)
-    shortfall = solved - level.peak_dbfs if probe else 0.0
+    """A retake at the gain that lands ``level`` just under its target (ADR-0364),
+    never more than one probe step over the gain its loudest reading solves; the
+    evidence names that reading when it sets the gain (ADR-0411). A probe's evidence
+    names how far its take's ceiling holds it under that gain (ADR-0365)."""
+    def solve(reading: LevelReading) -> float:
+        return solve_gain(reading, target_db=level.target_db_spl,
+                          tolerance_db=level.rule.tolerance_db, max_raise_db=level.rule.max_raise_db)
+    solved = solve(level.reading)
+    evidence: dict[str, float | bool | str] = {}
+    if (bound := solve(level.loudest) + MAX_STEP_DB) < solved:
+        solved = bound
+        evidence.update(level_bound_gain_db=level.loudest.gain_db, level_bound_db_spl=level.loudest.level_db)
+    if probe and (shortfall := solved - level.peak_dbfs) > 0:
+        evidence["level_shortfall_db"] = shortfall
     return TakeVerdict(False, fault=reasons.REASON_LEVEL_OFF_TARGET,
                        next="retake_louder" if level.gap_db > 0 else "retake_quieter", charge="speaker",
-                       next_gain_db=solved, evidence={"level_shortfall_db": shortfall} if shortfall > 0 else {})
+                       next_gain_db=solved, evidence=evidence)
 
 
 def _pilots_heard(analysis: ProgramAnalysis) -> bool | None:
