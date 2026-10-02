@@ -28,7 +28,7 @@ def _facts(request: AngleCaptureRequest, args: argparse.Namespace) -> PreflightF
 
 
 def resolve_run(args: argparse.Namespace) -> PreflightReport | LevelLadder:
-    stated ={key: getattr(args, key) for key in REQUEST_KEYS if getattr(args, key) is not None}
+    stated = {key: getattr(args, key) for key in REQUEST_KEYS if getattr(args, key) is not None}
     if stated and (args.plan or args.request):
         raise ValueError("a plan or request document already states its run parameters")
     if args.plan:
