@@ -171,14 +171,16 @@ def build_data(
 
     The catalog is the live bundles under ``sessions_dir`` and the rounds
     banked under ``campaign_root``, newest first; both are selected the same
-    way, by their catalog id. With no ``run_b_id``, run B is run A's comparand
-    round, and ``selected.b_source`` says ``"comparand"``.
+    way, by their catalog id. A live bundle that a bank holds lists once, as
+    its round. With no ``run_b_id``, run B is run A's comparand round, and
+    ``selected.b_source`` says ``"comparand"``.
     """
 
-    runs = sorted(
-        (*list_measurements(sessions_dir), *_banked_rounds(campaign_root)),
-        key=_newest_first,
-    )
+    banked = _banked_rounds(campaign_root)
+    # A bank keeps its bundle under the live session's directory name.
+    banked_sessions = {run.bundle_dir.name for run in banked}
+    live = (run for run in list_measurements(sessions_dir) if run.bundle_dir.name not in banked_sessions)
+    runs = sorted((*live, *banked), key=_newest_first)
     if not runs:
         return {
             "catalog_schema": CATALOG_SCHEMA,
