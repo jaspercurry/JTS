@@ -104,8 +104,7 @@ Restart=on-failure
 # cleanly (treated as success, no auto-restart) so a permanent fault cannot
 # spend the StartLimitAction=reboot budget above, which ADR-0146 sized for
 # transients. Copies jasper-voice.service, and the split is the same:
-#   78 (EX_CONFIG)  — JASPER_AEC_REF_SOURCE names a source this bridge cannot
-#                     read; chip-AEC armed with no validated beam plan or no
+#   78 (EX_CONFIG)  — chip-AEC armed with no validated beam plan or no
 #                     JASPER_OUTPUTD_CHIP_REF_PCM; the opt-in wake-corpus USB
 #                     leg naming a mic that is not plugged in.
 #   66 (EX_NOINPUT) — the wake mic itself would not open.

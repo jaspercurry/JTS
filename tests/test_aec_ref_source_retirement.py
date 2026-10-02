@@ -1,13 +1,10 @@
-"""AEC reference geometry, source migration, and chip reference admission."""
+"""AEC reference geometry and chip reference admission."""
 from __future__ import annotations
 
 import logging
 import os
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from jasper.cli import aec_bridge
 from jasper.aec.bridge_reference import REF_CHANNELS, REF_RATE
@@ -15,12 +12,6 @@ from tests._log_events import event_fields
 from tests._sounddevice_stub import stub_sounddevice
 
 REPO = Path(__file__).resolve().parents[1]
-RETIRED = "alsa"
-
-
-def _config(ref_source: str) -> aec_bridge.BridgeConfig:
-    """A default bridge config with only `ref_source` varied."""
-    return replace(aec_bridge.BridgeConfig.from_env(), ref_source=ref_source)
 
 
 def test_the_reference_geometry_matches_outputd_the_producer():
@@ -42,62 +33,6 @@ def test_the_reference_geometry_matches_outputd_the_producer():
         "REF_CHANNELS must equal jasper-outputd's channel count; "
         "the reference is stereo whatever the sink's width"
     )
-
-
-# ---------------------------------------------------------------------------
-# 2. A retired value converges; an unknown one still fails loudly.
-# ---------------------------------------------------------------------------
-
-
-def test_the_supported_source_is_returned_untouched():
-    config = _config(aec_bridge.REF_SOURCE)
-    assert aec_bridge.resolved_reference_source(config) is config
-
-
-def test_the_retired_source_warns_and_falls_back_to_outputd_udp(caplog):
-    """A parked box's stale env must not cost the household wake detection.
-
-    The pre-P7-1 reconciler wrote the retired value whenever it parked the
-    bridge, so it is still on disk out there. Refusing to start would leave
-    jasper-voice bound to a UDP mic nobody feeds — a silent failure — so the
-    bridge converges and says so.
-    """
-    with caplog.at_level(logging.WARNING, logger="jasper.aec_bridge"):
-        resolved = aec_bridge.resolved_reference_source(_config(RETIRED))
-
-    assert resolved.ref_source == aec_bridge.REF_SOURCE
-    fields = event_fields(caplog, "aec.ref_source_retired")
-    assert "jasper-aec-reconcile" in fields["detail"], (
-        "the warning must name the command that converges the env file"
-    )
-
-
-@pytest.mark.parametrize("value", ["", "jasper_ref", "chip_ref_tee", "typo"])
-def test_an_unknown_source_is_still_a_hard_failure(value):
-    """Only the retired spelling is converged. Everything else still refuses.
-
-    Guessing a transport for a name nobody recognises would put the AEC
-    engine on a reference the operator did not ask for.
-    """
-    with pytest.raises(aec_bridge.UnsupportedReferenceSource) as excinfo:
-        aec_bridge.resolved_reference_source(_config(value))
-    assert repr(value) in str(excinfo.value)
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# 4. The surviving chip-AEC precondition.
-#
-# Retiring the ALSA source made `main()`'s chip-AEC block a single guard:
-# the `ref_source != outputd_udp` half became unreachable and was removed,
-# leaving `JASPER_OUTPUTD_CHIP_REF_PCM` as the ONE thing standing between
-# `JASPER_AEC_CHIP_AEC_ENABLED=1` and a bridge that forwards the chip beam
-# while nothing feeds the chip's USB-IN reference — i.e. chip AEC running
-# open-loop against the speaker. Nothing pinned it before.
-# ---------------------------------------------------------------------------
 
 
 def _arm_chip_aec(monkeypatch, tmp_path, *, chip_ref_pcm: str) -> None:

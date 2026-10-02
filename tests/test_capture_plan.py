@@ -65,7 +65,6 @@ def test_capture_plan_chip_profile_is_canonical_bridge_contract() -> None:
     env = plan["required_bridge_env"]
     assert env["JASPER_AEC_CORPUS_CHIP_AEC_ENABLED"] == "1"
     assert env["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] == "1"
-    assert env["JASPER_AEC_REF_SOURCE"] == "outputd_udp"
     assert env["JASPER_OUTPUTD_REFERENCE_UDP_TARGET"] == (
         runtime_probe.OUTPUTD_REF_UDP_TARGET
     )

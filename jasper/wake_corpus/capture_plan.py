@@ -32,7 +32,6 @@ from jasper.aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     PLAN_ID_ENV,
-    REF_SOURCE_ENV,
 )
 from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
@@ -460,7 +459,6 @@ def _bridge_env_overrides_for_request(
     if corpus_profile == PROFILE_CHIP_AEC_COMPARISON:
         values[CORPUS_CHIP_AEC_ENABLED_ENV] = "1"
         values["JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED"] = "1"
-        values[REF_SOURCE_ENV] = "outputd_udp"
         values[OUTPUTD_REF_UDP_HOST_ENV] = "127.0.0.1"
         values[OUTPUTD_REF_UDP_PORT_ENV] = (
             OUTPUTD_REF_UDP_PORT

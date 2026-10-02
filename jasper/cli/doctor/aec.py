@@ -50,7 +50,7 @@ from jasper.platform.service_units import AEC_BRIDGE_SERVICE
 from ...aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV, OUTPUTD_REF_UDP_PORT,
-    REF_SOURCE_ENV,
+    REF_SOURCE,
 )
 from ...aec.bridge_engines import DTLN_ENABLED_ENV
 from ...aec.bridge_telemetry import (
@@ -829,7 +829,6 @@ def _assess_aec_reference_input_from_stats(
     stats: dict[str, object],
     now_monotonic: float,
     *,
-    configured_source: str,
     expected_endpoint: str,
     outputd_status: dict[str, object] | None = None,
     outputd_status_error: str | None = None,
@@ -844,16 +843,7 @@ def _assess_aec_reference_input_from_stats(
     aging out of the contract. The second element lets the caller suppress
     the window content assessment during the explicit startup grace.
 
-    ``configured_source`` is the route the CALLER resolved from the env plus
-    the bridge's own published snapshot, not the env value alone (see
-    ``check_aec_bridge_output_health``): those two diverge on a box parked by
-    a pre-P7-1 reconciler, and gating on the env would skip this
-    authoritative freshness check on exactly the box whose configuration is
-    already known to be stale.
     """
-
-    if configured_source != "outputd_udp":
-        return None
     schema_version = _bridge_stats_schema(stats)
     if schema_version not in _AEC_REFERENCE_INPUT_SCHEMA_VERSIONS:
         return None
@@ -979,7 +969,7 @@ def _assess_aec_reference_input_from_stats(
             )
         receiver_age_sec = receiver_age_at_snapshot_sec + snapshot_age_sec
 
-    if source != configured_source or endpoint != expected_endpoint:
+    if source != REF_SOURCE or endpoint != expected_endpoint:
         return (
             CheckResult(
                 "AEC bridge output", "fail",
@@ -1284,27 +1274,11 @@ def check_aec_bridge_output_health() -> CheckResult:
             reason=REASON_BRIDGE_OUTPUT_BRIDGE_NOT_RUNNING,
         )
 
-    env_source = os.environ.get(
-        REF_SOURCE_ENV, "outputd_udp",
-    ).strip().lower()
     expected_endpoint = (
         f"{os.environ.get(OUTPUTD_REF_UDP_HOST_ENV, '127.0.0.1').strip()}:"
         f"{os.environ.get(OUTPUTD_REF_UDP_PORT_ENV, str(OUTPUTD_REF_UDP_PORT)).strip()}"
     )
     bridge_stats = _read_bridge_stats_snapshot()
-    # EITHER end saying `outputd_udp` enables the authoritative freshness
-    # contract (the fail-closed direction): the env states intent, the
-    # bridge's own snapshot states what it applied, and the two diverge on a
-    # box parked by a pre-P7-1 reconciler (retired `alsa` spelling on disk
-    # while the bridge converged). Gating on the env alone would return OK
-    # for a dead reference behind a closed music lane. See the
-    # grace/past-grace pair in tests/test_doctor_aec.py.
-    applied_source = _applied_reference_source(bridge_stats)
-    configured_source = (
-        "outputd_udp"
-        if "outputd_udp" in (applied_source, env_source)
-        else env_source
-    )
     now_monotonic = time.monotonic()
 
     stats_assessment: tuple[CheckResult, bool] | None = None
@@ -1313,7 +1287,6 @@ def check_aec_bridge_output_health() -> CheckResult:
         stats_assessment = _assess_aec_reference_input_from_stats(
             bridge_stats,
             now_monotonic,
-            configured_source=configured_source,
             expected_endpoint=expected_endpoint,
         )
     if stats_assessment is not None:
@@ -1322,7 +1295,6 @@ def check_aec_bridge_output_health() -> CheckResult:
             localized = _assess_aec_reference_input_from_stats(
                 bridge_stats,
                 now_monotonic,
-                configured_source=configured_source,
                 expected_endpoint=expected_endpoint,
                 outputd_status=_read_outputd_status_for_aec_reference(),
             )
@@ -1406,41 +1378,6 @@ def check_aec_bridge_output_health() -> CheckResult:
 def _read_bridge_stats_snapshot() -> dict | None:
     """Read the bridge's one live stats snapshot source."""
     return read_bridge_stats()
-
-
-def _applied_reference_source(stats: dict | None) -> str | None:
-    """The reference source the running bridge APPLIED, or None if unreadable.
-
-    The bridge resolves ``JASPER_AEC_REF_SOURCE`` before anything reads it
-    (``jasper.aec.bridge_config.resolved_reference_source``) and publishes
-    the resolved value into its stats snapshot, so this is the box's
-    runtime truth where the env file is only its intent — and a box parked
-    by a pre-P7-1 reconciler still carries the retired ``alsa`` spelling in
-    /etc/jasper/jasper.env while the bridge converged to ``outputd_udp``.
-
-    Reads the ``reference_input.source`` receiver block, NOT
-    ``active_capture_plan.mic_reference_identity.ref_source``. The two are
-    written from the same resolved value, but where they disagree this
-    module's shipped ruling is that the receiver block wins and the
-    epoch-based plan is the legacy fallback (see the ``trusted_reference_
-    identity`` comment in ``check_aec_bridge_output_health``); reading the
-    plan here would have inverted that.
-
-    Fail-soft by design — an absent, malformed, or older snapshot returns
-    None and the caller falls back to the env value, which is what keeps a
-    rolling deploy (or an unwritten /run snapshot) from changing behaviour.
-    No freshness gate here: staleness is the assessor's own contract, which
-    fails closed on a stale current-schema snapshot rather than skipping it.
-    """
-    if not isinstance(stats, dict):
-        return None
-    reference_input = stats.get("reference_input")
-    if not isinstance(reference_input, dict):
-        return None
-    source = reference_input.get("source")
-    if not isinstance(source, str) or not source.strip():
-        return None
-    return source
 
 
 def _bridge_reference_provenance(

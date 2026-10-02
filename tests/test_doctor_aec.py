@@ -497,7 +497,6 @@ def _assess_reference_stats(stats: dict, *, now_monotonic: float = _NOW_MONOTONI
     return aec._assess_aec_reference_input_from_stats(
         stats,
         now_monotonic,
-        configured_source="outputd_udp",
         expected_endpoint="127.0.0.1:9891",
         outputd_status=_active_outputd_reference_status(),
     )
@@ -736,7 +735,6 @@ def test_reference_input_failure_localizes_outputd_without_using_it_as_proof(
     assessed = aec._assess_aec_reference_input_from_stats(
         _reference_input_stats(last_frame_age_ms=9_000),
         1_000.0,
-        configured_source="outputd_udp",
         expected_endpoint="127.0.0.1:9891",
         outputd_status=status,
         outputd_status_error=error,
@@ -761,21 +759,6 @@ def test_assess_reference_input_historical_starvation_does_not_fail_recent_ref()
     assert result.status == "ok"
 
 
-@pytest.mark.parametrize("configured_source", ["alsa", "custom"])
-def test_assess_reference_input_non_udp_sources_keep_journal_policy(
-    configured_source,
-):
-    assert (
-        aec._assess_aec_reference_input_from_stats(
-            _reference_input_stats(),
-            1_000.0,
-            configured_source=configured_source,
-            expected_endpoint="jasper_ref",
-        )
-        is None
-    )
-
-
 def _install_reference_health_check_fakes(
     monkeypatch,
     tmp_path: Path,
@@ -787,7 +770,6 @@ def _install_reference_health_check_fakes(
         stats if isinstance(stats, str) else json.dumps(stats),
         encoding="utf-8",
     )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "outputd_udp")
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_HOST", "127.0.0.1")
     monkeypatch.setenv("JASPER_AEC_OUTPUTD_REF_UDP_PORT", "9891")
     monkeypatch.setenv("JASPER_AEC_BRIDGE_STATS_PATH", str(stats_path))
@@ -972,95 +954,10 @@ def test_check_oversized_json_integer_fails_without_a_row_traceback(
     assert sum(command[0] == "outputd-status" for command in calls) == 1
 
 
-def test_applied_reference_source_reads_the_v4_receiver_not_the_legacy_plan():
-    """The applied source is `reference_input.source`, the v4 receiver field.
-
-    Where the v4 block and the epoch-based `active_capture_plan` disagree,
-    this module's shipped ruling is that v4 wins (see
-    `test_check_fresh_v4_identity_overrides_contradictory_legacy_plan`), so
-    the two are given contradictory values here and v4 must be the answer.
-    """
-    stats = _reference_input_stats()
-    stats["active_capture_plan"]["mic_reference_identity"] = {
-        "ref_source": "alsa",
-    }
-
-    assert aec._applied_reference_source(stats) == "outputd_udp"
-
-
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(lambda s: s.pop("reference_input"), id="block-absent"),
-        pytest.param(
-            lambda s: s.update(reference_input="outputd_udp"),
-            id="block-not-an-object",
-        ),
-        pytest.param(
-            lambda s: s["reference_input"].pop("source"), id="source-absent",
-        ),
-        pytest.param(
-            lambda s: s["reference_input"].update(source="  "),
-            id="source-blank",
-        ),
-        pytest.param(
-            lambda s: s["reference_input"].update(source=4),
-            id="source-not-a-string",
-        ),
-    ],
-)
-def test_applied_reference_source_is_fail_soft(mutate):
-    """Anything unreadable returns None so the caller falls back to env."""
-    stats = _reference_input_stats()
-    mutate(stats)
-
-    assert aec._applied_reference_source(stats) is None
-
-
-@pytest.mark.parametrize("stats", [None, {}, "not-a-dict", 4])
-def test_applied_reference_source_tolerates_a_missing_snapshot(stats):
-    """No snapshot (or a non-object one) is the rolling-deploy path."""
-    assert aec._applied_reference_source(stats) is None
-
-
-def test_stale_env_ref_source_still_runs_the_authoritative_check(
+def test_reference_receiver_reports_a_different_source(
     monkeypatch,
     tmp_path: Path,
 ):
-    """HS-N2: a stale `alsa` env must not skip the v4 freshness assessment.
-
-    A box parked by a pre-P7-1 reconciler keeps `JASPER_AEC_REF_SOURCE=alsa`
-    in /etc/jasper/jasper.env while the bridge converges to `outputd_udp`
-    and publishes that in its snapshot. Gating on the env dropped exactly
-    that box to the music-conditional journal fallback, which returns OK for
-    a dead reference whenever no snd-aloop renderer lane is open.
-    """
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=_reference_input_stats(last_frame_age_ms=8_000),
-    )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: False)
-
-    result = aec.check_aec_bridge_output_health()
-
-    assert result.status == "fail"
-    assert result.reason == aec.REASON_REF_RECEIVER_STALE
-    assert sum(command[0] == "outputd-status" for command in calls) == 1
-
-
-def test_env_route_still_reaches_the_receiver_identity_fail(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """The mirror case must keep its loud FAIL rather than being skipped.
-
-    Env says `outputd_udp`, the receiver reports `alsa`. Resolving the route
-    from the snapshot ALONE would close the gate and silently degrade to the
-    journal; the env half of the OR keeps this reaching the assessor's
-    runtime-identity FAIL.
-    """
     stats = _reference_input_stats()
     stats["reference_input"]["source"] = "alsa"
     _install_reference_health_check_fakes(
@@ -1075,22 +972,10 @@ def test_env_route_still_reaches_the_receiver_identity_fail(
     assert result.reason == aec.REASON_REF_ROUTE_MISMATCH
 
 
-def test_stale_env_inside_startup_grace_converges_to_ok(
+def test_reference_startup_grace_precedes_silent_content(
     monkeypatch,
     tmp_path: Path,
 ):
-    """The ONE case where opening the gate turns a content FAIL into an OK.
-
-    A bridge restarted seconds ago, a stale `alsa` env, and silent-ref
-    windows still in the snapshot: the env-gated path FAILed on those
-    windows, the OR path returns the assessor's <=10 s startup grace OK
-    *before* the windows are assessed.
-
-    That is convergence, not masking, and this pins it as intended: the
-    grace exists precisely so windows older than this process cannot indict
-    it, and an env-says-`outputd_udp` box has always taken this same path.
-    Its sibling below asserts the self-correction.
-    """
     _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
@@ -1098,7 +983,6 @@ def test_stale_env_inside_startup_grace_converges_to_ok(
             process_age_sec=3.0, rms_entries=_silent_ref_entries(8),
         ),
     )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
     result = aec.check_aec_bridge_output_health()
@@ -1111,12 +995,6 @@ def test_the_same_box_past_the_startup_grace_fails(
     monkeypatch,
     tmp_path: Path,
 ):
-    """The sibling: identical inputs, only `process_age` clears the grace.
-
-    Proves the grace OK above is bounded and self-correcting rather than
-    a permanent downgrade — the same silent-ref windows now reach the FAIL
-    branch.
-    """
     _install_reference_health_check_fakes(
         monkeypatch,
         tmp_path,
@@ -1124,7 +1002,6 @@ def test_the_same_box_past_the_startup_grace_fails(
             process_age_sec=60.0, rms_entries=_silent_ref_entries(8),
         ),
     )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
     monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
 
     result = aec.check_aec_bridge_output_health()
@@ -1185,42 +1062,6 @@ def test_check_fresh_v4_identity_overrides_contradictory_legacy_plan(
     # provenance would be unresolved and the reason would stay generic.
     assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT_UNCONFIRMED
     assert sum(command[0] == "outputd-status" for command in calls) == 1
-
-
-@pytest.mark.parametrize(
-    "legacy_source",
-    # `alsa` is the retired source (U4 / P7-1) and gets no special
-    # treatment: it reads exactly like a source doctor has never heard of.
-    ["alsa", "future_transport"],
-    ids=["retired-alsa", "unknown"],
-)
-def test_check_legacy_non_outputd_fallback_skips_status(
-    monkeypatch,
-    tmp_path: Path,
-    legacy_source,
-):
-    """A box neither configured for nor running the outputd reference keeps
-    the window-content policy and never pays for an outputd STATUS read —
-    what stops the OR gate in `check_aec_bridge_output_health` from becoming
-    "always enforce"."""
-    stats = _reference_input_stats(rms_entries=_silent_ref_entries(5))
-    stats["reference_input"]["source"] = legacy_source
-    stats["active_capture_plan"]["mic_reference_identity"] = {
-        "ref_source": legacy_source,
-    }
-    calls = _install_reference_health_check_fakes(
-        monkeypatch,
-        tmp_path,
-        stats=stats,
-    )
-    monkeypatch.setenv("JASPER_AEC_REF_SOURCE", "alsa")
-    monkeypatch.setattr(aec, "_loopback_playback_active", lambda: True)
-
-    result = aec.check_aec_bridge_output_health()
-
-    assert result.status == "fail"
-    assert result.reason == aec.REASON_BRIDGE_OUTPUT_REF_SILENT
-    assert not any(command[0] == "outputd-status" for command in calls)
 
 
 # ----------------------------------------- DTLN-aec engine health assessment

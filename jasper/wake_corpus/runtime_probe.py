@@ -45,7 +45,7 @@ from jasper.aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     PLAN_ENV_VARS,
-    REF_SOURCE_ENV,
+    REF_SOURCE,
 )
 from jasper.aec.bridge_engines import (
     CORPUS_USB_DTLN_ENABLED_ENV,
@@ -177,7 +177,6 @@ BRIDGE_CORPUS_OUTPUT_VARS = (
     CORPUS_CHIP_AEC_ENABLED_ENV,
     "JASPER_AEC_CORPUS_XVF_RAW0_WEBRTC_AEC3_ENABLED",
     "JASPER_AEC_CORPUS_XVF_RAW0_DTLN_ENABLED",
-    REF_SOURCE_ENV,
     OUTPUTD_REF_UDP_HOST_ENV,
     OUTPUTD_REF_UDP_PORT_ENV,
     "JASPER_OUTPUTD_CHIP_REF_PCM",
@@ -638,14 +637,7 @@ def dac_reference_context(
             ),
         },
         "reference": {
-            "source": env_value(
-                env,
-                REF_SOURCE_ENV,
-                # Matches the bridge's own default (aec_bridge.REF_SOURCE).
-                # A corpus session must not record a source nothing can read.
-                "outputd_udp",
-                process_env=process_env,
-            ),
+            "source": REF_SOURCE,
             "outputd_chip_ref_pcm": env_value(
                 env,
                 "JASPER_OUTPUTD_CHIP_REF_PCM",

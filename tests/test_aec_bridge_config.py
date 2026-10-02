@@ -5,7 +5,7 @@
 """Unit tests for `jasper.aec.bridge_config`.
 
 `BridgeConfig.from_env` is the bridge's only env-reading surface, and the
-two device-presence validators and the ref_source/usb_mic_source resolvers
+two device-presence validators and the USB microphone source resolver
 sit behind it. These pins cover env parsing and the resolution logic in
 isolation, before any of it reaches `main()` or `_aec_loop`.
 """

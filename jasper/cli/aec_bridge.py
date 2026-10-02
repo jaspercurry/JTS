@@ -103,12 +103,10 @@ from jasper.aec.bridge_config import (
     OUTPUTD_REF_UDP_HOST,
     OUTPUTD_REF_UDP_PORT,
     REF_SOURCE,
-    UnsupportedReferenceSource,
     UsbMicUnavailable,
     env_bool,
     leg_default_port,
     resolve_usb_mic_source,
-    resolved_reference_source,
     validate_mic_device,
     validate_usb_mic_device,
 )
@@ -416,7 +414,7 @@ def _publish_capture_plan(
             "mic_device": config.mic_device,
             "mic_channels": MIC_CHANNELS,
             "mic_channel_index": MIC_CHANNEL_INDEX,
-            "ref_source": config.ref_source,
+            "ref_source": REF_SOURCE,
             "outputd_ref_udp": (
                 f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
             ),
@@ -973,18 +971,12 @@ def main() -> int:
     from jasper.runtime import flight_recorder
     flight_recorder.install("aec")
     config = BridgeConfig.from_env(log_sweep=True, logger_=logger)
-    # Resolve the reference source before anything reads it: the stats
-    # snapshot below publishes it as the runtime provenance doctor trusts.
-    try:
-        config = resolved_reference_source(config)
-    except UnsupportedReferenceSource as e:
-        return _park(os.EX_CONFIG, "unsupported_reference_source", str(e))
     reference_endpoint = (
         f"{config.outputd_ref_udp_host}:{config.outputd_ref_udp_port}"
     )
     _bridge_stats.reset(
         config.aec3_sweep_variants,
-        reference_source=config.ref_source,
+        reference_source=REF_SOURCE,
         reference_endpoint=reference_endpoint,
     )
     _bridge_stats.write_snapshot(config.bridge_stats_path)
