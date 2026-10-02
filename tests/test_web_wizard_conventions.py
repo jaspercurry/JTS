@@ -287,7 +287,7 @@ def test_state_changing_get_can_reject_cross_site_top_level_navigation():
 
 def test_wifi_polling_state_get_still_works_with_normal_host(monkeypatch):
     monkeypatch.setattr(
-        wifi_setup,
+        wifi_setup.wifi,
         "gather_state",
         lambda: {
             "adapterPresent": True,

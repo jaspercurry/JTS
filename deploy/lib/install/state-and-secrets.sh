@@ -417,7 +417,7 @@ migrate_wifi_guardian() {
     # NAME/SSID containing one (e.g. "Cafe:Work") is matched rather than
     # truncated. A literal '\' is left as-is, matching
     # deploy/bin/jasper-wifi-guardian's nm_unescape — the canonical
-    # full-fidelity parser is jasper.web.wifi_setup._parse_terse if ever
+    # full-fidelity parser is jasper.net.wifi._parse_terse if ever
     # needed.
     _migrate_wifi_unescape_nmcli() {
         printf '%s' "${1//\\:/:}"
