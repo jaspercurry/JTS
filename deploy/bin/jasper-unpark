@@ -9,7 +9,7 @@
 #   jasper-unpark <park-record-path> <event-name>
 #
 # JTS parks two daemons out-of-band on a /run record —
-# jasper-outputd-failure-reconcile's (ADR-0141) and jasper-camilla-recover's
+# jasper-outputd-failure-reconcile's (ADR-0409) and jasper-camilla-recover's
 # (ADR-0175). Both units call this from ExecStartPost= after READY. A repair
 # owner may also retire the record to admit one deliberate retry; unparked_at
 # means the admission park ended, not that the later start reached READY.

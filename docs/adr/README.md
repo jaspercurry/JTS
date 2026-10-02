@@ -73,7 +73,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0273](0273-a-graph-naming-the-retired-snd-aloop-lane-is-refused-not-preserved.md) | A graph naming the retired snd-aloop lane is refused, not preserved | accepted |
 | [0281](0281-renderer-ingress-is-aloop-lanes-plus-usb-direct-capture.md) | Renderer ingress is snd-aloop lanes plus USB direct capture — nothing else | accepted |
 | [0282](0282-the-pre-mix-lives-in-fan-in.md) | The pre-mix lives in fan-in, because CamillaDSP captures one device | accepted |
-| [0409](0409-outputds-stop-hook-records-the-park-and-starts-the-reconcile-unit.md) | outputd's stop hook records the park and starts the reconcile unit: on a failing stop it starts `jasper-audio-hardware-reconcile.service` without waiting, and on exit 78 it first writes the park record; it runs no pass inside outputd's sandbox, where `/etc` is read-only | accepted |
+| [0409](0409-outputds-stop-hook-only-records-the-park.md) | outputd's stop hook only records the park: on exit 78 it writes the park record and runs or starts no reconcile pass (its inline pass could never write `/etc` inside outputd's sandbox) | accepted |
 
 ## Volume & hearing
 

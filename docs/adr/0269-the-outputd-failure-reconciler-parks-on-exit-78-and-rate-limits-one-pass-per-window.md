@@ -2,7 +2,7 @@
 
 - **Date:** 2026-09-09
 - **Status:** Superseded by
-  [ADR-0409](0409-outputds-stop-hook-records-the-park-and-starts-the-reconcile-unit.md).
+  [ADR-0409](0409-outputds-stop-hook-only-records-the-park.md).
   Supersedes
   [ADR-0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md).
 - **Context:** ADR-0141 recorded a lane-specific remedy keyed on the failing

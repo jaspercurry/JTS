@@ -22,22 +22,12 @@ def _write_executable(path: Path, text: str) -> Path:
 
 
 class _FailureReconcileHarness:
-    """Run jasper-outputd-failure-reconcile against a fake systemctl."""
+    """Run jasper-outputd-failure-reconcile with its park record in tmp_path."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.systemctl_log = tmp_path / "systemctl.log"
-        fake_systemctl = _write_executable(
-            tmp_path / "systemctl",
-            "#!/usr/bin/env bash\n"
-            "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n",
-        )
         self.park = tmp_path / "failure-reconcile.park"
         self.env = os.environ.copy()
-        self.env.update({
-            "JASPER_SYSTEMCTL": str(fake_systemctl),
-            "JASPER_SYSTEMCTL_LOG": str(self.systemctl_log),
-            "JASPER_OUTPUTD_RECONCILE_PARK_STATE": str(self.park),
-        })
+        self.env["JASPER_OUTPUTD_RECONCILE_PARK_STATE"] = str(self.park)
 
     def run(
         self,
@@ -65,11 +55,6 @@ class _FailureReconcileHarness:
             for line in self.park.read_text(encoding="utf-8").splitlines()
             if "=" in line
         )
-
-    def systemctl_calls(self) -> list[str]:
-        if not self.systemctl_log.exists():
-            return []
-        return self.systemctl_log.read_text(encoding="utf-8").splitlines()
 
 
 def test_output_hardware_hotplug_requests_reconcile_without_blocking(
@@ -105,56 +90,42 @@ def test_output_hardware_hotplug_requests_reconcile_without_blocking(
     assert "event=audio_hardware_hotplug.reconcile_requested" in result.stderr
 
 
-_RECONCILE_REQUEST = "--no-block start jasper-audio-hardware-reconcile.service"
-
-
 @pytest.mark.parametrize(
-    ("result", "exit_status", "park_reason"),
+    ("result", "exit_status", "parked"),
     [
-        ("exit-code", "78", "config_exit"),
-        ("exit-code", "1", None),
-        ("signal", "KILL", None),
+        ("exit-code", "78", True),
+        ("exit-code", "1", False),
+        ("signal", "KILL", False),
+        ("success", "0", False),
+        ("exec-condition", "1", False),
     ],
-    ids=["config-exit-parks", "crash", "signal"],
+    ids=["config-exit", "crash", "signal", "normal-stop", "exec-condition"],
 )
-def test_outputd_failure_reconcile_requests_a_reconcile_pass(
-    tmp_path: Path, result: str, exit_status: str, park_reason: str | None
+def test_outputd_failure_reconcile_parks_only_a_config_exit(
+    tmp_path: Path, result: str, exit_status: str, parked: bool
 ) -> None:
-    """A failing stop starts the reconcile unit and runs no pass in outputd's
-    sandbox. Only exit 78, which RestartPreventExitStatus= holds, is a park
+    """Only exit 78, which RestartPreventExitStatus= holds, is a park
     (ADR-0409)."""
     harness = _FailureReconcileHarness(tmp_path)
 
     harness.run(result=result, exit_status=exit_status)
 
-    assert harness.systemctl_calls() == [_RECONCILE_REQUEST]
     record = harness.park_record()
-    assert record.get("reason") == park_reason
-    if park_reason:
-        assert record["exit_status"] == "78"
+    if parked:
+        assert (record["exit_status"], record["reason"]) == ("78", "config_exit")
         assert int(record["parked_at"]) > 0
-
-
-@pytest.mark.parametrize("result", ["success", "exec-condition"])
-def test_outputd_failure_reconcile_skips_non_retrying_stops(
-    tmp_path: Path, result: str
-) -> None:
-    harness = _FailureReconcileHarness(tmp_path)
-
-    harness.run(result=result, exit_status="0")
-
-    assert harness.systemctl_calls() == []
-    assert harness.park_record() == {}
+    else:
+        assert record == {}
 
 
 def test_outputd_failure_reconcile_is_fail_open(tmp_path: Path) -> None:
-    """A reconcile request that cannot be sent still records the park and
-    exits 0."""
+    """A park record that cannot be written still exits 0."""
     harness = _FailureReconcileHarness(tmp_path)
 
-    harness.run(exit_status="78", JASPER_SYSTEMCTL=str(tmp_path / "absent"))
-
-    assert harness.park_record()["reason"] == "config_exit"
+    harness.run(
+        exit_status="78",
+        JASPER_OUTPUTD_RECONCILE_PARK_STATE=str(tmp_path / "absent" / "park"),
+    )
 
 
 # ----------------------------------------------------------- jasper-unpark

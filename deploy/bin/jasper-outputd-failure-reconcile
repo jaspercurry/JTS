@@ -3,15 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# jasper-outputd.service's ExecStopPost. It starts the reconcile unit rather
-# than running the pass: this unit's sandbox (ProtectSystem=full) makes /etc
-# read-only, and the pass writes there. See ADR-0409. Fail-open: always exits 0.
+# jasper-outputd.service's ExecStopPost. Exit 78 is held by
+# RestartPreventExitStatus=, so systemd will not retry it: record the park the
+# doctor and /state read. It runs and starts no reconcile pass (ADR-0409).
+# Fail-open: always exits 0.
 
 set -uo pipefail
 
 RESULT="${SERVICE_RESULT:-unknown}"
 STATUS="${EXIT_STATUS:-}"
-SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
 CONFIG_EXIT_STATUS=78
 # Deliberately OUTSIDE RuntimeDirectory=jasper-outputd: systemd removes that
 # directory when the unit stops without a restart, which is exactly the park
@@ -25,30 +25,18 @@ log() {
     echo "event=outputd.failure_reconcile.${outcome} result=${RESULT} exit_status=${STATUS:-none} ${*}" >&2
 }
 
-# `exec-condition` is systemd's own SERVICE_RESULT spelling for an
-# ExecCondition skip (systemd.service(5) $SERVICE_RESULT).
-if [[ "$RESULT" == "success" || "$RESULT" == "exec-condition" ]]; then
-    log skip reason=non_retrying_stop
+if [[ "$STATUS" != "$CONFIG_EXIT_STATUS" ]]; then
+    log skip reason=not_config_exit
     exit 0
 fi
 
-# Exit 78 is held by RestartPreventExitStatus=, so systemd will not retry it.
-if [[ "$STATUS" == "$CONFIG_EXIT_STATUS" ]]; then
-    tmp="${PARK_RECORD}.tmp.$$"
-    # tempfile+rename so a reader never sees a truncated record.
-    {
-        printf 'parked_at=%s\n' "$(date +%s)"
-        printf 'exit_status=%s\n' "$STATUS"
-        printf 'reason=%s\n' config_exit
-    } >"$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$PARK_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
-    log park reason=config_exit state="$PARK_RECORD"
-fi
-
-if "$SYSTEMCTL" --no-block start jasper-audio-hardware-reconcile.service >/dev/null 2>&1; then
-    log reconcile_requested
-else
-    rc=$?
-    log reconcile_request_failed rc="$rc"
-fi
+tmp="${PARK_RECORD}.tmp.$$"
+# tempfile+rename so a reader never sees a truncated record.
+{
+    printf 'parked_at=%s\n' "$(date +%s)"
+    printf 'exit_status=%s\n' "$STATUS"
+    printf 'reason=%s\n' config_exit
+} >"$tmp" 2>/dev/null || true
+mv -f "$tmp" "$PARK_RECORD" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+log park reason=config_exit state="$PARK_RECORD"
 exit 0

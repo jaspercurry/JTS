@@ -126,8 +126,7 @@ fn main() -> Result<()> {
 ///   unit, because a restart re-reads the SAME env against the SAME ring.
 /// * anything else — `WouldBlock`, `PermissionDenied`, `NotFound`,
 ///   `StorageFull`, `OutOfMemory`, a bare OS error — is left unmarked, so
-///   `Restart=on-failure` (plus outputd's bounded `ExecStopPost` retry) gets to
-///   try again. A ring directory that is not mounted yet, a tmpfs that is
+///   `Restart=on-failure` gets to try again. A ring directory that is not mounted yet, a tmpfs that is
 ///   momentarily full, a peer that has not created the ring: each clears
 ///   without an edit, and parking on them would need an operator to un-park a
 ///   box that fixed itself.
