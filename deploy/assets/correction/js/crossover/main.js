@@ -34,6 +34,9 @@ const els = {
 };
 
 let envelope = null;
+// True from the moment a start answers until the next envelope renders: `envelope` then predates the
+// capture it started.
+let envelopeStale = false;
 let busy = false;
 // The status line acknowledges a take ('Measurement started.'): stale once the
 // page waits for a person again or nothing is live (#5632 F9).
@@ -445,6 +448,7 @@ function screenOwnsLiveControl(env) {
 
 function render(env) {
   envelope = env;
+  envelopeStale = false;
   if (takeAcknowledged && (humanHold(env.capture, env.pending) || !sessionBusy(env))) setStatus('');
   els.verdict.textContent = env.verdict_text || '';
   renderRound(env);
@@ -501,6 +505,7 @@ async function runAction(action, button) {
     const response = await postJSON(action.endpoint, body);
     captureStarted = CAPTURE_STOPPABLE.has(response?.capture?.status);
     if (captureStarted) {
+      envelopeStale = true;
       if (els.roundChoice) els.roundChoice.hidden = true;
       renderCapture(response.capture);
       // The response's capture hasn't landed in `envelope` yet (that happens
@@ -536,9 +541,10 @@ async function runAction(action, button) {
     busy = false;
     // render() ran inside the refresh above while `busy` was still true, so the
     // controls it built carry a baked-in `disabled` that nothing else clears
-    // before the next poll. Rebuild them from the latest envelope;
-    // renderActionRow applies the capture gate to it.
-    if (envelope) {
+    // before the next poll. Rebuild them from the latest envelope, unless it
+    // predates a capture this action started: it would offer a second Start,
+    // which opens a second bundle before the server refuses it.
+    if (envelope && !envelopeStale) {
       renderRound(envelope);
       renderActionRow(envelope);
       renderWalk(envelope.capture, {
