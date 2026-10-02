@@ -33,8 +33,11 @@
   0.0 in every case. The 85 dB stop, `volume_limit`, the graph doors, the clamp and the driver caps
   do not change.
 - **Consequences:** A run's refusals after its shape and layout come from the door, with the same
-  exit code, code and next action. `plan.json` drops `artifact_schema_version` and `kind`, so each
-  walk's `request_fingerprint` moves once. The door refuses a session body with any key but `request`
-  and `attest_rig_clear`, and its answer adds `staged`. The applied rear no longer reads unknown when
-  the room charge cannot be computed. Rejected: keeping the CLI's local resolution for its answer, which
-  could then disagree with what the door staged.
+  reason; each now carries `code` and the door's next action. One exit code moves: `--mover arm` on a
+  layout that pins another mover, typed without `--wait`, exits 2 with the `--wait` usage error, not
+  1, because the CLI checks `--wait` before the door resolves. `plan.json` drops
+  `artifact_schema_version` and `kind`, so each walk's `request_fingerprint` moves once. The door
+  refuses a session body with any key but `request` and `attest_rig_clear`, and its answer adds
+  `staged`. The applied rear no longer reads unknown when the room charge cannot be computed.
+  Rejected: keeping the CLI's local resolution for its answer, which could then disagree with what
+  the door staged.
