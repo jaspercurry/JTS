@@ -603,7 +603,7 @@ def test_append_capture_is_fail_soft_when_info_json_is_missing(
 
 
 # --------------------------------------------------------------------------
-# list_bundles / summarize_bundle / latest_bundle
+# list_bundles / summarize_bundle
 # --------------------------------------------------------------------------
 
 
@@ -644,7 +644,6 @@ def test_list_bundles_treats_missing_sessions_dir_as_empty(
     tmp_path: Path,
 ) -> None:
     assert bundles.list_bundles(tmp_path / "missing") == []
-    assert bundles.latest_bundle(tmp_path / "missing") is None
 
 
 def test_summarize_bundle_reports_counts_and_size(tmp_path: Path) -> None:
@@ -669,16 +668,6 @@ def test_summarize_bundle_raises_for_non_directory(tmp_path: Path) -> None:
 
     with pytest.raises(BundleError):
         bundles.summarize_bundle(tmp_path / "nope")
-
-
-def test_latest_bundle_returns_the_newest(tmp_path: Path) -> None:
-    _open(tmp_path, now=1000.0)
-    newest = _open(tmp_path, now=5000.0)
-
-    found = bundles.latest_bundle(tmp_path)
-
-    assert found is not None
-    assert found["session_id"] == newest["session_id"]
 
 
 # --------------------------------------------------------------------------

@@ -710,7 +710,7 @@ def test_shared_layout_can_change_to_two_positions_without_code(tmp_path: Path) 
     config = _bundled_config()
     config["layouts"]["seat_express"]["poses"] = config["layouts"]["seat_express"]["poses"][:2]  # type: ignore[index]
 
-    presets = mp.load_presets(_write_config(tmp_path, config))
+    presets = mp._load_presets(_write_config(tmp_path, config))[0]
 
     assert len(presets["room/seat"].poses) == 2
     assert presets["rear/seat"].poses is presets["room/seat"].poses
@@ -721,7 +721,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     pose = config["layouts"]["bass_axis"]["poses"][0]  # type: ignore[index]
     pose.update({"headline": "Measure the main seat", "detail": "Hold the mic at ear height."})
 
-    loaded = mp.load_presets(_write_config(tmp_path, config))["bass/axis"].poses[0]
+    loaded = mp._load_presets(_write_config(tmp_path, config))[0]["bass/axis"].poses[0]
     assert (loaded.headline, loaded.detail) == (
         "Measure the main seat", "Hold the mic at ear height.",
     )
@@ -780,7 +780,7 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         config["presets"][0].update({"purposes": ["room"], "regime": "per_driver"})  # type: ignore[index]
 
     with pytest.raises(ValueError):
-        mp.load_presets(_write_config(tmp_path, config))
+        mp._load_presets(_write_config(tmp_path, config))
 
 
 @pytest.mark.parametrize("layout", ["bass_axis", "seat_cloud", "room_quick", "seat_express"])
@@ -806,4 +806,4 @@ def test_invalid_registry_stimulus_is_a_value_error(tmp_path, stimuli, reference
     config["stimuli"] = {**config["stimuli"], **stimuli} if isinstance(stimuli, dict) else stimuli
     next(row for row in config["presets"] if row["preset"] == "bass/axis")["stimulus"] = reference
     with pytest.raises(ValueError):
-        mp.load_presets(_write_config(tmp_path, config))
+        mp._load_presets(_write_config(tmp_path, config))
