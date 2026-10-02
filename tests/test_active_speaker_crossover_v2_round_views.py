@@ -64,9 +64,6 @@ def _make_round_dir(tmp_path: Path, name: str, *, take: bool = False) -> Path:
             "build_sha": "deadbeef",
         },
     }))
-    (capture_dir / "round_receipt.json").write_text(json.dumps({
-        "kind": "jts_crossover_v2_round_receipt", "schema_version": 2, "round_id": "r1",
-    }))
     if take:
         (capture_dir / "positions").mkdir()
         (capture_dir / "positions" / "take_0001.json").write_text(json.dumps({

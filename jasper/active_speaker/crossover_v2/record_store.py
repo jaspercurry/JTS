@@ -26,7 +26,6 @@ from .contracts import (
     MEASURE_KIND_KEY,
     MEASURE_KINDS,
     POSITION_EVIDENCE_KIND,
-    ROUND_RECEIPT_KIND,
 )
 
 __all__ = [
@@ -71,14 +70,6 @@ def _verify_candidate(
         raise RuntimeError("published measured candidate changed on exact readback")
 
 
-def _verify_receipt(
-    written: Mapping[str, Any], reopened: Mapping[str, Any],
-) -> None:
-    """R21's accept-receipt pattern: a receipt is what it says it is."""
-    if reopened != dict(written):
-        raise RuntimeError("published round receipt changed on exact readback")
-
-
 def _required(record: Mapping[str, Any], field: str) -> str:
     value = str(record.get(field) or "")
     if not value:
@@ -108,11 +99,6 @@ _ROUTES: dict[str, _Route] = {
         lambda capture, _r: f"{_round_dir(capture)}/candidate.json",
         enveloped=False,
         verify=_verify_candidate,
-    ),
-    ROUND_RECEIPT_KIND: _Route(
-        lambda capture, _r: f"{_round_dir(capture)}/round_receipt.json",
-        enveloped=False,
-        verify=_verify_receipt,
     ),
 }
 

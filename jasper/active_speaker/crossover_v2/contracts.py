@@ -49,16 +49,11 @@ __all__ = [
     "POSITION_AXIS_HORIZONTAL",
     "POSITION_AXIS_VERTICAL",
     "REFERENCE_MARK_DESIGN_AXIS",
-    "ROUND_RECEIPT_KIND",
     "ResponseCurve",
     "VERIFY_TOLERANCE_DB",
 ]
 
 SCHEMA_VERSION = 3
-
-#: What a banked round receipt calls itself — the discriminator a store routes
-#: on, named beside the type that emits it.
-ROUND_RECEIPT_KIND = "jts_crossover_v2_round_receipt"
 
 
 class CrossoverV2FlowError(RuntimeError):

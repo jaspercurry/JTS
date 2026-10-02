@@ -86,20 +86,6 @@ REPO = Path(__file__).resolve().parents[1]
 BAND = (824.35, 3297.4)
 
 
-def _receipt() -> dict[str, Any]:
-    return {
-        "kind": "jts_crossover_v2_round_receipt",
-        "schema_version": 2,
-        "round_id": "r1",
-        "adoption": {"outcome": "keep", "reason": "round_cap_reached", "row": "row7"},
-        "verification": {"spec": "failed", "realization": "matched"},
-        "round_axes": {"safety": {"status": "ok", "evidence": {"probe_verdict": "clean"}}},
-        "evidence_identities": {"candidate_fingerprint": "abc", "tier": ""},
-        "proposal_fingerprint": "55fedc24",
-        "proposal_fingerprint_kind": "intervention_proposal",
-    }
-
-
 def _bundle(tmp_path: Path, *, state: dict[str, Any] | None = None) -> tuple[Path, Path | None]:
     """A commissioning bundle on disk, in the real tree shape."""
     session = tmp_path / "session"
@@ -121,7 +107,6 @@ def _bundle(tmp_path: Path, *, state: dict[str, Any] | None = None) -> tuple[Pat
             "build_sha": "200d54578",
         },
     }))
-    (round_dir / "round_receipt.json").write_text(json.dumps(_receipt()))
     state_path = None
     if state is not None:
         state_path = tmp_path / "state.json"

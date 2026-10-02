@@ -37,8 +37,6 @@ def crossover_v2_status_block() -> dict[str, Any] | None:
         needs_recovery = True  # unreadable volume state fails closed
     return {
         "phase": _projection.crossover_v2_phase(state, review_declined=False),
-        # The coordinator owns the ordinal and adoption receipt (#2537, #2602).
-        "round_receipt": (state or {}).get("round_receipt"),
         "failure": (state or {}).get("failure"),
         "needs_recovery": needs_recovery,
     }

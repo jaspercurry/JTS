@@ -250,24 +250,6 @@ def test_an_unfinished_session_is_refused_rather_than_claiming_its_round_id(
     assert not (tmp_path / "campaigns").exists()
 
 
-@pytest.mark.parametrize("round_id", [".", "..", "../escape", "a/b"])
-def test_a_round_id_that_is_not_a_plain_token_falls_back_to_the_session_id(
-    tmp_path, round_id
-):
-    session_dir, state_path = _live_session(tmp_path)
-    round_dir, _why = round_artifact_dir(session_dir)
-    receipt_path = round_dir / "round_receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt["round_id"] = round_id
-    receipt_path.write_text(json.dumps(receipt))
-
-    banked = bank_round(
-        session_dir, campaign_root=tmp_path / "campaigns", state_path=state_path
-    )
-
-    assert banked.path == tmp_path / "campaigns" / session_dir.name
-
-
 @pytest.mark.parametrize("snapshot", [True, False])
 def test_delayed_bank_preserves_capture_state_without_borrowing_a_later_round(
     tmp_path, monkeypatch, snapshot,

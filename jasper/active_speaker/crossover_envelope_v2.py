@@ -15,7 +15,6 @@ from jasper.platform.log_event import log_event
 from .measurement_programs import PROGRAM_ROWS, PURPOSE_SPEAKER, preset, run_purpose
 from .measurement_view import round_capture, run_door
 from .round_copy import CHOOSE_PROGRAM, RUN_ENDED, RUN_UNDER_WAY
-from .crossover_v2.coordinator import series_position_from_state
 from .crossover_v2.position_gate import RETAKE_ENDPOINT
 from .capture_status import CAPTURE_COMPLETE, CAPTURE_FAILED, SESSION_ENDED_STATUSES
 from .crossover_v2.journey import (
@@ -163,7 +162,6 @@ def _envelope(
     status: Mapping[str, Any],
     advertise_capture: bool = True,
     terminal_status: str | None = None,
-    round_ordinal: int | None = None,
 ) -> dict[str, Any]:
     # The speaker round's packet is the one timing verdict; a live candidate is not judged twice (#5632).
     timing_action = dict(as_mapping(as_mapping(status.get("timing")).get("next_action"))) or None
@@ -179,7 +177,6 @@ def _envelope(
         "flow": "v2",
         "screen": screen,
         "terminal_status": terminal_status,
-        "round_ordinal": round_ordinal,
         "phase": _v2(status).get("phase"),
         "active": True,
         "steps": _step_payload(active_step, _done_before(active_step)),
@@ -318,14 +315,11 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
     if terminal in SESSION_ENDED_STATUSES or durable_complete:
         if terminal == CAPTURE_FAILED or (durable_complete and failure_code):
             return _failure_envelope(failure_code, status)
-        ordinal = None
         if durable_complete:
             terminal = CAPTURE_COMPLETE
-            if phase != PHASE_DONE:
-                ordinal = series_position_from_state(v2).ordinal
         verdict = RUN_ENDED if terminal == CAPTURE_COMPLETE else "Measurement stopped."
         return _envelope(
-            screen="finished", active_step="verify", terminal_status=str(terminal), round_ordinal=ordinal,
+            screen="finished", active_step="verify", terminal_status=str(terminal),
             verdict=verdict, next_action=_reset_action(), status=status, advertise_capture=False,
         )
     if failure_code:

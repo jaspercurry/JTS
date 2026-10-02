@@ -969,19 +969,6 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     return _open_prepared(monkeypatch, prepared)
 
 
-def _seed_applied_stage_1_state() -> dict[str, Any]:
-    state = {
-        "session_id": "cap_stage1_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": True,
-        "candidate": {"fingerprint": "fp-stage-1"},
-        "gain_plan_db": {"woofer": -3.0, "tweeter": -6.0},
-    }
-    v2state.save_v2_state(state)
-    return state
-
-
 class _AcceptingStore:
 
     session_id = "bundle-test"
@@ -1031,8 +1018,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "gain_plan_db",
     "kind",
     "measure_gain_ceiling_db",
-    "round_ordinal_epoch",
-    "round_receipt",
     "schema_version",
     "session_id",
     "session_phases",

@@ -18,9 +18,6 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
-from jasper.active_speaker.crossover_v2.coordinator import (
-    ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
-)
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker import driver_base_trim
 from jasper.platform.log_event import log_event
@@ -175,30 +172,19 @@ def clear_v2_state() -> None:
 
 
 def reset_v2_journey_state() -> None:
-    """Clear the journey; keep the applied flag and the round-ordinal epoch."""
+    """Clear the journey; keep the applied flag."""
     # One hold across the read and the write: an apply between them would
     # otherwise lose the record it just wrote.
     with v2_state_locked():
         state = load_v2_state()
         if state is None:
             return
-        epoch = round_ordinal_epoch_from_state(state)
-        applied = bool(state.get("applied"))
-        if not applied and not epoch:
+        if not state.get("applied"):
             clear_v2_state()
             return
-        receipt = state.get("round_receipt")
-        if applied and receipt is not None:
-            epoch += 1
-            ordinal = receipt.get("round_ordinal") if isinstance(receipt, Mapping) else None
-            log_event(logger, "correction.crossover_v2_journey_reset_advanced_epoch",
-                      round_ordinal_epoch=epoch,
-                      reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
-        save_v2_state({"session_id": None, "accepted_phases": [], "applied": applied,
-                       "gain_plan_db": None, "candidate": None, "failure": None, "evidence": None,
-                       ROUND_ORDINAL_EPOCH_STATE_KEY: epoch})
-        log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
-                  else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
+        save_v2_state({"session_id": None, "accepted_phases": [], "applied": True,
+                       "gain_plan_db": None, "candidate": None, "failure": None, "evidence": None})
+        log_event(logger, "correction.crossover_v2_journey_reset_kept_applied")
 
 
 def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:

@@ -168,13 +168,9 @@ def test_awaiting_plan_without_a_staged_run(phase):
 
 
 @pytest.mark.parametrize("phase", ["review", "applying", "done"])
-@pytest.mark.parametrize("receipt, current_ordinal", [(None, 1), ({"round_ordinal": 3}, 4)])
-def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, current_ordinal):
-    env = build_crossover_envelope_v2({
-        **_status(phase=phase, round_receipt=receipt), "capture": None,
-    })
+def test_durable_completion_survives_an_empty_capture_slot(phase):
+    env = build_crossover_envelope_v2({**_status(phase=phase), "capture": None})
     assert (env["screen"], env["terminal_status"], env["phase"]) == ("finished", "complete", phase)
-    assert env["round_ordinal"] == (None if phase == "done" else current_ordinal)
     assert env["verdict_text"] == RUN_ENDED
     assert env["next_action"]["id"] == "reset"
     assert env["action_note"] is None

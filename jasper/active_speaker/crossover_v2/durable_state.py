@@ -13,7 +13,6 @@ from typing import Any, Mapping, Sequence
 
 from jasper.platform.json_fields import finite_float as _finite
 
-from .coordinator import ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state
 from .journey import PHASE_MEASURE
 from .topology_prescription import candidate_topology
 
@@ -264,6 +263,4 @@ def build_conductor_state(
         state["candidate"] = dict(prior["candidate"])
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping) and same_session:
         state["evidence"] = dict(prior["evidence"])
-    state["round_receipt"] = prior.get("round_receipt")
-    state[ROUND_ORDINAL_EPOCH_STATE_KEY] = round_ordinal_epoch_from_state(prior)
     return state

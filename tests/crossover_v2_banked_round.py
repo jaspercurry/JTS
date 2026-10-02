@@ -4,11 +4,9 @@
 
 """One banked round, as the FLOW banks it — the shared real-shape fixture.
 
-A fixture library that IS a fixture library, on
-``tests/crossover_v2_round_harness.py``'s precedent and for its reason: a
-shared builder living in a collected test module makes that module
-undeletable. This one is imported by the round-views and forward-model
-suites.
+A fixture library that IS a fixture library: a shared builder living in a
+collected test module makes that module undeletable. This one is imported by
+the round-views and forward-model suites.
 
 **The two shapes are DISJOINT, and that is the finding they exist to hold.**
 ``jasper.web.correction_crossover_v2``'s own words: *"stage 2 opens a new
@@ -45,6 +43,7 @@ import json
 import math
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -72,7 +71,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
     EVIDENCE_ROOT,
     CommissioningEvidenceStore,
 )
-from jasper.active_speaker import angle_capture, measurement_programs
+from jasper.active_speaker import angle_capture, bundles, measurement_programs
 from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.capture_plan import position_geometry
@@ -81,7 +80,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     DRIVER_ROLE_TWEETER,
     DRIVER_ROLE_WOOFER,
     REFERENCE_MARK_DESIGN_AXIS,
-    ROUND_RECEIPT_KIND,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
@@ -204,20 +202,22 @@ def _tilted(
 
 
 def _open_round(
-    root: Path, name: str, mode: str,
+    root: Path, name: str, mode: str, round_id: str,
 ) -> tuple[Path, BankedRecordStore, str]:
-    """``<round-dir>/bundle/<session-id>/`` with a real evidence store on it.
+    """``<round-dir>/bundle/<round_id>/`` with a real evidence store on it.
 
     The directory layout is ``bank-crossover-round.sh``'s: the whole session
     bundle untarred under ``bundle/``, with the flow state written beside it
-    by the callers below.
+    by the callers below. ``round_id`` is the bundle's session id, the name
+    ``round_bank.bank_round`` files the round under.
     """
     round_dir = Path(root) / name
-    info = open_bundle(
-        mono_output_topology(mode=mode),
-        calibration_id="calibration-test",
-        sessions_dir=round_dir / "bundle",
-    )
+    with mock.patch.object(bundles, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=round_id))):
+        info = open_bundle(
+            mono_output_topology(mode=mode),
+            calibration_id="calibration-test",
+            sessions_dir=round_dir / "bundle",
+        )
     assert info is not None, "open_bundle refused to open a fixture bundle"
     store = CommissioningEvidenceStore.open(
         Path(str(info["bundle_dir"])), expected_session_id=str(info["session_id"]),
@@ -237,23 +237,9 @@ def _bank(store: BankedRecordStore, *records: Mapping[str, Any]) -> None:
     asyncio.run(_run())
 
 
-def _receipt(round_id: str) -> dict[str, Any]:
-    return {
-        "kind": ROUND_RECEIPT_KIND,
-        "schema_version": 2,
-        "round_id": round_id,
-        "entry_graph_fingerprint": "fp-entry-graph",
-    }
-
-
-def _state(*, round_ordinal: int) -> dict[str, Any]:
-    """The flow state ``bank-crossover-round.sh`` drops beside the bundle,
-    narrowed to the round's place in the series."""
-    return {
-        "session_id": _CAPTURE_SESSION_ID,
-        "round_receipt": {"round_ordinal": round_ordinal},
-        "round_ordinal_epoch": 1,
-    }
+def _state() -> dict[str, Any]:
+    """The flow state ``bank-crossover-round.sh`` drops beside the bundle."""
+    return {"session_id": _CAPTURE_SESSION_ID}
 
 
 # --------------------------------------------------------------------------- #
@@ -660,7 +646,6 @@ def bank_measure_round(
     root: Path,
     *,
     name: str = "r1-measure",
-    round_ordinal: int = 1,
     mode: str = MODE_TWO_WAY,
     candidates: Sequence[str] = (),
 ) -> Path:
@@ -680,7 +665,7 @@ def bank_measure_round(
     under it. Empty walks the single unattributed pose a round with no ladder
     banks.
     """
-    round_dir, store, session_id = _open_round(root, name, mode)
+    round_dir, store, session_id = _open_round(root, name, mode, "r1")
     stamp = {
         "run_id": session_id,
         "graph_fingerprint": "fp-entry-graph",
@@ -725,10 +710,9 @@ def bank_measure_round(
         ),
     )
     # Every take of a speaker round states its purpose, as the executor stamps it.
-    _bank(store, *({**take, "measurement_purpose": measurement_programs.PURPOSE_SPEAKER} for take in takes),
-          _receipt("r1"))
+    _bank(store, *({**take, "measurement_purpose": measurement_programs.PURPOSE_SPEAKER} for take in takes))
     (round_dir / "state.json").write_text(
-        json.dumps(_state(round_ordinal=round_ordinal))
+        json.dumps(_state())
     )
     write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
@@ -739,7 +723,6 @@ def bank_verify_round(
     *,
     name: str = "r2-verify",
     measured_db: np.ndarray | None = None,
-    round_ordinal: int = 2,
 ) -> Path:
     """One STAGE-2 round directory, as the flow banks it.
 
@@ -749,7 +732,7 @@ def bank_verify_round(
 
     ``measured_db`` defaults to a flat -30 dB curve on :data:`VERIFY_GRID_HZ`.
     """
-    round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY)
+    round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY, "r2")
     measured = (
         np.full(VERIFY_GRID_HZ.shape, -30.0)
         if measured_db is None else np.asarray(measured_db, dtype=float)
@@ -775,9 +758,8 @@ def bank_verify_round(
             ],
             **stamp,
         ),
-        _receipt("r2"),
     )
-    (round_dir / "state.json").write_text(json.dumps(_state(round_ordinal=round_ordinal)))
+    (round_dir / "state.json").write_text(json.dumps(_state()))
     write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir
 
@@ -804,7 +786,6 @@ def bank_seat_round(
     *,
     name: str = "r3-seat",
     magnitudes_db: Sequence[np.ndarray] | None = None,
-    round_ordinal: int = 3,
 ) -> Path:
     """One SEAT round directory: the ``seat/cube`` walk, as the flow banks it.
 
@@ -815,7 +796,7 @@ def bank_seat_round(
     ``magnitudes_db`` defaults to seven flat -30 dB curves on
     :data:`SEAT_GRID_HZ`, in the program's own pose order.
     """
-    round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY)
+    round_dir, store, session_id = _open_round(root, name, MODE_TWO_WAY, "r3")
     stops = angle_capture.resolve_request(
         angle_capture.request_for_preset(measurement_programs.run_preset("room", "seat_cube"))
     )
@@ -854,10 +835,9 @@ def bank_seat_round(
             ), **_seat_capture(store, program, stop.index, magnitude), "measurement_purpose": measurement_programs.PURPOSE_ROOM}
             for stop, magnitude in zip(stops, magnitudes)
         ),
-        _receipt("r3"),
     )
     (round_dir / "state.json").write_text(
-        json.dumps(_state(round_ordinal=round_ordinal))
+        json.dumps(_state())
     )
     write_manifest(round_dir, program="room" if name == "r3-seat" else "speaker")
     return round_dir

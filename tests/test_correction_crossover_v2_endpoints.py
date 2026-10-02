@@ -3224,32 +3224,6 @@ def test_concurrent_same_pose_joins_replay_the_accepted_payload(monkeypatch, run
         release.set()
 
 
-@pytest.mark.parametrize("applied,epoch,receipt,expected", [
-    (True, 0, {"round_ordinal": 2}, 1),
-    (False, 0, None, 0),
-    (False, 2, None, 2),
-    (True, 2, None, 2),
-    (True, 2, {"round_ordinal": 3}, 3),
-])
-def test_start_over_carries_the_sequence_epoch(applied, epoch, receipt, expected, caplog):
-    from jasper.active_speaker.crossover_v2.coordinator import series_position_from_state
-    from tests._log_events import event_records, parse_event
-
-    v2state.save_v2_state({"applied": applied, "round_ordinal_epoch": epoch, "round_receipt": receipt})
-    with caplog.at_level(logging.INFO):
-        v2state.reset_v2_journey_state()
-    state = v2state.load_v2_state()
-    position = series_position_from_state(state)
-    assert (position.ordinal, position.ordinal_epoch) == (1, expected)
-    assert (state or {}).get("round_receipt") is None
-    events = event_records(caplog, "correction.crossover_v2_journey_reset_advanced_epoch")
-    if applied and receipt:
-        event = parse_event(events[0].getMessage())[1]
-        assert event["reset_round_ordinal_from"] == str(receipt["round_ordinal"])
-    else:
-        assert not events
-
-
 def test_a_restore_by_fingerprint_moves_the_declaration_back(monkeypatch, tmp_path):
     from jasper.active_speaker.preset_binding import compile_preset_from_crossover_preview
     from jasper.active_speaker.crossover_preview import build_crossover_preview

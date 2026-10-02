@@ -534,7 +534,6 @@ def test_run_allocates_unique_take_ids_across_engine_instances(tmp_path):
     records = [json.loads((root / take["record_id"]).read_text()) for take in _takes(document)]
     assert len({record["take_id"] for record in records}) == 2
     assert document["status"] == "complete"
-    assert not (root / "crossover_v2/run/round_receipt.json").exists()
 
 
 def test_retake_while_next_pose_waits_restarts_the_displayed_pose(monkeypatch):
