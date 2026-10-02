@@ -214,39 +214,36 @@ check(
   "(g) click-swallowing: runAction ran to completion and the row re-enabled",
 );
 
-// (h) A start's own refresh can already land the first placement hold, built while the start is busy.
-// The hold's release is a live button when the start returns, whichever panel carries it.
+// (h) A start answers awaiting_join with the first placement's release already in it, and the walk renders
+// that release while the start is busy. It is a live button when the start returns, not after the next poll.
 const release = {
   id: "position_ready",
   label: "Microphone is at the seat",
   endpoint: "/sound/speaker/crossover/v2/position-ready",
   body: { index: 1, attempt: 1 },
 };
-const hold = {
-  mover: "human",
-  degrees: 0,
-  vertical_deg: 0,
-  prompt: { progress: "", title: "Put the microphone at the seat.", body: "" },
-  actions: [release, { id: "retake", label: "Redo this pose", endpoint: "/retake", body: {} }],
+const joined = {
+  status: "awaiting_join",
+  join: {
+    mover: "human",
+    degrees: 0,
+    vertical_deg: 0,
+    prompt: { progress: "", title: "Put the microphone at the seat.", body: "" },
+    actions: [release],
+  },
 };
-for (const [carrier, held, controls] of [
-  ["round hold", { capture: null, busy: true, pending: hold }, actionRowChildren],
-  ["capture hold", { capture: { status: "awaiting_capture", position_pending: hold } },
-    () => elements.get("crossover-walk-action").children],
-]) {
-  render(clickEnvelope());
-  postResponse = { capture: { status: "awaiting_capture" } };
-  nextEnvelope = { verdict_text: "", steps: [], nudges: [], next_action: null, alternate_actions: [], ...held };
-  await runAction(clickAction, element("start"));
-  const [button] = controls();
-  check(
-    button.textContent === release.label && button.disabled === false,
-    `(h) ${carrier}: the release is live when the start returns`,
-  );
-  posted.length = 0;
-  await button.click();
-  check(posted[0] === release.endpoint, `(h) ${carrier}: its click posts the placement`);
-}
+render(clickEnvelope());
+postResponse = { capture: joined };
+nextEnvelope = { verdict_text: "", steps: [], nudges: [], next_action: null, alternate_actions: [], capture: joined };
+await runAction(clickAction, element("start"));
+const [firstRelease] = elements.get("crossover-walk-action").children;
+check(
+  firstRelease.textContent === release.label && firstRelease.disabled === false,
+  "(h) the first release is live when the start returns",
+);
+posted.length = 0;
+await firstRelease.click();
+check(posted[0] === release.endpoint, "(h) its click posts the placement");
 
 for (const enabled of [false, true]) {
   render({next_action: {...holdPrimaryAction, enabled}});
