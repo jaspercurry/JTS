@@ -56,12 +56,14 @@ import pytest
 
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.camilla_yaml import (
-    EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
-    _assert_tweeter_crossover_honours_declared_floor,
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
     emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
+)
+from jasper.active_speaker.camilla_yaml.gates import (
+    EMIT_GATE_TWEETER_CROSSOVER_BELOW_DECLARED_FLOOR,
+    _assert_tweeter_crossover_honours_declared_floor,
 )
 from jasper.active_speaker.crossover_preview import build_crossover_preview
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND

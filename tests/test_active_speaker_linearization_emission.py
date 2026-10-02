@@ -26,7 +26,7 @@ import yaml
 from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.platform.biquad import SHELF_Q, PeqFilter
-from jasper.active_speaker.camilla_yaml import MAX_LINEARIZATION_FILTERS_PER_DRIVER
+from jasper.active_speaker.camilla_yaml.filters import MAX_LINEARIZATION_FILTERS_PER_DRIVER
 from jasper.active_speaker import program_headroom
 from jasper.active_speaker.graph_safety import GraphFilter, GraphView
 from jasper.active_speaker.camilla_names import (

@@ -195,7 +195,7 @@ def test_parked_null_sink_is_a_noop_and_matches_the_python_constant(tmp_path):
     apart (#2164) — today drift would only rename the journal label, but
     nothing else pinned that it can't rename to something misleading.
     """
-    from jasper.active_speaker.camilla_yaml import PARKED_SINK_PATH
+    from jasper.active_speaker.camilla_yaml.emit_parked import PARKED_SINK_PATH
 
     # `_pipe_config` takes a Path, and Path() NORMALIZES; the emitter does not
     # (camilla_yaml.py interpolates the raw constant: `filename:

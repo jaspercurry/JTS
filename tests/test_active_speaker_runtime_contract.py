@@ -3966,7 +3966,7 @@ def test_parked_verifier_refuses_a_graph_narrower_than_the_topology() -> None:
 
 def test_parked_emitter_gate_refuses_before_the_graph_leaves_the_emitter() -> None:
     """The emitter's own gate is the FIRST of the two independent proofs."""
-    from jasper.active_speaker.camilla_yaml import _assert_parked_outputs_muted
+    from jasper.active_speaker.camilla_yaml.gates import _assert_parked_outputs_muted
 
     text, _graph = build_parked_muted_graph(_active_topology("mono", "active_2_way"))
     _assert_parked_outputs_muted(text, 2)  # the real graph passes

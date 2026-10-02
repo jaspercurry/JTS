@@ -20,7 +20,8 @@ pytestmark = pytest.mark.usefixtures("isolated_candidate_bank")
 import yaml
 from scipy.io import wavfile
 
-from jasper.active_speaker import camilla_yaml, commission_wiring, design_draft
+from jasper.active_speaker import commission_wiring, design_draft
+from jasper.active_speaker.camilla_yaml.decorate_rear import _mute_unfitted_rear_outputs
 from jasper.active_speaker.camilla_names import driver_baseline_gain_name
 from jasper.active_speaker.commission_wiring import resolve_capture_preset
 from jasper.active_speaker.crossover_v2 import conductor_context
@@ -1500,7 +1501,7 @@ def test_a_rear_the_take_excites_is_emitted_and_admitted_un_muted(tmp_path, name
     assert "as_out2_rear_pending_mute" not in yaml.safe_load(graph)["filters"]
     if not names_the_rear:
         # What the same emitter produces for a take that does not name the rear.
-        graph = camilla_yaml._mute_unfitted_rear_outputs(graph, _rear_pair("mono")[0])
+        graph = _mute_unfitted_rear_outputs(graph, _rear_pair("mono")[0])
         assert "as_out2_rear_pending_mute" in yaml.safe_load(graph)["filters"]
     program = _rear_take_program(CARDIOID_TAKE)
     wav = tmp_path / "branches.wav"

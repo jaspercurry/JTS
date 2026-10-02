@@ -427,7 +427,8 @@ def test_active_emit_devices_needs_no_composite_change():
     """
     import dataclasses
 
-    from jasper.active_speaker.camilla_yaml import ActiveEmitDevices, active_emit_devices
+    from jasper.active_speaker.camilla_yaml import active_emit_devices
+    from jasper.active_speaker.camilla_yaml.devices import ActiveEmitDevices
 
     assert "channels" not in {f.name for f in dataclasses.fields(ActiveEmitDevices)}
     from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE

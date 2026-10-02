@@ -25,9 +25,10 @@ from jasper.active_speaker.camilla_yaml.emit_program import emit_active_speaker_
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.camilla_names import driver_limiter_name as _driver_limiter_name
 from jasper.active_speaker.camilla_yaml import (
-    _assert_program_graph_proven,
-    emit_active_speaker_baseline_config, protected_neutral_program_origin,
+    emit_active_speaker_baseline_config,
+    protected_neutral_program_origin,
 )
+from jasper.active_speaker.camilla_yaml.gates import _assert_program_graph_proven
 from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.graph_safety import (
     output_highpass_protected,

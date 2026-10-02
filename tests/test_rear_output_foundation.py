@@ -11,6 +11,7 @@ import yaml
 
 from jasper.active_speaker.program_headroom import program_peak
 from jasper.active_speaker import camilla_yaml as emit
+from jasper.active_speaker.camilla_yaml.gates import _assert_tweeter_outputs_protected
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
 from jasper.active_speaker.measurement import active_driver_targets
@@ -402,16 +403,16 @@ def test_undecorated_emitters_keep_the_emitter_drift_guard(emitter, kwargs):
     preset, _ = _rear_pair("mono")
     text = emitter(preset, playback_device=ACTIVE_PCM, **kwargs)
     with pytest.raises(ActiveSpeakerConfigError):
-        emit._assert_tweeter_outputs_protected(
+        _assert_tweeter_outputs_protected(
             yaml.safe_dump(yaml.safe_load(text)), preset,
         )
 
 
 def test_the_decorated_baseline_gate_reads_the_re_serialised_graph():
     preset, _, text = _cardioid_baseline()
-    emit._assert_tweeter_outputs_protected(text, preset, decorated=True)
+    _assert_tweeter_outputs_protected(text, preset, decorated=True)
     with pytest.raises(ActiveSpeakerConfigError):
-        emit._assert_tweeter_outputs_protected("pipeline: [", preset, decorated=True)
+        _assert_tweeter_outputs_protected("pipeline: [", preset, decorated=True)
 
 
 @pytest.mark.parametrize("role_channels,parked,expected,rear_muted", [

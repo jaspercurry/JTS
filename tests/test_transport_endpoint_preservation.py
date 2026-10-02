@@ -711,10 +711,8 @@ async def test_the_derived_device_block_is_byte_identical_off_the_ring(
     call shape, with the defaults re-read from the emitter's own signature
     rather than hand-copied into a table that would rot.
     """
-    from jasper.active_speaker.camilla_yaml import (
-        ActiveEmitDevices,
-        emit_active_speaker_commissioning_config,
-    )
+    from jasper.active_speaker.camilla_yaml import emit_active_speaker_commissioning_config
+    from jasper.active_speaker.camilla_yaml.devices import ActiveEmitDevices
 
     device_fields = {f.name for f in dataclasses.fields(ActiveEmitDevices)}
     assert device_fields, "ActiveEmitDevices lost its fields; this test is vacuous"

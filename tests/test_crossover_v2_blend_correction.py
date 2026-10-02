@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.active_speaker import camilla_yaml
-from jasper.active_speaker.camilla_yaml import (
-    ActiveSpeakerConfigError,
-    emit_active_speaker_baseline_config,
+from jasper.active_speaker.camilla_yaml import emit_active_speaker_baseline_config
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
+from jasper.active_speaker.camilla_yaml.filters import (
+    MAX_BLEND_CORRECTION_FILTERS,
+    MAX_BLEND_CORRECTION_GAIN_DB,
 )
 from jasper.active_speaker.crossover_v2 import blend_correction as bc
 from jasper.audio_measurement.comparison_bands import (
@@ -169,8 +170,8 @@ def test_the_emitters_bounds_equal_the_solvers():
     and inheriting a future change to it silently — so a test is what keeps
     them numerically equal."""
 
-    assert camilla_yaml.MAX_BLEND_CORRECTION_FILTERS == bc.BLEND_MAX_FILTERS
-    assert camilla_yaml.MAX_BLEND_CORRECTION_GAIN_DB == 0.0
+    assert MAX_BLEND_CORRECTION_FILTERS == bc.BLEND_MAX_FILTERS
+    assert MAX_BLEND_CORRECTION_GAIN_DB == 0.0
 
 
 def _emitted(blend) -> str:

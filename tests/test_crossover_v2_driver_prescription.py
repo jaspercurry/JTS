@@ -16,6 +16,10 @@ import pytest
 
 from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.active_speaker import camilla_yaml
+from jasper.active_speaker.camilla_yaml.filters import (
+    _validated_linearization,
+    MAX_LINEARIZATION_FILTERS_PER_DRIVER,
+)
 from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
 from tests.active_speaker_fixtures import mono_output_topology
@@ -2506,7 +2510,7 @@ def test_the_emitters_own_gate_re_validates_and_accepts_the_prescribed_filters(
         ]
     )
 
-    safe = camilla_yaml._validated_linearization(preset, reduced)
+    safe = _validated_linearization(preset, reduced)
 
     assert safe["tweeter"] == [{
         "biquad_type": "Peaking", "freq": TWEETER_FEATURE_HZ,
@@ -2845,7 +2849,7 @@ def test_every_bound_is_the_constant_the_fit_engine_already_emits_up_to():
     assert DRIVER_MIN_CUT_DB == _MIN_FILTER_GAIN_DB
     assert DRIVER_MAX_FILTERS_PER_ROLE == MAX_FILTERS_PER_DRIVER
     assert DRIVER_MAX_FILTERS_PER_ROLE == (
-        camilla_yaml.MAX_LINEARIZATION_FILTERS_PER_DRIVER
+        MAX_LINEARIZATION_FILTERS_PER_DRIVER
     )
 
 
