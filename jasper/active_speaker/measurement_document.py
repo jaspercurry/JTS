@@ -11,7 +11,7 @@ from dataclasses import replace
 from typing import Any
 
 from .crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from .crossover_v2.record_index import played_graph_fingerprint
+from .crossover_v2.record_index import played_graph_fingerprint, whole_degrees
 from .crossover_v2.round_captures import doc_pose_key
 from .frequency_reference import band_limited_curve, share_run_reference
 from .frequency_view import (
@@ -23,13 +23,9 @@ from .prediction_document import CAPTURE_PREDICTION_KIND, frequency_run_from_cap
 from jasper.platform.json_fields import finite_float
 
 
-def _whole_degrees(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _label(record: Mapping[str, Any], curve: Mapping[str, Any], fallback: str) -> str:
-    degrees = _whole_degrees(record.get("position_deg"))
-    vertical = _whole_degrees(record.get("vertical_deg")) or 0
+    degrees = whole_degrees(record.get("position_deg"))
+    vertical = whole_degrees(record.get("vertical_deg")) or 0
     role = str(curve.get("role") or record.get("role") or "")
     parts = []
     if degrees is not None:
@@ -101,7 +97,7 @@ def frequency_run_from_documents(
         pose_id = doc_pose_key(document) if document.get("kind") == POSITION_EVIDENCE_KIND else None
         if pose_id is not None and (document.get("position_deg") is not None or document.get("seat_offset_m") is not None):
             poses.add(pose_id)
-        degrees = _whole_degrees(document.get("position_deg"))
+        degrees = whole_degrees(document.get("position_deg"))
         if degrees is not None:
             angles.add(degrees)
         phase = str(document.get("phase") or "")
@@ -145,7 +141,7 @@ def frequency_run_from_documents(
                     "seat_offset_m": document.get("seat_offset_m"),
                     "axis": document.get("position_axis"),
                     "azimuth_deg": document.get("position_deg"),
-                    "vertical_deg": _whole_degrees(document.get("vertical_deg")) or 0,
+                    "vertical_deg": whole_degrees(document.get("vertical_deg")) or 0,
                     "mark_distance_m": document.get("mark_distance_m"),
                 },
                 take_id=take_id or None,

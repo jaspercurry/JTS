@@ -43,6 +43,7 @@ __all__ = [
     "reopen_measurement_record",
     "take_pose_kind",
     "take_purpose",
+    "whole_degrees",
 ]
 
 
@@ -119,11 +120,11 @@ def played_graph_fingerprint(document: Mapping[str, Any]) -> str:
     return str(graph.get("fingerprint") or document.get("graph_fingerprint") or "")
 
 
-def _position_deg(value: Any) -> int | None:
-    """The signed whole-degree bearing, or ``None`` where none was commanded.
+def whole_degrees(value: Any) -> int | None:
+    """A banked angle as a whole number, or ``None`` where none was recorded.
 
-    ``bool`` is an ``int`` subclass, so it is excluded rather than read as a
-    bearing of 0 or 1.
+    ``bool`` is an ``int`` subclass, so it is excluded rather than read as an
+    angle of 0 or 1.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -168,7 +169,7 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
     that field (#2902)."""
     if document.get("kind") != POSITION_EVIDENCE_KIND:
         return None
-    vertical_deg = _position_deg(document.get("vertical_deg"))
+    vertical_deg = whole_degrees(document.get("vertical_deg"))
     if vertical_deg is None:
         raise _not_banked(document, "vertical_deg")
     return (
@@ -176,7 +177,7 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         _text(document.get("run_id")),
         _text(document.get(MEASURE_KIND_KEY)),
         _text(document.get("phase")),
-        _position_deg(document.get("position_deg")),
+        whole_degrees(document.get("position_deg")),
         vertical_deg,
         _text(document.get("candidate_id")),
         _captured_at(document.get("captured_at")),

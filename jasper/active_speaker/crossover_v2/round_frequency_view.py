@@ -9,21 +9,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-
-def _whole_degrees(value: Any) -> int | None:
-    """One banked angle as a whole number, or ``None`` for "not recorded".
-
-    ``bool`` is rejected before ``int`` because it subclasses it, so a
-    hand-edited ``true`` cannot be drawn on a legend as 1°.
-    """
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    return value
+from .record_index import whole_degrees
 
 
 def position_label(row: Mapping[str, Any]) -> str:
-    degrees = _whole_degrees(row.get("position_deg"))
-    elevation = _whole_degrees(row.get("vertical_deg"))
+    degrees = whole_degrees(row.get("position_deg"))
+    elevation = whole_degrees(row.get("vertical_deg"))
     raw_role = str(row.get("role") or "")
     role = {"onax": "On axis", "offax": "Off axis"}.get(
         raw_role, raw_role.replace("_", " ").title(),
