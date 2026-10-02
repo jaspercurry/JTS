@@ -62,8 +62,8 @@ from jasper.audio_measurement.admission.excitation_admission import FrequencyBan
 from jasper.audio_measurement.admission.playback import PlaybackObservation
 from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.program import (
-    ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program, build_summed_level_probe_program,
-    is_level_probe,
+    KIND_SWEEP, ExcitationProgram, RoleBand, build_level_probe_program, build_measure_program,
+    build_summed_level_probe_program, is_level_probe,
 )
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
@@ -1105,26 +1105,29 @@ def test_a_close_driverless_set_shares_one_level():
     assert selected == [False] + [True] * 4
 
 
-@pytest.mark.parametrize("front_db, rear_db, room_gain_db, ask_db", [
-    (110.0, 110.0, 0.0, -37.0), (106.0, 112.0, 0.0, -39.0), (110.0, 110.0, 8.0, -45.0)],
+@pytest.mark.parametrize("front_db, rear_db, room_gain_db, ask_db, alone_db", [
+    (110.0, 110.0, 0.0, -37.0, (-31.0, -31.0)), (106.0, 112.0, 0.0, -39.0, (-27.0, -33.0)),
+    (110.0, 110.0, 8.0, -45.0, (-39.0, -39.0))],
     ids=["equal", "rear-louder", "room-gain"])
-def test_a_branch_take_at_the_mark_plays_6_db_under_its_quieter_branch(front_db, rear_db, room_gain_db, ask_db):
+def test_a_branch_take_at_the_mark_sums_6_db_under_its_quieter_branch(front_db, rear_db, room_gain_db, ask_db,
+                                                                         alone_db):
     """At the mark, each branch plays alone the probe a driver's pose plays, on
     the drivers graph, over its take's band down to the woofer's floor, so it
     reads the room's gain under 150 Hz as the take does. The take, and the next
-    take of its set, play 6 dB under the lower level found, so a raw rear branch
-    in phase with the front woofer reads at most 80 dB. The take is never
-    levelled by its own reading (ADR-0403 §3)."""
+    take of its set, play each branch alone at its own probe's level and their
+    sum 6 dB under the lower one, so a raw rear branch in phase with the front
+    woofer reads at most 80 dB. The take is never levelled by its own reading
+    (ADR-0403 §3, ADR-0407)."""
     request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
 
     result, fakes, selected, _ = _run_levelled(request, (), ceiling_db=-12.0, room_gain_db=room_gain_db,
                                                chain={"woofer": front_db, "woofer:rear": rear_db})
 
     assert result.status == "complete"
-    assert [(call["spec"].graph_scope, call["spec"].branch_target_ids, call["stimulus_dbfs"])
-            for call in fakes.play.calls] == [
-        ("drivers", ("woofer",), None), ("drivers", ("woofer:rear",), None),
-        *[("candidate_branches", ("woofer", "woofer:rear"), ask_db)] * 2]
+    assert [(call["spec"].graph_scope, call["spec"].branch_target_ids, call["stimulus_dbfs"],
+             call["spec"].branch_levels_dbfs) for call in fakes.play.calls] == [
+        ("drivers", ("woofer",), None, ()), ("drivers", ("woofer:rear",), None, ()),
+        *[("candidate_branches", ("woofer", "woofer:rear"), ask_db, alone_db)] * 2]
     assert selected == [False, False, True, True]
     readings = [take["level"]["loudest_half_second_db_spl"]
                 for take in sorted(_takes(result.joined()), key=lambda take: take["take_id"])]
@@ -1133,15 +1136,43 @@ def test_a_branch_take_at_the_mark_plays_6_db_under_its_quieter_branch(front_db,
 
 def test_a_re_placed_branch_take_probes_both_branches_again():
     """A new placement of a branch set's first take starts at its first branch's
-    probe again, never at the take unlevelled (ADR-0365, ADR-0403 §3)."""
+    probe again, never at the take unlevelled, and its branches play alone at
+    what those probes find (ADR-0365, ADR-0403 §3, ADR-0407)."""
     request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
 
     result, fakes, _, _ = _run_levelled(request, (), ceiling_db=-12.0, replace_at=3,
                                         chain={"woofer": 110.0, "woofer:rear": 110.0})
 
     assert result.status == "complete"
-    assert [(call["spec"].graph_scope, call["stimulus_dbfs"]) for call in fakes.play.calls] == [
-        ("drivers", None), ("drivers", None), ("candidate_branches", -37.0)] * 2 + [("candidate_branches", -37.0)]
+    assert [(call["spec"].graph_scope, call["stimulus_dbfs"], call["spec"].branch_levels_dbfs)
+            for call in fakes.play.calls] == [
+        ("drivers", None, ()), ("drivers", None, ()), ("candidate_branches", -37.0, (-31.0, -31.0))] * 2 + [
+        ("candidate_branches", -37.0, (-31.0, -31.0))]
+
+
+@pytest.mark.parametrize(("front_db", "rear_db"), [(124.6, 106.0), (110.0, 110.0)],
+                         ids=["the rear faces away", "in phase at one level"])
+def test_each_branch_alone_lands_near_80_db_and_their_sum_at_or_under_it(front_db, rear_db):
+    """At the mark a cardioid's rear woofer faces away and reads 18.6 dB under the
+    front for one drive. Each branch plays alone at its own probe's level, so each
+    lands near 80 dB; their sum plays 6 dB under the lower level, so even in phase
+    it reads at most 80 dB (ADR-0407; smoke test #6113, bug 6)."""
+    request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
+    chain = {"woofer": front_db, "woofer:rear": rear_db}
+
+    result, fakes, _, _ = _run_levelled(request, (), ceiling_db=-12.0, chain=chain)
+
+    assert result.status == "complete"
+    takes = [call for call in fakes.play.calls if call["spec"].graph_scope == "candidate_branches"]
+    assert takes
+    for call in takes:
+        program = program_for_spec(call["spec"], _CHAIN_EXCITATION, None, call["stimulus_dbfs"],
+                                   safety_profile={}, role_targets={})
+        alone = [segment.gain_db + chain[segment.role] for segment in program.stimulus_segments()
+                 if segment.kind == KIND_SWEEP]
+        summed = program.segment("sweep_verify").gain_db
+        assert len(alone) == 4 and all(78.0 <= db <= 82.0 for db in alone), alone
+        assert 20 * math.log10(sum(10 ** ((summed + db) / 20) for db in chain.values())) <= 80.0
 
 
 _BEHIND = [{"azimuth_deg": 0, "elevation_deg": 0},
@@ -1262,7 +1293,8 @@ def test_a_branch_set_whose_second_probe_never_lands_plays_no_more_takes():
 def test_a_branch_set_whose_first_take_never_lands_carries_both_branches_level():
     """Both probes land, and the take is raised for its SNR and then never
     lands. The rest of the set plays 6 dB under the lower branch's level, not
-    at the raised level (ADR-0403 §3)."""
+    at the raised level, and each branch alone at its own probe's (ADR-0403 §3,
+    ADR-0407)."""
     request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
     raised = TakeVerdict(False, fault=REASON_SNR_FLOOR, next="retake_louder", charge="speaker", next_gain_db=-35.0)
 
@@ -1271,6 +1303,9 @@ def test_a_branch_set_whose_first_take_never_lands_carries_both_branches_level()
         verdicts=lambda take: raised if take == 3 else _OVERRUN if 4 <= take <= 7 else None)
 
     assert fakes.play.rungs == [None, None, -39.0] + [-35.0] * 4 + [-39.0]
+    # The raise moves each branch alone with the sum; the carry turns them down with it (ADR-0407).
+    assert [call["spec"].branch_levels_dbfs for call in fakes.play.calls] == [
+        (), (), (-27.0, -33.0), *[(-23.0, -29.0)] * 4, (-27.0, -33.0)]
     assert [row["reason"] for row in result.not_measured] == [REASON_CAPTURE_OVERRUN]
 
 

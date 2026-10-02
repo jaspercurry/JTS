@@ -268,6 +268,10 @@ def _session(
         },
         {"kind": MEASURE_KIND_BASELINE, "positions": (22.5,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (True,)},
+        # Only a branch take plays its branches alone, each at one level (ADR-0407).
+        {"kind": MEASURE_KIND_BASELINE, "branch_levels_dbfs": (-30.0,)},
+        {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate_branches", "candidate_id": "fp",
+         "branch_target_ids": ("woofer", "tweeter"), "branch_levels_dbfs": (-30.0,)},
         {"kind": MEASURE_KIND_BASELINE, "positions": (0, 22), "pose_prompts": ("a",)},
         # Only a candidate graph has layers to clear (ADR-0370).
         {"kind": MEASURE_KIND_BASELINE, "cleared_layers": ("room_correction",)},
@@ -293,6 +297,8 @@ def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
     {"polarity": POLARITY_INVERTED, "inverted_role": DRIVER_ROLE_TWEETER,
      "delayed_role": DRIVER_ROLE_WOOFER, "delay_us": 120.0, "positions": (-30,),
      "pose_prompts": ("stand left",), "candidate_id": "null_a1"},
+    {"graph_scope": "candidate_branches", "candidate_id": "fp", "branch_target_ids": ("woofer", "woofer:rear"),
+     "level_ladder_dbfs": (-37.0,), "branch_levels_dbfs": (-31.0, -12.4)},
 ])
 def test_a_spec_survives_its_own_json_shape_unchanged(kwargs: dict) -> None:
     """``MeasureSpec`` owns the document a plan's ``template`` is written in, so

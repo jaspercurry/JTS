@@ -840,6 +840,29 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
                                                                           sweep.f2_hz)}
 
 
+@pytest.mark.parametrize(("levels", "alone"), [
+    ((-30.0, -15.0), (-30.0, -15.0)), ((-30.0, 6.0), (-30.0, -12.0)), ((), (-37.0, -37.0))],
+    ids=["each at its own level", "never over the take's ceiling", "no branch levels: one level"])
+def test_a_branch_plays_alone_at_its_own_level_and_its_sum_at_the_takes(levels, alone):
+    """Each branch-alone sweep of a branch take, and its repeat, plays at that
+    branch's own level, clamped where the take's sum is (−12 dBFS here); the sum
+    plays at the take's level (ADR-0407)."""
+    targets = ("woofer", "woofer:rear")
+    band = FrequencyBand(20.0, 4000.0)
+    excitation = SessionExcitation((RoleBand("woofer", 0, band),), dict.fromkeys(targets, 0.0), 0.0, None,
+                                   dict.fromkeys(targets, 8.0), target_bands=dict.fromkeys(targets, band))
+    take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial", program_phase="verify",
+                       branch_target_ids=targets, branch_levels_dbfs=levels)
+
+    program = program_for_spec(take, excitation, None, -37.0, safety_profile={}, role_targets={})
+
+    gains = {segment.segment_id: (segment.gain_db, segment.effective_peak_dbfs)
+             for segment in program.stimulus_segments()}
+    assert [gains[name] for name in ("sweep_w", "sweep_t", "sweep_w_rep", "sweep_t_rep")] == [
+        (db, db) for db in (*alone, *alone)]
+    assert gains["sweep_verify"] == gains["sum_companion"] == (-37.0, -37.0)
+
+
 @pytest.mark.parametrize("take_band_hz,probe_bands_hz", [
     ((), [(20.0, 4000.0), (30.0, 3000.0)]), ((40.0, 1000.0), [(40.0, 1000.0)] * 2)], ids=["unstated", "stated"])
 def test_a_branch_take_finds_its_level_from_a_drivers_probe_of_each_branch(take_band_hz, probe_bands_hz):

@@ -499,7 +499,10 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
     program = compose_summed_program(excitation, spec, stimulus_dbfs,
                                      safety_profile=safety_profile, role_targets=role_targets)
     if spec.graph_scope == "candidate_branches":
-        program = build_branch_program(program, branch_channels_for(spec))
+        # Each branch plays alone at its own level under the take's ceiling, as the sum plays at its own (ADR-0407).
+        alone = {target: excitation._summed_gain(max(_scope_backoff_db(spec), BASE_STIMULUS_PEAK_DBFS - level))
+                 for target, level in zip(spec.branch_target_ids, spec.branch_levels_dbfs)}
+        program = build_branch_program(program, branch_channels_for(spec), alone)
     return program
 
 
