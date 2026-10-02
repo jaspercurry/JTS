@@ -82,8 +82,12 @@ from jasper.audio_measurement.program import (
 )
 from jasper.active_speaker.profile import ramp_bound_db_spl
 from jasper.audio_measurement.ramp import MAX_STEP_DB
+from jasper.active_speaker.crossover_v2.composition import bass_reserve_db
+from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.web.correction_run_host import compose_plan_program
+from tests.active_speaker_fixtures import mono_output_topology
+from tests.test_preflight import _boost
 from tests.test_active_speaker_audition import ACTIVE_PCM
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_rear_output_foundation import _rear_pair
@@ -840,27 +844,48 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
                                                                           sweep.f2_hz)}
 
 
-@pytest.mark.parametrize(("levels", "alone"), [
-    ((-30.0, -15.0), (-30.0, -15.0)), ((-30.0, 6.0), (-30.0, -12.0)), ((), (-37.0, -37.0))],
-    ids=["each at its own level", "never over the take's ceiling", "no branch levels: one level"])
-def test_a_branch_plays_alone_at_its_own_level_and_its_sum_at_the_takes(levels, alone):
+@pytest.mark.parametrize(("caps", "reserve", "levels", "alone"), [
+    ({}, None, (-30.0, -15.0), (-30.0, -15.0)), ({}, None, (-30.0, 6.0), (-30.0, -12.0)),
+    ({"tweeter": -20.0}, None, (-30.95, -12.35), (-30.95, -12.35)),
+    ({}, {"woofer": 19.6, "woofer:rear": 19.6}, (-30.95, -12.35), (-30.95, -19.61)),
+    ({}, None, (), (-37.0, -37.0))],
+    ids=["each at its own level", "never over the base peak", "a cap the take does not play holds no branch",
+         "jts3 B's 19.6 dB bass reserve at a 0 dB fader", "no branch levels: one level"])
+def test_a_branch_plays_alone_at_its_own_level_and_its_sum_at_the_takes(caps, reserve, levels, alone):
     """Each branch-alone sweep of a branch take, and its repeat, plays at that
-    branch's own level, clamped where the take's sum is (−12 dBFS here); the sum
-    plays at the take's level (ADR-0407)."""
+    branch's own level, under the base peak (−12 dBFS here) and under its own
+    driver's cap less the bass reserve its output keeps, so admission's gain +
+    fader + reserve ≤ cap holds; the sum plays at the take's level (ADR-0407)."""
     targets = ("woofer", "woofer:rear")
     band = FrequencyBand(20.0, 4000.0)
-    excitation = SessionExcitation((RoleBand("woofer", 0, band),), dict.fromkeys(targets, 0.0), 0.0, None,
+    excitation = SessionExcitation((RoleBand("woofer", 0, band),), {**dict.fromkeys(targets, 0.0), **caps}, 0.0, None,
                                    dict.fromkeys(targets, 8.0), target_bands=dict.fromkeys(targets, band))
     take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial", program_phase="verify",
-                       branch_target_ids=targets, branch_levels_dbfs=levels)
+                       branch_target_ids=targets, branch_levels_dbfs=levels, bass_reserve_db=reserve)
 
     program = program_for_spec(take, excitation, None, -37.0, safety_profile={}, role_targets={})
 
     gains = {segment.segment_id: (segment.gain_db, segment.effective_peak_dbfs)
              for segment in program.stimulus_segments()}
-    assert [gains[name] for name in ("sweep_w", "sweep_t", "sweep_w_rep", "sweep_t_rep")] == [
-        (db, db) for db in (*alone, *alone)]
+    assert [db for name in ("sweep_w", "sweep_t", "sweep_w_rep", "sweep_t_rep") for db in gains[name]] == pytest.approx(
+        [db for db in (*alone, *alone) for _ in range(2)])
     assert gains["sweep_verify"] == gains["sum_companion"] == (-37.0, -37.0)
+
+
+@pytest.mark.parametrize(("layout", "bass", "reserved"), [
+    ("cardioid", True, {"woofer", "woofer:rear"}), ("cardioid", False, set()), ("active_2_way", True, {"woofer"})],
+    ids=["both woofers of a cardioid", "no bass extension", "the woofer, never the tweeter"])
+def test_the_seam_reserves_the_bass_boost_on_each_bass_output_a_branch_plays(layout, bass, reserved):
+    """The composition seam states, for each branch of a take, the dynamic bass boost
+    its graph keeps on that output: what admission charges on a bass output, the
+    mains' lowest driver here (ADR-0359, ADR-0407)."""
+    topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
+    descriptor = _boost(19.6)
+    targets = ("woofer", "woofer:rear") if layout == "cardioid" else ("woofer", "tweeter")
+
+    reserve = bass_reserve_db(topology, {"bass_extension": descriptor if bass else {}}, targets)
+
+    assert reserve == dict.fromkeys(reserved, dynamic_bass_gain_reserve_db(descriptor))
 
 
 @pytest.mark.parametrize("take_band_hz,probe_bands_hz", [

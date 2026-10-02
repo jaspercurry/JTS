@@ -21,7 +21,9 @@ from itertools import count
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Sequence
 
+from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
 from jasper.platform.log_event import log_event
+from jasper.platform.speaker_layout import measurement_target_id
 from jasper.audio_control.camilla import CamillaConfigRejected
 
 from .._common import MeasurementGraphRefused
@@ -35,6 +37,8 @@ from .program_transaction import (
 )
 from .session_seams import EngineSeams, RecordStore, VolumeClaim
 from ..commissioning_admission import ActiveCommissioningAdmissionError, running_graph_fingerprint
+from ..measurement import active_driver_targets
+from ..output_contract import classify_output_contract, mains_lowest_driver_indexes, subwoofer_output_indexes
 from ..program_playback import ProgramPlaybackError
 from .measure_spec import GRAPH_SCOPE_DRIVERS
 
@@ -42,6 +46,20 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program import ExcitationProgram, RoleBand
 
 logger = logging.getLogger(__name__)
+
+
+def bass_reserve_db(topology: Any, evidence: Mapping[str, Any] | None, targets: Sequence[str]) -> dict[str, float]:
+    """The dynamic bass boost a take's graph keeps on each of ``targets`` that is a bass
+    output, dB: what admission charges there before it admits a segment (ADR-0359)."""
+    descriptor = (evidence or {}).get("bass_extension") or {}
+    if not descriptor:
+        return {}
+    contract = classify_output_contract(topology)
+    channels = subwoofer_output_indexes(contract) or mains_lowest_driver_indexes(contract)
+    bass = {measurement_target_id(target["role"], target.get("output_variant", "primary"))
+            for target in active_driver_targets(topology) if target["output_index"] in channels}
+    reserve = dynamic_bass_gain_reserve_db(descriptor)
+    return {target: reserve for target in targets if target in bass}
 
 __all__ = [
     "bind_engine_seams",
@@ -213,7 +231,9 @@ def bind_program_composer(
                 expected_graph, level_reference_yaml, roles, topology=topology))
         except GraphTransferError as exc:
             raise MeasurementGraphRefused("measurement_scope_gain_unavailable", str(exc)) from exc
-        spec = replace(spec, scope_gains_db=gains)
+        evidence = graph_evidence_for_spec(spec) if graph_evidence_for_spec else None
+        spec = replace(spec, scope_gains_db=gains, **({"bass_reserve_db": bass_reserve_db(
+            topology, evidence, spec.branch_target_ids)} if spec.branch_levels_dbfs else {}))
         program = program_for_spec(spec, stimulus_dbfs)
         phase = spec.program_phase or program.phase
         if phase == PHASE_CHECK or spec.graph_scope != GRAPH_SCOPE_DRIVERS:
@@ -236,7 +256,7 @@ def bind_program_composer(
             topology=topology, safety_profile=safety_profile,
             role_targets=role_targets, session_volume_db=level_db,
             graph_yaml=expected_graph, summed=spec.graph_scope != GRAPH_SCOPE_DRIVERS,
-            graph_evidence=graph_evidence_for_spec(spec) if graph_evidence_for_spec else None,
+            graph_evidence=evidence,
             phase=phase, before_play=partial(before_play, spec) if before_play else None,
         ))
 

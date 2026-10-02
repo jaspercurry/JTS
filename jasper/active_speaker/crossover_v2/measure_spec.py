@@ -130,6 +130,10 @@ class MeasureSpec:
     #: ``branch_target_ids`` order, in dBFS; ``level_ladder_dbfs`` plays their sum.
     #: Only the executor sets it, from the branches' probes (ADR-0407).
     branch_levels_dbfs: tuple[float, ...] = ()
+    #: What this take's graph keeps on each output for its dynamic bass boost, dB, by
+    #: measurement target: a branch alone plays under its own cap less it (ADR-0359,
+    #: ADR-0407). Only the composition seam sets it, from the take's own graph.
+    bass_reserve_db: Mapping[str, float] | None = None
 
     def __post_init__(self) -> None:
         if self.stimulus is not None:

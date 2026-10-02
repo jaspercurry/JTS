@@ -23,7 +23,7 @@ from jasper.platform.json_fields import finite_float
 from jasper.platform.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, is_level_probe
+from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, KIND_SWEEP, is_level_probe
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
 from jasper.runtime.measurement_window import MeasurementWindowError
@@ -186,19 +186,24 @@ def _first_play(spec: MeasureSpec) -> MeasureSpec:
     return next(iter(branch_probes(spec)), spec)
 
 
-def _at_level(spec: MeasureSpec, level: float) -> MeasureSpec:
-    """``spec`` asked to play at ``level``; a branch take's branches alone move
-    with its sum (ADR-0407)."""
-    shift = level - spec.level_ladder_dbfs[0] if spec.branch_levels_dbfs and spec.level_ladder_dbfs else 0.0
-    return replace(spec, level_ladder_dbfs=(level,),
-                   branch_levels_dbfs=tuple(branch + shift for branch in spec.branch_levels_dbfs))
-
-
-def _played_peak(records: Sequence[tuple[Mapping[str, Any], str]]) -> float | None:
-    """The loudest segment of the program a take played, as banked."""
-    program = next((record["program"] for record, _ in records if record.get("program")), None)
-    return None if program is None else max(
-        segment.gain_db for segment in ExcitationProgram.from_dict(program).stimulus_segments())
+def _relevelled(spec: MeasureSpec, played: ExcitationProgram, probes: Sequence[float], peak_db: float) -> MeasureSpec:
+    """A branch take's level retake to the new peak its assessment names, from what
+    each segment played (ADR-0407). A cut lowers every segment by what the peak
+    moves, even one its ceiling held. A raise lifts each by that much, never over its
+    own probe's level (the sum's: 6 dB under the lower), and lifts nothing when the
+    peak played under what it asked, held at its ceiling."""
+    alone = {segment.role: segment.gain_db for segment in played.stimulus_segments() if segment.kind == KIND_SWEEP}
+    plays = [*(alone[target] for target in spec.branch_target_ids), played.segment("sweep_verify").gain_db]
+    asked = [*spec.branch_levels_dbfs, spec.level_ladder_dbfs[0]]
+    loudest = max(range(len(plays)), key=plays.__getitem__)
+    shift = peak_db - plays[loudest]
+    if shift > 0.0:
+        held = plays[loudest] < asked[loudest] - 1e-6
+        tops = [*probes, min(probes) - BRANCH_SUM_MARGIN_DB]
+        moved = [play if held else min(play + shift, top) for play, top in zip(plays, tops)]
+    else:
+        moved = [play + shift for play in plays]
+    return replace(spec, level_ladder_dbfs=(moved[-1],), branch_levels_dbfs=tuple(moved[:-1]))
 
 
 def _landed_db_spl(verdict: TakeVerdict, rule: PoseLevel, probe: ExcitationProgram) -> float:
@@ -489,6 +494,9 @@ async def _run(
     retry_was_measured = False
     playing = [_first_play(item.spec) for item in work]
     branch_levels: dict[int, list[float]] = {}
+    #: Each branch set's probe levels, and a branch take's next levels after its own level retake.
+    set_probes: dict[int | None, tuple[float, ...]] = {}
+    relevelled: dict[int, MeasureSpec] = {}
     unlevelled: set[int] = set()
     # A run finds its fader with a probe of its first summed take that plays at the run's
     # fader, before the first take of that take's placement, banked as that take's attempts.
@@ -597,9 +605,12 @@ async def _run(
                                     if found is None:
                                         unlevelled.add(index)
                                     else:
-                                        playing[index] = _at_level(replace(
-                                            work[index].spec, level_ladder_dbfs=playing[offset].level_ladder_dbfs,
-                                            branch_levels_dbfs=playing[offset].branch_levels_dbfs), found)
+                                        # Each branch alone carries the last level solved for it too (ADR-0407).
+                                        pending = relevelled.get(offset, playing[offset]).branch_levels_dbfs
+                                        playing[index] = replace(
+                                            work[index].spec, level_ladder_dbfs=(found,), branch_levels_dbfs=tuple(
+                                                map(min, playing[offset].branch_levels_dbfs, pending)))
+                        relevelled.pop(offset, None)
                         retry = None
                         retry_was_measured = False
                         offset += 1
@@ -622,11 +633,13 @@ async def _run(
                         if row.pose_index == item.pose_index and row.pose_level is not None:
                             playing[index] = _first_play(row.spec)
                             branch_levels.pop(index, None)
+                            relevelled.pop(index, None)
                 if retry.next in _LEVEL_RETAKES:
                     if retry.next_gain_db is None:
                         manifest.reason = retry.fault or "retry_gain_missing"
                         break
-                    playing[offset] = _at_level(playing[offset], retry.next_gain_db)
+                    playing[offset] = (relevelled.pop(offset) if offset in relevelled
+                                       else replace(playing[offset], level_ladder_dbfs=(retry.next_gain_db,)))
             spec = playing[offset]
             attempt = attempts[offset] + 1
             before = sweep_offsets[offset] - sweep_offsets[offset - item.config + 1]
@@ -764,13 +777,16 @@ async def _run(
                             playing[offset] = probes[len(levels)]
                             retry = replace(verdict, next="retake_same", next_gain_db=None)
                         else:
+                            set_probes[item.level_set] = tuple(levels)
                             playing[offset] = replace(item.spec, branch_levels_dbfs=tuple(levels))
+                            relevelled.pop(offset, None)
                             retry = replace(verdict, next_gain_db=min(levels) - BRANCH_SUM_MARGIN_DB)
                     elif spec.branch_levels_dbfs and verdict.next in _LEVEL_RETAKES and verdict.next_gain_db is not None:
-                        # Its own retake names the take's new peak: every level moves by what the peak moves.
-                        peak = _played_peak(records)
-                        retry = replace(verdict, next_gain_db=spec.level_ladder_dbfs[0] + (
-                            0.0 if peak is None else verdict.next_gain_db - peak))
+                        # Its own retake names the take's new peak (ADR-0407).
+                        played = ExcitationProgram.from_dict(next(
+                            record["program"] for record, _ in records if record.get("program")))
+                        relevelled[offset] = _relevelled(spec, played, set_probes[item.level_set], verdict.next_gain_db)
+                        retry = replace(verdict, next_gain_db=relevelled[offset].level_ladder_dbfs[0])
                     continue
                 retry = None
                 retry_was_measured = False

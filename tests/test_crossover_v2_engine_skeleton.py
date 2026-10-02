@@ -298,7 +298,7 @@ def test_a_spec_outside_the_vocabulary_is_refused_at_construction(kwargs: dict):
      "delayed_role": DRIVER_ROLE_WOOFER, "delay_us": 120.0, "positions": (-30,),
      "pose_prompts": ("stand left",), "candidate_id": "null_a1"},
     {"graph_scope": "candidate_branches", "candidate_id": "fp", "branch_target_ids": ("woofer", "woofer:rear"),
-     "level_ladder_dbfs": (-37.0,), "branch_levels_dbfs": (-31.0, -12.4)},
+     "level_ladder_dbfs": (-37.0,), "branch_levels_dbfs": (-31.0, -12.4), "bass_reserve_db": {"woofer": 19.6}},
 ])
 def test_a_spec_survives_its_own_json_shape_unchanged(kwargs: dict) -> None:
     """``MeasureSpec`` owns the document a plan's ``template`` is written in, so
