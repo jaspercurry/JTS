@@ -1,7 +1,9 @@
 # ADR-0269: The outputd failure reconciler parks on exit 78 and rate-limits one pass per window
 
 - **Date:** 2026-09-09
-- **Status:** Accepted. Supersedes
+- **Status:** Superseded by
+  [ADR-0409](0409-outputds-stop-hook-records-the-park-and-starts-the-reconcile-unit.md).
+  Supersedes
   [ADR-0141](0141-outputd-parks-out-of-band-rather-than-riding-its-restart-limit-to-a-reboot.md).
 - **Context:** ADR-0141 recorded a lane-specific remedy keyed on the failing
   PCM name: it counted consecutive content-lane opens and parked on the 4th,

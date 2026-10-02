@@ -95,11 +95,9 @@ EnvironmentFile=-/var/lib/jasper/grouping-outputd.env
 # reset-failed+starts outputd when a recognized DAC role returns. Camilla is
 # not gated here: it writes only to Ring B, never to a DAC.
 ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${JASPER_AUDIO_DAC_CARD:-}"; id="$${JASPER_AUDIO_DAC_ID:-unknown}"; if [ "$$backend" = "fake" ] || [ -z "$$card" ] || [ -e "/proc/asound/$$card" ]; then exit 0; fi; echo "event=outputd.output_device_gate.park reason=missing_dac output_dac_id=$$id output_dac_card=$$card outputd_backend=$$backend" >&2; exit 1'
-# Refresh the output-hardware env before systemd's Restart=on-failure retry.
-# The helper skips normal stops and ExecCondition parks, and reconciles at most
-# once per short window across every failure class so a crash loop cannot spawn
-# a reconciler pass per restart. Its --no-restart keeps that reconciler from
-# controlling jasper-outputd from inside this unit's stop transaction.
+# On a failing stop the helper records an exit-78 park and starts
+# jasper-audio-hardware-reconcile.service without waiting. It runs no pass
+# itself: this unit's sandbox makes /etc read-only (ADR-0409).
 #
 # Keep the producer, reader, native ConditionPathExists=, and READY retirer on
 # the same fixed path. A service condition cannot expand Environment= values.
