@@ -1005,18 +1005,26 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
     assert p._stream is replacement
 
 
-@pytest.mark.parametrize("fanin_restarted", [True, False])
+@pytest.mark.parametrize(
+    ("state", "replaced"),
+    [("fanin_restarted", True), ("live", False), ("dropped_while_restarting", True), ("poisoned_for_lock", False)],
+)
 async def test_refresh_connection_replaces_only_a_stream_whose_fanin_end_closed(
-    monkeypatch, fanin_restarted,
+    monkeypatch, state, replaced,
 ) -> None:
     """A fan-in restart leaves a socket whose far end is gone; the measurement
-    pause's refresh replaces it before the fail-closed PAUSE (#6113), and
-    leaves a live one alone."""
+    pause's refresh replaces it before the fail-closed PAUSE (#6113), retries
+    one it dropped while fan-in was still restarting, and leaves a live stream
+    and one poisoned for another reason (#2288) alone."""
 
     parent, child = socket.socketpair()
     stream = tts_mod._OutputdStreamAdapter(parent)
-    if fanin_restarted:
+    if state != "live":
         child.close()
+    if state == "dropped_while_restarting":
+        assert stream.drop_if_peer_closed()
+    if state == "poisoned_for_lock":
+        stream._poison(reason="lock", timeout_sec=0.0)
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = stream  # type: ignore[assignment]
     replacement = FakeOutputdStream()
@@ -1028,9 +1036,9 @@ async def test_refresh_connection_replaces_only_a_stream_whose_fanin_end_closed(
 
     await p.refresh_connection()
 
-    assert (p._stream is replacement) is fanin_restarted
-    assert stream.closed is fanin_restarted
-    if not fanin_restarted:
+    assert (p._stream is replacement) is replaced
+    assert stream.closed is (state != "live")
+    if state == "live":
         parent.close()
         child.close()
 

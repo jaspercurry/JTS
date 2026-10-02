@@ -476,24 +476,51 @@ async def test_pause_drains_only_when_opening_over_playing_output() -> None:
     await wl.measurement_hold.resume()
 
 
-async def test_the_pause_refreshes_the_fanin_connection_before_its_meter_pause() -> None:
+async def test_only_the_opening_pause_refreshes_the_fanin_connection() -> None:
     """Fan-in restarts on every layout save, and a dead TTS socket would fail
-    the first measurement's PAUSE (#6113); the pause replaces it first."""
+    the first measurement's PAUSE (#6113), so the opening replaces it first. A
+    renewal does not: fan-in restarting mid-window must fail it closed."""
     tts = FakeTts()
     wl = wake_loop_for_tests(tts=tts)
 
     assert (await wl.measurement_hold.pause_response())["result"] == "ok"
+    assert (await wl.measurement_hold.pause_response())["result"] == "ok"
     await wl.measurement_hold.resume()
 
+    assert tts.calls.count("refresh_connection") == 1
     assert tts.calls.index("refresh_connection") < tts.calls.index(
         "pause_content_meter_for_measurement"
     )
 
 
+async def test_a_hung_fanin_refresh_times_out_inside_the_setup_deadline(monkeypatch) -> None:
+    """The refresh is a bounded pause step: a fan-in that never answers ends
+    the opening with a rollback before the meter pause, not a hang."""
+    clock = FakeClock()
+    monkeypatch.setattr(measurement_hold_mod, "measurement_monotonic", clock.monotonic)
+
+    async def guard(active: bool) -> None:
+        if active:
+            clock.now = MEASUREMENT_PAUSE_SETUP_DRAIN_TIMEOUT_SEC - 0.05
+
+    async def hang() -> None:
+        await asyncio.sleep(10)
+
+    gate = _SpyGate()
+    tts = FakeTts(on_refresh=hang)
+    wl = wake_loop_for_tests(output_gate=gate, tts=tts, volume_coordinator=_Volume(guard))
+
+    with pytest.raises(TimeoutError):
+        await wl.measurement_hold.pause_response()
+
+    assert "pause_content_meter_for_measurement" not in tts.calls
+    assert not gate.admission_paused
+
+
 # --- setup failure, rollback and resume ------------------------------------
 
 
-@pytest.mark.parametrize("phase", ["volume_guard", "content_meter"])
+@pytest.mark.parametrize("phase", ["volume_guard", "tts_connection", "content_meter"])
 @pytest.mark.parametrize("error_type", [RuntimeError, AssertionError, SystemExit])
 async def test_setup_failure_after_opening_rolls_back_once(
     phase: str, error_type: type[BaseException],
@@ -523,8 +550,11 @@ async def test_setup_failure_after_opening_rolls_back_once(
     async def meter(_deadline: float) -> None:
         await fail_in("content_meter")
 
+    async def refresh() -> None:
+        await fail_in("tts_connection")
+
     gate = _SpyGate()
-    tts = FakeTts(on_meter_pause=meter)
+    tts = FakeTts(on_meter_pause=meter, on_refresh=refresh)
     wl = wake_loop_for_tests(output_gate=gate, tts=tts, volume_coordinator=_Volume(guard))
 
     with pytest.raises(error_type):
@@ -570,7 +600,8 @@ async def test_uds_setup_expiry_rolls_back_inside_the_declared_total(
 async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     monkeypatch, short_sock_path: str,
 ) -> None:
-    """MEASURE_PAUSE never reconnects; a later ordinary control does once."""
+    """MEASURE_PAUSE never revives a stream poisoned for another reason (here
+    a plain close); a later ordinary control reconnects it once."""
     parent, child = socket.socketpair()
     poisoned = tts_mod._OutputdStreamAdapter(parent)
     poisoned.close()

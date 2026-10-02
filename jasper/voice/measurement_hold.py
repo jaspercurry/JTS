@@ -329,14 +329,17 @@ class MeasurementHold:
                     deadline_monotonic=setup_deadline,
                     phase="volume_guard",
                 )
-                # A fan-in restart leaves a dead TTS socket that only its next
-                # send would find; replace it first, so the fail-closed PAUSE
-                # below reaches the running fan-in.
-                await self._await_pause_step(
-                    self._output.tts.refresh_connection(),
-                    deadline_monotonic=setup_deadline,
-                    phase="tts_connection",
-                )
+                # A fan-in restart before the window leaves a dead TTS socket
+                # that only its next send would find; replace it first, so the
+                # fail-closed PAUSE below reaches the running fan-in. Opening
+                # only: a renewal that finds fan-in restarted mid-window must
+                # fail closed (#2288), since the new fan-in starts unpaused.
+                if opening:
+                    await self._await_pause_step(
+                        self._output.tts.refresh_connection(),
+                        deadline_monotonic=setup_deadline,
+                        phase="tts_connection",
+                    )
                 await self._await_pause_step(
                     self._output.tts.pause_content_meter_for_measurement(
                         setup_deadline,

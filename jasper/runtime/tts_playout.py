@@ -220,21 +220,24 @@ class _OutputdStreamAdapter:
         restarted); True when this call dropped it.
 
         A zero-timeout readability check, then a peek: it consumes nothing and
-        never blocks. A stream whose lock is held is in use, so not stale."""
-        if self._closed:
-            return False
-        if not self._lock.acquire(blocking=False):
+        never blocks. A stream whose lock is held is in use, so not stale. A
+        concurrent ``_poison`` (it sets ``_closed`` before closing the socket)
+        keeps its own reason."""
+        if self._closed or not self._lock.acquire(blocking=False):
             return False
         try:
-            readable, _, _ = select.select([self._sock], [], [], 0)
-            peer_closed = bool(readable) and self._sock.recv(1, socket.MSG_PEEK) == b""
-        except (OSError, ValueError):
-            peer_closed = True
+            if self._closed:
+                return False
+            try:
+                readable, _, _ = select.select([self._sock], [], [], 0)
+                peer_closed = bool(readable) and self._sock.recv(1, socket.MSG_PEEK) == b""
+            except (OSError, ValueError):
+                peer_closed = not self._closed
+            if peer_closed:
+                self._poison(reason=None, poison_reason="peer_closed")
+            return peer_closed
         finally:
             self._lock.release()
-        if peer_closed:
-            self._poison(reason=None, poison_reason="peer_closed")
-        return peer_closed
 
     def _readline_locked(self, timeout_sec: float) -> bytes:
         """Read one daemon response line while the caller holds _lock."""
@@ -963,14 +966,20 @@ class TtsPlayout:
         await self._send_meter_control(_OutputdStreamAdapter.pause_content_meter)
 
     async def refresh_connection(self) -> None:
-        """Replace a live-looking stream whose fan-in end is gone, through the
-        ordinary reconnect path. Fan-in restarts on every layout save, and the
-        socket only learns of it on its next send; the measurement pause calls
-        this before :meth:`pause_content_meter_for_measurement`, which never
-        reconnects itself. A stream already poisoned for another reason is left
-        as it is, so that pause still fails closed on it."""
+        """Replace a stream whose fan-in end is gone, through the ordinary
+        reconnect path. Fan-in restarts on every layout save, and the socket
+        only learns of it on its next send; the measurement pause calls this
+        when a window opens, before :meth:`pause_content_meter_for_measurement`,
+        which never reconnects itself.
+
+        It retries a stream an earlier call dropped as ``peer_closed`` (fan-in
+        was still restarting then). A stream poisoned for any other reason is
+        left as it is, so that pause still fails closed on it."""
         stream = self._stream
-        if stream is not None and stream.drop_if_peer_closed():
+        if stream is not None and (
+            stream.drop_if_peer_closed()
+            or (stream.closed and stream.poison_reason == "peer_closed")
+        ):
             await self._current_outputd_stream()
 
     async def pause_content_meter_for_measurement(
