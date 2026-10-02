@@ -24,8 +24,8 @@ from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.position_cycle import OWN_WINDOW, take_curve
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
-    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, SetTakes, round_inputs,
-    prescription_sources, ROUND_INPUT_ERRORS, with_records,
+    INDEX_FILENAME, PACKET_FILENAME, PICTURE_FILENAME, ROUND_PACKET_SCHEMA, RoundInputs, SetTakes, files_by_set,
+    round_inputs, prescription_sources, ROUND_INPUT_ERRORS, with_records,
 )
 from .frequency_plot import prepare_plot_curve
 from .frequency_view import FREQUENCY_VIEW_FILENAME
@@ -246,7 +246,7 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
     sets = view_sets(manifest)
     for group in sets:
         try:
-            section_sources = prescription_sources(inputs, set_id=group["set_id"] if len(sets) > 1 else None)
+            section_sources = prescription_sources(inputs, set_id=group["set_id"] if files_by_set(sets) else None)
             if purpose in contract_programs(section_sources):
                 contract = prescription_contracts(programs=(purpose,), **section_sources)[purpose]
                 limits[group["set_id"]] = {key: value for key, value in contract.items() if key != "evidence_declarations"}

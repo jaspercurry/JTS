@@ -57,7 +57,7 @@ __all__ = [
     'matching_state_path', 'read_banked_round', 'recent_round_sessions', 'latest_banked_rounds', 'round_stores',
     'state_matches_capture',
     'round_inputs', 'bank_of', 'banked_packet', 'contract_sources', 'prescription_sources', 'BASS_PACKET_ROUND_MISMATCH',
-    'default_out', 'view_path',
+    'default_out', 'view_path', 'files_by_set', 'set_view_path',
     'ROUND_INPUT_ERRORS', 'RoundSetRefused', 'SetTakes', 'read_run_manifest', 'resolve_set', 'latest_measure_takes',
     'subject', 'COMPARAND_EARLIER_ROUND', 'COMPARAND_SAME_ROUND', 'Comparand', 'comparand', 'comparands',
 ]
@@ -353,6 +353,20 @@ def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path
     return default_out(inputs, banked_round_of(inputs.session_dir) or inputs.session_dir, name, set_id)
 
 
+def files_by_set(sets: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the bank runs a per-set view once for each of a round's view sets (``sets`` is :func:`view_sets`)
+    and files it under that set's name, as a round of several does. A round of one runs it once, for the round,
+    and files it under none."""
+    return len(sets) > 1
+
+
+def set_view_path(inputs: RoundInputs, name: str, set_id: str | None, sets: Sequence[Mapping[str, Any]]) -> Path:
+    """Where set ``set_id``'s view ``name`` is filed: under the set's name, else, in a round of one view set,
+    under none, as its bank files it (:func:`files_by_set`)."""
+    path = view_path(inputs, name, set_id)
+    return path if files_by_set(sets) or path.is_file() else view_path(inputs, name)
+
+
 def bank_of(inputs: RoundInputs) -> Path | None:
     """The bank holding the round, whether it is named by its bank or by its bundle."""
     return inputs.session_dir.parent.parent if inputs.banked else banked_round_of(inputs.session_dir)
@@ -372,9 +386,11 @@ def banked_packet(inputs: RoundInputs) -> dict[str, Any]:
     return packet
 
 
-def _banked_room(rows: list[Any], name: str) -> dict[str, Any]:
-    """The bank's copy of the room view it wrote as ``name``, or ``{}``."""
-    return next((row for row in rows if isinstance(row, dict) and Path(str(row.get("out"))).name == name), {})
+def _banked_room(rows: list[Any], sets: Sequence[Mapping[str, Any]], set_id: str | None) -> dict[str, Any]:
+    """The bank's copy of set ``set_id``'s room view, or ``{}``: each row names its set, in whatever file the bank
+    filed it. A round of one view set needs none named."""
+    wanted = set_id or (sets[0]["set_id"] if len(sets) == 1 else None)
+    return next((row for row in rows if wanted and isinstance(row, dict) and row.get("set_id") == wanted), {})
 
 
 def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -> dict[str, Any]:
@@ -382,17 +398,18 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     artifact_dir, reason = round_artifact_dir(inputs.session_dir)
     if artifact_dir is None:
         raise CrossoverEvidencePacketError(reason)
+    manifest = _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME)
+    sets = view_sets(manifest or {})
     # A re-run room view is a view: a banked round's contract reads its bank's copy (ADR-0371).
     banked_rooms = banked_packet(inputs).get("room")
-    room = (_banked_room(banked_rooms, set_artifact_name(ROOM_ARTIFACT, set_id)) if isinstance(banked_rooms, list)
-            else _read_json_mapping(view_path(inputs, ROOM_ARTIFACT, set_id)) or {})
+    room = (_banked_room(banked_rooms, sets, set_id) if isinstance(banked_rooms, list)
+            else _read_json_mapping(set_view_path(inputs, ROOM_ARTIFACT, set_id, sets)) or {})
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
         room = {"median": {"code": ROOM_NOT_BANKED}}
     path = artifact_dir / "candidate.json"
     # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
     # so each refuses it by this code. Only a round that banked none has no base.
     candidate = (_read_json_mapping(path) or {"code": "candidate_malformed"}) if path.is_file() else {}
-    manifest = _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME)
     return {"candidate": candidate,
             "manifest": with_records(inputs.session_dir, manifest) if manifest else {},
             **{f"room_{section}": room.get(section, {})

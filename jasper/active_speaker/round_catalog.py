@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .crossover_v2.position_cycle import OWN_WINDOW, take_curve
-from .crossover_v2.round_inputs import SetTakes, set_artifact_name, take_artifact_name
+from .crossover_v2.round_inputs import SetTakes, files_by_set, set_artifact_name, take_artifact_name
 from .measurement_programs import PURPOSES, run_purposes
 from .round_view_artifacts import CATALOG, PROG, TAKES_THIS_ROUND, CatalogRow
 from .run_manifest import view_sets
@@ -83,7 +83,7 @@ def round_calls(round_dir: Path, manifest: Mapping[str, Any], *, purposes: Colle
             calls += [_call(command, row, round_dir, program=program) for program in PURPOSES if program in reads]
         elif "<set-id>" in holes:
             calls += [_call(command, row, round_dir, set_id=group.set_id, take_id=take["take_id"] if take else None,
-                            role=group.role, one_set=len(sets) == 1)
+                            role=group.role, one_set=not files_by_set(sets))
                       for group, base, firsts in groups if not (base and row.grades_against_base)
                       and not (row.driver_sets and group.role == "summed")
                       for take in (firsts if "<take-id>" in holes else [None])]

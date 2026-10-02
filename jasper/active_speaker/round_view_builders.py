@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from dataclasses import replace
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 
@@ -22,9 +22,10 @@ from .crossover_v2.record_index import measurement_documents
 from .crossover_v2.room_grade import bundle_graph_scopes, grade_room_median, read_room_median
 from .crossover_v2.room_views import room_document
 from .crossover_v2.room_selection import select_seat_takes
-from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, RoundViewsError, round_inputs, read_run_manifest, resolve_set, default_out
+from .crossover_v2.round_inputs import RoundInputs, RoundSetRefused, RoundViewsError, round_inputs, read_run_manifest, resolve_set, set_view_path
 from .round_view_artifacts import ARTIFACT_BY_VIEW
 from .round_packet_report import gate_fields
+from .run_manifest import view_sets
 
 REFUSE_NO_SEAT_TAKES = "room_no_seat_takes"
 
@@ -126,25 +127,26 @@ def room_payload(inputs: RoundInputs, set_id: str | None) -> dict[str, Any]:
     return payload
 
 
-def _document(inputs: RoundInputs, directory: Path, set_id: str | None) -> tuple[dict, Path]:
-    path = default_out(inputs, directory, ARTIFACT_BY_VIEW["room"].artifact, set_id)
+def _document(inputs: RoundInputs, set_id: str | None, sets: Sequence[Mapping[str, Any]]) -> tuple[dict, Path]:
+    path = set_view_path(inputs, ARTIFACT_BY_VIEW["room"].artifact, set_id, sets)
     document = json.loads(path.read_text())
     if not isinstance(document, dict) or not isinstance(document.get("incumbent") or {}, dict):
         raise TypeError("room_document_malformed")
     return document, path
 
 
-def room_grade_payload(inputs: RoundInputs, directory: Path, set_id: str | None, *,
-                       incumbent_id: str | None = None) -> dict[str, Any]:
-    selected = resolve_set(inputs, set_id)
-    candidate, candidate_path = _document(inputs, directory, set_id)
+def room_grade_payload(inputs: RoundInputs, set_id: str | None, *, incumbent_id: str | None = None) -> dict[str, Any]:
+    manifest = read_run_manifest(inputs)
+    sets = view_sets(manifest)
+    selected = resolve_set(inputs, set_id, manifest=manifest)
+    candidate, candidate_path = _document(inputs, set_id, sets)
     incumbent_id = incumbent_id or (candidate.get("incumbent") or {}).get("set_id")
     if incumbent_id == selected.set_id:
         incumbent_id = None  # the incumbent's own measurement grades against nothing
     incumbent_doc = None
     if incumbent_id is not None:
-        resolve_set(inputs, incumbent_id)
-        incumbent_doc = _document(inputs, directory, incumbent_id)[0]
+        resolve_set(inputs, incumbent_id, manifest=manifest)
+        incumbent_doc = _document(inputs, incumbent_id, sets)[0]
     median = read_room_median(candidate.get("median", {}))
     incumbent = None if incumbent_doc is None else read_room_median(incumbent_doc.get("median", {}))
     grade = grade_room_median(median, incumbent=incumbent)

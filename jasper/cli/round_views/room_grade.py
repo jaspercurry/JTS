@@ -49,7 +49,7 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     directory = Path(args.round_dir)
     inputs = stage(EXIT_UNREADABLE, _ROUND_TOOL_ERRORS, round_inputs, directory)
     try:
-        artifact = room_grade_payload(inputs, directory, args.set, incumbent_id=args.incumbent)
+        artifact = room_grade_payload(inputs, args.set, incumbent_id=args.incumbent)
     except RoundSetRefused:
         raise
     except RoomPrescriptionRefused as exc:

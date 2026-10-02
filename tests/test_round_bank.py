@@ -547,6 +547,23 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
     assert positions == sorted(positions)
 
 
+@pytest.mark.parametrize("probe", [False, True], ids=["", "probed"])
+def test_bass_compare_reads_the_view_a_one_set_bank_filed(tmp_path, request, capsys, probe):
+    """A round of one view set, with or without its run probe's set beside it, is banked with its bass view
+    under no set name; the set still names it."""
+    source, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    asyncio.run(bank("baseline", measurement_purpose="bass"))
+    write_manifest(source, program="bass", probe=probe)
+    inputs = round_inputs(source)
+    mark_state(inputs.session_dir, "applied")
+    banked = bank_round(inputs.session_dir, campaign_root=tmp_path / "bank", state_path=inputs.state_path,
+                        view_runner=run_bookkeeping, **_ssot(tmp_path, present=False))
+    set_id = resolve_set(round_inputs(banked.path)).set_id
+    assert round_views_main(["bass-compare", str(banked.path), str(banked.path), "--before-set", set_id,
+                             "--after-set", set_id, "--change", "diagnostic"]) == 0
+    assert json.loads(capsys.readouterr().out)["subject"]["rounds"][0]["set_id"] == set_id
+
+
 @pytest.mark.parametrize("stored_evidence", [True, False, "old-schema"], ids=["stored", "not-stored", "old-schema"])
 def test_a_round_answers_with_the_packet_its_bank_stored(tmp_path, monkeypatch, capsys, stored_evidence):
     """A round banked beside it later moves what a rebuild would read, so

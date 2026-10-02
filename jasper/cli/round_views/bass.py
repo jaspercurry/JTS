@@ -77,7 +77,7 @@ def _compare(args: argparse.Namespace) -> tuple[dict[str, Any], Path, list[dict[
         selected = resolve_set(inputs, set_id, manifest=manifests[key]).with_records(
             inputs.session_dir, every_take=take_id is not None)
         take_id = selected.take_id(take_id)
-        path = bass_view_path(inputs, root, selected.set_id, manifests[key])
+        path = bass_view_path(inputs, selected.set_id, manifests[key])
         read = subject(inputs, selected, take_ids=[take_id])
         if source is not None and not path.is_file():
             raise CrossoverV2Refused({"round_id": read.get("round_id"), "set_id": selected.set_id,
