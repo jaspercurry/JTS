@@ -759,11 +759,6 @@ class PilotObservation:
     other role to compare against — published raw since the isolation
     ratio is derivable from them but not the reverse.
 
-    ``programmed_hi_gain_db`` is the HI segment's declared ``gain_db``, so a
-    caller can compute the capture chain's own transfer without binding
-    back to the source program; ``None`` predates this field and must be
-    treated as "nothing to compare", never ``0.0``.
-
     ``delta_implausible`` is True when ``captured_delta_db`` diverges from
     ``programmed_delta_db`` by more than `DELTA_IMPLAUSIBLE_GAP_DB` (#2647) --
     a gap no real wiring can produce, so CHECK's ladder reads it as
@@ -786,7 +781,6 @@ class PilotObservation:
     snr_db: float = math.inf
     channel_map_target_rise_db: float | None = None
     channel_map_cross_rise_db: float | None = None
-    programmed_hi_gain_db: float | None = None
     delta_implausible: bool = False
     mic_meter_status: str | None = None
 

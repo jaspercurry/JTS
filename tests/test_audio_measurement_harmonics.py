@@ -229,7 +229,7 @@ def test_notch_excluded_tracking_passes_when_only_the_notch_disagrees():
     new_rms, new_max = notch_excluded_tracking_error_db(
         freqs, measured_db, predicted_db, band, notch_exclusion_db=12.0,
     )
-    assert old_max > 1.5  # the OLD gate (VERIFY_TOLERANCE_DB) fails
+    assert old_max > 1.5  # the OLD 1.5 dB gate fails
     assert new_max <= 1.5  # the NEW gate passes: out-of-notch agreement is tight
     assert new_max < old_max
 

@@ -20,8 +20,6 @@ from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
-    REASON_VERIFY_INCONCLUSIVE,
-    TRANSIENT_AUTO_RETRY_CODES,
     reason_message,
 )
 from jasper.active_speaker.round_copy import RUN_ENDED, RUN_UNDER_WAY, round_lines
@@ -324,31 +322,19 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     assert env["screen"] == "awaiting_plan"
 
 
-@pytest.mark.parametrize("code", [REASON_LOCATE_FAILED, REASON_VERIFY_INCONCLUSIVE])
-def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record(code):
+def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record():
     """A state file from an older build may still carry the retired evidence keys."""
     env = build_crossover_envelope_v2(_status(
-        failure={"code": code, "pilot_heard": True},
-        verify={"gate": {"reflection_measured": True}},
+        failure={"code": REASON_LOCATE_FAILED, "pilot_heard": True},
     ))
 
-    assert env["verdict_text"] == REASON_REGISTRY[code].message
-
-
-@pytest.mark.parametrize("code", sorted(TRANSIENT_AUTO_RETRY_CODES))
-def test_a_run_that_ended_on_a_silent_retry_code_says_no_retry(code):
-    """The banner says JTS is measuring again, which a run that ended is not."""
-    spec = REASON_REGISTRY[code]
-
-    env = build_crossover_envelope_v2(_status(applied=False, failure={"code": code}))
-
-    assert env["verdict_text"] == spec.message != spec.banner
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_LOCATE_FAILED].message
 
 
 def test_no_registry_sentence_names_undo():
     for code, spec in REASON_REGISTRY.items():
         for text in (
-            spec.message, spec.banner,
+            spec.message,
             reason_message(code, spec),
         ):
             assert "undo" not in text.lower(), (code, text)
@@ -361,7 +347,7 @@ def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(failure={"code": code}))
     assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION
     assert env["screen"]
-    assert env["verdict_text"]
+    assert env["verdict_text"] == REASON_REGISTRY[code].message
 
 
 def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():

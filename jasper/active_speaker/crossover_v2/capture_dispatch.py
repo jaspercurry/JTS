@@ -22,9 +22,7 @@ from jasper.audio_measurement.program_analysis.model import (
     DRIVER_SNR_ALIGNMENT_KEY, GAIN_MAX_DIGITAL_PEAK_DBFS, PILOT_MIN_SNR_DB,
     SWEEP_LOCATE_CONFIDENCE_FLOOR, SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, MeasurementPriors, ProgramAnalysis,
 )
-from jasper.audio_measurement.program_analysis.summary import (
-    driver_alignment_snr_verdict, driver_snr_verdict, gate_window_ms,
-)
+from jasper.audio_measurement.program_analysis.summary import driver_alignment_snr_verdict, driver_snr_verdict
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.level import LevelReading, solve_gain
 from jasper.audio_measurement.ramp import MAX_STEP_DB
@@ -48,8 +46,6 @@ if TYPE_CHECKING:
 SAME_POSE_DRIFT_DB = 2.0
 ACROSS_POSE_DRIFT_DB = 6.0
 CLIP_RETRY_BACKOFF_DB = 3.0
-# dB, recorder transfer stability; see ADR-0182.
-VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 #: dB a VERIFY sweep's impulse must clear its take's ambient floor by; real jts3 takes
 #: read 9.1 dB and up (replay: #5672).
 SWEEP_OVER_AMBIENT_MIN_DB = 6.0
@@ -229,8 +225,6 @@ def _assess_recording(
     session_volume_db: float = 0.0,
     spl_stop_db_spl: float | None = None,
     spl: Mapping[str, Any] | None = None,
-    pilot_transfer_prior: Mapping[str, float] | None = None,
-    measure_gate_window_ms: float | None = None,
 ) -> TakeVerdict:
     if phase not in {"check", "measure", "verify"}:
         raise ValueError(f"unsupported assessment phase: {phase}")
@@ -380,20 +374,6 @@ def _assess_recording(
         return refuse(code)
     if phase == "check" and not capabilities["level_solve"]:
         return quiet(reasons.REASON_SNR_FLOOR)
-    verify_gate = gate_window_ms(analysis.summed_response)
-    # A shorter VERIFY gate manufactures overlay differences (§5.2).
-    if (phase == "verify" and measure_gate_window_ms is not None and verify_gate is not None
-            and verify_gate + 1e-6 < measure_gate_window_ms):
-        evidence.update(measure_gate_window_ms=measure_gate_window_ms, verify_gate_window_ms=verify_gate)
-        return refuse(reasons.REASON_VERIFY_INCONCLUSIVE, ok=True)
-    if phase == "verify" and pilot_transfer_prior:
-        transfer = _pilot_transfer_by_role(analysis)
-        step = max((abs(value - pilot_transfer_prior[role]) for role, value in transfer.items()
-                    if role in pilot_transfer_prior), default=None)
-        if step is not None:
-            evidence["pilot_transfer_step_db"] = float(step)
-            if step > VERIFY_PILOT_TRANSFER_STEP_CEILING_DB:
-                return refuse(reasons.REASON_VERIFY_LEVEL_SHIFT, ok=True)
     spl = spl or {}
     peak_spl = finite_float(spl.get("max_window_db_spl"))
     stop = finite_float(spl.get("ceiling_db_spl"))
@@ -474,33 +454,6 @@ def _sweep_schedule_diag_fields(
     residual_ms_worst = worst.residual_samples / sample_rate_hz * 1000.0
     confidence_min = min(loc.confidence for loc in sweeps)
     return residual_ms_worst, confidence_min
-
-
-def _pilot_transfer_by_role(analysis: ProgramAnalysis) -> dict[str, float]:
-    """Per-role pilot transfer: captured hi level minus the programmed hi gain.
-
-    The measurement-honesty raw material: VERIFY replays the identical
-    program through the identical applied graph on every attempt, so this
-    transfer should not move between attempts either. Excludes any pilot whose
-    ``programmed_hi_gain_db`` is unset — there is nothing to compare it against.
-
-    ``PilotObservation`` warns that ``level_hi_dbfs`` must never feed an
-    ABSOLUTE-level consumer, because ambient subtraction shifts it. This use is
-    safe for two independent reasons. (1) It is a RELATIVE cross-ATTEMPT
-    comparison, never a true absolute-level read. (2) The confound stays under
-    the gate: an attempt reaches G3 only with its pilot step inside
-    ``LINEARITY_TOLERANCE_DB``, or with no ambient window and so nothing
-    subtracted. Room noise the subtraction misses moves the HI pilot, a further
-    ``PILOT_LEVEL_DELTA_DB`` (10 dB) above the QUIET one, by about a tenth of
-    what it moves the QUIET one, and the step bounds that: ≈0.05 dB per attempt,
-    under :data:`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` (0.35 dB). Lowering that
-    ceiling toward ~0.1 dB is what would put this back in play.
-    """
-    return {
-        pilot.role: pilot.level_hi_dbfs - pilot.programmed_hi_gain_db
-        for pilot in analysis.pilots
-        if pilot.programmed_hi_gain_db is not None
-    }
 
 
 # --------------------------------------------------------------------------- #

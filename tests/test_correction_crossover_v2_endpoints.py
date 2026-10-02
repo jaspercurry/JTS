@@ -1896,7 +1896,6 @@ def _seed_alternative_apply(
             "verdict": "recommend_alternative", "configured_hz": 2500.0,
             "recommended_hz": selected_hz, "comparison_complete": True,
         },
-        "sound_design_revision": 1,
     })
     return candidate
 
@@ -2028,7 +2027,6 @@ def test_a_persisted_fc_selection_no_longer_decides_what_sound_is_told(
             "verdict": "recommend_alternative", "configured_hz": 2500.0,
             "recommended_hz": 2750.0, "comparison_complete": True,
         },
-        "sound_design_revision": 1,
     })
 
     payload = _apply(
@@ -2247,7 +2245,7 @@ class _StubConductor:
         self._session_id = session_id
 
     def snapshot(self):
-        return SimpleNamespace(session_id=self._session_id, gain_plan_db=None)
+        return SimpleNamespace(session_id=self._session_id)
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
@@ -2846,7 +2844,6 @@ def _inline_context(topology: Any = None) -> V2ConductorContext:
         driver_spacing_m=0.0, driver_spacing_source="unknown",
         topology=topology or SimpleNamespace(topology_id="t-inline"),
         playback_device="hw:Test", role_channels={"woofer": 0, "tweeter": 1},
-        sound_design_revision=1,
     )
 
 

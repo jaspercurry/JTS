@@ -677,15 +677,6 @@ def test_an_unavailable_map_reports_no_gain_factor():
 # --- derivation pins (N3, N5) ---------------------------------------------
 
 
-def test_the_low_tolerance_is_the_flows_own_measured_vs_predicted_bar():
-    """**N3.** The probe and the tracking check must not hold one chain to two
-    different standards in two different bands — so the constant is pinned to
-    the flow's, not merely documented as equal to it."""
-    from jasper.active_speaker.crossover_v2.contracts import VERIFY_TOLERANCE_DB
-
-    assert DELTA_PROBE_TOLERANCE_LOW_DB == VERIFY_TOLERANCE_DB
-
-
 def test_the_hf_split_matches_the_fit_engines_own_tier_split():
     """**N3.** "High frequencies" means one thing across the fit and its
     verification."""

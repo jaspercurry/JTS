@@ -288,17 +288,9 @@ def test_the_swept_verdict_and_refusal_copy_says_microphone():
     """Positive pins: the specific strings the sweep rewrote still name the
     microphone. Catches a revert that keeps the file free of "phone" by deleting
     the sentence instead of fixing it."""
-    from jasper.active_speaker.crossover_v2.refusal_copy import (
-        REASON_REGISTRY,
-        REASON_SNR_FLOOR,
-        REASON_VERIFY_LEVEL_SHIFT,
-    )
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, REASON_SNR_FLOOR
 
     assert "microphone" in REASON_REGISTRY[REASON_SNR_FLOOR].message
-    # R4 owns the noun here; #1924's routing half (the remedy clause) landed
-    # separately and is pinned in tests/test_crossover_v2_conductor.py. Both
-    # halves of the sentence have to survive, so this keeps asserting the noun.
-    assert "microphone" in REASON_REGISTRY[REASON_VERIFY_LEVEL_SHIFT].message
 
 
 def test_allowlist_entries_are_still_used():

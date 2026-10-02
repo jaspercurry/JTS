@@ -90,7 +90,6 @@ class V2ConductorContext:
     topology: Any
     playback_device: str
     role_channels: dict[str, int]
-    sound_design_revision: int
     #: Per-target permitted excitation band, from the resolver the caps come
     #: from; keyed like :attr:`role_targets`, so a rear woofer has its own.
     driver_bands: dict[str, Any] = field(default_factory=dict)
@@ -319,7 +318,6 @@ def resolve_conductor_context(status: Mapping[str, Any], *, topology: Any = None
         topology=topology,
         playback_device=playback_device,
         role_channels=measurement_role_channels(preset),
-        sound_design_revision=int(draft.get("revision", 0)),
         radiating_diameter_mm_by_target=declared_by_target(draft, "radiating_diameter_mm"),
         measurement_band_hz_by_role=measurement_bands,
     )

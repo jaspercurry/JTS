@@ -32,8 +32,7 @@ TEMPLATE_SILENT_AUTO_RETRY = "silent_auto_retry"
 TEMPLATE_FIX_AND_RETRY = "fix_and_retry"
 TEMPLATE_HARD_STOP = "hard_stop"
 TEMPLATE_SESSION_RESTART = "session_restart"
-# Two special screens (§5.2), not among the four generic templates.
-TEMPLATE_VERIFY_FAIL = "verify_fail"
+# A special screen (§5.2), not among the four generic templates.
 TEMPLATE_VOLUME_RECOVERY = "volume_recovery"
 
 # Reason codes (internal — never a bare code reaches the household; the envelope
@@ -131,12 +130,10 @@ REASON_ARM_PARK_UNCONFIRMED = "arm_park_unconfirmed"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
-REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-REASON_WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 REASON_WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
 REASON_WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
@@ -151,16 +148,7 @@ REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupporte
 # raises MeasurementWindowError), so an enumerated except list is how failures
 # escape with the volume active and the phone frozen. Terminal.
 REASON_INTERNAL_ERROR = "internal_error"
-# §5.2's "inconclusive — re-verify" verdict: VERIFY's own detected first
-# reflection forced a shorter gate than MEASURE's, so the overlay difference is
-# not evidence about driver alignment.
-REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
-# A distinct VERIFY outcome: the recording chain drifted between VERIFY
-# attempts, not the speaker going out of tolerance.
-REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # The apply transaction came back blocked or raised.
-# ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
-# code: an apply failure says nothing about the mic position.
 REASON_APPLY_FAILED = "apply_failed"
 # A deliberate phone Stop (CaptureAborted, abort_reason == "stopped") is not a
 # transport death — see the catch-all's exception classification in
@@ -270,12 +258,11 @@ class RetryableReasonCopy:
 
 _RETAKE = {"id": "crossover_v2_retake", "label": "Record the last spot again", "href": "/sound/speaker/crossover/"}
 #: What a row with no action of its own offers, as an id, a household label and a page: the button its template's
-#: failure screen shows (``crossover_envelope_v2._failure_envelope``). A silent auto-retry shows a banner and has none.
+#: failure screen shows (``crossover_envelope_v2._failure_envelope``). A silent auto-retry has none.
 _TEMPLATE_ACTIONS: dict[str, Mapping[str, Any]] = {
     TEMPLATE_HARD_STOP: {"id": "speaker_setup", "label": "Back to speaker setup", "href": "/sound/speaker/"},
     TEMPLATE_SESSION_RESTART: {"id": "restart_session", "label": "Start over", "href": "/sound/speaker/crossover/"},
     TEMPLATE_FIX_AND_RETRY: _RETAKE,
-    TEMPLATE_VERIFY_FAIL: _RETAKE,
 }
 
 
@@ -289,12 +276,9 @@ class ReasonSpec:
     # :data:`MAX_EXTRA_ATTEMPTS_PER_POSITION`. Zero means "no extra attempt can
     # help" — a statement about the CONDITION, not a budget — and those codes
     # stop the moment they fire. Any non-zero value says only "retriable"; the
-    # specific 1 vs 2 does not change behaviour. See
+    # specific value does not change behaviour. See
     # :data:`NON_RETRIABLE_CODES`.
     retry_budget: int
-    # A silent auto-retry's diagnosis and the retry JTS makes (template 1). Empty
-    # for codes whose template is a decision screen.
-    banner: str
     # What a run that ended on this code says: the fix/action copy the
     # decision-screen template renders (one reason, one action: the Language
     # guide), or a silent auto-retry's diagnosis alone, whose retry is over.
@@ -313,7 +297,7 @@ class ReasonSpec:
         """What a CLI prints for this reason: the row's own action, else its template's (ADR-0300)."""
         template = self.template
         # A retry that no extra attempt can clear stops the run, as a restart does.
-        if template in (TEMPLATE_FIX_AND_RETRY, TEMPLATE_VERIFY_FAIL) and not self.retry_budget:
+        if template == TEMPLATE_FIX_AND_RETRY and not self.retry_budget:
             template = TEMPLATE_SESSION_RESTART
         return self.own_action or _TEMPLATE_ACTIONS.get(template)
 
@@ -324,23 +308,12 @@ def _retriable_reason(
     retry_budget: int,
     copy: RetryableReasonCopy,
     *,
-    auto_retry: bool = False,
     capture_quality: bool = False,
 ) -> ReasonSpec:
-    """Build a retryable registry row from one structured copy source.
-
-    A silent auto-retry's banner says JTS is measuring again, so a run that ended
-    on it says its diagnosis alone."""
+    """Build a retryable registry row from one structured copy source."""
     if retry_budget <= 0:
         raise ValueError("a retryable reason needs a positive retry budget")
-    return ReasonSpec(
-        code,
-        template,
-        retry_budget,
-        copy.message if auto_retry else "",
-        copy.diagnosis if auto_retry else copy.message,
-        capture_quality=capture_quality,
-    )
+    return ReasonSpec(code, template, retry_budget, copy.message, capture_quality=capture_quality)
 
 
 ARM_STOP_COPY = {
@@ -747,62 +720,62 @@ _STORE_COPY: dict[str, str] = {
 # copy and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
     "bass_fit_capture_context_changed": ReasonSpec(
-        "bass_fit_capture_context_changed", TEMPLATE_HARD_STOP, 0, "", "The paired bass captures used different conditions.",
+        "bass_fit_capture_context_changed", TEMPLATE_HARD_STOP, 0, "The paired bass captures used different conditions.",
         own_action={"id": "match_bass_capture", "label": "Measure both graphs at the same pose and settings", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_reference_band_unavailable": ReasonSpec(
-        "bass_fit_reference_band_unavailable", TEMPLATE_HARD_STOP, 0, "", "The bass sweep does not cover the reference band.",
+        "bass_fit_reference_band_unavailable", TEMPLATE_HARD_STOP, 0, "The bass sweep does not cover the reference band.",
         own_action={"id": "measure_bass_reference", "label": "Measure a sweep that covers the reference band", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_requires_room_baseline_and_exact_candidate": ReasonSpec(
-        "bass_fit_requires_room_baseline_and_exact_candidate", TEMPLATE_HARD_STOP, 0, "", "The bass pair does not contain the required graphs.",
+        "bass_fit_requires_room_baseline_and_exact_candidate", TEMPLATE_HARD_STOP, 0, "The bass pair does not contain the required graphs.",
         own_action={"id": "select_bass_pair", "label": "Select the room baseline and the measured bass candidate", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_inputs_missing": ReasonSpec(
-        "bass_fit_inputs_missing", TEMPLATE_HARD_STOP, 0, "", "No bass pairs are available for this fit.",
+        "bass_fit_inputs_missing", TEMPLATE_HARD_STOP, 0, "No bass pairs are available for this fit.",
         own_action={"id": "select_bass_run", "label": "Select a run with baseline and candidate takes", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_pose_missing": ReasonSpec(
-        "bass_fit_pose_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture has no recorded pose.",
+        "bass_fit_pose_missing", TEMPLATE_HARD_STOP, 0, "The bass capture has no recorded pose.",
         own_action={"id": "measure_bass_pose", "label": "Measure with a recorded microphone pose", "href": "/sound/speaker/crossover/"},
     ),
     "bass_table_window_gain_missing": ReasonSpec(
-        "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "", "The bass capture lacks a complete resolved window gain.",
+        "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "The bass capture lacks a complete resolved window gain.",
         own_action={"id": "measure_bass_level", "label": "Record Main and program identity on each take", "href": "/sound/speaker/crossover/"},
     ),
     "bass_table_capture_integrity_failed": ReasonSpec(
-        "bass_table_capture_integrity_failed", TEMPLATE_HARD_STOP, 0, "", "A bass capture failed its integrity check.",
+        "bass_table_capture_integrity_failed", TEMPLATE_HARD_STOP, 0, "A bass capture failed its integrity check.",
         own_action={"id": "repeat_bass_capture", "label": "Repeat the failed capture", "href": "/sound/speaker/crossover/"},
     ),
     "bass_table_capture_context_changed": ReasonSpec(
-        "bass_table_capture_context_changed", TEMPLATE_HARD_STOP, 0, "", "The bass levels were captured under different conditions.",
+        "bass_table_capture_context_changed", TEMPLATE_HARD_STOP, 0, "The bass levels were captured under different conditions.",
         own_action={"id": "match_bass_levels", "label": "Measure all levels with the same stimulus and setup", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_pairs_unavailable": ReasonSpec(
-        "bass_fit_pairs_unavailable", TEMPLATE_HARD_STOP, 0, "", "The run has no unique baseline pair for each candidate take.",
+        "bass_fit_pairs_unavailable", TEMPLATE_HARD_STOP, 0, "The run has no unique baseline pair for each candidate take.",
         own_action={"id": "complete_bass_pairs", "label": "Measure baseline and candidates at matching levels and poses", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_candidate_unreadable": ReasonSpec(
-        "bass_fit_candidate_unreadable", TEMPLATE_HARD_STOP, 0, "", "The measured bass candidate descriptor is unavailable.",
+        "bass_fit_candidate_unreadable", TEMPLATE_HARD_STOP, 0, "The measured bass candidate descriptor is unavailable.",
         own_action={"id": "select_bass_candidate", "label": "Supply the candidate artifact named by the run", "href": "/sound/speaker/crossover/"},
     ),
     "bass_fit_run_mismatch": ReasonSpec(
-        "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "", "The selected run does not match this manifest.",
+        "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "The selected run does not match this manifest.",
         own_action={"id": "select_bass_run", "label": "Select the run recorded in this manifest", "href": "/sound/speaker/crossover/"},
     ),
     # See ADR-0371
     "room_not_banked": ReasonSpec(
-        "room_not_banked", TEMPLATE_HARD_STOP, 0, "", "This round banked no room measurement for this set.",
+        "room_not_banked", TEMPLATE_HARD_STOP, 0, "This round banked no room measurement for this set.",
         own_action={"id": "measure_room", "label": "Measure a new room round", "href": "/sound/speaker/crossover/"},
     ),
-    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", message,
+    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, message,
                         own_action={"id": action, "label": label, "href": next(iter(page), "/sound/speaker/crossover/")})
        for (action, label, *page), rows in _EVIDENCE_COPY.items() for code, message in rows.items()},
-    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message,
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, message,
                         own_action={"id": "measure_again", "label": "Measure this round again",
                                     "href": "/sound/speaker/crossover/"})
        for code, message in _STORE_COPY.items()},
-    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, "", label,
+    **{code: ReasonSpec(code, TEMPLATE_HARD_STOP, 0, label,
                        own_action={"id": action, "label": label, "href": "/sound/speaker/crossover/"})
        for code, action, label in (
            ("compose_refused", "review_candidate", "Review the candidate graph and driver declaration."),
@@ -814,38 +787,38 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
            ("baseline_config_validation_failed", "speaker_setup", "Review the protected speaker graph."),
        )},
     "wired_mic_missing": ReasonSpec(
-        "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "", "Connect the measurement microphone.",
+        "wired_mic_missing", TEMPLATE_HARD_STOP, 0, "Connect the measurement microphone.",
         own_action={"id": "connect_mic", "label": "Connect the measurement microphone", "href": "/sound/speaker/crossover/"},
     ),
     CODE_CAPTURE_GAIN_UNVERIFIED: ReasonSpec(
-        CODE_CAPTURE_GAIN_UNVERIFIED, TEMPLATE_HARD_STOP, 0, "",
+        CODE_CAPTURE_GAIN_UNVERIFIED, TEMPLATE_HARD_STOP, 0,
         "JTS could not set the measurement microphone's input level to full, so it cannot check the sound level. "
         "Reconnect the microphone, then measure again.",
         own_action={"id": "connect_mic", "label": "Reconnect the measurement microphone", "href": "/sound/speaker/crossover/"},
     ),
     "measurement_mic_unidentified": ReasonSpec(
-        "measurement_mic_unidentified", TEMPLATE_HARD_STOP, 0, "", "Select a known measurement microphone.",
+        "measurement_mic_unidentified", TEMPLATE_HARD_STOP, 0, "Select a known measurement microphone.",
         own_action={"id": "identify_mic", "label": "Select a known measurement microphone", "href": "/sound/speaker/crossover/"},
     ),
     "measure_box_not_ready": ReasonSpec(
-        "measure_box_not_ready", TEMPLATE_HARD_STOP, 0, "", "Finish the protected speaker setup.",
+        "measure_box_not_ready", TEMPLATE_HARD_STOP, 0, "Finish the protected speaker setup.",
         own_action={"id": "speaker_setup", "label": "Finish the protected speaker setup", "href": "/sound/speaker/crossover/"},
     ),
     DECLARED_GEOMETRY_UNREADABLE: ReasonSpec(
-        DECLARED_GEOMETRY_UNREADABLE, TEMPLATE_HARD_STOP, 0, "",
+        DECLARED_GEOMETRY_UNREADABLE, TEMPLATE_HARD_STOP, 0,
         "Declare the rig again with jasper-declare-geometry set; jasper-declare-geometry show prints the command.",
         own_action={"id": "declare_geometry", "label": "Declare the rig again with jasper-declare-geometry set", "href": "/sound/speaker/crossover/"},
     ),
     "not_found": ReasonSpec(
-        "not_found", TEMPLATE_HARD_STOP, 0, "", "Select a candidate from the bank.",
+        "not_found", TEMPLATE_HARD_STOP, 0, "Select a candidate from the bank.",
         own_action={"id": "select_candidate", "label": "Select a candidate from the bank", "href": "/sound/speaker/crossover/"},
     ),
     "ambiguous": ReasonSpec(
-        "ambiguous", TEMPLATE_HARD_STOP, 0, "", "Select a candidate with one banked identity.",
+        "ambiguous", TEMPLATE_HARD_STOP, 0, "Select a candidate with one banked identity.",
         own_action={"id": "select_candidate", "label": "Select a candidate with one banked identity", "href": "/sound/speaker/crossover/"},
     ),
     "fingerprint_required": ReasonSpec(
-        "fingerprint_required", TEMPLATE_HARD_STOP, 0, "", "Supply a candidate fingerprint.",
+        "fingerprint_required", TEMPLATE_HARD_STOP, 0, "Supply a candidate fingerprint.",
         own_action={"id": "select_candidate", "label": "Supply a candidate fingerprint", "href": "/sound/speaker/crossover/"},
     ),
     REASON_AGC_BEHAVIORAL_FAIL: _retriable_reason(
@@ -853,8 +826,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         # The captured two-pilot level delta did not match the programmed one
         # at a level where it should have. Two things produce that — the input
         # chain riding gain, or the speaker's own output compressing — so the
-        # copy names the observation, not a cause. The definite mic accusation
-        # lives ONLY on REASON_VERIFY_LEVEL_SHIFT.
+        # copy names the observation, not a cause.
         RetryableReasonCopy(
             "The two test tones didn't come back at the levels JTS played them.",
             "Re-allow the microphone, then try again.",
@@ -893,7 +865,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         capture_quality=True,
     ),
     REASON_CHANNEL_MAP_MISMATCH: ReasonSpec(
-        REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        REASON_CHANNEL_MAP_MISMATCH, TEMPLATE_HARD_STOP, 0,
         # The numbers behind the refusal are on
         # `event=correction.crossover_v2_check_diag`, which publishes each
         # role's raw rises, isolation ratio, and bound.
@@ -918,15 +890,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         ),
         capture_quality=True,
     ),
-    REASON_CLIPPED: _retriable_reason(
-        REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy(
-            "That was a touch loud.",
-            "measuring again a bit quieter.",
-            joiner=" — ",
-            strip_before_join=".",
-        ),
-        auto_retry=True,
+    REASON_CLIPPED: ReasonSpec(
+        REASON_CLIPPED, TEMPLATE_SILENT_AUTO_RETRY, 1, "That was a touch loud.",
     ),
     REASON_LEVEL_DRIFT_AT_SESSION_GAIN: _retriable_reason(
         REASON_LEVEL_DRIFT_AT_SESSION_GAIN, TEMPLATE_FIX_AND_RETRY, 1,
@@ -934,38 +899,20 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
                             "Retake."),
         capture_quality=True,
     ),
-    REASON_LEVEL_OFF_TARGET: _retriable_reason(
-        REASON_LEVEL_OFF_TARGET, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy("That was not at the measuring level.", "measuring again at the right level.",
-                            joiner=" — ", strip_before_join="."),
-        auto_retry=True, capture_quality=True,
-    ),
-    REASON_CAPTURE_OVERRUN: _retriable_reason(
-        REASON_CAPTURE_OVERRUN, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy("JTS was busy and missed part of the recording.", "measuring again.",
-                            joiner=" — ", strip_before_join="."),
-        auto_retry=True, capture_quality=True,
-    ),
-    REASON_DRIFT_BASELINES_DISAGREE: _retriable_reason(
-        REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy(
-            "The capture glitched.",
-            "measuring again.",
-            joiner=" — ",
-            strip_before_join=".",
-        ),
-        auto_retry=True,
+    REASON_LEVEL_OFF_TARGET: ReasonSpec(
+        REASON_LEVEL_OFF_TARGET, TEMPLATE_SILENT_AUTO_RETRY, 1, "That was not at the measuring level.",
         capture_quality=True,
     ),
-    REASON_SWEEP_MISSING: _retriable_reason(
-        REASON_SWEEP_MISSING, TEMPLATE_SILENT_AUTO_RETRY, 1,
-        RetryableReasonCopy(
-            "JTS heard the test tones, but not the sweep after them.",
-            "measuring again.",
-            joiner=" — ",
-            strip_before_join=".",
-        ),
-        auto_retry=True,
+    REASON_CAPTURE_OVERRUN: ReasonSpec(
+        REASON_CAPTURE_OVERRUN, TEMPLATE_SILENT_AUTO_RETRY, 1, "JTS was busy and missed part of the recording.",
+        capture_quality=True,
+    ),
+    REASON_DRIFT_BASELINES_DISAGREE: ReasonSpec(
+        REASON_DRIFT_BASELINES_DISAGREE, TEMPLATE_SILENT_AUTO_RETRY, 1, "The capture glitched.",
+        capture_quality=True,
+    ),
+    REASON_SWEEP_MISSING: ReasonSpec(
+        REASON_SWEEP_MISSING, TEMPLATE_SILENT_AUTO_RETRY, 1, "JTS heard the test tones, but not the sweep after them.",
         capture_quality=True,
     ),
     REASON_DELAY_EXCEEDS_SEARCH_WINDOW: _retriable_reason(
@@ -982,26 +929,26 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         capture_quality=True,
     ),
     REASON_VOLUME_UNRESOLVED: ReasonSpec(
-        REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0, "",
+        REASON_VOLUME_UNRESOLVED, TEMPLATE_VOLUME_RECOVERY, 0,
         "JTS could not confirm the listening volume was restored. Recover the "
         "safe volume before continuing.",
         own_action={"id": "recover_volume", "label": "Recover safe listening volume",
                     "href": "/sound/speaker/crossover/"},
     ),
     "driver_protection_invalid": ReasonSpec(
-        "driver_protection_invalid", TEMPLATE_HARD_STOP, 0, "",
+        "driver_protection_invalid", TEMPLATE_HARD_STOP, 0,
         "The driver protection confirmed in speaker setup cannot be used for "
         "this measurement. Review the driver limits, then measure again.",
         own_action={"id": "review_safety_limits", "label": "Review driver limits",
                     "href": "/sound/speaker/#driver-safety-issues"},
     ),
     "program_admission_refused": ReasonSpec(
-        "program_admission_refused", TEMPLATE_HARD_STOP, 0, "",
+        "program_admission_refused", TEMPLATE_HARD_STOP, 0,
         "The speaker's safety limits refused this sweep. Nothing was played for the refused sweep. "
         "Correct the sweep band, level or length before retrying.",
     ),
     REASON_PROGRAM_OUTPUT_MUTED: ReasonSpec(
-        REASON_PROGRAM_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_PROGRAM_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0,
         "This sweep would play through the rear woofer output, and that output stays muted until "
         "cardioid tuning is applied. Nothing was played. On speaker setup, measure the rear woofer with "
         "Cardioid tuning first.",
@@ -1009,24 +956,24 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
                     "href": "/sound/speaker/"},
     ),
     "session_level_not_ready": ReasonSpec(
-        "session_level_not_ready", TEMPLATE_SESSION_RESTART, 0, "",
+        "session_level_not_ready", TEMPLATE_SESSION_RESTART, 0,
         "The measurement volume was not ready. Nothing was played for this sweep. "
         "Check the speaker's volume status, then start the measurement again.",
     ),
     "program_play_failed": ReasonSpec(
-        "program_play_failed", TEMPLATE_SESSION_RESTART, 0, "",
+        "program_play_failed", TEMPLATE_SESSION_RESTART, 0,
         "The speaker could not play the measurement program. Check the playback status before retrying.",
     ),
-    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message + " The remaining poses were not measured.")
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, message + " The remaining poses were not measured.")
        for code, message in ARM_STOP_COPY.items()},
     REASON_PROGRAM_UNPLAYABLE: ReasonSpec(
-        REASON_PROGRAM_UNPLAYABLE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_PROGRAM_UNPLAYABLE, TEMPLATE_HARD_STOP, 0,
         "JTS could not play the measurement signal within the speaker's safe "
         "limits. Re-check the driver details in speaker setup, then measure "
         "again.",
     ),
     REASON_PROGRAM_PLAN_SHAPE_INVALID: ReasonSpec(
-        REASON_PROGRAM_PLAN_SHAPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        REASON_PROGRAM_PLAN_SHAPE_INVALID, TEMPLATE_HARD_STOP, 0,
         "JTS could not read the measurement plan. Submit a complete plan in the current format.",
         own_action={
             "id": "review_plan",
@@ -1035,7 +982,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         },
     ),
     REASON_MEASUREMENT_VOLUME_DRIFT: ReasonSpec(
-        REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_VOLUME_DRIFT, TEMPLATE_HARD_STOP, 0,
         # NAMES THE OBSERVATION, NOT A CAUSE. Two conditions reach this code:
         # the fader was read and would not hold (something else owns the
         # volume), or it could not be read at all (the DSP is not answering).
@@ -1048,33 +995,33 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "speaker from the system page.",
     ),
     REASON_MEASUREMENT_OUTPUT_MUTED: ReasonSpec(
-        REASON_MEASUREMENT_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0,
         "The speaker is muted. Raise the speaker volume above zero, then measure again.",
         own_action={"id": "raise_volume", "label": "Raise speaker volume above zero", "href": "/sound/"},
     ),
     REASON_PROTECTION_SWEEP_TOO_LOW: ReasonSpec(
-        REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0, "",
+        REASON_PROTECTION_SWEEP_TOO_LOW, TEMPLATE_HARD_STOP, 0,
         "JTS played the measurement fine, but it swept this driver lower than "
         "the driver's own protection lets through, so the bottom of the sweep "
         "is too quiet to trust. Re-check this driver's protection settings in "
         "speaker setup, then measure again.",
     ),
     REASON_PROTECTION_NOT_SEPARABLE: ReasonSpec(
-        REASON_PROTECTION_NOT_SEPARABLE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_PROTECTION_NOT_SEPARABLE, TEMPLATE_HARD_STOP, 0,
         "JTS played the measurement fine, but the safety limits it had to keep "
         "in place overlap the crossover you have set, so it cannot tell the two "
         "apart well enough to trust the result. Change the crossover frequency "
         "in speaker setup, then measure again.",
     ),
     REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID: ReasonSpec(
-        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID, TEMPLATE_HARD_STOP, 0,
         "The driver limits needed for measurement are missing or do not fit. "
         "Check the listed driver issues in speaker setup before measuring.",
         own_action={"id": "review_safety_limits", "label": "Review driver limits",
                     "href": "/sound/speaker/#driver-safety-issues"},
     ),
     REASON_DRIVER_SENSITIVITY_UNDECLARED: ReasonSpec(
-        REASON_DRIVER_SENSITIVITY_UNDECLARED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_DRIVER_SENSITIVITY_UNDECLARED, TEMPLATE_HARD_STOP, 0,
         "JTS sets a tweeter's measurement level from the declared driver sensitivities, and one is "
         "missing or differs between a driver's outputs. Declare one sensitivity for each driver in "
         "speaker setup, then measure again.",
@@ -1082,7 +1029,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
                     "href": "/sound/speaker/"},
     ),
     REASON_MEASUREMENT_TARGETS_MISSING: ReasonSpec(
-        REASON_MEASUREMENT_TARGETS_MISSING, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_TARGETS_MISSING, TEMPLATE_HARD_STOP, 0,
         "JTS does not have a measurement target for every driver this speaker "
         "declares, so it cannot measure them. Finish speaker setup so each "
         "driver is assigned to an output, then measure again.",
@@ -1093,7 +1040,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         },
     ),
     REASON_SPEAKER_SHAPE_UNSUPPORTED: ReasonSpec(
-        REASON_SPEAKER_SHAPE_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_SPEAKER_SHAPE_UNSUPPORTED, TEMPLATE_HARD_STOP, 0,
         "JTS can measure a single full-range speaker or a two-way active "
         "crossover, and this speaker is neither. There is nothing to retry — "
         "check the drivers declared in speaker setup.",
@@ -1105,204 +1052,192 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     # Measurement graph and walk refusals (tracking issue #4942).
     REASON_MEASUREMENT_GRAPH_UNAVAILABLE: ReasonSpec(
-        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_GRAPH_UNAVAILABLE, TEMPLATE_HARD_STOP, 0,
         "JTS could not install or restore the measurement audio setup. Check the speaker's audio state, then start a new session.",
         own_action={"id": "new_measurement_session", "label": "Start a new session",
                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_MEASUREMENT_BASELINE_UNAVAILABLE: ReasonSpec(
-        REASON_MEASUREMENT_BASELINE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_BASELINE_UNAVAILABLE, TEMPLATE_HARD_STOP, 0,
         "JTS could not build this program's baseline. Review the saved speaker setup before measuring.",
         own_action={"id": "speaker_setup", "label": "Review speaker setup", "href": "/sound/speaker/"},
     ),
     REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_CANDIDATE_SPEAKER_MISMATCH, TEMPLATE_HARD_STOP, 0,
         "The selected tuning uses a different speaker setup. Select a tuning for this speaker.",
         own_action={"id": "speaker_setup", "label": "Review speaker outputs", "href": "/sound/speaker/"},
     ),
     REASON_MEASUREMENT_CANDIDATE_REQUIRED: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_CANDIDATE_REQUIRED, TEMPLATE_HARD_STOP, 0,
         "This measurement needs a saved tuning. Your AI assistant makes it. "
         "On speaker setup, copy a tuning prompt and give it to your assistant.",
         own_action={"id": "copy_tuning_prompt", "label": "Copy a tuning prompt", "href": "/sound/speaker/"},
     ),
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED: ReasonSpec(
-        REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, TEMPLATE_HARD_STOP, 0,
         "This speaker does not offer that measurement. Choose one from the list.",
     ),
     REASON_MEASUREMENT_CANDIDATE_INVALID: ReasonSpec(
-        REASON_MEASUREMENT_CANDIDATE_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_CANDIDATE_INVALID, TEMPLATE_HARD_STOP, 0,
         'JTS cannot read the selected tuning. Select a valid saved tuning, then measure again.',
         own_action={"id": 'select_candidate', "label": 'Select a valid tuning',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_MEASUREMENT_SCOPE_INVALID: ReasonSpec(
-        REASON_MEASUREMENT_SCOPE_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_SCOPE_INVALID, TEMPLATE_HARD_STOP, 0,
         'JTS cannot measure the selected tuning layer. Select a supported measurement layer.',
         own_action={"id": 'select_measurement_scope', "label": 'Select a measurement layer',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_MEASUREMENT_FILTERS_INVALID: ReasonSpec(
-        REASON_MEASUREMENT_FILTERS_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_FILTERS_INVALID, TEMPLATE_HARD_STOP, 0,
         'JTS cannot read all the filters in this tuning. Select a valid saved tuning before '
         'measuring again.',
         own_action={"id": 'select_candidate', "label": 'Select a valid tuning',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_MEASUREMENT_BRANCH_CHANNELS: ReasonSpec(
-        REASON_MEASUREMENT_BRANCH_CHANNELS, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASUREMENT_BRANCH_CHANNELS, TEMPLATE_HARD_STOP, 0,
         'This measurement needs the woofer and tweeter on separate supported outputs. Review their '
         'output assignments in speaker setup.',
         own_action={"id": 'speaker_setup', "label": 'Review speaker outputs',
                     "href": '/sound/speaker/'},
     ),
     REASON_WALK_RIG_CLEAR_NOT_ATTESTED: ReasonSpec(
-        REASON_WALK_RIG_CLEAR_NOT_ATTESTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_RIG_CLEAR_NOT_ATTESTED, TEMPLATE_HARD_STOP, 0,
         "Confirm that the arm's full sweep path is clear with --attest-rig-clear.",
         own_action={"id": "attest_rig_clear", "label": "Check the full sweep path and attest",
                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_ARM_PARK_UNCONFIRMED: ReasonSpec(
-        REASON_ARM_PARK_UNCONFIRMED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_ARM_PARK_UNCONFIRMED, TEMPLATE_HARD_STOP, 0,
         "Check the arm and its parked journal row before starting another round.",
         own_action={"id": "check_arm_park", "label": "Check the arm park",
                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_MOVER_UNAVAILABLE: ReasonSpec(
-        REASON_WALK_MOVER_UNAVAILABLE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_MOVER_UNAVAILABLE, TEMPLATE_HARD_STOP, 0,
         "Connect the arm adapter and check that root can detect it.",
         own_action={"id": "connect_arm", "label": "Connect and detect the arm adapter",
                     "href": "/sound/speaker/crossover/"},
     ),
     REASON_WALK_MOVER_MISMATCH: ReasonSpec(
-        REASON_WALK_MOVER_MISMATCH, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_MOVER_MISMATCH, TEMPLATE_HARD_STOP, 0,
         'Match the microphone movement settings in the plan and session.',
         own_action={"id": 'match_walk_mover', "label": 'Match the movement settings',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_OVER_MOVER_ENVELOPE: ReasonSpec(
-        REASON_WALK_OVER_MOVER_ENVELOPE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_OVER_MOVER_ENVELOPE, TEMPLATE_HARD_STOP, 0,
         'A measurement position is beyond the stated movement range. Move that position within the '
         'range.',
         own_action={"id": 'adjust_walk_positions', "label": 'Adjust the positions',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_LEVEL_POLICY_INVALID: ReasonSpec(
-        REASON_WALK_LEVEL_POLICY_INVALID, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_LEVEL_POLICY_INVALID, TEMPLATE_HARD_STOP, 0,
         'Correct the measurement level settings before starting.',
         own_action={"id": 'correct_walk_levels', "label": 'Correct the level settings',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_VOLUME_RESTORE_DEFERRED: ReasonSpec(
-        REASON_VOLUME_RESTORE_DEFERRED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_VOLUME_RESTORE_DEFERRED, TEMPLATE_HARD_STOP, 0,
         'Measurement stopped because another volume claim is active.',
         own_action={"id": "new_measurement_session", "label": "Start a new measurement after playback settles",
                     "href": "/sound/speaker/crossover/"},
     ),
-    REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
-        REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
-        'Submit the measurement plan in the current request format.',
-        own_action={"id": "review_plan", "label": "Review measurement settings",
-                    "href": "/sound/speaker/crossover/"},
-    ),
     REASON_MEASURE_SPL_CALIBRATION_REQUIRED: ReasonSpec(
-        REASON_MEASURE_SPL_CALIBRATION_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_MEASURE_SPL_CALIBRATION_REQUIRED, TEMPLATE_HARD_STOP, 0,
         'JTS needs microphone calibration to check the sound level during this measurement. '
         'Register calibration with microphone sensitivity, then measure again.',
         own_action={"id": 'register_mic_calibration', "label": 'Register microphone calibration',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_COMMISSIONING_STOP_UNSET: ReasonSpec(
-        REASON_WALK_COMMISSIONING_STOP_UNSET, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_COMMISSIONING_STOP_UNSET, TEMPLATE_HARD_STOP, 0,
         'This speaker has no sound level stop set for measurements. Set the stop level in speaker '
         'setup before measuring.',
         own_action={"id": 'speaker_setup', "label": 'Set the measurement stop level',
                     "href": '/sound/speaker/'},
     ),
     REASON_WALK_STIMULUS_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_STIMULUS_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_STIMULUS_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
         'The test signal does not fit this measurement plan. Choose a supported signal for its '
         'positions.',
         own_action={"id": 'correct_walk_stimulus', "label": 'Correct the test signal',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_OVER_CAPTURE_CAPACITY: ReasonSpec(
-        REASON_WALK_OVER_CAPTURE_CAPACITY, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_OVER_CAPTURE_CAPACITY, TEMPLATE_HARD_STOP, 0,
         'This plan has more recordings than one session can hold. Split the positions across '
         'separate sessions.',
         own_action={"id": 'split_walk', "label": 'Split the measurement plan',
                     "href": '/sound/speaker/crossover/'},
     ),
-    REASON_WALK_STOP_NO_LONGER_VALID: ReasonSpec(
-        REASON_WALK_STOP_NO_LONGER_VALID, TEMPLATE_HARD_STOP, 0, "",
-        'A saved measurement position is no longer valid. Correct that position before starting.',
-        own_action={"id": 'correct_walk_stop', "label": 'Correct the saved position',
-                    "href": '/sound/speaker/crossover/'},
-    ),
     REASON_WALK_TEMPLATE_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_TEMPLATE_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_TEMPLATE_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
         'The test signal settings include position fields that the plan must set. Remove those '
         'fields from the signal settings.',
         own_action={"id": 'correct_walk_template', "label": 'Correct the signal settings',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_POLARITY_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_POLARITY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_POLARITY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
         'The selected driver and polarity settings do not match. Correct the polarity settings '
         'before starting.',
         own_action={"id": 'correct_walk_polarity', "label": 'Correct the polarity settings',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_DELAY_NOT_ACCEPTED: ReasonSpec(
-        REASON_WALK_DELAY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_DELAY_NOT_ACCEPTED, TEMPLATE_HARD_STOP, 0,
         'The selected driver and delay settings do not match. Correct the delay settings before '
         'starting.',
         own_action={"id": 'correct_walk_delay', "label": 'Correct the delay settings',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_LEVEL_MATCH_NO_EVIDENCE: ReasonSpec(
-        REASON_WALK_LEVEL_MATCH_NO_EVIDENCE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_LEVEL_MATCH_NO_EVIDENCE, TEMPLATE_HARD_STOP, 0,
         'JTS has no measured driver levels to match. Measure the driver levels before asking it to '
         'match them.',
         own_action={"id": 'measure_driver_levels', "label": 'Measure the driver levels',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_CANDIDATE_NOT_MEASURABLE: ReasonSpec(
-        REASON_WALK_CANDIDATE_NOT_MEASURABLE, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_CANDIDATE_NOT_MEASURABLE, TEMPLATE_HARD_STOP, 0,
         "A summed tuning test must use that tuning's own levels and alignment. Remove the separate "
         'level or alignment overrides.',
         own_action={"id": 'remove_trial_overrides', "label": "Use the tuning's own settings",
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_BRANCH_PAIR_UNDECLARED: ReasonSpec(
-        REASON_WALK_BRANCH_PAIR_UNDECLARED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_BRANCH_PAIR_UNDECLARED, TEMPLATE_HARD_STOP, 0,
         'This measurement plays a driver output this speaker does not declare. Check the outputs '
         'in speaker setup, then measure again.',
         own_action={"id": 'speaker_setup', "label": 'Open speaker setup',
                     "href": '/sound/speaker/'},
     ),
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS: ReasonSpec(
-        REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP, 0, "",
+        REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP, 0,
         'This layout declares three driver roles: woofer, mid and tweeter. '
         'The measurement programs are not built for it yet.',
     ),
     # End measurement graph and walk refusals.
     REASON_SPL_CEILING_EXCEEDED: ReasonSpec(
-        REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
+        REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0,
         "The measurement stopped because the microphone heard a sound over this speaker's level stop. "
         "The sound may have come from the speaker or from the room. "
         "Wait for quiet, then measure again. If it stops again in a quiet room, report it.",
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(
-        REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",
+        REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0,
         "Something went wrong on the speaker during that measurement. "
         "Try again.",
     ),
     REASON_RETRIES_SPENT: ReasonSpec(
-        REASON_RETRIES_SPENT, TEMPLATE_SESSION_RESTART, 0, "",
+        REASON_RETRIES_SPENT, TEMPLATE_SESSION_RESTART, 0,
         "The retakes for this position are used up. Start another run to measure it again.",
     ),
-    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, message) for code, message in {
         REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so no measurement was taken there.",
         REASON_NOT_REACHED: "The run stopped before JTS took this measurement.",
         "retry_gain_missing": "The retake has no test level to use.",
@@ -1314,31 +1249,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "wired_capture_failed": "The microphone could not complete the recording.",
         "program_not_composed": "The speaker could not prepare the test signal.",
     }.items()},
-    REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
-        REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
-        # Names no reflection: a gate window capped at the search ceiling proves
-        # nothing about one (gate_disclosure.describe_gate discloses the gate).
-        RetryableReasonCopy(
-            "The check was inconclusive — this measurement had less usable sound "
-            "to compare than the tuning did.",
-            "Re-verify to try again.",
-        ),
-    ),
-    REASON_VERIFY_LEVEL_SHIFT: _retriable_reason(
-        REASON_VERIFY_LEVEL_SHIFT, TEMPLATE_VERIFY_FAIL, 2,
-        # The instrument is named device-agnostically: the session mic may be a
-        # UMIK-2 or a laptop. ONE string renders on TWO surfaces where "try
-        # again" is a DIFFERENT control — the measurement page's in-session
-        # re-arm, which re-compares against the SAME reference and repeats
-        # until the budget dies, and the wizard's FRESH capture session, which
-        # re-baselines and settles in one capture — so it names the escalation
-        # conditionally rather than commanding or dismissing the retry.
-        RetryableReasonCopy(
-            "The microphone's levels changed between measurements, so this "
-            "check couldn't settle.",
-            "Try again — if it repeats, re-measure.",
-        ),
-    ),
     REASON_APPLY_FAILED: _retriable_reason(
         REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
         RetryableReasonCopy(
@@ -1347,41 +1257,41 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         ),
     ),
     REASON_USER_STOPPED: ReasonSpec(
-        REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0, "",
+        REASON_USER_STOPPED, TEMPLATE_SESSION_RESTART, 0,
         "You stopped the measurement. Start over from this page when you're "
         "ready.",
     ),
     REASON_ARM_HOST_STUCK: ReasonSpec(
-        REASON_ARM_HOST_STUCK, TEMPLATE_HARD_STOP, 0, "",
+        REASON_ARM_HOST_STUCK, TEMPLATE_HARD_STOP, 0,
         "The arm host stopped the measurement because the executor made no progress. "
         "Check the run status and arm trail before starting another measurement.",
     ),
     # The isolation window's own codes (jasper.runtime.measurement_window), where the door holds voice strictly.
-    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "",
+    **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0,
                         "The voice assistant did not stay paused, so the measurement stopped before it played on. "
                         "Try again.",
                         own_action={"id": "measure_again", "label": "Measure again", "href": "/sound/speaker/crossover/"})
        for code in ("voice_pause_failed", "voice_lease_lost")},
     "voice_status_unavailable": ReasonSpec(
-        "voice_status_unavailable", TEMPLATE_SESSION_RESTART, 0, "",
+        "voice_status_unavailable", TEMPLATE_SESSION_RESTART, 0,
         "The voice assistant is not answering, so the measurement cannot hold it quiet. Check the voice "
         "assistant, or try again after it starts.",
         own_action={"id": "check_voice", "label": "Check the voice assistant", "href": "/assistant/voice/"},
     ),
     REASON_POSITION_HOLD_EXPIRED: ReasonSpec(
-        REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
+        REASON_POSITION_HOLD_EXPIRED, TEMPLATE_SESSION_RESTART, 0,
         "Nothing reported the microphone reaching its next position, so the "
         "measurement stopped waiting. Start over from this page when every "
         "position can be confirmed as the microphone arrives.",
     ),
     REASON_POSITION_TARGET_MISSING: ReasonSpec(
-        REASON_POSITION_TARGET_MISSING, TEMPLATE_SESSION_RESTART, 0, "",
+        REASON_POSITION_TARGET_MISSING, TEMPLATE_SESSION_RESTART, 0,
         "This measurement did not say where the microphone should be, so it "
         "stopped rather than record an unknown position. Start over from this "
         "page.",
     ),
     REASON_SESSION_CEILING_EXPIRED: ReasonSpec(
-        REASON_SESSION_CEILING_EXPIRED, TEMPLATE_SESSION_RESTART, 0, "",
+        REASON_SESSION_CEILING_EXPIRED, TEMPLATE_SESSION_RESTART, 0,
         "The whole measurement ran out of time while it was still waiting for "
         "the microphone to reach a position. Start over from this page once "
         "the microphone can be moved through the walk more quickly.",
@@ -1406,14 +1316,6 @@ def refusal_copy_for(code: str | None, *, failed_roles: Sequence[str] = ()) -> t
     fallback = REASON_REGISTRY[REASON_INTERNAL_ERROR]
     spec = fallback if code is None else REASON_REGISTRY.get(code, fallback)
     return reason_message(spec.code, spec, failed_roles=failed_roles), dict(spec.own_action) if spec.own_action else None
-
-
-# The transient codes whose first retry is automatic (a banner, no decision
-# screen) per §5.10 template 1.
-TRANSIENT_AUTO_RETRY_CODES = frozenset(
-    code for code, spec in REASON_REGISTRY.items()
-    if spec.template == TEMPLATE_SILENT_AUTO_RETRY
-)
 
 
 def reason_message(

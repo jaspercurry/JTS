@@ -30,11 +30,9 @@ __all__ = [
 
 @dataclass(frozen=True)
 class V2ConductorSnapshot:
-    """The session's level state, bound to its capture session (§5.6)."""
+    """The capture session a state document is bound to (§5.6)."""
 
     session_id: str
-    gain_plan_db: Mapping[str, float] | None = None
-    measure_gain_ceiling_db: Mapping[str, float] | None = None
 
 
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
@@ -222,16 +220,7 @@ def build_conductor_state(
     same_session = prior.get("session_id") == snap.session_id
     state: dict[str, Any] = {
         "session_id": snap.session_id,
-        "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
-        "measure_gain_ceiling_db": dict(
-            getattr(snap, "measure_gain_ceiling_db", None) or {}
-        ),
         "candidate": None,
-        "sound_design_revision": (
-            getattr(conductor, "sound_design_revision", None)
-            if getattr(conductor, "sound_design_revision", None) is not None
-            else prior.get("sound_design_revision")
-        ),
         "failure": (
             {
                 "code": failure_code,

@@ -139,7 +139,6 @@ class CrossoverV2Session:
             str, Sequence[CrossoverSection]
         ]
         | None = None,
-        sound_design_revision: int | None = None,
         lateral_prompts: Sequence[CloudPositionPrompt] = (),
         measure_specs_by_index: Mapping[int, MeasureSpec] | None = None,
     ) -> None:
@@ -147,7 +146,6 @@ class CrossoverV2Session:
         if not 1 <= len(roles) <= 2:
             raise CrossoverV2FlowError("a v2 session walks one or two drivers")
         self.session_id = str(session_id)
-        self.sound_design_revision = sound_design_revision
         self._preset = source_preset
         self._roles = roles
         # Lowest role first. ``_tweeter`` is ``None`` on a 1-way main, never aliased.
@@ -347,11 +345,7 @@ class CrossoverV2Session:
         return f"{phase}:{index}" if phase == PHASE_LATERAL else phase
 
     def snapshot(self) -> V2ConductorSnapshot:
-        return V2ConductorSnapshot(
-            session_id=self.session_id,
-            gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
-            measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
-        )
+        return V2ConductorSnapshot(session_id=self.session_id)
 
     def authorize_begin(
         self,

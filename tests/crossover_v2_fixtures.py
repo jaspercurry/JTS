@@ -277,12 +277,11 @@ def _measure_analysis(
     )
 
 
-def _verify_pilot(hi_dbfs: float, *, programmed_hi_gain_db: float = -20.0) -> PilotObservation:
+def _verify_pilot(hi_dbfs: float) -> PilotObservation:
     return PilotObservation(
         role="summed", level_lo_dbfs=hi_dbfs - 10.0, level_hi_dbfs=hi_dbfs,
         programmed_delta_db=10.0, captured_delta_db=10.0,
         linearity_ok=True, channel_map_ok=True,
-        programmed_hi_gain_db=programmed_hi_gain_db,
     )
 
 
@@ -291,7 +290,7 @@ _INTEGRITY_FROM_LOCATIONS = object()
 
 def _verify_analysis(
     program, *, max_db=0.9, gate_ms=8.5, linearity=True, locate_confidence=0.9,
-    pilot_hi_dbfs=None, programmed_hi_gain_db=-20.0, summed_db=None,
+    pilot_hi_dbfs=None, summed_db=None,
     pilot_snr_ok=None, floor_source=None, residual_samples=0.0,
     n_graded_bins=120,
     integrity=_INTEGRITY_FROM_LOCATIONS,
@@ -330,7 +329,7 @@ def _verify_analysis(
         linearity_ok=linearity,
         pilot_snr_ok=pilot_snr_ok,
         pilots=(
-            (_verify_pilot(pilot_hi_dbfs, programmed_hi_gain_db=programmed_hi_gain_db),)
+            (_verify_pilot(pilot_hi_dbfs),)
             if pilot_hi_dbfs is not None else ()
         ),
     )
@@ -1014,12 +1013,9 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "candidate",
     "evidence",
     "failure",
-    "gain_plan_db",
     "kind",
-    "measure_gain_ceiling_db",
     "schema_version",
     "session_id",
-    "sound_design_revision",
     "updated_at",
 }
 

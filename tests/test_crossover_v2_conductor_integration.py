@@ -11,7 +11,6 @@ from dataclasses import replace
 from jasper.active_speaker.crossover_v2.planning import analysis_json as _analysis_json
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
-    TRANSIENT_AUTO_RETRY_CODES,
 )
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.program_analysis.model import CrossoverCandidate, DriftEstimate
@@ -100,7 +99,6 @@ def test_the_accountability_reasons_are_gone_from_the_registry():
     assert "driver_levels_disagree" not in REASON_REGISTRY
     assert "correction_not_an_improvement" not in REASON_REGISTRY
     assert "prescribed_correction_not_an_improvement" not in REASON_REGISTRY
-    assert "driver_levels_disagree" not in TRANSIENT_AUTO_RETRY_CODES
 
 
 # SF2 / SF3 (adversarial review, 2026-07-24 — #1668 PR-C review)
