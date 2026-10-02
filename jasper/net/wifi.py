@@ -836,6 +836,8 @@ def connect_new(
     list doesn't accumulate garbage.
 
     Returns (ok, human-readable message)."""
+    if password is not None and not isinstance(password, str):
+        raise InvalidPassword("password must be a string or null")
     # nmcli's --ask prompt reads one line; control characters truncate the PSK.
     if isinstance(password, str) and any(c in password for c in "\r\n\0"):
         raise InvalidPassword("password must not contain line breaks or NUL")

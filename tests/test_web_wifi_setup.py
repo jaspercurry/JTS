@@ -349,9 +349,13 @@ def test_post_connect_emits_one_redacted_action_event(
 
 
 @pytest.mark.parametrize(
-    "bad_password", ["line\nbreak", "carriage\rreturn", "both\r\ncombined", "nul\0byte"],
+    "bad_password",
+    [
+        "line\nbreak", "carriage\rreturn", "both\r\ncombined", "nul\0byte",
+        12345678, 0, 1.5, True, False, [], {}, ["password"], {"password": "secret"},
+    ],
 )
-def test_post_connect_rejects_control_characters_before_nmcli(
+def test_post_connect_rejects_invalid_password_before_nmcli(
     monkeypatch, bad_password,
 ):
     calls = []

@@ -16,7 +16,7 @@ speaker. The rule lives at deploy/polkit/49-jasper-web.rules and is installed to
 These tests pin the invariants that, if broken, silently brick Wi-Fi management
 or over-grant the most network-exposed daemon:
 
-* it grants exactly the five NetworkManager actions wifi_setup.py drives;
+* it grants exactly the five NetworkManager actions jasper/net/wifi.py drives;
 * it keys on `subject.user` ONLY (a sessionless daemon has subject.active ==
   false, so gating on .active would never fire — the single most likely mistake);
 * it does NOT grant systemctl/reboot (jasper-web restarts via the restart broker,
@@ -30,9 +30,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RULES = ROOT / "deploy/polkit/49-jasper-web.rules"
 
-# The NetworkManager polkit actions wifi_setup.py exercises. Source of truth for
+# The NetworkManager polkit actions jasper/net/wifi.py exercises. Source of truth for
 # the grant set; keep in lockstep with deploy/polkit/49-jasper-web.rules and the
-# rule's header comment that maps each to a wifi_setup.py operation.
+# rule's header comment that maps each to a jasper/net/wifi.py operation.
 NM_ACTIONS = (
     "org.freedesktop.NetworkManager.settings.modify.system",
     "org.freedesktop.NetworkManager.settings.modify.own",
@@ -105,7 +105,7 @@ def test_rule_does_not_grant_systemctl_or_reboot():
 
 
 def test_rule_does_not_grant_unrelated_nm_actions():
-    """Scope discipline: only the five wifi_setup.py actions are granted. NM's
+    """Scope discipline: only the five jasper/net/wifi.py actions are granted. NM's
     own sleep/wake/reload/checkpoint actions are never called by the wizard;
     granting them would expand the blast radius of a jasper-web compromise."""
     code = _code_only(_rule_text())

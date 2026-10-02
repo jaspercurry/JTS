@@ -99,7 +99,7 @@ RestartSec=2
 # Each one's mechanism, validated on jts.local (systemd 257, polkit 126, NM 1.52):
 #   * NetworkManager (/wifi/ scan/connect/forget/radio/PSK-stash) — a polkit
 #     rule (deploy/polkit/49-jasper-web.rules) grants this uid the 5 NM actions
-#     wifi_setup.py drives; NM denies a sessionless daemon by default, so the
+#     jasper/net/wifi.py drives; NM denies a sessionless daemon by default, so the
 #     rule is load-bearing. `netdev` group is neither necessary nor sufficient.
 #   * BlueZ adapter Alias/Powered (/speaker rename, BT radio) — the `bluetooth`
 #     supplementary group (D-Bus policy grant, not polkit).

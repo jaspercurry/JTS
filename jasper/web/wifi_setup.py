@@ -189,7 +189,7 @@ def _post_connect(handler: _Handler, body: dict[str, Any]) -> None:
     hidden = bool(body.get("hidden"))
     if ssid:
         try:
-            ok, msg = wifi.connect_new(ssid, password or None, hidden=hidden)
+            ok, msg = wifi.connect_new(ssid, password, hidden=hidden)
         except wifi.InvalidPassword as exc:
             handler._send_json({"ok": False, "message": str(exc)}, status=400)
             return

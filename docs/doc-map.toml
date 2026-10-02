@@ -293,6 +293,7 @@ docs = [
 id = "wifi-and-network-recovery"
 safety = "connectivity-risk"
 code = [
+  "jasper/net/wifi.py",
   "jasper/web/wifi_setup.py",
   "jasper/net/wifi_scan_repair.py",
   "jasper/net/wifi_guardian_persistence.py",

@@ -243,7 +243,7 @@ def test_the_pre_redaction_message_is_not_kept_on_the_record():
 def test_the_secret_word_rule_spares_its_own_placeholder(message, expected):
     """`_SECRET_WORD_RE` must not re-match its own `<redacted>` placeholder,
     mirroring the guard `_AUTHORIZATION_RE` already carries. A literal
-    substitution (e.g. `wifi_setup._readable_nmcli_error` scrubbing an
+    substitution (e.g. `wifi._readable_nmcli_error` scrubbing an
     echoed PSK) can put that placeholder into a quoted `log_event` value
     before this filter ever sees it; re-matching it let the greedy value
     class swallow the value's closing quote. The guard is
