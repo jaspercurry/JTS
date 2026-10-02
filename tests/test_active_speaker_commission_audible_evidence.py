@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import yaml as yaml_lib
 
-from jasper.active_speaker import (
-    ActiveSpeakerPreset,
-    audible_outputs_for_role,
-    driver_commission_audible_evidence,
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
     emit_active_speaker_commissioning_config,
 )
+from jasper.active_speaker.camilla_yaml.topology import audible_outputs_for_role
+from jasper.active_speaker.graph_evidence import driver_commission_audible_evidence
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 
 # Reuse the canonical preset fixtures.
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset

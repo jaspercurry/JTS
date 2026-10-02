@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jasper.active_speaker import (
+from jasper.active_speaker.staging import (
     COMMISSIONING_CONFIG_KIND,
     prepare_driver_commissioning_config,
 )

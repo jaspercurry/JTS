@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import (
+from jasper.active_speaker.design_draft import (
     DESIGN_DRAFT_KIND,
     DRIVER_RESEARCH_KIND,
     ActiveSpeakerDesignDraftError,

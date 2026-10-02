@@ -10,16 +10,16 @@ from pathlib import Path
 
 import pytest
 
-from jasper.active_speaker import (
+from jasper.active_speaker.path_safety import (
     HARDWARE_PROBE_EVIDENCE_SOURCE,
     OPERATOR_EVIDENCE_SOURCE,
     PATH_SAFETY_EVIDENCE_KIND,
-    ActiveSpeakerConfigError,
     build_startup_load_path_safety_evidence,
     evaluate_path_safety_evidence,
     requirements_payload,
     write_path_safety_evidence,
 )
+from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.path_safety import (

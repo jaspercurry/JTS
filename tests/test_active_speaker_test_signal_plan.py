@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker import (
+from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.test_signal_plan import (
     DRIVER_TEST_SIGNAL_PLAN_KIND,
-    ActiveSpeakerPreset,
     driver_test_signal_plan,
     driver_test_signal_plan_from_edges,
 )

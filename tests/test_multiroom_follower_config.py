@@ -51,9 +51,7 @@ from jasper.active_speaker.crossover_preview import build_crossover_preview
 # Clock-seam guard imports — the grouping ring is the follower's ingress and
 # snapclient is its sole rate-tracker (see the clock-seam tests at the end of
 # this file).
-from jasper.active_speaker import (
-    ActiveSpeakerPreset,
-)
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import active_emit_devices
 from jasper.dsp_control.camilla_config_contract import DEFAULT_CHUNKSIZE
 from jasper.dsp_control.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE

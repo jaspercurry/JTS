@@ -2540,10 +2540,8 @@ def test_an_admitted_boost_is_still_charged_and_re_proved_at_the_graph(tmp_path)
     a MEASUREMENT plays, not the EQ an accepted round applies. Neither this
     change nor this test touches it.)
     """
-    from jasper.active_speaker import (
-        ActiveSpeakerPreset,
-        emit_active_speaker_baseline_config,
-    )
+    from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
+    from jasper.active_speaker.profile import ActiveSpeakerPreset
 
     from jasper.active_speaker.graph_types import GRAPH_APPROVED_ACTIVE_RUNTIME
     from tests.test_active_speaker_linearization_emission import (

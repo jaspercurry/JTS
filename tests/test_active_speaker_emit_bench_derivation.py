@@ -17,7 +17,8 @@ import math
 import pytest
 import yaml
 
-from jasper.active_speaker import ActiveSpeakerPreset, emit_active_speaker_baseline_config
+from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
+from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.bench import derivation
 from jasper.active_speaker.bench.derivation import (
     ArtifactHeader,

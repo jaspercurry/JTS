@@ -8,12 +8,12 @@ import copy
 
 import pytest
 
-from jasper.active_speaker import (
+from jasper.active_speaker.camilla_yaml.emit_startup import emit_active_speaker_startup_config
+from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     BaselineVerification,
     SpeakerBaselineProfile,
-    emit_active_speaker_startup_config,
 )
 
 

@@ -16,7 +16,7 @@ import yaml
 
 import jasper.active_speaker.startup_load as startup_load_mod
 import jasper.cli.active_speaker as active_speaker_cli
-from jasper.active_speaker import (
+from jasper.active_speaker.path_safety import (
     HARDWARE_PROBE_EVIDENCE_SOURCE,
     OPERATOR_EVIDENCE_SOURCE,
     PATH_SAFETY_EVIDENCE_KIND,
@@ -656,7 +656,7 @@ def test_commission_ramp_tweeter_blocked_before_woofer_cli(
 
 
 def test_commission_load_cli_arms_woofer_at_floor(monkeypatch, tmp_path: Path, capsys):
-    from jasper.active_speaker import load_commission_load_state
+    from jasper.active_speaker.startup_load import load_commission_load_state
 
     controller = _FakeController("placeholder")
     env = _commission_env(monkeypatch, tmp_path, controller)
@@ -721,7 +721,7 @@ def test_commission_load_cli_dry_run_loads_nothing(monkeypatch, tmp_path: Path, 
 def test_commission_rollback_cli_reloads_staged_all_muted(
     monkeypatch, tmp_path: Path, capsys
 ):
-    from jasper.active_speaker import load_commission_load_state
+    from jasper.active_speaker.startup_load import load_commission_load_state
 
     controller = _FakeController("placeholder")
     env = _commission_env(monkeypatch, tmp_path, controller)
@@ -746,7 +746,7 @@ def test_commission_rollback_cli_clears_pending_ramp_step(
 ):
     """#2669: a bare rollback re-mutes the graph, so the step the ramp was
     waiting on is gone with it — but the group memory is not."""
-    from jasper.active_speaker import load_ramp_state
+    from jasper.active_speaker.commission_ramp import load_ramp_state
     from jasper.active_speaker.safe_playback import load_safe_playback_state
 
     _controller, _env, floor = _arm_woofer(monkeypatch, tmp_path, capsys)
@@ -783,7 +783,7 @@ def test_commission_rollback_cli_keeps_pending_when_rollback_fails(
 ):
     """Fail-closed: a rollback that did NOT reach the anchor leaves the step
     alone — the driver may still be audible and still needs its ACK."""
-    from jasper.active_speaker import load_ramp_state
+    from jasper.active_speaker.commission_ramp import load_ramp_state
 
     _controller, env, _floor = _arm_woofer(monkeypatch, tmp_path, capsys)
     assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0
@@ -834,7 +834,7 @@ def test_commission_ramp_status_cli_mid_ramp(monkeypatch, tmp_path: Path, capsys
 
 
 def test_commission_ramp_status_cli_after_rollback(monkeypatch, tmp_path: Path, capsys):
-    from jasper.active_speaker import load_commission_load_state
+    from jasper.active_speaker.startup_load import load_commission_load_state
 
     _controller, _env, _floor = _arm_woofer(monkeypatch, tmp_path, capsys)
     assert main(["commission-ramp", "step", "--group", "mono", "--role", "woofer"]) == 0

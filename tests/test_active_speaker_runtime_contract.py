@@ -21,14 +21,15 @@ from pathlib import Path
 from jasper.active_speaker import graph_selector
 from jasper.active_speaker.graph import bass_extension
 from jasper.active_speaker.graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
-from jasper.active_speaker import (
-    ACTIVE_PROGRAM_BAKE_SOURCE,
-    ActiveSpeakerConfigError,
-    ActiveSpeakerPreset,
-    emit_active_speaker_baseline_config,
+from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
+from jasper.active_speaker.camilla_yaml.emit_commissioning import (
     emit_active_speaker_commissioning_config,
+)
+from jasper.active_speaker.camilla_yaml.emit_program_bake import (
+    ACTIVE_PROGRAM_BAKE_SOURCE,
     emit_active_speaker_program_bake_config,
 )
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from jasper.active_speaker.camilla_yaml import BASELINE_LIMITER_CLIP_LIMIT_DB
 from jasper.active_speaker.camilla_names import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.camilla_names import driver_linearization_shelf_name, driver_linearization_taper_name

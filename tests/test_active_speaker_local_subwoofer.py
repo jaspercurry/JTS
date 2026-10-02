@@ -22,11 +22,11 @@ from dataclasses import replace
 import pytest
 import yaml
 
-from jasper.active_speaker import (
+from jasper.active_speaker.camilla_yaml.emit_baseline import emit_active_speaker_baseline_config
+from jasper.active_speaker.profile import (
     ActiveSpeakerConfigError,
     ActiveSpeakerPreset,
     LocalSubwoofer,
-    emit_active_speaker_baseline_config,
     lowest_driver_role,
 )
 from jasper.platform.speaker_layout import DEFAULT_SUB_CROSSOVER_HZ

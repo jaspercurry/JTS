@@ -594,7 +594,7 @@ def test_seed_crossover_statefile_points_at_driver_domain(monkeypatch, tmp_path)
     """The arm-time re-seed points camilla#2's statefile at the re-proven
     driver-domain config — closing the B1 seam (the install seed is flat; the
     crossover guard repairs only a dead pipe, never a flat statefile)."""
-    from jasper.active_speaker import parse_camilla_statefile_config_path
+    from jasper.active_speaker.environment import parse_camilla_statefile_config_path
 
     monkeypatch.setattr(
         alc, "CROSSOVER_CONFIG_PATH", str(tmp_path / "grouping_active_leader_crossover.yml")
