@@ -113,7 +113,6 @@ __all__ = [
     "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
-    "WALK_CANDIDATE_NOT_MEASURABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
 ]
@@ -412,16 +411,6 @@ class AngleCaptureRequest:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"{name} must be an integer >= {minimum}")
-        if not isinstance(self.candidates, (tuple, list)) or any(
-            not isinstance(c, str) or not c for c in self.candidates
-        ):
-            raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must be nonempty names")
-        object.__setattr__(self, "candidates", tuple(self.candidates))
-        cycle = self.candidates or (BASE_CANDIDATE,)
-        if set(cycle) != {
-            candidate_identity(stop.candidate_id) for stop in self.stops
-        }:
-            raise LateralWalkRefused(WALK_CANDIDATE_NOT_MEASURABLE, "candidates must match the stop identities")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -683,8 +672,6 @@ WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
 
-WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
-
 #: A ladder's levels are steps, not faders: the loudest plays at the level the first rung's probe finds
 #: (ADR-0403 §4).
 LADDER_STEPS_DETAIL = ("levels are distinct steps in dB: the loudest plays at the level the first rung's probe "
@@ -699,7 +686,6 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
-    WALK_CANDIDATE_NOT_MEASURABLE,
 })
 
 
