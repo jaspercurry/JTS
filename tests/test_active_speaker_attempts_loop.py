@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.active_speaker.attempts_loop import (
-    CLAIM_FLOOR_P95_MULTIPLE, FLOOR_BASIS_MEASURED, FLOOR_BASIS_POLICY,
-    FLOOR_SCOPE_ACROSS_SITTINGS, FLOOR_SCOPE_WITHIN_SITTING, FLOOR_SCOPES, FloorStats, percentile,
-)
+from jasper.active_speaker.attempts_loop import CLAIM_FLOOR_P95_MULTIPLE, FloorStats, percentile
 
 METRIC = "max_db_notch_excluded"
 
@@ -21,9 +18,6 @@ BANKED_CONSECUTIVE_PAIRS_DB = (
 )
 BANKED_P95_DB = 0.08508
 BANKED_MEDIAN_DB = 0.05183
-
-
-SITTING = "sitting-1"
 
 
 def test_percentile_reproduces_the_banked_studys_own_summary():
@@ -66,7 +60,6 @@ def test_claim_floor_is_twice_the_measured_p95_not_a_transcribed_decimal():
     )
     assert floor.claim_floor_db == pytest.approx(0.17016, abs=1e-9)
     assert floor.claim_floor_db < 0.2
-    assert floor.basis == FLOOR_BASIS_MEASURED
 
 
 def test_a_larger_measured_p95_moves_the_floor_with_it():
@@ -83,65 +76,16 @@ def test_a_larger_measured_p95_moves_the_floor_with_it():
     assert loose.claim_floor_db == pytest.approx(2 * tight.claim_floor_db)
 
 
-def test_policy_bar_floor_refuses_to_invent_a_measurement():
-    floor = FloorStats.from_policy_bar(
-        metric="anything", claim_floor_db=0.5, source="a shipped constant",
-        scope=FLOOR_SCOPE_ACROSS_SITTINGS,
-    )
-    assert floor.basis == FLOOR_BASIS_POLICY
-    assert floor.p95_db is None
-    assert floor.median_db is None
-
-
 def test_floor_construction_refuses_nonsense():
     with pytest.raises(ValueError):
         FloorStats.from_repeat_study(
             metric=METRIC, median_db=0.0, p95_db=0.0, source="s", measured_at="",
         )
     with pytest.raises(ValueError):
-        FloorStats.from_policy_bar(
-            metric="", claim_floor_db=0.5, source="s",
-            scope=FLOOR_SCOPE_WITHIN_SITTING,
+        FloorStats.from_repeat_study(
+            metric="", median_db=0.05, p95_db=0.085, source="s", measured_at="",
         )
     with pytest.raises(ValueError):
-        FloorStats.from_policy_bar(
-            metric="m", claim_floor_db=0.5, source="",
-            scope=FLOOR_SCOPE_WITHIN_SITTING,
-        )
-    with pytest.raises(ValueError):
-        FloorStats(
-            metric="m", claim_floor_db=0.5, basis="made_up", source="s",
-        )
-    with pytest.raises(ValueError):
-        FloorStats(
-            metric="m", claim_floor_db=0.5, basis=FLOOR_BASIS_POLICY,
-            source="s", scope="whenever",
-        )
-
-
-def test_every_floor_scope_is_declared_and_the_default_is_the_narrow_one():
-    assert FLOOR_SCOPES == {FLOOR_SCOPE_WITHIN_SITTING, FLOOR_SCOPE_ACROSS_SITTINGS}
-    bare = FloorStats(
-        metric=METRIC, claim_floor_db=0.5, basis=FLOOR_BASIS_POLICY, source="s",
-    )
-    assert bare.scope == FLOOR_SCOPE_WITHIN_SITTING
-    assert bare.to_dict()["scope"] == FLOOR_SCOPE_WITHIN_SITTING
-    study = FloorStats.from_repeat_study(
-        metric=METRIC, median_db=0.05, p95_db=0.085, source="s",
-        measured_at="2026-07-31",
-    )
-    assert study.scope == FLOOR_SCOPE_WITHIN_SITTING
-    assert FloorStats.from_repeat_study(
-        metric=METRIC, median_db=0.05, p95_db=0.085, source="s",
-        measured_at="2026-07-31", scope=FLOOR_SCOPE_ACROSS_SITTINGS,
-    ).scope == FLOOR_SCOPE_ACROSS_SITTINGS
-
-
-def test_a_policy_bar_must_say_what_it_licenses():
-    """No default, because there is no fact behind a declared bar to infer one
-    from — see ``from_policy_bar``'s own note."""
-
-    with pytest.raises(TypeError):
-        FloorStats.from_policy_bar(  # type: ignore[call-arg]
-            metric=METRIC, claim_floor_db=0.5, source="s",
+        FloorStats.from_repeat_study(
+            metric=METRIC, median_db=0.05, p95_db=0.085, source="", measured_at="",
         )

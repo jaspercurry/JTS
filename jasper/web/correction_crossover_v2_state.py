@@ -16,7 +16,7 @@ import threading
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.active_speaker.crossover_v2.coordinator import (
@@ -25,9 +25,6 @@ from jasper.active_speaker.crossover_v2.coordinator import (
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker import driver_base_trim
 from jasper.platform.log_event import log_event
-
-if TYPE_CHECKING:
-    from jasper.active_speaker.model_error_store import ModelErrorStoreSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -200,17 +197,6 @@ def clear_v2_state() -> None:
                 "correction.crossover_v2_state_clear_failed",
                 level=logging.WARNING,
             )
-
-
-def attempt_loop_store_snapshot() -> ModelErrorStoreSnapshot:
-    """The store-owned floor and current model-error count for one conductor.
-
-    The host performs the I/O at conductor construction; the conductor
-    receives values and a writer seam, and the attempts kernel remains pure.
-    """
-    from jasper.active_speaker.model_error_store import store_snapshot
-
-    return store_snapshot()
 
 
 def reset_v2_journey_state() -> None:

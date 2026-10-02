@@ -103,10 +103,6 @@ _BINDING = "placement_abcdefghijklmnopqrstuv"
 def _isolated_state(tmp_path, monkeypatch):
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_BASELINE_PROFILE_STATE", str(tmp_path / "baseline_profile.json"))
-    monkeypatch.setenv(
-        "JASPER_ACTIVE_SPEAKER_MODEL_ERROR_PATH",
-        str(tmp_path / "model_error.json"),
-    )
     yield
     v2state.set_state_path_for_tests(None)
     v2volume.set_volume_plan_for_tests(None)
@@ -995,7 +991,7 @@ def test_observe_apply_success_records_the_way_back_pointer():
     assert v2state.load_v2_state()["previous_candidate_fingerprint"] is None
 
 
-def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
+def test_start_over_while_applied_keeps_the_attempt_history():
     loop = {
         "history": [
             {
@@ -1014,22 +1010,6 @@ def test_attempt_loop_status_is_minimal_and_start_over_keeps_its_basis():
         "applied": True,
         "attempts_loop": loop,
     })
-
-    from jasper.active_speaker.model_error_store import (
-        MODEL_ERROR_STATE_KIND,
-        model_error_state_path,
-    )
-
-    model_error_state_path().write_text(json.dumps({
-        "kind": MODEL_ERROR_STATE_KIND,
-        "model_error": [{"attempt_id": f"candidate-{index}"} for index in range(7)],
-    }))
-
-    block = v2status.crossover_v2_status_block()
-    assert block["attempts_loop"] == {
-        "store_count": 7,
-    }
-    assert "history" not in block["attempts_loop"]
 
     v2state.reset_v2_journey_state()
     assert v2state.load_v2_state()["attempts_loop"] == loop
