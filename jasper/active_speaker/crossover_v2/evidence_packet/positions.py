@@ -13,7 +13,7 @@ from jasper.audio_measurement.evidence_reasons import unavailable
 from ...commissioning_evidence_store import EVIDENCE_ROOT
 from .. import position_cycle
 from ..journey import PHASE_LATERAL
-from ..record_index import Measurement
+from ..record_index import Measurement, whole_degrees
 
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns:
@@ -58,13 +58,8 @@ def banked_takes(
 
 def _distinct_degrees(takes: list[Any], field: str) -> list[int]:
     """The sorted whole degrees ``field`` carries across ``takes``."""
-
-    values = set()
-    for take in takes:
-        value = take.get(field)
-        if isinstance(value, int) and not isinstance(value, bool):
-            values.add(value)
-    return sorted(values)
+    degrees = (whole_degrees(take.get(field)) for take in takes)
+    return sorted({value for value in degrees if value is not None})
 
 
 def _lateral_poses_block(

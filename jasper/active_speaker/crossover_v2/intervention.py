@@ -12,12 +12,12 @@ estimator is reimplemented here. Must never import anything under
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from ..branch_chain import radiating_band_hz
-from ..crossover_section import CrossoverSection, sections_by_role
+from ..crossover_section import CrossoverSection
 from ..branch_target import branch_target
 from ..linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
@@ -241,21 +241,12 @@ def fit_branches(
     drivers: Sequence[DriverEvidence], *,
     mic_tiers: Mapping[str, str],
     vocabulary: FitVocabulary | Mapping[str, FitVocabulary],
-    sections: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    source_preset: Mapping[str, Any] | None = None,
+    sections: Mapping[str, Sequence[CrossoverSection]],
     cloud: CloudFitTerms | Mapping[str, CloudFitTerms] | None = None,
-    on_bands: Callable[[Mapping[str, tuple[float, float]]], None] | None = None,
 ) -> BranchFits:
     """Compose every envelope before fitting the shared measurement hole."""
-    if sections is None:
-        sections = sections_by_role(
-            CrossoverRegion.from_mapping(region)
-            for region in (source_preset or {}).get("crossover_regions") or ()
-        )
     responses = {driver.role: driver.response for driver in drivers}
     radiating = {role: radiating_band_hz(sections.get(role, ())) for role in responses}
-    if on_bands is not None:
-        on_bands(radiating)
     envelopes = {}
     clouds = cloud if isinstance(cloud, Mapping) else {role: cloud for role in responses}
     for driver in drivers:

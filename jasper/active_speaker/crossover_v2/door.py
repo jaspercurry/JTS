@@ -13,7 +13,6 @@ from typing import Any, AsyncIterator, Callable, Mapping, cast
 
 from jasper.platform.log_event import log_event
 from jasper.audio_measurement.wired_capture import WiredSplMonitor
-from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.dsp_control.dsp_apply import dsp_writer_lock
 from jasper.audio_resources.volume_owner import volume_owner
 from jasper.voice.input_presence import voice_parked_no_mic
@@ -31,7 +30,7 @@ from .measure_spec import CANDIDATE_SCOPES
 from .refusal_copy import REASON_MEASURE_SPL_CALIBRATION_REQUIRED, REASON_VOLUME_RESTORE_DEFERRED
 from .composition import confirm_graph_is_live
 from .session_graph import MeasurementSessionGraph
-from .volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor
+from .volume_claim import MeasurementVolumeClaim, OwnerVolumeDoor, camilla_fader_reader
 
 logger = logging.getLogger(__name__)
 REFUSE_SESSION_LIVE = "measurement_door_session_live"
@@ -83,10 +82,9 @@ class OpenMeasurementDoor:
 async def isolation_hold(
     *, graph: Any, camilla_factory: Callable[[], Any], action: str,
     volume_state_path: str | Path | None = None,
-    wall_clock_ceiling_s: float | None = None, gate_owner: str | None = None,
-    plan: Any = None,
+    wall_clock_ceiling_s: float | None = None, plan: Any = None,
 ) -> AsyncIterator[IsolationHold]:
-    from jasper.runtime.measurement_window import MEASUREMENT_GATE_OWNER, measurement_window  # lazy: coordinator boundary
+    from jasper.runtime.measurement_window import measurement_window  # lazy: coordinator boundary
     from ..session_volume_plan import (  # lazy: live plan binding
         DEFAULT_SESSION_VOLUME_STATE_PATH, SessionVolumePlan, live_measurement_session,
     )
@@ -105,8 +103,7 @@ async def isolation_hold(
     # write like any other.
     # Where jasper-voice runs, a voice pause the window cannot hold, at entry or on
     # renewal, ends the run into the restore below (#5925, comment 5921678274).
-    async with measurement_window(gate_owner=MEASUREMENT_GATE_OWNER if gate_owner is None else gate_owner,
-                                  require_voice_pause=not voice_parked_no_mic()):
+    async with measurement_window(require_voice_pause=not voice_parked_no_mic()):
         await plan.enforce_ceiling(volume_door)
         body_error: BaseException | None = None
         try:
@@ -237,14 +234,7 @@ def _volume_door(
     The read is the PHYSICAL fader, which is what makes the snapshot every drain
     restores toward a state rather than an intent.
     """
-
-    async def _read_fader() -> float | None:
-        try:
-            return await camilla_factory().get_volume_db(best_effort=False)
-        except CamillaUnavailable as exc:
-            raise RuntimeError("CamillaDSP is unavailable") from exc
-
-    return OwnerVolumeDoor(owner, read_fader=_read_fader, claim=claim)
+    return OwnerVolumeDoor(owner, read_fader=camilla_fader_reader(camilla_factory), claim=claim)
 
 
 def bind_measurement_graph(

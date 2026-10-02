@@ -162,7 +162,6 @@ def _envelope(
     alternate_actions: list[dict[str, Any]] | None = None,
     status: Mapping[str, Any],
     advertise_capture: bool = True,
-    busy: bool = False,
     terminal_status: str | None = None,
     round_ordinal: int | None = None,
 ) -> dict[str, Any]:
@@ -192,7 +191,7 @@ def _envelope(
             action and action.get("id") == "reset_timing" for action in actions
         ) else None,
         "timing": dict(as_mapping(status.get("timing"))),
-        "busy": bool(busy),
+        "busy": False,
         **round_capture(as_mapping(status.get("capture")), verdict, advertise_capture=advertise_capture),
         "progress": _progress(active_step),
         "applied": _applied_chip(status),

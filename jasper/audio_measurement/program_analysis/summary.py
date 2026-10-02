@@ -15,7 +15,7 @@ from .model import DRIVER_SNR_ALIGNMENT_KEY, DriverResponse, TIMING_NEEDS_MEASUR
 from .response import polarity_label
 
 
-def _gate_window_ms_of(response: "DriverResponse | None") -> float | None:
+def gate_window_ms(response: "DriverResponse | None") -> float | None:
     if response is None:
         return None
     window = response.gating.get("window_ms") if response.gating else None
@@ -171,7 +171,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
 
     for resp in getattr(analysis, "driver_responses", None) or ():
         role = resp.role
-        out[f"{role}_gate_window_ms"] = _gate_window_ms_of(resp)
+        out[f"{role}_gate_window_ms"] = gate_window_ms(resp)
         out[f"{role}_gate_floor_source"] = _gate_floor_source_of(resp)
         out[f"{role}_gate_disclosure"] = _gate_disclosure_of(resp)
         out[f"{role}_validity_floor_hz"] = resp.validity_floor_hz
@@ -256,7 +256,7 @@ def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
 
     summed_response = getattr(analysis, "summed_response", None)
     if summed_response is not None:
-        out["verify_gate_window_ms"] = _gate_window_ms_of(summed_response)
+        out["verify_gate_window_ms"] = gate_window_ms(summed_response)
         out["verify_gate_floor_source"] = _gate_floor_source_of(summed_response)
         out["verify_gate_disclosure"] = _gate_disclosure_of(summed_response)
         out["verify_validity_floor_hz"] = summed_response.validity_floor_hz

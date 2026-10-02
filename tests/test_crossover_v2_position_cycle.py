@@ -25,7 +25,6 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     select_pose_curve_pair,
     write_position_cycle,
 )
-from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
 from jasper.active_speaker.measurement_programs import PURPOSE_SPEAKER
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.spatial import (
@@ -474,38 +473,7 @@ def _pose_bank(tmp_path: Path) -> Path:
     return tmp_path / "bundle" / "sess-1"
 
 
-def _pair_take(bundle_dir: Path, **pose) -> list[str]:
-    found = select_pose_curve_pair(
-        bundle_dir, phases=(PHASE_LATERAL,), roles=("woofer", "tweeter"), **pose
-    )
-    return [] if found is None else [found.take.path]
-
-
-def _indexed(bundle_dir: Path, **filters) -> list[str]:
-    return [row.path for row in bundle_measurements(bundle_dir, **filters)]
-
-
-@pytest.mark.parametrize(
-    ("select", "expected"),
-    [
-        pytest.param(
-            lambda d: _pair_take(d, position_deg=0),
-            ["lateral_01_a01"],
-            id="the_design_axis_pair_is_the_mark_height_take",
-        ),
-        pytest.param(
-            lambda d: _pair_take(d, position_deg=0, vertical_deg=10),
-            ["lateral_02_a01"],
-            id="the_raised_pose_answers_only_when_its_height_is_named",
-        ),
-        pytest.param(
-            lambda d: _indexed(d, vertical_deg=10),
-            ["lateral_02_a01"],
-            id="the_index_selects_the_raised_take_alone",
-        ),
-    ],
-)
-def test_a_pose_is_selected_by_its_bearing_AND_its_height(tmp_path, select, expected):
+def test_the_design_axis_pair_is_the_mark_height_take_not_a_newer_raised_one(tmp_path):
     """A raised seat and a mark-height one share a bearing and are NOT the
     same pose.
 
@@ -513,4 +481,8 @@ def test_a_pose_is_selected_by_its_bearing_AND_its_height(tmp_path, select, expe
     only key hands the newer raised take to the forward model and the delay
     landscape as their design-axis basis — the wrong measurement, silently.
     """
-    assert [Path(path).stem for path in select(_pose_bank(tmp_path))] == expected
+    found = select_pose_curve_pair(
+        _pose_bank(tmp_path), phases=(PHASE_LATERAL,), position_deg=0, roles=("woofer", "tweeter"),
+    )
+
+    assert found is not None and Path(found.take.path).stem == "lateral_01_a01"

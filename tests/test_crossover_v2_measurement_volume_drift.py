@@ -222,7 +222,7 @@ def test_a_transiently_unreadable_fader_is_proven_by_the_re_read_not_refused():
 
 def test_a_wedged_fader_read_refuses_instead_of_raising_its_own_error():
     """``CamillaUnavailable`` reaches this seam as ``RuntimeError`` (the
-    caller's ``_session_volume_read`` wraps it). It must land as the refusal,
+    caller's ``camilla_fader_reader`` wraps it). It must land as the refusal,
     not as an unclassified error the catch-all arm calls ``internal_error``."""
 
     async def boom() -> float:

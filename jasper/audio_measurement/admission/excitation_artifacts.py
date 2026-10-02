@@ -127,7 +127,8 @@ def _identifier(value: object, *, field: str) -> str:
     return value
 
 
-def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+def strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """``json.loads`` ``object_pairs_hook`` that refuses a duplicate key."""
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
@@ -140,7 +141,7 @@ def _parse_json_object(raw: bytes, *, artifact: str) -> dict[str, Any]:
     try:
         payload = json.loads(
             raw.decode("utf-8"),
-            object_pairs_hook=_strict_object_pairs,
+            object_pairs_hook=strict_object_pairs,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise AdmissionArtifactError(

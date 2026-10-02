@@ -58,18 +58,14 @@ def _declared_alignment_delay_range_ms(
     return region, lo_ms, hi_ms
 
 
-def alignment_delay_search_bounds_us(
-    source_preset: Any,
-    *,
-    margin_ms: float = ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS,
-) -> tuple[float, float] | None:
+def alignment_delay_search_bounds_us(source_preset: Any) -> tuple[float, float] | None:
     """Flatness-search magnitude bounds from the preset's declaration."""
     declared = _declared_alignment_delay_range_ms(source_preset)
     if declared is None:
         return None
     _region, lo_ms, hi_ms = declared
-    lo_ms = max(0.0, lo_ms - margin_ms)
-    hi_ms += margin_ms
+    lo_ms = max(0.0, lo_ms - ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS)
+    hi_ms += ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS
     return lo_ms * 1000.0, hi_ms * 1000.0
 
 

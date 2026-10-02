@@ -11,7 +11,7 @@ from typing import Any, Collection, Mapping
 
 from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQUIRED
 from jasper.active_speaker.design_inputs import declared_by_target
-from jasper.active_speaker.excitation_safety_plan import _role_sensitivities
+from jasper.active_speaker.excitation_safety_plan import role_sensitivities
 from jasper.active_speaker.measurement_programs import (
     PROGRAM_ENTRIES, PURPOSE_REAR, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, layouts_without_arm,
     offered_here, preset,
@@ -63,7 +63,7 @@ def _declared_components(design_draft: Mapping[str, Any]) -> list[dict[str, Any]
     profile = design_draft.get("driver_safety_profile") or {}
     targets = profile.get("targets") or []
     passbands = driver_passbands_from_safety_profile(profile)
-    sensitivities, _disagreeing = _role_sensitivities(targets)
+    sensitivities, _disagreeing = role_sensitivities(targets)
     diameters = declared_by_target(design_draft, "radiating_diameter_mm")
     components = []
     for target in targets:

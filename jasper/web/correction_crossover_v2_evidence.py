@@ -10,6 +10,7 @@ from jasper.active_speaker.crossover_v2.capture_provenance import analysis_prove
 from jasper.active_speaker.crossover_v2.harmonic_evidence import distortion_evidence
 from jasper.active_speaker.measurement_bass import bass_evidence
 from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from jasper.active_speaker.crossover_v2.volume_claim import camilla_fader_reader
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 
@@ -388,7 +389,7 @@ def bind_production_play(
 
     async def _before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         await v2volume.session_volume_plan().hold_measurement_volume(
-            v2volume._session_volume_read(camilla_factory), context=f"capture:{phase}",
+            camilla_fader_reader(camilla_factory), context=f"capture:{phase}",
         )
         await record_capture_provenance(
             provenance, open_cam=camilla_factory,

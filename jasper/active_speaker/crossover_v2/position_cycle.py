@@ -247,7 +247,7 @@ class PoseCurvePair(NamedTuple):
 
 def select_pose_curve_pair(
     bundle_dir: Path, *, phases: tuple[str, ...], position_deg: int | None,
-    roles: tuple[str, str], vertical_deg: int = 0, take_id: str | None = None,
+    roles: tuple[str, str], take_id: str | None = None,
     search_detail: dict[str, Any] | None = None,
 ) -> PoseCurvePair | None:
     """Newest matching speaker take the round kept, with both gated curves
@@ -265,7 +265,7 @@ def select_pose_curve_pair(
                              purposes_searched=list(purposes), roles_required=list(roles),
                              takes_seen=0, roles_per_take={}, poses=[])
     for row, document in reversed(list(kept_measurements(bundle_dir, phases=phases, purposes=purposes))):
-        if (row.vertical_deg != vertical_deg
+        if (row.vertical_deg != 0
             or (position_deg is not None and row.position_deg != position_deg)
             or (take_id is not None and document.get("take_id") != take_id)):
             continue

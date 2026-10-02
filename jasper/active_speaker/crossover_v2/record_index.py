@@ -43,6 +43,7 @@ __all__ = [
     "reopen_measurement_record",
     "take_pose_kind",
     "take_purpose",
+    "whole_degrees",
 ]
 
 
@@ -119,11 +120,11 @@ def played_graph_fingerprint(document: Mapping[str, Any]) -> str:
     return str(graph.get("fingerprint") or document.get("graph_fingerprint") or "")
 
 
-def _position_deg(value: Any) -> int | None:
-    """The signed whole-degree bearing, or ``None`` where none was commanded.
+def whole_degrees(value: Any) -> int | None:
+    """A banked angle as a whole number, or ``None`` where none was recorded.
 
-    ``bool`` is an ``int`` subclass, so it is excluded rather than read as a
-    bearing of 0 or 1.
+    ``bool`` is an ``int`` subclass, so it is excluded rather than read as an
+    angle of 0 or 1.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -168,7 +169,7 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
     that field (#2902)."""
     if document.get("kind") != POSITION_EVIDENCE_KIND:
         return None
-    vertical_deg = _position_deg(document.get("vertical_deg"))
+    vertical_deg = whole_degrees(document.get("vertical_deg"))
     if vertical_deg is None:
         raise _not_banked(document, "vertical_deg")
     return (
@@ -176,7 +177,7 @@ def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
         _text(document.get("run_id")),
         _text(document.get(MEASURE_KIND_KEY)),
         _text(document.get("phase")),
-        _position_deg(document.get("position_deg")),
+        whole_degrees(document.get("position_deg")),
         vertical_deg,
         _text(document.get("candidate_id")),
         _captured_at(document.get("captured_at")),
@@ -218,30 +219,14 @@ def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mappi
             yield Measurement(*row), document
 
 
-def bundle_measurements(
-    bundle_dir: Path,
-    *,
-    kind: str | None = None,
-    phase: str | None = None,
-    position_deg: int | None = None,
-    vertical_deg: int | None = None,
-    candidate_id: str | None = None,
-) -> tuple[Measurement, ...]:
-    """One bundle's takes, matching every filter — the offline reader's door.
+def bundle_measurements(bundle_dir: Path, *, phase: str | None = None) -> tuple[Measurement, ...]:
+    """One bundle's takes, or only those of one ``phase`` — the offline reader's door.
 
     ``phase`` is what a take IS (the walk pose, the entry baseline, a CHECK);
-    ``kind`` is what it MEASURES (baseline / candidate / verify).
-    A pose is a bearing AND a height, so a caller naming only ``position_deg``
-    is handed raised seats too; every axis is ``None``-means-no-filter, and it
-    is the pose readers above this that pin the height they mean. The rows
+    ``kind`` is what it MEASURES (baseline / candidate / verify). The rows
     select; the take files still decide — every caller re-reads the file it was
     pointed at through its own accept rule.
     """
     return tuple(
-        row for row, _ in measurement_documents(bundle_dir)
-        if (kind is None or row.kind == kind)
-        and (phase is None or row.phase == phase)
-        and (position_deg is None or row.position_deg == position_deg)
-        and (vertical_deg is None or row.vertical_deg == vertical_deg)
-        and (candidate_id is None or row.candidate_id == candidate_id)
+        row for row, _ in measurement_documents(bundle_dir) if phase is None or row.phase == phase
     )
