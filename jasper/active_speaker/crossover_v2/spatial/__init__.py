@@ -23,9 +23,6 @@ from ..pose_curve import (
     LateralPoseCurve as LateralPoseCurve,
     pose_curve_record as pose_curve_record,
 )
-from .group_floor import (
-    GEOMETRY_RETRY_POSITIONS as GEOMETRY_RETRY_POSITIONS,
-)
 from .records import (
     POSITION_ROLES as POSITION_ROLES,
     POSITION_ROLE_OFFAX as POSITION_ROLE_OFFAX,
@@ -39,7 +36,6 @@ from .records import (
 )
 
 __all__ = [
-    "GEOMETRY_RETRY_POSITIONS",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "MARK_DISTANCE_M",
