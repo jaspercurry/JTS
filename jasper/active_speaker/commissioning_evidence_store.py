@@ -34,6 +34,7 @@ from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.admission.excitation_artifacts import (
     AdmissionArtifactError,
     AdmissionAuthority,
+    strict_object_pairs,
 )
 from jasper.platform.json_fields import canonical_json_bytes
 
@@ -118,20 +119,11 @@ def _canonical_json(value: Mapping[str, Any]) -> bytes:
         ) from exc
 
 
-def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
 def _parse_canonical_object(raw: bytes) -> dict[str, Any]:
     try:
         value = json.loads(
             raw.decode("utf-8"),
-            object_pairs_hook=_strict_object_pairs,
+            object_pairs_hook=strict_object_pairs,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise CommissioningEvidenceStoreError(
