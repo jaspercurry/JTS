@@ -62,6 +62,7 @@ from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
 from tests.run_manifest_fixture import IN_ROOM_CLEARED, manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_bass_extension_dynamic import _descriptor as _bass_descriptor
 
 #: The digest the fixture document echoes when the test does not care which.
 MEDIAN_SHA256 = "a" * 64
@@ -417,14 +418,15 @@ def _rerun(capsys: pytest.CaptureFixture[str], bank: Path, view: str, *flags: st
     return Path(json.loads(capsys.readouterr().out)["out"])
 
 
-def _prescribe(tmp_path: Path, capsys: pytest.CaptureFixture[str], bank: Path, argv: list[str], sha: str) -> tuple[int, Any]:
-    """One ``jasper-crossover-prescriber`` call on ``bank`` with a room document answering ``sha``, a fresh base
-    candidate beside it: its exit code and answer."""
+def _prescribe(tmp_path: Path, capsys: pytest.CaptureFixture[str], bank: Path, argv: list[str], sha: str,
+               sections: dict[str, Any] | None = None) -> tuple[int, Any]:
+    """One ``jasper-crossover-prescriber`` call on ``bank`` with ``sections``, else a room document answering
+    ``sha``, a fresh base candidate beside it: its exit code and answer."""
     root = tmp_path / f"candidates {len(list(tmp_path.glob('candidates *')))}"
     base = publish_authored_candidate(replace(_candidate(), analysis={"measurement_status": "unmeasured"}), root=root)
     path = tmp_path / f"{root.name}.json"
-    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint,
-                                "rationale": "room", "sections": {"room": _document(filters=[], sha256=sha)}}))
+    path.write_text(json.dumps({"kind": "jts_prescription", "schema": 1, "base": base.fingerprint, "rationale": "room",
+                                "sections": sections or {"room": _document(filters=[], sha256=sha)}}))
     code = cli.main([argv[0], str(path), "--round", str(bank), "--root", str(root), *argv[1:]])
     return code, json.loads(capsys.readouterr().out)
 
@@ -432,7 +434,7 @@ def _prescribe(tmp_path: Path, capsys: pytest.CaptureFixture[str], bank: Path, a
 def test_a_one_set_room_round_is_filed_and_served_by_its_set_whether_it_is_named_or_not(tmp_path, capsys):
     """The bank files a one-set round's room views under no set name, and the round's set names them
     all the same: a re-run of room or room-grade files where the bank does, and judge, its preview,
-    compose and room-grade answer with --set and without."""
+    compose and room-grade answer with --set and without, as a bass document's preview does (ADR-0421)."""
     bank = _bank_room_round(tmp_path)
     (set_id, view), = _banked_room_views(bank).items()
     assert view.name == "room.json"
@@ -448,6 +450,11 @@ def test_a_one_set_room_round_is_filed_and_served_by_its_set_whether_it_is_named
             assert answer["subject"]["set_id"] == set_id
             if "--preview" not in argv:
                 assert answer["packet_contracts"]["contract_current"] is True
+    for flags in ([], ["--set", set_id]):
+        code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--preview", *flags], sha,
+                                  sections={"bass": _bass_descriptor().payload()})
+        assert code == 0, answer
+        assert (answer["subject"]["set_id"], answer["preview"]["room_median_sha256"]) == (set_id, sha)
 
 
 def test_a_two_set_room_round_is_filed_and_served_by_the_set_named_and_asks_for_one_when_none_is(tmp_path, capsys):
