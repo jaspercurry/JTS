@@ -1000,8 +1000,10 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     REASON_PROGRAM_OUTPUT_MUTED: ReasonSpec(
         REASON_PROGRAM_OUTPUT_MUTED, TEMPLATE_HARD_STOP, 0, "",
         "This sweep would play through the rear woofer output, and that output stays muted until "
-        "cardioid tuning is applied. Nothing was played. Measure the rear woofer with Cardioid tuning first.",
-        own_action={"id": "measure_rear", "label": "Measure the rear woofer", "href": "/sound/speaker/crossover/"},
+        "cardioid tuning is applied. Nothing was played. On speaker setup, measure the rear woofer with "
+        "Cardioid tuning first.",
+        own_action={"id": "measure_rear_woofer", "label": "Measure the rear woofer with Cardioid tuning",
+                    "href": "/sound/speaker/"},
     ),
     "session_level_not_ready": ReasonSpec(
         "session_level_not_ready", TEMPLATE_SESSION_RESTART, 0, "",

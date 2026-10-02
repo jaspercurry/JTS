@@ -1694,7 +1694,8 @@ def test_a_summed_take_that_feeds_its_muted_rear_still_refuses_and_names_it(tmp_
     assert admission.refusals == (ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,)
     assert admission.to_dict()["muted_output"] == {"target_id": _REAR, "output_index": 2}
     assert admission_incident(ProgramPlaybackRefused(admission)) == REASON_PROGRAM_OUTPUT_MUTED
-    assert REASON_REGISTRY[REASON_PROGRAM_OUTPUT_MUTED].next_action["id"] == "measure_rear"
+    action = REASON_REGISTRY[REASON_PROGRAM_OUTPUT_MUTED].next_action
+    assert (action["id"], action["href"]) == ("measure_rear_woofer", "/sound/speaker/")
 
 
 @pytest.mark.parametrize("scope, cleared", [("timing", ()), ("candidate", ()), ("candidate", _BASS_BASE_CLEARS)])
