@@ -117,9 +117,9 @@ def _level_retake(level: _LevelTarget, *, probe: bool) -> TakeVerdict:
 
 
 def _pilots_heard(analysis: ProgramAnalysis) -> bool | None:
-    """The pilots cleared the room: over their SNR floor, or with a step inside
-    tolerance, since room noise would have moved it (#6113). ``None`` without
-    pilot SNR evidence."""
+    """The pilots cleared the room: over their SNR floor, or with a step read
+    inside tolerance, which ``linearity_ok`` judges only from
+    ``PILOT_STEP_MIN_SNR_DB`` up (#6113). ``None`` without pilot SNR evidence."""
     if analysis.pilot_snr_ok is None:
         return None
     return analysis.pilot_snr_ok or analysis.linearity_ok is True

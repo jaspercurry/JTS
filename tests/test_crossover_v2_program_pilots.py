@@ -55,6 +55,7 @@ from jasper.audio_measurement.program_analysis import (
     analysis_diagnostic_summary,
     analyze_program_capture,
 )
+from jasper.audio_measurement.program_analysis.model import PILOT_STEP_MIN_SNR_DB
 from jasper.audio_measurement.program_analysis.verify_integrity import _verify_capture_integrity
 from jasper.audio_measurement.program_analysis.check import _pilot_ambient_samples
 from tests._log_events import event_fields, event_records
@@ -331,27 +332,36 @@ _PILOT_AT_10_DB_SNR = {"measure": -11.0, "verify": -22.0}
 
 
 @pytest.mark.parametrize("phase", ["measure", "verify"])
-@pytest.mark.parametrize(("snr_lift_db", "hi_shift_db", "fault"), [
-    # #6113: steps of 9.73-10.09 dB at 10.1-12.35 dB SNR, under the floor.
-    (0.0, 0.0, None),
-    (2.0, 0.0, None),
-    # A short step under the floor names the room, never the recorder.
-    (1.0, -3.0, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE),
+@pytest.mark.parametrize(("snr_offset_db", "squeeze_db", "window_lift_db", "fault"), [
+    # #6113: true steps at 10-12 dB SNR, under the floor, are kept.
+    (0.0, 0.0, 0.0, None),
+    (2.0, 0.0, 0.0, None),
+    # A step 3 dB short there names the room, never the recorder.
+    (1.0, 3.0, 0.0, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE),
+    # Under `PILOT_STEP_MIN_SNR_DB` no step keeps a take: a squeeze under an
+    # AGC-lifted window, a squeeze in a steady room, a buried pair.
+    (-4.5, 1.0, 3.0, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE),
+    (-6.5, 0.75, 0.0, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE),
+    (-20.0, 0.0, 0.0, refusal_copy.REASON_PILOT_LEVEL_COLLAPSE),
 ])
-def test_the_pilot_step_decides_a_take_under_the_snr_floor(phase, snr_lift_db, hi_shift_db, fault):
+def test_the_pilot_step_decides_a_take_from_its_snr_limit(phase, snr_offset_db, squeeze_db, window_lift_db, fault):
     prog = _measure_program() if phase == "measure" else _verify_pilot_program()
     cap = _synthesize(prog)
     role = "woofer" if phase == "measure" else "summed"
-    for suffix, shift_db in (("lo", 0.0), ("hi", hi_shift_db)):
+    for suffix, shift_db in (("lo", 0.0), ("hi", -squeeze_db)):
         seg = prog.segment(f"pilot_{role}_{suffix}")
         start = GLOBAL_OFFSET + seg.start_sample
-        cap[start:start + seg.n_samples] *= 10.0 ** ((_PILOT_AT_10_DB_SNR[phase] + snr_lift_db + shift_db) / 20.0)
-    cap = cap + np.random.default_rng(7).normal(0.0, 1e-2, cap.size)
+        cap[start:start + seg.n_samples] *= 10.0 ** ((_PILOT_AT_10_DB_SNR[phase] + snr_offset_db + shift_db) / 20.0)
+    room = np.random.default_rng(7).normal(0.0, 1e-2, cap.size)
+    window = prog.segment(AMBIENT_SEGMENT_ID)
+    start = GLOBAL_OFFSET + window.start_sample
+    room[start:start + window.n_samples] *= 10.0 ** (window_lift_db / 20.0)
     res = analyze_program_capture(
-        prog, cap, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
+        prog, cap + room, SR, priors=MeasurementPriors(crossover_fc_hz=FC_HZ),
     )
     pilot, = res.pilots
-    assert 9.5 < pilot.snr_db < PILOT_MIN_SNR_DB
+    assert pilot.snr_db < PILOT_MIN_SNR_DB
+    assert (pilot.snr_db >= PILOT_STEP_MIN_SNR_DB) is (snr_offset_db >= 0)
     verdict = capture_dispatch.assess(res, phase=phase, program=prog)
     assert (verdict.ok, verdict.fault) == (fault is None, fault)
     assert [screen["code"] for screen in verdict.screens] == ([fault] if fault else [])

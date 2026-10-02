@@ -285,8 +285,10 @@ PILOT_FADE_TRIM_S = 0.005
 # from ambient nonstationarity stays a small fraction of
 # `LINEARITY_TOLERANCE_DB`. Solving for the minimum trustworthy in-band SNR
 # gives `PILOT_MIN_SNR_DB` ≈ 12.4 dB. It routes a step that fails, and sets
-# the CHECK gain solve's pilot arm; it never refuses a step that reads
-# inside tolerance (#6113).
+# the CHECK gain solve's pilot arm. `PILOT_STEP_MIN_SNR_DB` ≈ 9.4 dB is where
+# the same bias spends the whole tolerance: from it up, a step read inside
+# tolerance keeps a take (#6113); under it the step is unknown, because a
+# phone's AGC lifts the silent window and squeezes the step, and they cancel.
 AMBIENT_NONSTATIONARITY_DB = 3.0
 LINEARITY_SNR_BIAS_BUDGET_FRACTION = 0.5
 _pilot_snr_k = 10.0 ** (AMBIENT_NONSTATIONARITY_DB / 10.0)
@@ -294,6 +296,7 @@ _pilot_snr_linear_min = (10.0 / math.log(10.0)) * (_pilot_snr_k - 1.0) / (
     LINEARITY_TOLERANCE_DB * LINEARITY_SNR_BIAS_BUDGET_FRACTION
 )
 PILOT_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min)
+PILOT_STEP_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min * LINEARITY_SNR_BIAS_BUDGET_FRACTION)
 
 # Channel-map discriminator TARGET rise, dB (`_channel_map_ok`): an absolute
 # floor — a driver whose declared band never rose over the room did not play.

@@ -4468,6 +4468,20 @@ def test_pilot_min_snr_db_matches_its_own_derivation():
     assert PILOT_MIN_SNR_DB == pytest.approx(expected, abs=1e-9)
 
 
+def test_rumble_in_one_role_band_leaves_the_other_role_trusted():
+    """Rumble in the woofer's band buries its quiet pilot (about 7 dB SNR), so
+    its step is unknown; the tweeter's disjoint band keeps its trusted SNR and
+    its step verdict."""
+    prog, cap = _check_rumble_capture((300.0, 500.0, 800.0), 0.02, seed=23)
+    res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
+    woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
+    tweeter_pilot = next(p for p in res.pilots if p.role == "tweeter")
+    assert woofer_pilot.snr_valid is False
+    assert woofer_pilot.linearity_ok is None
+    assert tweeter_pilot.snr_valid is True
+    assert tweeter_pilot.linearity_ok is True
+
+
 def test_check_buried_pilot_delta_routes_to_snr_floor_not_a_retake():
     """#2647's ROUTING ruling, approximating the #1838 production shape
     (session cap_-Us10xORVNlFa_dgi-sP7g: -60.9 dB captured against a +10.0 dB

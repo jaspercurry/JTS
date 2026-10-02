@@ -47,6 +47,7 @@ from .model import (
     MeasurementPriors,
     PILOT_FADE_TRIM_S,
     PILOT_MIN_SNR_DB,
+    PILOT_STEP_MIN_SNR_DB,
     PilotObservation,
     RoleGainSolve,
     SegmentLocation,
@@ -115,9 +116,10 @@ def _pilot_ambient_samples(
 
     Located by SCHEDULE offset, not correlation (it is silence). Clipped to
     the capture, never slid along it, sharing :data:`AMBIENT_MIN_USABLE_FRACTION`
-    with `_ambient_from_capture`. Replay failure direction is safe: a
-    too-loud "ambient" reads as low SNR, resolving ``linearity_ok`` to
-    ``None`` rather than a false AGC accusation.
+    with `_ambient_from_capture`. A too-loud "ambient" reads as low SNR and
+    makes the step read long; `PILOT_STEP_MIN_SNR_DB` bounds that, and a
+    failed or unknown step under `PILOT_MIN_SNR_DB` names the room, never a
+    false AGC accusation.
     """
     try:
         seg = program.segment(AMBIENT_SEGMENT_ID)
@@ -244,12 +246,11 @@ def _pilot_observations(
     The composer's fixed edge fade (`_pilot_trim_fade`) is trimmed before
     measuring so the RMS rides the steady-state portion, not the ramp.
 
-    The step alone decides ``linearity_ok``, at any SNR (#6113): room noise
-    the ambient window missed moves the quiet pilot's level, so it shows in
-    the step. The quiet (lo) pilot's in-band SNR (`_pilot_in_band_snr_db`)
-    only routes a step that fails: below `PILOT_MIN_SNR_DB`,
-    ``snr_valid=False`` names the room or the level, never the phone's AGC.
-    With no ambient window, both are ``None``.
+    The step decides ``linearity_ok`` once the quiet (lo) pilot's in-band SNR
+    (`_pilot_in_band_snr_db`) reaches `PILOT_STEP_MIN_SNR_DB` (#6113); under
+    it, or with no ambient window, ``linearity_ok`` is ``None``. Under
+    `PILOT_MIN_SNR_DB`, ``snr_valid=False`` routes a step that fails or is
+    unknown to the room or the level, never the phone's AGC.
 
     ``peak_lo_dbfs``/``peak_hi_dbfs`` are a SEPARATE, non-ambient-subtracted
     full-band `_peak_dbfs`: `_solve_gain_plan` uses a pilot level
@@ -308,7 +309,10 @@ def _pilot_observations(
         lo_snr_db = _pilot_in_band_snr_db(lo_power, ambient_power) if has_ambient else math.inf
         snr_valid = lo_snr_db >= PILOT_MIN_SNR_DB if has_ambient else None
         step_gap_db = abs(captured_delta - programmed_delta)
-        linearity_ok = step_gap_db <= LINEARITY_TOLERANCE_DB if has_ambient else None
+        linearity_ok = (
+            step_gap_db <= LINEARITY_TOLERANCE_DB
+            if has_ambient and lo_snr_db >= PILOT_STEP_MIN_SNR_DB else None
+        )
         # A gap this large is not evidence about wiring at all (#2647) --
         # see `DELTA_IMPLAUSIBLE_GAP_DB`'s derivation: one of the two readings
         # floored (fell at/below ambient) while the other did not, which is
