@@ -35,6 +35,7 @@ import time
 import numpy as np
 import pytest
 
+from jasper.fanin import tts_client as client_mod
 import jasper.runtime.tts_playout as tts_mod
 from jasper.runtime_config.assistant_loudness import (
     UPSAMPLE_2X_CONTEXT,
@@ -279,7 +280,7 @@ async def test_write_segment_reports_transport_acceptance(monkeypatch, state):
     elif state == "unavailable":
         async def unavailable():
             return None
-        monkeypatch.setattr(p, "_current_outputd_stream", unavailable)
+        monkeypatch.setattr(p, "_current_stream", unavailable)
     elif state == "refused":
         p.set_emission_admission(lambda: "measurement")
     accepted = await p.write_segment(
@@ -776,7 +777,7 @@ def test_outputd_stream_adapter_program_duck_wire_bytes(on, wire):
     """The exact verb fan-in already parses. Depth is fan-in's — the wire
     carries the requested state and nothing else."""
     parent, child = socket.socketpair()
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     seen: list[bytes] = []
 
     def serve() -> None:
@@ -796,7 +797,7 @@ def test_outputd_stream_adapter_program_duck_wire_bytes(on, wire):
 
 def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
     parent, child = socket.socketpair()
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     errors: list[BaseException] = []
 
     def serve() -> None:
@@ -826,8 +827,8 @@ def test_outputd_stream_adapter_flush_sync_reads_ack_from_socket():
 def test_outputd_stream_adapter_flush_sync_timeout_is_bounded(monkeypatch):
     parent, child = socket.socketpair()
     child.settimeout(0.5)
-    adapter = tts_mod._OutputdStreamAdapter(parent)
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC", 0.01)
+    adapter = client_mod.TtsStream(parent)
+    monkeypatch.setattr(client_mod, "FLUSH_ACK_TIMEOUT_SEC", 0.01)
 
     start = time.monotonic()
     try:
@@ -846,9 +847,9 @@ def test_outputd_adapter_lock_timeout_poisons_and_preserves_owner(
     monkeypatch,
     caplog,
 ) -> None:
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(client_mod, "LOCK_TIMEOUT_SEC", 0.01)
     parent, child = socket.socketpair()
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     adapter._lock.acquire()
     try:
         with pytest.raises(TimeoutError):
@@ -866,12 +867,12 @@ def test_outputd_lock_timeout_shutdown_unblocks_nonreading_sendall(
     monkeypatch,
     caplog,
 ) -> None:
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.02)
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 0.5)
+    monkeypatch.setattr(client_mod, "LOCK_TIMEOUT_SEC", 0.02)
+    monkeypatch.setattr(client_mod, "IO_TIMEOUT_SEC", 0.5)
     parent, child = socket.socketpair()
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     child.settimeout(0.5)
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     writer_errors: list[BaseException] = []
 
     def write_until_poisoned() -> None:
@@ -904,7 +905,7 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
     monkeypatch,
     caplog,
 ) -> None:
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(client_mod, "CONNECT_TIMEOUT_SEC", 0.01)
     connect_entered = threading.Event()
     closed = threading.Event()
 
@@ -925,11 +926,11 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
             closed.set()
 
     fake_socket = _BlockingSocket()
-    monkeypatch.setattr(tts_mod.socket, "socket", lambda *_a, **_k: fake_socket)
+    monkeypatch.setattr(client_mod.socket, "socket", lambda *_a, **_k: fake_socket)
     p = TtsPlayout(socket_path="/tmp/nonresponsive-outputd.sock")
 
     with pytest.raises(TimeoutError):
-        await p._connect_stream_adapter()
+        await p._connect_stream()
 
     assert connect_entered.is_set()
     assert closed.is_set()
@@ -940,9 +941,9 @@ async def test_outputd_connect_timeout_closes_blocked_socket(
 async def test_meter_control_recovers_on_access_after_stuck_lock(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_LOCK_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(client_mod, "LOCK_TIMEOUT_SEC", 0.01)
     parent, child = socket.socketpair()
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
     p._stream = adapter  # type: ignore[assignment]
     adapter._lock.acquire()
@@ -957,7 +958,7 @@ async def test_meter_control_recovers_on_access_after_stuck_lock(
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
     await p.pause_content_meter()
     assert p._stream is replacement
     assert replacement.meter_pauses == 1
@@ -970,7 +971,7 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
     """Concurrent callers share the replacement published under the lock."""
 
     parent, child = socket.socketpair()
-    closed_stream = tts_mod._OutputdStreamAdapter(parent)
+    closed_stream = client_mod.TtsStream(parent)
     closed_stream.close()
     child.close()
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
@@ -987,14 +988,14 @@ async def test_closed_outputd_adapter_reconnect_is_single_publisher(
         await release_connect.wait()
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
-    first = asyncio.create_task(p._current_outputd_stream())
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
+    first = asyncio.create_task(p._current_stream())
     await wait_signalled(
         connect_entered,
         "first outputd reconnect",
         producer=first,
     )
-    second = asyncio.create_task(p._current_outputd_stream())
+    second = asyncio.create_task(p._current_stream())
     await asyncio.sleep(0)
     release_connect.set()
 
@@ -1018,7 +1019,7 @@ async def test_refresh_connection_replaces_only_a_stream_whose_fanin_end_closed(
     and one poisoned for another reason (#2288) alone."""
 
     parent, child = socket.socketpair()
-    stream = tts_mod._OutputdStreamAdapter(parent)
+    stream = client_mod.TtsStream(parent)
     if state != "live":
         child.close()
     if state == "dropped_while_restarting":
@@ -1032,7 +1033,7 @@ async def test_refresh_connection_replaces_only_a_stream_whose_fanin_end_closed(
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     await p.refresh_connection()
 
@@ -1058,7 +1059,7 @@ async def test_measurement_meter_pause_has_250ms_cap_and_no_late_send() -> None:
             raise AssertionError("a waiter must not release unowned lock")
 
     parent, child = socket.socketpair()
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     lock = _RefusingLock()
     adapter._lock = lock  # type: ignore[assignment]
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock")
@@ -1085,12 +1086,12 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     monkeypatch, accepted_prefix, caplog,
 ) -> None:
 
-    monkeypatch.setattr(tts_mod, "_OUTPUTD_IPC_IO_TIMEOUT_SEC", 5)
+    monkeypatch.setattr(client_mod, "IO_TIMEOUT_SEC", 5)
     monkeypatch.setattr(tts_mod, "upsample_2x", lambda arr: arr)
     parent, child = socket.socketpair()
     parent.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     child.settimeout(0.5)
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     p = TtsPlayout(
         socket_path="/tmp/outputd-test.sock",
         gain_db=-8.0,
@@ -1134,7 +1135,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
     caplog.set_level(logging.INFO, logger=tts_mod.logger.name)
     await p.write_segment(b"\x01\x00" * 2, segment_kind="cue")
     assert p._stream is replacement
@@ -1145,7 +1146,7 @@ async def test_cancelled_nonreading_audio_write_is_bounded_and_reconnects(
 
 def test_outputd_stream_adapter_sends_loudness_control_protocol():
     parent, child = socket.socketpair()
-    adapter = tts_mod._OutputdStreamAdapter(parent)
+    adapter = client_mod.TtsStream(parent)
     profile = AssistantLoudnessProfile(
         provider="openai",
         model="gpt-realtime-2",
@@ -1208,7 +1209,7 @@ async def test_program_duck_reconnects_after_a_closed_socket(monkeypatch):
     nothing else would heal the connection first."""
     p = TtsPlayout(socket_path="/tmp/outputd-test.sock", drain_tail_sec=0.0)
     parent, child = socket.socketpair()
-    closed_stream = tts_mod._OutputdStreamAdapter(parent)
+    closed_stream = client_mod.TtsStream(parent)
     closed_stream.close()
     child.close()
     p._stream = closed_stream  # type: ignore[assignment]
@@ -1218,7 +1219,7 @@ async def test_program_duck_reconnects_after_a_closed_socket(monkeypatch):
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     assert await p.program_duck(True) is True
     assert p._stream is replacement
@@ -1239,7 +1240,7 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    closed_stream = tts_mod._OutputdStreamAdapter(parent)
+    closed_stream = client_mod.TtsStream(parent)
     closed_stream.close()
     child.close()
     p._stream = closed_stream  # type: ignore[assignment]
@@ -1249,7 +1250,7 @@ async def test_outputd_transport_reconnects_after_closed_socket(monkeypatch):
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     mono = np.array([1, 2], dtype=np.int16)
     await p.write_segment(
@@ -1274,7 +1275,7 @@ async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = tts_mod._OutputdStreamAdapter(parent)
+    broken_stream = client_mod.TtsStream(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1283,7 +1284,7 @@ async def test_outputd_transport_reconnects_and_retries_after_broken_pipe(
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     mono = np.array([1, 2], dtype=np.int16)
     await p.write_segment(
@@ -1308,7 +1309,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = tts_mod._OutputdStreamAdapter(parent)
+    broken_stream = client_mod.TtsStream(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1317,7 +1318,7 @@ async def test_outputd_prepare_reconnects_and_retries_after_broken_pipe(
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     await p.prepare_assistant_context(
         provider="openai",
@@ -1368,14 +1369,14 @@ async def test_outputd_prepare_reconnect_failure_is_best_effort(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = tts_mod._OutputdStreamAdapter(parent)
+    broken_stream = client_mod.TtsStream(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
     async def fake_connect():
         raise OSError("outputd still unavailable")
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     await p.prepare_assistant_context(
         provider="openai",
@@ -1397,7 +1398,7 @@ async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = tts_mod._OutputdStreamAdapter(parent)
+    broken_stream = client_mod.TtsStream(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
@@ -1406,7 +1407,7 @@ async def test_outputd_meter_control_reconnects_and_retries_after_broken_pipe(
     async def fake_connect():
         return replacement
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     await p.pause_content_meter()
 
@@ -1424,14 +1425,14 @@ async def test_outputd_meter_control_reconnect_failure_is_best_effort(
         drain_tail_sec=0.0,
     )
     parent, child = socket.socketpair()
-    broken_stream = tts_mod._OutputdStreamAdapter(parent)
+    broken_stream = client_mod.TtsStream(parent)
     child.close()
     p._stream = broken_stream  # type: ignore[assignment]
 
     async def fake_connect():
         raise OSError("outputd still unavailable")
 
-    monkeypatch.setattr(p, "_connect_stream_adapter", fake_connect)
+    monkeypatch.setattr(p, "_connect_stream", fake_connect)
 
     await p.pause_content_meter()
 
@@ -1463,7 +1464,7 @@ def _takes_var_keywords(func) -> bool:
 @pytest.mark.parametrize(
     ("fake", "real"),
     [
-        (FakeOutputdStream, tts_mod._OutputdStreamAdapter),
+        (FakeOutputdStream, client_mod.TtsStream),
         (FakeTts, TtsPlayout),
     ],
     ids=["stream", "playout"],

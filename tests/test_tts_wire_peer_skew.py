@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.runtime.tts_playout import _OutputdStreamAdapter
+from jasper.fanin.tts_client import TtsStream
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -126,7 +126,7 @@ def test_a_pre_audio32_peer_hangs_up_on_the_wide_wire(peer_pair):
     silently discarding the reply.
     """
     ours, peer = peer_pair
-    adapter = _OutputdStreamAdapter(ours)
+    adapter = TtsStream(ours)
     payload = b"\x01\x02\x03\x04" * 512
     error = _write_until_error(adapter, payload)
     assert isinstance(error, OSError), (
@@ -150,7 +150,7 @@ def test_the_rejected_connection_cannot_carry_a_failure_cue_either(peer_pair):
     only because a stale peer is unreachable.
     """
     ours, peer = peer_pair
-    adapter = _OutputdStreamAdapter(ours)
+    adapter = TtsStream(ours)
     payload = b"\x01\x02\x03\x04" * 512
     assert isinstance(_write_until_error(adapter, payload), OSError)
     peer.join()

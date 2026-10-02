@@ -2,18 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Assistant-audio playout: the fan-in TTS IPC client."""
+"""Assistant PCM conversion, pacing and drain accounting."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import select
-import socket
-import threading
 import time
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -30,7 +25,7 @@ from jasper.runtime_config.assistant_loudness import (
 )
 from jasper.audio_control.assistant_volume import EffectiveVolumeContext
 from jasper.platform.log_event import log_event
-from jasper.platform import wire
+from jasper.fanin import tts_client
 from jasper.service_state.tts_routing import FANIN_TTS_SOCKET
 
 logger = logging.getLogger("jasper.tts_playout")
@@ -46,17 +41,6 @@ _OUTPUTD_SAMPLE_RATE = 48_000
 _SPINE_SCALE = 65_536
 _I32_MIN = -(2 ** 31)
 _I32_MAX = 2 ** 31 - 1
-_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC = 3.0
-# All IPC is local to the Pi. Healthy connects and control writes complete in
-# milliseconds, while one second tolerates scheduler pressure without letting
-# a dead owner or full Unix-socket buffer strand voice teardown indefinitely.
-# Lock waits use the same ceiling: their owner is itself bounded by the socket
-# timeout, and a timed-out waiter poisons the socket to wake that owner.
-_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC = 1.0
-_OUTPUTD_IPC_IO_TIMEOUT_SEC = 1.0
-_OUTPUTD_IPC_LOCK_TIMEOUT_SEC = 1.0
-# A closed socket may not wake another thread's select on macOS.
-_OUTPUTD_IPC_CANCEL_POLL_SEC = 0.05
 # MEASURE_PAUSE is a rare safety-control request, not an audio hot path. Its
 # canonical adapter call runs synchronously so it cannot outlive the reply;
 # 250 ms covers two IPC audio chunks and leaves ample room inside the daemon's
@@ -107,475 +91,6 @@ def _quantize_to_wire(arr):
     return np.clip(scaled, _I32_MIN, _I32_MAX).astype(np.int32)
 
 
-async def _outputd_io(
-    stream: _OutputdStreamAdapter,
-    method: str,
-    *args,
-    on_accepted=None,
-    **kwargs,
-):
-    """Own a socket operation through cancellation and observe completed writes.
-
-    Cancellation closes the socket; bounded I/O slices let the worker observe
-    that close. The worker must finish before another flush/write.
-    """
-    worker = asyncio.create_task(asyncio.to_thread(getattr(stream, method), *args, **kwargs))
-    cancelled = False
-    current = asyncio.current_task()
-    while not worker.done():
-        try:
-            await asyncio.wait({worker})
-        except asyncio.CancelledError:
-            cancelled = True
-            stream._poison(reason=None, poison_reason="cancelled")
-            if current is not None:
-                current.uncancel()
-    try:
-        result = worker.result()
-    except Exception:  # noqa: BLE001
-        if cancelled:
-            raise asyncio.CancelledError from None
-        raise
-    if on_accepted is not None:
-        await on_accepted()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
-def _outputd_segment_kind(kind: str) -> str:
-    if kind in {"assistant", "cue", "chirp"}:
-        return kind
-    logger.warning(
-        "fan-in TTS IPC segment kind rejected: %r; falling back to assistant",
-        kind,
-    )
-    return "assistant"
-
-
-def _outputd_provider_token(provider_item_id: str | None) -> str:
-    if provider_item_id is None:
-        return "-"
-    if _outputd_token_ok(provider_item_id):
-        return provider_item_id
-    logger.warning("fan-in TTS IPC provider item id rejected: %r", provider_item_id)
-    return "-"
-
-
-def _outputd_token_ok(value: str) -> bool:
-    return bool(value) and value.isascii() and not any(ch.isspace() for ch in value)
-
-
-def _outputd_profile_tokens(profile) -> list[str] | None:
-    if profile is None:
-        return None
-    for field in (profile.provider, profile.model, profile.voice):
-        if not _outputd_token_ok(field):
-            logger.warning(
-                "fan-in TTS IPC profile token rejected: provider=%r model=%r voice=%r",
-                profile.provider, profile.model, profile.voice,
-            )
-            return None
-    return [
-        profile.provider,
-        profile.model,
-        profile.voice,
-        f"{profile.source_lufs:.2f}",
-        f"{profile.source_peak_dbfs:.2f}",
-        f"{profile.confidence:.2f}",
-    ]
-
-
-class _OutputdStreamAdapter:
-    """The one TtsPlayout transport: a blocking writer over the TTS Unix socket.
-
-    TtsPlayout does resample, mono-to-stereo, and drain accounting before
-    calling into this adapter from a worker thread, so every method here may
-    block for up to its bounded timeout.
-    """
-
-    def __init__(self, sock: socket.socket) -> None:
-        self._sock = sock
-        self._sock.settimeout(_OUTPUTD_IPC_IO_TIMEOUT_SEC)
-        self._recv_buffer = bytearray()
-        self._lock = threading.Lock()
-        self._active_segment: tuple[str, str, tuple[str, ...] | None] | None = None
-        self._closed = False
-        self._timeout_logged = False
-        self._poison_reason: str | None = None
-
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
-    @property
-    def poison_reason(self) -> str | None:
-        """Why `_poison` closed this stream (e.g. "cancelled", "lock",
-        "send", "send_error", "flush_timeout", "flush_error", "peer_closed") —
-        attribution for a reconnect logged far from the close."""
-        return self._poison_reason
-
-    def drop_if_peer_closed(self) -> bool:
-        """Poison this live-looking stream if fan-in has closed its end (fan-in
-        restarted); True when this call dropped it.
-
-        A zero-timeout readability check, then a peek: it consumes nothing and
-        never blocks. A stream whose lock is held is in use, so not stale. A
-        concurrent ``_poison`` (it sets ``_closed`` before closing the socket)
-        keeps its own reason."""
-        if self._closed or not self._lock.acquire(blocking=False):
-            return False
-        try:
-            if self._closed:
-                return False
-            try:
-                readable, _, _ = select.select([self._sock], [], [], 0)
-                peer_closed = bool(readable) and self._sock.recv(1, socket.MSG_PEEK) == b""
-            except (OSError, ValueError):
-                peer_closed = not self._closed
-            if peer_closed:
-                self._poison(reason=None, poison_reason="peer_closed")
-            return peer_closed
-        finally:
-            self._lock.release()
-
-    def _readline_locked(self, timeout_sec: float) -> bytes:
-        """Read one daemon response line while the caller holds _lock."""
-        deadline = time.monotonic() + timeout_sec
-        while True:
-            newline_at = self._recv_buffer.find(b"\n")
-            if newline_at >= 0:
-                line = bytes(self._recv_buffer[: newline_at + 1])
-                del self._recv_buffer[: newline_at + 1]
-                return line
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            if self._closed:
-                raise BrokenPipeError("TTS IPC socket is closed")
-            readable, _, _ = select.select(
-                [self._sock], [], [], min(remaining, _OUTPUTD_IPC_CANCEL_POLL_SEC),
-            )
-            if not readable:
-                continue
-            chunk = self._sock.recv(4096)
-            if not chunk:
-                return b""
-            self._recv_buffer.extend(chunk)
-
-    def _close_unlocked(
-        self, *, send_close: bool, poison_reason: str | None = None,
-    ) -> None:
-        if self._closed:
-            return
-        try:
-            if send_close:
-                if self._active_segment is not None:
-                    self._send_line(wire.TTS_SEGMENT_END)
-                    self._active_segment = None
-                self._send_line(wire.TTS_CLOSE)
-        except OSError:
-            pass
-        self._poison(reason=None, poison_reason=poison_reason)
-
-    def _poison(
-        self,
-        *,
-        reason: str | None,
-        timeout_sec: float | None = None,
-        poison_reason: str | None = None,
-    ) -> None:
-        """Close from any thread; blocked operations check closure each slice.
-
-        ``reason`` drives the timeout warning below; ``poison_reason`` is the
-        attribution a later reconnect log reads back (defaults to ``reason``),
-        letting a non-timeout caller (cancellation) name itself without
-        triggering that warning.
-        """
-
-        if self._closed:
-            return
-        self._closed = True
-        self._poison_reason = poison_reason if poison_reason is not None else reason
-        self._active_segment = None
-        self._recv_buffer.clear()
-        try:
-            self._sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self._sock.close()
-        except OSError:
-            pass
-        if reason is not None and not self._timeout_logged:
-            self._timeout_logged = True
-            if timeout_sec is None:
-                timeout_sec = (
-                    _OUTPUTD_IPC_LOCK_TIMEOUT_SEC
-                    if reason == "lock"
-                    else _OUTPUTD_IPC_IO_TIMEOUT_SEC
-                )
-            log_event(
-                logger,
-                "tts_fanin.adapter_timeout",
-                phase=reason,
-                timeout_sec=timeout_sec,
-                action="socket_poisoned",
-                level=logging.WARNING,
-            )
-
-    @staticmethod
-    def _remaining_timeout(
-        ceiling_sec: float,
-        deadline_monotonic: float | None,
-    ) -> float:
-        if deadline_monotonic is None:
-            return ceiling_sec
-        remaining = deadline_monotonic - time.monotonic()
-        if remaining <= 0.0:
-            raise TimeoutError("TTS IPC aggregate deadline expired")
-        return min(ceiling_sec, remaining)
-
-    @contextmanager
-    def _bounded_lock(
-        self,
-        *,
-        deadline_monotonic: float | None = None,
-    ):
-        try:
-            timeout_sec = self._remaining_timeout(
-                _OUTPUTD_IPC_LOCK_TIMEOUT_SEC,
-                deadline_monotonic,
-            )
-        except TimeoutError:
-            self._poison(reason="lock", timeout_sec=0.0)
-            raise
-        acquired = self._lock.acquire(timeout=timeout_sec)
-        if not acquired:
-            # Only the owning worker can release this lock. Closing the
-            # socket makes that worker fail within its current I/O slice.
-            self._poison(reason="lock", timeout_sec=timeout_sec)
-            raise TimeoutError(
-                "TTS IPC adapter lock timed out after "
-                f"{timeout_sec:.3f}s"
-            )
-        try:
-            yield
-        finally:
-            self._lock.release()
-
-    def _send_line(
-        self,
-        command: str,
-        *,
-        deadline_monotonic: float | None = None,
-    ) -> None:
-        self._sendall_locked(
-            wire.encode(command), deadline_monotonic=deadline_monotonic,
-        )
-
-    def _sendall_locked(
-        self,
-        data: bytes,
-        *,
-        deadline_monotonic: float | None = None,
-    ) -> None:
-        if self._closed:
-            raise BrokenPipeError("TTS IPC socket is closed")
-        try:
-            timeout_sec = self._remaining_timeout(
-                _OUTPUTD_IPC_IO_TIMEOUT_SEC,
-                deadline_monotonic,
-            )
-        except TimeoutError:
-            self._poison(reason="send", timeout_sec=0.0)
-            raise
-        try:
-            deadline = time.monotonic() + timeout_sec
-            remaining_data = memoryview(data)
-            while remaining_data:
-                if self._closed:
-                    raise BrokenPipeError("TTS IPC socket is closed")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError
-                self._sock.settimeout(min(remaining, _OUTPUTD_IPC_CANCEL_POLL_SEC))
-                try:
-                    sent = self._sock.send(remaining_data)
-                except TimeoutError:
-                    continue
-                if sent == 0:
-                    raise BrokenPipeError("TTS IPC socket stopped accepting bytes")
-                remaining_data = remaining_data[sent:]
-        except TimeoutError as e:
-            self._poison(reason="send", timeout_sec=timeout_sec)
-            raise TimeoutError(
-                "TTS IPC send timed out after "
-                f"{timeout_sec:.3f}s"
-            ) from e
-        except OSError:
-            self._poison(reason=None, poison_reason="send_error")
-            raise
-
-    def set_gain_db(self, db: float) -> None:
-        with self._bounded_lock():
-            self._send_line(wire.tts_gain(db))
-
-    def program_duck(self, on: bool) -> None:
-        with self._bounded_lock():
-            self._send_line(wire.tts_program_duck(on))
-
-    def prepare_assistant(
-        self,
-        *,
-        provider: str,
-        model: str,
-        voice: str,
-        tts_envelope_lufs: float,
-        volume_context: EffectiveVolumeContext | None = None,
-    ) -> None:
-        if not (
-            _outputd_token_ok(provider)
-            and _outputd_token_ok(model)
-            and _outputd_token_ok(voice)
-        ):
-            logger.warning(
-                "fan-in TTS IPC prepare rejected invalid profile identity: "
-                "provider=%r model=%r voice=%r",
-                provider, model, voice,
-            )
-            return
-        with self._bounded_lock():
-            self._send_line(
-                wire.tts_prepare_assistant(
-                    provider=provider,
-                    model=model,
-                    voice=voice,
-                    tts_envelope_lufs=tts_envelope_lufs,
-                    volume_context=volume_context,
-                )
-            )
-
-    def pause_content_meter(
-        self,
-        *,
-        deadline_monotonic: float | None = None,
-    ) -> None:
-        with self._bounded_lock(deadline_monotonic=deadline_monotonic):
-            self._send_line(
-                wire.TTS_CONTENT_METER_PAUSE,
-                deadline_monotonic=deadline_monotonic,
-            )
-
-    def resume_content_meter(self) -> None:
-        with self._bounded_lock():
-            self._send_line(wire.TTS_CONTENT_METER_RESUME)
-
-    def start_segment(
-        self,
-        *,
-        kind: str,
-        provider_item_id: str | None,
-        profile=None,
-    ) -> None:
-        profile_tokens = _outputd_profile_tokens(profile)
-        segment = (
-            _outputd_segment_kind(kind),
-            _outputd_provider_token(provider_item_id),
-            tuple(profile_tokens) if profile_tokens is not None else None,
-        )
-        with self._bounded_lock():
-            if self._active_segment == segment:
-                return
-            if self._active_segment is not None:
-                self._send_line(wire.TTS_SEGMENT_END)
-            self._send_line(wire.tts_segment_start(*segment))
-            self._active_segment = segment
-
-    def end_segment(self) -> None:
-        with self._bounded_lock():
-            if self._active_segment is None:
-                return
-            self._send_line(wire.TTS_SEGMENT_END)
-            self._active_segment = None
-
-    def write(self, data: bytes) -> None:
-        with self._bounded_lock():
-            self._send_line(wire.tts_audio(len(data)))
-            self._sendall_locked(data)
-
-    def flush_sync(self) -> dict | None:
-        with self._bounded_lock():
-            try:
-                self._send_line(wire.TTS_FLUSH_SYNC)
-                self._active_segment = None
-                line = self._readline_locked(_OUTPUTD_FLUSH_ACK_TIMEOUT_SEC)
-            except TimeoutError:
-                logger.warning(
-                    "fan-in TTS IPC flush ack timed out after %.1fs; "
-                    "closing socket",
-                    _OUTPUTD_FLUSH_ACK_TIMEOUT_SEC,
-                )
-                self._close_unlocked(send_close=False, poison_reason="flush_timeout")
-                return None
-            except OSError as e:
-                logger.warning("fan-in TTS IPC flush failed: %s", e)
-                self._close_unlocked(send_close=False, poison_reason="flush_error")
-                return None
-        if not line:
-            return None
-        try:
-            ack = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            logger.warning("fan-in TTS IPC flush ack parse failed: %s", e)
-            return None
-        if not isinstance(ack, dict):
-            logger.warning("fan-in TTS IPC flush ack had unexpected shape: %r", ack)
-            return None
-        return ack
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        with self._bounded_lock():
-            self._close_unlocked(send_close=True)
-
-
-def confirmed_tts_flush(ack: object) -> bool:
-    """Validate the shared fan-in/outputd stop and segment ledger reply."""
-    if not isinstance(ack, dict) or ack.get("ok") is not True:
-        return False
-    for key in ("requests", "pending_frames", "segments", "flushed_frames", "max_audio_played_ms"):
-        value = ack.get(key)
-        if type(value) is not int or value < 0:
-            return False
-    events = ack.get("events")
-    if ack["requests"] == 0 or not isinstance(events, list) or len(events) != ack["segments"]:
-        return False
-    segments = set()
-    for event in events:
-        if not isinstance(event, dict):
-            return False
-        for key in ("segment", "queued_frames", "written_frames", "drained_frames", "flushed_frames"):
-            value = event.get(key)
-            if type(value) is not int or value < 0:
-                return False
-        if event["segment"] in segments:
-            return False
-        segments.add(event["segment"])
-        item = event.get("provider_item_id")
-        if "provider_item_id" not in event or not (item is None or isinstance(item, str) and item):
-            return False
-        if event.get("kind") not in {"assistant", "cue", "chirp"}:
-            return False
-        if not 0 <= event["drained_frames"] <= event["written_frames"] <= event["queued_frames"]:
-            return False
-        if event["flushed_frames"] > event["queued_frames"]:
-            return False
-    return True
-
-
 class TtsPlayout:
     """Assistant-audio playout: gain validation, drain-deadline timing, and
     the fan-in TTS IPC client.
@@ -616,7 +131,7 @@ class TtsPlayout:
         self._gain_db = self.MIN_TTS_GAIN_DB
         # Cumulative pacing-sleep time since the last take_paced_sec().
         self._paced_total_sec = 0.0
-        self._stream: _OutputdStreamAdapter | None = None
+        self._stream: tts_client.TtsStream | None = None
         # One-shot latch so a write() before __aenter__ (no stream yet) is
         # audible in the journal instead of a silent no-op.
         self._closed_stream_warned = False
@@ -647,7 +162,7 @@ class TtsPlayout:
         # One publisher owns reconnect. Without this lock, simultaneous meter
         # and audio callers can each connect after the same poisoned adapter
         # and leave one live but unreachable socket behind.
-        self._outputd_reconnect_lock = asyncio.Lock()
+        self._reconnect_lock = asyncio.Lock()
 
     @property
     def gain_db(self) -> float:
@@ -732,51 +247,12 @@ class TtsPlayout:
         self._paced_total_sec = 0.0
         return v
 
-    async def _connect_stream_adapter(
-        self,
-    ) -> _OutputdStreamAdapter:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC)
-        connect_task = asyncio.create_task(
-            asyncio.to_thread(sock.connect, self._socket_path)
-        )
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(connect_task),
-                timeout=_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC,
-            )
-        except (asyncio.TimeoutError, asyncio.CancelledError) as e:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            sock.close()
-            # The thread is bounded by the socket timeout too, but it may
-            # finish after this coroutine returns. Consume that late outcome.
-            connect_task.add_done_callback(
-                lambda task: None if task.cancelled() else task.exception()
-            )
-            if isinstance(e, asyncio.CancelledError):
-                raise
-            log_event(
-                logger,
-                "tts_fanin.connect_timeout",
-                socket=self._socket_path,
-                timeout_sec=_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC,
-                level=logging.WARNING,
-            )
-            raise TimeoutError(
-                "TTS IPC connect timed out after "
-                f"{_OUTPUTD_IPC_CONNECT_TIMEOUT_SEC:.1f}s"
-            ) from None
-        except Exception as e:  # noqa: BLE001
-            sock.close()
-            logger.error(
-                "fan-in TTS IPC connect failed: socket=%s exc=%s: %s",
-                self._socket_path, type(e).__name__, e,
-            )
-            raise
-        stream = _OutputdStreamAdapter(sock)
+    async def __aenter__(self) -> "TtsPlayout":
+        self._stream = await self._connect_stream()
+        return self
+
+    async def _connect_stream(self) -> tts_client.TtsStream:
+        stream = await tts_client.connect(self._socket_path)
         try:
             stream.set_gain_db(self.gain_db)
         except OSError:
@@ -785,14 +261,10 @@ class TtsPlayout:
         logger.info("fan-in TTS IPC connected: socket=%s", self._socket_path)
         return stream
 
-    async def __aenter__(self) -> "TtsPlayout":
-        self._stream = await self._connect_stream_adapter()
-        return self
-
-    async def _current_outputd_stream(self) -> _OutputdStreamAdapter | None:
+    async def _current_stream(self) -> tts_client.TtsStream | None:
         stream = self._stream
         if stream is not None and stream.closed:
-            async with self._outputd_reconnect_lock:
+            async with self._reconnect_lock:
                 # Another waiter may have published the replacement while we
                 # queued for the reconnect lock. Re-read inside ownership so
                 # every caller shares that adapter and no loser socket exists.
@@ -807,7 +279,7 @@ class TtsPlayout:
                     poison_reason=stream.poison_reason,
                 )
                 try:
-                    stream = await self._connect_stream_adapter()
+                    stream = await self._connect_stream()
                 except Exception as e:  # noqa: BLE001
                     log_event(
                         logger,
@@ -884,7 +356,7 @@ class TtsPlayout:
             )
             return False
 
-        stream = await self._current_outputd_stream()
+        stream = await self._current_stream()
         if stream is None:
             return failed("no_connection")
         try:
@@ -914,56 +386,30 @@ class TtsPlayout:
         # (see _save_assistant_source_profile) may have rewritten it since.
         self._profile_cache_key = None
         self._profile_cache = None
-        for attempt in range(2):
-            stream = await self._current_outputd_stream()
-            if stream is None:
-                return
-            try:
-                prepare_kwargs = {
-                    "provider": provider,
-                    "model": model,
-                    "voice": voice,
-                    "tts_envelope_lufs": tts_envelope_lufs,
-                }
-                if (
-                    canonical_volume_db is not None
-                    and downstream_volume_db is not None
-                    and context_tts_envelope_lufs is not None
-                    and muted is not None
-                    and context_stamp_boot_ns is not None
-                ):
-                    prepare_kwargs["volume_context"] = EffectiveVolumeContext(
-                        canonical_db=canonical_volume_db,
-                        downstream_db=downstream_volume_db,
-                        tts_envelope_lufs=context_tts_envelope_lufs,
-                        muted=muted,
-                        stamp_boot_ns=context_stamp_boot_ns,
-                    )
-                await asyncio.to_thread(
-                    stream.prepare_assistant,
-                    **prepare_kwargs,
-                )
-                return
-            except OSError as e:
-                if (
-                    attempt == 0
-                    and stream.closed
-                    and not isinstance(e, TimeoutError)
-                ):
-                    log_event(
-                        logger,
-                        "tts_fanin.control_retry",
-                        method="prepare_assistant",
-                        reason="closed_socket",
-                        exc_type=type(e).__name__,
-                        err=str(e),
-                    )
-                    continue
-                logger.warning("fan-in TTS IPC prepare assistant failed: %s", e)
-                return
+        prepare_kwargs = {
+            "provider": provider,
+            "model": model,
+            "voice": voice,
+            "tts_envelope_lufs": tts_envelope_lufs,
+        }
+        if (
+            canonical_volume_db is not None
+            and downstream_volume_db is not None
+            and context_tts_envelope_lufs is not None
+            and muted is not None
+            and context_stamp_boot_ns is not None
+        ):
+            prepare_kwargs["volume_context"] = EffectiveVolumeContext(
+                canonical_db=canonical_volume_db,
+                downstream_db=downstream_volume_db,
+                tts_envelope_lufs=context_tts_envelope_lufs,
+                muted=muted,
+                stamp_boot_ns=context_stamp_boot_ns,
+            )
+        await self._send_control("prepare_assistant", **prepare_kwargs)
 
     async def pause_content_meter(self) -> None:
-        await self._send_meter_control(_OutputdStreamAdapter.pause_content_meter)
+        await self._send_control("pause_content_meter")
 
     async def refresh_connection(self) -> None:
         """Replace a stream whose fan-in end is gone, through the ordinary
@@ -980,7 +426,7 @@ class TtsPlayout:
             stream.drop_if_peer_closed()
             or (stream.closed and stream.poison_reason == "peer_closed")
         ):
-            await self._current_outputd_stream()
+            await self._current_stream()
 
     async def pause_content_meter_for_measurement(
         self,
@@ -1006,17 +452,15 @@ class TtsPlayout:
         stream.pause_content_meter(deadline_monotonic=control_deadline)
 
     async def resume_content_meter(self) -> None:
-        await self._send_meter_control(_OutputdStreamAdapter.resume_content_meter)
+        await self._send_control("resume_content_meter")
 
-    async def _send_meter_control(
-        self, method: Callable[[_OutputdStreamAdapter], None]
-    ) -> None:
+    async def _send_control(self, method: str, **kwargs) -> None:
         for attempt in range(2):
-            stream = await self._current_outputd_stream()
+            stream = await self._current_stream()
             if stream is None:
                 return
             try:
-                await asyncio.to_thread(getattr(stream, method.__name__))
+                await asyncio.to_thread(getattr(stream, method), **kwargs)
                 return
             except OSError as e:
                 if (
@@ -1027,14 +471,14 @@ class TtsPlayout:
                     log_event(
                         logger,
                         "tts_fanin.control_retry",
-                        method=method.__name__,
+                        method=method,
                         reason="closed_socket",
                         exc_type=type(e).__name__,
                         err=str(e),
                     )
                     continue
                 logger.warning(
-                    "fan-in TTS IPC %s failed: %s", method.__name__, e
+                    "fan-in TTS IPC %s failed: %s", method, e
                 )
                 return
 
@@ -1074,7 +518,7 @@ class TtsPlayout:
                 )
                 self._closed_stream_warned = True
             return False
-        stream = await self._current_outputd_stream()
+        stream = await self._current_stream()
         if stream is None:
             return False
 
@@ -1105,11 +549,11 @@ class TtsPlayout:
         write_start = time.monotonic()
         for attempt in range(2):
             try:
-                await _outputd_io(stream, "set_gain_db", self.gain_db)
+                await tts_client.run_io(stream, "set_gain_db", self.gain_db)
                 profile = self._profile_for_segment(
                     segment_kind, source_profile=source_profile,
                 )
-                await _outputd_io(
+                await tts_client.run_io(
                     stream, "start_segment",
                     kind=segment_kind,
                     provider_item_id=provider_item_id,
@@ -1129,7 +573,7 @@ class TtsPlayout:
                         exc_type=type(e).__name__,
                         err=str(e),
                     )
-                    stream = await self._current_outputd_stream()
+                    stream = await self._current_stream()
                     if stream is None:
                         return False
                     continue
@@ -1167,7 +611,7 @@ class TtsPlayout:
                 paced_sec += pace_excess
                 self._paced_total_sec += pace_excess
             try:
-                await _outputd_io(stream, "write", chunk, on_accepted=commit_chunk)
+                await tts_client.run_io(stream, "write", chunk, on_accepted=commit_chunk)
             except OSError:
                 if stream.closed:
                     log_event(
@@ -1244,7 +688,7 @@ class TtsPlayout:
         stream = self._stream
         if stream is not None and not stream.closed:
             try:
-                await _outputd_io(stream, "end_segment")
+                await tts_client.run_io(stream, "end_segment")
             except OSError as e:
                 logger.warning("fan-in TTS IPC segment end failed: %s", e)
         self._schedule_assistant_source_profile_save()
@@ -1300,16 +744,16 @@ class TtsPlayout:
 
     async def flush(self) -> dict | None:
         self._upsample_tail = None
-        stream = await self._current_outputd_stream()
+        stream = await self._current_stream()
         if stream is None:
             await self._save_assistant_source_profile(self._pop_assistant_meter())
             return None
         ack: dict | None = None
         try:
-            ack = await _outputd_io(stream, "flush_sync")
+            ack = await tts_client.run_io(stream, "flush_sync")
         except Exception as e:  # noqa: BLE001
             logger.warning("fan-in TTS IPC flush failed: %s", e)
-        if confirmed_tts_flush(ack):
+        if tts_client.confirmed_tts_flush(ack):
             self._ring_end_monotonic = None
             log_event(
                 logger,

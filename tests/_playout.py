@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The TTS-playout stand-ins, one per real surface: `FakeOutputdStream` for
-`jasper.runtime.tts_playout._OutputdStreamAdapter` (the blocking socket writer) and
+`jasper.fanin.tts_client.TtsStream` (the blocking socket writer) and
 `FakeTts` for `jasper.runtime.tts_playout.TtsPlayout`; `playout_over_fake_stream`
 builds a real `TtsPlayout` writing into a `FakeOutputdStream`.
 

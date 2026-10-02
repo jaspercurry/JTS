@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 
+from jasper.fanin import tts_client as client_mod
 import jasper.runtime.tts_playout as tts_mod
 import jasper.voice.measurement_hold as measurement_hold_mod
 from jasper.cues import AudioCueManager
@@ -603,14 +604,14 @@ async def test_uds_poisoned_meter_fails_closed_then_reconnects_on_next_access(
     """MEASURE_PAUSE never revives a stream poisoned for another reason (here
     a plain close); a later ordinary control reconnects it once."""
     parent, child = socket.socketpair()
-    poisoned = tts_mod._OutputdStreamAdapter(parent)
+    poisoned = client_mod.TtsStream(parent)
     poisoned.close()
     child.close()
     tts = TtsPlayout()
     tts._stream = poisoned  # type: ignore[assignment]
     replacement = FakeOutputdStream()
     connect = AsyncMock(return_value=replacement)
-    monkeypatch.setattr(tts, "_connect_stream_adapter", connect)
+    monkeypatch.setattr(tts, "_connect_stream", connect)
     wl = wake_loop_for_tests(tts=tts)
     async with _serving(wl, short_sock_path):
         assert await _voice_uds_command(
@@ -1344,7 +1345,7 @@ async def test_begin_turn_overlaps_one_output_preparation_with_connection(
         await real_prepare(**kwargs)
         prepared.set()
 
-    async def connect():
+    async def connect(*args):
         connect_started.set()
         await release_connect.wait()
         connected.set()

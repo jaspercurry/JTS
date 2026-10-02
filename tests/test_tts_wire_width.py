@@ -18,13 +18,13 @@ import pytest
 
 from jasper.runtime import tts_playout
 from jasper.runtime_config.assistant_loudness import UPSAMPLE_2X_CONTEXT, upsample_2x
+from jasper.fanin.tts_client import TtsStream
 from jasper.runtime.tts_playout import (
     _OUTPUTD_AUDIO_FRAME_BYTES,
     _OUTPUTD_MAX_AUDIO_CHUNK_BYTES,
     _SPINE_SCALE,
     TtsPlayout,
     _outputd_audio_chunks,
-    _OutputdStreamAdapter,
     _quantize_to_wire,
 )
 
@@ -59,7 +59,7 @@ def _emit(pcm: bytes, **write_kwargs) -> bytes:
     async def _ready():
         return rec
 
-    tts._current_outputd_stream = _ready
+    tts._current_stream = _ready
     asyncio.run(tts.write_segment(pcm, segment_kind="cue", **write_kwargs))
     return b"".join(rec.writes)
 
@@ -67,7 +67,7 @@ def _emit(pcm: bytes, **write_kwargs) -> bytes:
 def test_the_adapter_writes_the_audio32_header():
     ours, theirs = socket.socketpair()
     try:
-        adapter = _OutputdStreamAdapter(ours)
+        adapter = TtsStream(ours)
         payload = b"\x01\x02\x03\x04\x05\x06\x07\x08"
         adapter.write(payload)
         theirs.settimeout(2.0)
