@@ -3156,7 +3156,7 @@ def test_the_real_incumbent_shelf_can_be_repeated_and_the_role_keeps_it(tmp_path
 def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
     """A shelf's ``q`` is not the prescriber's to choose, and is not ignored.
 
-    ``camilla_yaml._emit_driver_linearization_definitions`` builds a shelf's
+    ``camilla_yaml.filters._emit_driver_linearization_definitions`` builds a shelf's
     ``FilterSpec`` with no ``q`` at all, and ``biquad.biquad_coeffs`` forces
     ``SHELF_Q`` for both shelf types whatever the record says — so a banked
     number that was not that one would be a number nothing in the loop reads.
@@ -3193,7 +3193,7 @@ def test_a_prescribed_shelf_carries_the_emitters_own_steepness(tmp_path):
 def test_a_shelf_may_only_sit_where_the_emitter_can_name_it(tmp_path, filters, legal):
     """The emitter's structural rule, applied at intake instead of at emission.
 
-    ``camilla_yaml._validate_linearization_shelf_structure`` raises on any other
+    ``camilla_yaml.filters._validate_linearization_shelf_structure`` raises on any other
     placement, because position is what names the emitted filter and two
     shelves in "peak" slots would collide. A document accepted here and refused
     there is the one failure shape a gate exists to prevent, so the door

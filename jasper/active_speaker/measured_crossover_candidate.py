@@ -568,7 +568,7 @@ class MeasuredCrossoverCandidate:
         # A list, not a mapping, so the shape check differs from its neighbours
         # above; the exact-JSON-data walk and the freeze are the same.
         # Cuts-only is enforced at the emitter boundary
-        # (``camilla_yaml._validated_blend_correction``), not re-checked here.
+        # (``camilla_yaml.filters._validated_blend_correction``), not re-checked here.
         if (
             not isinstance(self.blend_correction, Sequence)
             or isinstance(self.blend_correction, (str, bytes, Mapping))

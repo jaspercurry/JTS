@@ -156,7 +156,7 @@ _HF_TAPER_CORNER_RATIO: float = 1.25
 # The taper's corner must stay strictly below Nyquist or CamillaDSP refuses
 # the whole config at load. Derived from the runtime contract's own sample
 # rate so a rate change cannot drift this from
-# ``camilla_yaml._validated_biquad_entry``.
+# ``camilla_yaml.filters._validated_biquad_entry``.
 _HF_TAPER_NYQUIST_HZ: float = DEFAULT_SAMPLE_RATE / 2.0
 
 # Continuation policy above the confidence ceiling, keyed by DECLARED driver

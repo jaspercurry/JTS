@@ -281,7 +281,7 @@ LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
 # VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
 # measured against the notch-excluded max
-# (`program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
+# (`program_analysis.model.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
 
 #: The spot CHECK asks the household to stand the microphone on. An identity,

@@ -31,7 +31,7 @@ undeclared driver, which staging writes as present-and-``None``, still passes.
 A fifth family, section (g), pins the **apply-time** layer. All four families
 above compare the floor only once a graph exists — none of them stood between a
 chosen crossover frequency and an APPLIED graph, which was harmless only while
-nothing varied Fc. ``camilla_yaml._assert_tweeter_crossover_honours_declared_floor``
+nothing varied Fc. ``camilla_yaml.gates._assert_tweeter_crossover_honours_declared_floor``
 closes that at the emitter, and section (g) keeps it honest in both directions:
 it must refuse a below-floor corner, and it must not invent a floor where the
 operator declared none.

@@ -29,7 +29,7 @@ def sections_by_role(regions: Iterable[Any]) -> dict[str, tuple[CrossoverSection
     emitter, so the two cannot drift apart. A role with no region gets no sections (runs
     FULL RANGE in the emitted graph). ``regions`` are duck-typed on
     ``lower_driver``/``upper_driver``/``fc_hz``/``order``, mirroring
-    ``camilla_yaml._emit_baseline_driver_definitions``.
+    ``camilla_yaml.filters._emit_baseline_driver_definitions``.
     """
     out: dict[str, list[CrossoverSection]] = {}
     for region in regions:

@@ -1354,7 +1354,7 @@ def test_cd_horn_taper_corner_is_clamped_below_nyquist_never_skipped(
     Reference's ceiling is 20 kHz (the grid's own top edge, since the
     2026-08-29 horn-droop correction ruling), where the designed corner would
     be 25 kHz -- past the 48 kHz runtime's 24 kHz Nyquist, which
-    ``camilla_yaml._validated_biquad_entry`` refuses outright. There the
+    ``camilla_yaml.filters._validated_biquad_entry`` refuses outright. There the
     corner is CLAMPED into the only interval that is legal at all, strictly
     between the ceiling (below it the shelf would cut inside the measured
     band) and Nyquist; the relaxation the policy designs still ships.
