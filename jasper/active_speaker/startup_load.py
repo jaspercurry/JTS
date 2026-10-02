@@ -105,10 +105,7 @@ def _commission_base_state(path: Path) -> dict[str, Any]:
         path,
         schema_version=COMMISSION_LOAD_SCHEMA_VERSION,
         kind=COMMISSION_LOAD_STATE_KIND,
-        extra={
-            "target": {},
-            "runtime_status": {},
-        },
+        extra={"target": {}},
     )
 
 
@@ -721,11 +718,9 @@ def reemit_staged_startup_anchor(
     commissioning is deliberately transient, so a reboot or a CamillaDSP restart
     mid-commission leaves ``status="loaded"`` on disk with nothing loaded. This
     reads that record RAW — no live-graph consult — because the whole point of
-    the command is to work with CamillaDSP down, and
-    ``commission_load_runtime_status`` (what ``commission-rollback`` and the web
-    wizard overlay to report ``stale``) needs the running graph to answer. The
-    way past a stale record is ``--force``, or a ``commission-rollback`` /
-    wizard visit, which reconcile the record against the live graph.
+    the command is to work with CamillaDSP down. The way past a stale record is
+    ``--force``, or a ``commission-rollback``, which reloads the staged anchor
+    and records the rollback.
     """
     import tempfile
 
