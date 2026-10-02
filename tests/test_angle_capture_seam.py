@@ -1078,9 +1078,10 @@ def test_a_template_carrying_what_the_executor_assigns_refuses(identity: dict) -
     ("drivers/each", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}]', (), True),
     ("rear/express", None, '[{"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.2}]', (), True),
     ("rear/pair", "rear_behind", None, (), True),
+    ("speaker/mark", "speaker_mark", None, (), True),
     ("speaker/mark", "speaker_mark", None, ("base", "fp-a"), True),
     ("bass/axis", "seat_express", None, (), False),
-], ids=["driver", "close set", "branch set", "a trial over a timing take", "bass"])
+], ids=["driver", "close set", "branch set", "a timing take", "a trial over a timing take", "bass"])
 def test_a_plan_states_no_ladder_for_a_take_that_levels_itself(program, layout, poses, candidates, refused) -> None:
     """A take that levels itself plays its probe first, so a staged plan whose
     template states a ladder is refused where every plan document enters, the

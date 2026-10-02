@@ -594,10 +594,9 @@ class AngleCaptureRequest:
                 f"a walk's template states what each capture is measured at, "
                 f"so it cannot carry {', '.join(stated)}",
             )
-        if self.template.level_ladder_dbfs and any(take_level(
-                stop, scope=TEMPLATE_SWEEP_SCOPE if stop.plays_summed else "", over_timing=self.takes_timing) is not None
-                for stop in self.stops):
-            # A take that levels itself plays its probe first (ADR-0361 §3, ADR-0405).
+        if self.template.level_ladder_dbfs and (self.takes_timing or any(stop.level is not None for stop in self.stops)):
+            # A take that levels itself, and a timing take, which finds its run's fader, play
+            # their probe first (ADR-0361 §3, ADR-0405, ADR-0408).
             raise LateralWalkRefused(
                 WALK_TEMPLATE_NOT_ACCEPTED,
                 "a take that levels itself finds its own level, so the template cannot state level_ladder_dbfs",

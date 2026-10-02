@@ -20,8 +20,8 @@
      (`angle_capture.take_level`, `level_sets`). The base's candidate graph is never the timing graph,
      so the base is one of them. The set's first take probes its own graph from −60 dBFS at the output
      and levels itself to its pose's run level, 80 ± 2 dB at a bearing. Its repeats and other poses carry
-     that level, as a close set's takes do. A plan template cannot state a ladder for such a set
-     (ADR-0405).
+     that level, as a close set's takes do. A plan template cannot state a ladder for a run that takes
+     a timing take (ADR-0405).
   2. **What goes.** Over a timing take, no summed take on another graph plays at the run's fader. So
      rule A's timing branch has no input, and it goes: each driver's gap under the timing graph
      (`driver_excess_db`), with `PreflightFacts.driver_peaks_db`, `applied_program_charge_db` and
@@ -37,8 +37,10 @@
      a level that admission refuses.
 - **Hearing:** every probe starts at −60 dBFS at the output, rises at most 6 dB a burst, and stops at
   the 76 dB ramp bound (ADR-0405). Every take of a run that takes a timing take plays only a graph its
-  own probe read, and lands at 80 ± 2 dB, so at 82 dB or less. The 85 dB stop, `volume_limit`, the
-  graph doors, the `set_volume_db` clamp and the driver caps do not change.
+  own probe read, and each set's first take lands at 80 ± 2 dB. A take that carries that level to
+  another pose reads what that pose adds, bounded by the 85 dB stop, as ADR-0406 accepts for a close
+  set. Every shipped timing layout starts on the axis, where the speaker reads most. The 85 dB stop,
+  `volume_limit`, the graph doors, the `set_volume_db` clamp and the driver caps do not change.
 - **Consequences:**
   - A speaker trial plays at the fader its timing take's probe finds, with no margin cut. On jts3's
     tune its margin goes from 20.80 dB to 0, and its timing take keeps its pilots' SNR.
@@ -46,6 +48,10 @@
     two-graph trial at each layout of `speaker/mark` and `tournament/express` in the preview.
   - An A/B pair of a speaker trial no longer plays at one drive level. Its readers compare transfer
     functions, each deconvolved from its own stimulus at the gain it played (`segment_stimulus`), at
-    one placement and one fader, as ADR-0406 accepts for a close set.
+    one placement and one fader, as ADR-0406 accepts for a close set. So `round compare` reads such a
+    pair as one basis: it compares the stimulus's shape (`program.stimulus_shape_id`), not its level.
+  - A hand-staged bass stop over a timing take now levels per graph, so `bass_fit`, `bass_table` and
+    `bass_comparison` refuse its pair (`*_capture_context_changed`): that is why the bass trial keeps
+    one drive level (§3).
   - Rejected: each take pays its own margin under the timing take's fader. It moves the charge to the
     candidate takes instead of removing it, and on jts3 they would still play 16.8 dB down.

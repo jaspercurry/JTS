@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_v2 import capture_prediction
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation
 from jasper.active_speaker.crossover_v2.round_captures import PoseCapture
 from jasper.active_speaker.crossover_v2.round_inputs import COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND, comparand
 from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
@@ -29,7 +31,8 @@ from jasper.active_speaker.crossover_v2.take_reading import (
 )
 from jasper.cli import round_views
 from jasper.cli._refusal import EXIT_REFUSED
-from tests.crossover_v2_fixtures import CAPTURE_RECORDS, bank_capture_round, capture_record
+from jasper.audio_measurement.program import ExcitationProgram
+from tests.crossover_v2_fixtures import CAPTURE_RECORDS, _roles, bank_capture_round, capture_record
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_audio_measurement_decay import _decay
 from tests.test_take_impulses import _response
@@ -83,6 +86,33 @@ def test_a_different_microphone_is_disclosed_not_refused():
 
     assert report["summary"]["basis"]["basis_status"] == "incompatible"
     assert "capture_calibration" in report["summary"]["basis"]["incompatible_fields"]
+
+
+def _played(program: ExcitationProgram) -> dict:
+    """A take's record: one microphone at one fader, and the stimulus it played."""
+    peak = max(segment.gain_db for segment in program.stimulus_segments())
+    return {"side": "mono", "level_db": -19.0, "stimulus_dbfs": peak, "stimulus_id": program.stimulus_id,
+            "program": program.to_dict(), "capture_device": {"card": "UMIK2", "model_key": "minidsp_umik2"},
+            "capture_calibration": {"applied": True, "calibration_id": "umik", "curve_fingerprint": "fp-umik"},
+            "provenance": {"stimulus": {"wav_sha256": program.stimulus_id, "peak_dbfs": peak}}}
+
+
+@pytest.mark.parametrize(("b", "status"), [("louder", "compatible"), ("another sweep", "incompatible")])
+def test_a_pair_reads_one_basis_when_its_stimuli_differ_only_in_level(b, status):
+    """Each take is deconvolved against the stimulus it played, so a pair whose
+    stimuli differ only in level, as a speaker trial's two graphs each levelled by
+    its own probe (ADR-0408), compares as one basis; another sweep does not."""
+    excitation = SessionExcitation(tuple(_roles()), {"woofer": 0.0, "tweeter": -6.0}, -19.0, 2000.0,
+                                   {"woofer": 8.0, "tweeter": 8.0})
+    quiet = excitation.cloud_program(extra_backoff_db=14.78)
+    other = {"louder": excitation.cloud_program(),
+             "another sweep": replace(excitation, summed_sweep_band_hz=(300.0, 3000.0)).cloud_program(
+                 extra_backoff_db=14.78)}[b]
+
+    basis = compare_report(_take("t1", record=_played(quiet)), _take("t2", record=_played(other)))["summary"]["basis"]
+
+    assert (basis["basis_status"], basis["incompatible_fields"]) == (
+        status, [] if status == "compatible" else ["stimulus_shape_id"])
 
 
 def test_both_sides_are_read_through_the_shorter_take_window_unless_one_is_named():
