@@ -212,8 +212,9 @@ class CrossoverV2Session:
             else None
         )
         self._verify_program = self._excitation.verify_program()
-        # VERIFY's sweep without the courtesy prelude: a summed lateral pose plays
-        # it, and a branch pose builds on it.
+        # VERIFY's sweep without the courtesy prelude, for ``program_for_phase``
+        # alone. Only ``bind_production_play``'s fallback asks that, and only tests
+        # take it: a run composes each take by spec (``programs.program_for_spec``).
         self._cloud_program = self._excitation.cloud_program()
         branch_spec = next(
             (

@@ -105,6 +105,10 @@ APPLIED_TUNE = {"active": True, "status": "ready", "applied_crossover": {"valid"
                  ["done", "done", "done", "active"], id="finished_run"),
     pytest.param(_status({"status": "failed", "run": {"fault": "clipped"}}), "finished",
                  ["done", "done", "done", "active"], id="failed_run"),
+    pytest.param(_status({**LIVE, "run": {"fault": "agc_behavioral_fail"}}), "finished",
+                 ["done", "done", "active", "pending"], id="live_run_with_a_fault"),
+    pytest.param(_status({**LIVE, "run": {"fault": "capture_overrun"}}), "finished",
+                 ["done", "done", "active", "pending"], id="live_run_retrying_silently"),
     pytest.param({**_status(), "setup": APPLIED_TUNE}, "awaiting_plan",
                  ["done", "active", "pending", "pending"], id="applied_tune"),
 ])

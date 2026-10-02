@@ -185,7 +185,7 @@ def _failure_envelope(code: str, status: Mapping[str, Any]) -> dict[str, Any]:
     if live and action:
         action = {**action, "show_during_capture": True}
     return _envelope(
-        screen="finished", active_step="done", terminal_status=None if live else CAPTURE_FAILED,
+        screen="finished", active_step="measure" if live else "done", terminal_status=None if live else CAPTURE_FAILED,
         verdict=_reason_message(code, spec, status) if spec else "Measurement failed.",
         nudges=[] if live else [{"code": "run_ended", "severity": "info", "text":
             RUN_ENDED}],

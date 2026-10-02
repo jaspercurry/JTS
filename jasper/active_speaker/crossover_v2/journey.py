@@ -10,7 +10,7 @@ PHASE_CHECK = "check"
 PHASE_MEASURE = "measure"
 PHASE_VERIFY = "verify"
 # R16 lateral evidence (plan §4.4): one prompted pose per capture index. Its
-# per-driver takes replay the ANCHOR's MEASURE program, so it is not a
+# per-driver takes play MEASURE's program, so it is not a
 # ``programs.SUMMED_SWEEP_PHASES`` member.
 PHASE_LATERAL = "lateral"
 # The ADR-0319 timing take: the front drivers summed at the design-axis mark,
