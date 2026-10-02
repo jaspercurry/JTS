@@ -286,7 +286,6 @@ def check_content_transport_coherence() -> CheckResult:
     """
     from jasper.audio_control.audio_runtime_plan import output_endpoint_evidence_from_statefiles
     from jasper.platform.paths import crossover_statefile
-    from jasper.fanin.coupling_reconcile import outputd_ring_path_for
     from jasper.dsp_control.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_RING_PATH_ENV_VAR,
@@ -295,6 +294,7 @@ def check_content_transport_coherence() -> CheckResult:
         dac_content_marker_contradicted,
         dac_content_ring_served,
         outputd_bridge_is_ring,
+        outputd_ring_path_for,
         resolve_outputd_ring_path,
     )
 

@@ -15,6 +15,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from jasper.dsp_control.fanin_coupling import (
+    OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
+    OUTPUTD_RING_PATH_ENV_VAR,
+    outputd_ring_path_for,
+)
 from jasper.platform.atomic_io import EnvKeyAction as EnvAction
 from jasper.platform.env_file import read_env_file
 
@@ -122,7 +127,8 @@ def dac_format_actions_for_recognized(
 
 
 def set_outputd_active_lane_pair(run: Pass, lane: str, endpoint_device: str) -> bool:
-    """THE SINGLE WRITER of the active-lane PAIR.
+    """THE SINGLE WRITER of the active-lane PAIR, and of the ring path the
+    endpoint marker projects to.
 
     JASPER_OUTPUTD_ACTIVE_LANE and JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT are
     ONE FACT with two consumers: outputd bails at startup on the incoherent
@@ -130,19 +136,29 @@ def set_outputd_active_lane_pair(run: Pass, lane: str, endpoint_device: str) -> 
     is broken. So every path that states one states the other, here, from
     one decision. Positive equality against the named device, never "not
     the ALSA lane": an unrecognized endpoint must resolve to NO marker,
-    which a negative test would invert into a spurious arm. Returns whether
-    either key changed.
+    which a negative test would invert into a spurious arm.
+
+    outputd also refuses a marker whose ring path has not followed it (exit
+    78), and this pass restarts outputd before the coupling pass runs, so the
+    path moves in this same write. Returns whether any key changed.
     """
     ring_endpoint = (
         "1"
         if lane == "1" and endpoint_device == RING_ACTIVE_OUTPUTD_PLAYBACK_DEVICE
         else ""
     )
+    ring_path = outputd_ring_path_for(
+        {
+            **read_env_file(run.outputd_env_target),
+            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: ring_endpoint,
+        }
+    )
     return run.set_env_file_var(
         run.outputd_env_target,
         [
             ("JASPER_OUTPUTD_ACTIVE_LANE", lane),
-            ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", ring_endpoint),
+            (OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR, ring_endpoint),
+            (OUTPUTD_RING_PATH_ENV_VAR, ring_path),
         ],
     )
 

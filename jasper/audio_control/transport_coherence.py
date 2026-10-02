@@ -17,7 +17,6 @@ from jasper.dsp_control.camilla_config_contract import (
 from jasper.fanin.ring_readiness import load_topology_for_wire
 from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
-    DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_FORMAT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
@@ -181,12 +180,11 @@ class TransportCoherenceReport:
     """One transport comparison's contradictions AND its non-error observations.
 
     ``errors`` are contradictions: a caller that reports them refuses, parks, or
-    fails. ``notes`` are states that are coherent but not steady — the two rungs
-    of the ACTIVE-ring arm ladder — so a caller PROCEEDS while still saying what
-    the box is sitting in. The split exists because those two need opposite
-    dispositions from the same comparison: collapsing them into ``errors``
-    deadlocks the documented arm ladder at either rung — the graph rung on a
-    loopback plan, and the endpoint rung on a plan already ``shm_ring``.
+    fails. ``notes`` are states that are coherent but not steady — the graph
+    rung of the ACTIVE-ring arm ladder on a box still off the ring — so a
+    caller PROCEEDS while still saying what the box is sitting in. The split
+    exists because the two need opposite dispositions from the same
+    comparison: collapsing that rung into ``errors`` deadlocks the ladder.
 
     Notes are not "soft errors". A note means the state is safe-by-construction
     at this instant and has a documented next step, not that a contradiction was
@@ -328,46 +326,6 @@ def transport_coherence_report(
             expected_playback = str(
                 topology.camilla_to_outputd.get("camilla_playback_device") or ""
             )
-            if normalized == TRANSPORT_SHM_RING_ACTIVE:
-                # The armed active endpoint may read ONLY the active ring file,
-                # and outputd enforces that pairing as a biconditional at its
-                # own startup. This layer reports the pair; it does not gate.
-                #
-                # WHY A NOTE AND NOT AN ERROR. The two halves are not two facts.
-                # The MARKER is the fact — jasper-audio-hardware-reconcile
-                # writes it from the accepted active-lane decision — and the
-                # PATH is its projection, with exactly one derivation and one
-                # writer (jasper.fanin.coupling_reconcile's
-                # `outputd_ring_path_for`, applied by `_outputd_actions` on
-                # every pass). A crossed pair is therefore always a projection
-                # one pass behind its source, never a disagreement between two
-                # independent observations — and refusing on it DEADLOCKED the
-                # arm, because the marker cannot be written until the path moves
-                # while the path is derived FROM the marker.
-                #
-                # Safe by construction rather than by permission: outputd
-                # REFUSES the crossed pair, so the waypoint is silence and never
-                # wrong audio; the pair's own writer converges it on its next
-                # pass, which the marker's writer kicks
-                # (`jasper-fanin-coupling-auto`); and the device / bridge /
-                # format / channel comparisons in this same branch still return
-                # ERRORS for a graph that is not actually on the active ring, so
-                # this note never stands alone on a wrecked box.
-                observed_ring_path = str(topology.camilla_to_outputd.get("path") or "")
-                if observed_ring_path != DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
-                    notes.append(
-                        f"{OUTPUTD_RING_PATH_ENV_VAR}={observed_ring_path!r} under an "
-                        f"armed active endpoint is the FIRST-ARM waypoint: the "
-                        f"endpoint marker has moved and its ring-path projection has "
-                        f"not. An armed active endpoint may read only "
-                        f"{DEFAULT_OUTPUTD_ACTIVE_RING_PATH!r}, so outputd refuses "
-                        "the pair and this box is silent — never wrong audio — until "
-                        "the path's single writer converges it. Complete it with "
-                        "`jasper-fanin-coupling-reconcile shm_ring` (the audio-"
-                        "hardware reconciler also starts "
-                        "jasper-fanin-coupling-auto.service, which runs the same "
-                        "pass)."
-                    )
             if playback_device and playback_device != expected_playback:
                 errors.append(
                     f"transport plan is shm_ring but Camilla playback={playback_device!r}; "

@@ -1853,11 +1853,10 @@ def test_a_crossed_ring_pair_converges_on_the_next_pass_and_says_so(
 ):
     """RECOVERY for the marker/path pair: one pass, either direction, observable.
 
-    The pair's two halves have two writers and cannot move in one write — the
-    marker's writer (``jasper-audio-hardware-reconcile``) runs first and kicks
-    this one. So a crossed pair is a normal bounded window, not a wreck, and what
-    makes it bounded is that ``_outputd_actions`` derives the path from the
-    marker on EVERY pass, before the transition-vs-confirm split.
+    The marker's writer (``jasper-audio-hardware-reconcile``) moves the path in
+    the same write, so a crossed pair here was crossed by something else.
+    ``_outputd_actions`` derives the path from the marker on EVERY pass, before
+    the transition-vs-confirm split, so one pass converges it.
 
     Both directions are walked, because each was a separate stall:
 

@@ -13,8 +13,8 @@ Ring B (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or
 on a roleful box whose active endpoint is armed, to the ACTIVE ring
 (active-content.ring) via ``jts_ring_active_playback``. The post-DSP end is
 declared by ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the ring's path
-in outputd.env, whose single writer is ``_outputd_actions``. Ring A needs no
-declaration — fan-in fills it unconditionally.
+in outputd.env, set by ``_outputd_actions``. Ring A needs no declaration —
+fan-in fills it unconditionally.
 
 NO FALLBACK. A step that fails reports ``ok=False`` and the box PARKS visibly
 through :mod:`jasper.control.transport_eligibility`; recovery from a bad deploy is
@@ -31,7 +31,7 @@ import argparse
 import asyncio
 import fcntl
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 import os
 import sys
 import time
@@ -43,18 +43,16 @@ from jasper.control import camilla_topology_gate_state, restart_broker
 from jasper.platform.atomic_io import flock_held
 from jasper.service_state.audio_runtime_settings import RuntimeEnvAction
 from jasper.runtime.output_topology_runtime import GROUPING_RECONCILE_UNIT
-from jasper.platform.env_file import env_value, read_value
+from jasper.platform.env_file import read_value
 from jasper.fanin.coupling_auto import converge_usb_combo
 from jasper.fanin.env_actions import _apply_actions, _write_env_actions
 from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
-    DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
-    DEFAULT_OUTPUTD_RING_PATH,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-    OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR,
     OUTPUTD_RING_PATH_ENV_VAR,
     RING_SLOTS_ENV_VAR,
+    outputd_ring_path_for,
     resolve_outputd_ring_path,
 )
 from jasper.platform.log_event import log_event
@@ -563,9 +561,8 @@ def _converge_ring(
     )
     # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
     # values so first-writing an absent key (which resolves to the same default)
-    # is not mistaken for a heal. The pair is crossed for a bounded window by
-    # construction (its two halves have two writers), so logging the heal is
-    # what keeps that window observable.
+    # is not mistaken for a heal. The marker's writer moves the path in the
+    # same write, so a heal here means something else crossed the pair.
     ring_path_before = resolve_outputd_ring_path(
         read_value(outputd_snapshot.text, OUTPUTD_RING_PATH_ENV_VAR)
     )
@@ -992,49 +989,6 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
     return deleted
 
 
-def outputd_ring_path_for(outputd_env: str | Mapping[str, str]) -> str:
-    """The ring file outputd must read, derived from the endpoint marker.
-
-    ONE writer for the path half of outputd's ring-path/marker biconditional.
-    Armed -> the ACTIVE ring's file; unarmed -> the operator's custom Ring B
-    path if they set one, else the canonical Ring B default.
-
-    The marker is read from ONE already-read snapshot of outputd.env — raw
-    text or an equivalent parsed mapping — rather than from the file on disk,
-    so the path derived and the marker it derives from cannot straddle a
-    concurrent hardware reconcile and emit a crossed pair.
-
-    The asymmetry is deliberate: an operator's custom path is honoured on the
-    STEREO ring and ignored on the ACTIVE one. There is exactly one legal
-    active-ring file — outputd's allowlist compares against that named constant
-    — so "preserving" a custom value there could only produce the crossed pair
-    the allowlist refuses.
-
-    TOTAL INTO THE LEGAL SET, in BOTH directions: the armed branch discards
-    whatever the key held, and the unarmed branch equally refuses to CARRY
-    FORWARD the active ring's own file. Preserving it on the unarmed side would
-    make the disarm direction STICKY — a box whose marker cleared while the
-    coupling stayed ``shm_ring`` would keep pointing outputd at a ring whose only
-    writer stood down.
-    """
-    armed = fanin_coupling.ring_active_endpoint_armed(
-        {
-            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: env_value(
-                outputd_env, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
-            )
-            or ""
-        }
-    )
-    if armed:
-        return DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-    carried = resolve_outputd_ring_path(
-        env_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
-    )
-    if carried == DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
-        return DEFAULT_OUTPUTD_RING_PATH
-    return carried
-
-
 def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     """The COMPLETE set of reconciler-owned outputd.env actions for the ring.
 
@@ -1052,12 +1006,9 @@ def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
     full-range Ring B path onto an armed box, and outputd would refuse the pair
     at startup.
 
-    THIS RUNS ON EVERY PASS, before the transition-vs-confirm split, so it is
-    also the pair's RECOVERY: whichever half moved last, one pass converges the
-    other. The two halves have different writers and cannot move in one write, so
-    the pair is legitimately crossed between them;
-    :func:`jasper.audio_control.transport_coherence.transport_coherence_report` reports that
-    window as a note rather than a contradiction.
+    The marker's writer applies the same derivation in the same write as the
+    marker. THIS RUNS ON EVERY PASS, before the transition-vs-confirm split, so
+    it is also the pair's RECOVERY for a file something else crossed.
     """
     return (
         RuntimeEnvAction(

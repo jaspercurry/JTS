@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Final, TypedDict, cast
 
-from jasper.platform.env_file import read_value
+from jasper.platform.env_file import env_value, read_value
 
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via the CAPTURE direction of the ``jts_ring`` ioplug. The Rust
@@ -555,6 +555,51 @@ def resolve_outputd_ring_path(raw_path: str | None) -> str:
         return DEFAULT_OUTPUTD_RING_PATH
     value = raw_path.strip()
     return value or DEFAULT_OUTPUTD_RING_PATH
+
+
+def outputd_ring_path_for(outputd_env: str | Mapping[str, str]) -> str:
+    """The ring file outputd must read, derived from the endpoint marker.
+
+    The ONE derivation of the path half of outputd's ring-path/marker
+    biconditional. The marker's writer applies it in the same write as the
+    marker, so outputd never starts on a crossed pair. Armed -> the ACTIVE
+    ring's file; unarmed -> the operator's custom Ring B path if they set
+    one, else the canonical Ring B default.
+
+    The marker is read from ONE already-read snapshot of outputd.env — raw
+    text or an equivalent parsed mapping — rather than from the file on disk,
+    so the path derived and the marker it derives from cannot straddle a
+    concurrent hardware reconcile and emit a crossed pair.
+
+    The asymmetry is deliberate: an operator's custom path is honoured on the
+    STEREO ring and ignored on the ACTIVE one. There is exactly one legal
+    active-ring file — outputd's allowlist compares against that named constant
+    — so "preserving" a custom value there could only produce the crossed pair
+    the allowlist refuses.
+
+    TOTAL INTO THE LEGAL SET, in BOTH directions: the armed branch discards
+    whatever the key held, and the unarmed branch equally refuses to CARRY
+    FORWARD the active ring's own file. Preserving it on the unarmed side would
+    make the disarm direction STICKY — a box whose marker cleared while the
+    coupling stayed ``shm_ring`` would keep pointing outputd at a ring whose only
+    writer stood down.
+    """
+    armed = ring_active_endpoint_armed(
+        {
+            OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: env_value(
+                outputd_env, OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR
+            )
+            or ""
+        }
+    )
+    if armed:
+        return DEFAULT_OUTPUTD_ACTIVE_RING_PATH
+    carried = resolve_outputd_ring_path(
+        env_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
+    )
+    if carried == DEFAULT_OUTPUTD_ACTIVE_RING_PATH:
+        return DEFAULT_OUTPUTD_RING_PATH
+    return carried
 
 
 def capture_kwargs_for_coupling() -> dict[str, object]:
