@@ -20,6 +20,7 @@ from jasper.runtime import outputd_failure_reconcile_state as reader
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "bin" / "jasper-outputd-failure-reconcile"
 UNPARK_SCRIPT = ROOT / "deploy" / "bin" / "jasper-unpark"
+RECONCILE_SCRIPT = ROOT / "deploy" / "bin" / "jasper-audio-hardware-reconcile"
 UNIT = ROOT / "deploy" / "systemd" / "jasper-outputd.service"
 
 FAILED = {"active_state": "failed", "result": "exit-code"}
@@ -135,6 +136,11 @@ def test_the_record_path_is_the_one_the_script_writes_and_the_unit_removes():
     )
     assert UNIT.name == reader.UNIT
     assert f"ExecStopPost=-/usr/local/sbin/{SCRIPT.name}" in unit
+    # The reconcile pass retries outputd only when it finds the record here.
+    assert (
+        f'OUTPUTD_PARK_RECORD="${{JASPER_OUTPUTD_RECONCILE_PARK_STATE:-{reader.DEFAULT_RECORD_PATH}}}"'
+        in RECONCILE_SCRIPT.read_text()
+    )
 
 
 def test_the_record_lives_outside_the_runtime_directory_systemd_deletes():

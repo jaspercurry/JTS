@@ -3,13 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# jasper-outputd.service's ExecStopPost. On a failing stop it asks the output
-# hardware reconciler for a pass; on exit 78 it first records the park the
-# doctor reads. It never runs the pass itself: this unit's sandbox
-# (ProtectSystem=full) makes /etc read-only, and the pass writes there. The
-# reconcile unit skips the pass when its inputs match its last good one, and a
-# pass that finds the park record retries outputd after its repair. See
-# ADR-0409. Fail-open: always exits 0.
+# jasper-outputd.service's ExecStopPost. It starts the reconcile unit rather
+# than running the pass: this unit's sandbox (ProtectSystem=full) makes /etc
+# read-only, and the pass writes there. See ADR-0409. Fail-open: always exits 0.
 
 set -uo pipefail
 
@@ -52,6 +48,7 @@ fi
 if "$SYSTEMCTL" --no-block start jasper-audio-hardware-reconcile.service >/dev/null 2>&1; then
     log reconcile_requested
 else
-    log reconcile_request_failed
+    rc=$?
+    log reconcile_request_failed rc="$rc"
 fi
 exit 0

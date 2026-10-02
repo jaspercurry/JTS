@@ -27,11 +27,10 @@ Restart=on-failure
 RestartSec=5
 # CONFIG-validation failures exit 78 (EX_CONFIG) and must stay off the restart
 # ladder: a persistent bad config would otherwise climb the burst into the
-# reboot above. ExecStopPost gives exit 78 one bounded audio-hardware
-# reconcile + explicit retry for transient DAC hotplug shear; a second 78
-# leaves the unit parked on the helper's marker, visible on /state + doctor.
-# See ADR-0141. Recovery after a persistent park: fix the env, reset-failed,
-# retire the park with jasper-unpark, then start jasper-outputd.
+# reboot above. ExecStopPost records the park, visible on /state + doctor,
+# and starts the audio-hardware reconcile, which retries outputd after a
+# repair. See ADR-0409. Recovery after a persistent park: fix the env,
+# reset-failed, retire the park with jasper-unpark, then start jasper-outputd.
 RestartPreventExitStatus=78
 
 # Above Camilla (-900): this owns the DAC write loop.

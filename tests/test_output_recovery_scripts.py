@@ -139,7 +139,6 @@ def test_outputd_failure_reconcile_requests_a_reconcile_pass(
 def test_outputd_failure_reconcile_skips_non_retrying_stops(
     tmp_path: Path, result: str
 ) -> None:
-    """`exec-condition` is systemd's spelling; `condition` matched nothing."""
     harness = _FailureReconcileHarness(tmp_path)
 
     harness.run(result=result, exit_status="0")
