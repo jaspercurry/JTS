@@ -396,7 +396,7 @@ def effective_sweep_duration_limit_s(
     )
 
 
-def _role_sensitivities(targets: list[Any]) -> tuple[dict[str, float], set[str]]:
+def role_sensitivities(targets: list[Any]) -> tuple[dict[str, float], set[str]]:
     """Each role's declared effective sensitivity, from its outputs' own figures,
     and the roles whose outputs declare different figures, which get none.
 
@@ -424,7 +424,7 @@ def _derived_hf_ceiling_dbfs(
     """``(ceiling, anchor provenance, anchor cap)`` for ``hf_role``.
 
     Refuses ``SENSITIVITY_UNDECLARED`` when ``hf_role`` or every low-frequency
-    role has no sensitivity (per :func:`_role_sensitivities`; ADR-0382). Its
+    role has no sensitivity (per :func:`role_sensitivities`; ADR-0382). Its
     detail names the roles that declare none (``undeclared_roles``) apart from
     those whose outputs declare different ones (``disagreeing_roles``).
 
@@ -443,7 +443,7 @@ def _derived_hf_ceiling_dbfs(
     """
 
     targets = [target for target in safety_profile["targets"] if isinstance(target, Mapping)]
-    sensitivities, disagreeing = _role_sensitivities(targets)
+    sensitivities, disagreeing = role_sensitivities(targets)
     sens_hf = sensitivities.get(hf_role)
     siblings = [target for target in targets if target.get("role") in LOW_FREQUENCY_ROLES]
     candidates: list[tuple[float, str, float]] = []
