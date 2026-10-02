@@ -36,8 +36,6 @@ from jasper.audio_measurement.branch_program import build_branch_program
 from .measure_spec import branch_channels_for, solo_target
 from .journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
-    PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_TIMING,
@@ -109,12 +107,7 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float) -> 
 # which phases share one composed program
 # --------------------------------------------------------------------------- #
 
-SUMMED_SWEEP_PHASES = frozenset(
-    {PHASE_VERIFY, PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_TIMING}
-)
-
-#: Position groups omit the courtesy prelude: each pose is not a new session.
-GROUP_SUMMED_SWEEP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY})
+SUMMED_SWEEP_PHASES = frozenset({PHASE_VERIFY, PHASE_TIMING})
 
 
 class NoProgramForPhaseError(RuntimeError):
@@ -169,8 +162,7 @@ def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_db
                                      role_targets=role_targets, extra_backoff_db=backoff,
                                      courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase))
     else:
-        program = (excitation.cloud_program(extra_backoff_db=backoff) if spec.program_phase == PHASE_CLOUD_VERIFY
-                   else excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s))
+        program = excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s)
     return program
 
 
@@ -420,10 +412,7 @@ class SessionExcitation:
 
     def cloud_program(self, *, extra_backoff_db: float = 0.0) -> ExcitationProgram:
         """The same summed sweep without a courtesy prelude at each pose."""
-        return self._summed_sweep(
-            courtesy_prelude=courtesy_prelude_for_phase(PHASE_CLOUD_VERIFY),
-            extra_backoff_db=extra_backoff_db,
-        )
+        return self._summed_sweep(courtesy_prelude=False, extra_backoff_db=extra_backoff_db)
 
     def _summed_sweep(
         self, *, courtesy_prelude: bool, extra_backoff_db: float, sweep_s: float | None = None,
@@ -459,13 +448,11 @@ def program_for_phase(
     check: ExcitationProgram,
     measure: ExcitationProgram | None,
     verify: ExcitationProgram,
-    cloud: ExcitationProgram,
 ) -> ExcitationProgram:
     """Which composed program this phase plays — **by identity, not by value**.
 
     The timing take and VERIFY get the same ``verify`` object (shared
-    ``stimulus_id``), and every :data:`GROUP_SUMMED_SWEEP_PHASES` position gets
-    the same ``cloud`` object.
+    ``stimulus_id``).
 
     ``measure`` is ``None`` until the CHECK gain solve produces a plan;
     requesting MEASURE before then raises :class:`NoProgramForPhaseError` rather
@@ -483,13 +470,6 @@ def program_for_phase(
                 "MEASURE armed before the CHECK gain solve produced a program"
             )
         return measure
-    if phase in GROUP_SUMMED_SWEEP_PHASES:
-        # One composed sweep serves both position groups: same excitation, same
-        # min-cap clamp, same ``program.phase`` ("verify") so the analyzer routes
-        # it unchanged. What differs from ``verify`` is the courtesy
-        # prelude alone, which is analysis-invisible (``KIND_COURTESY_TONE`` is
-        # not a ``STIMULUS_KIND``).
-        return cloud
     if phase in SUMMED_SWEEP_PHASES:
         # What differs between the two is the PRIORS the session hands the
         # analysis and the verdict it draws — never the sound the speaker makes.

@@ -17,8 +17,8 @@ Two promises the module makes that these tests exist to hold:
   allowed to grow one — `test_no_view_publishes_a_verdict` walks the
   serialised output of all three and fails on a `passed` key.
 * **Not-evaluated never collapses.** A missing residual is `None` with a
-  reason attached, never `0.0` and never a pass, mirroring the first-class
-  `CLAIM_NOT_EVALUATED` outcome issue #1868 keeps distinct from both.
+  reason attached, never `0.0` and never a pass: the first-class
+  not-evaluated outcome issue #1868 keeps distinct from both.
 """
 from __future__ import annotations
 

@@ -230,7 +230,7 @@ class PositionFlatness:
     is carried because a residual isn't comparable across two fractions.
     ``rms_db``/``log_rms_db`` are this position's own linear- and
     log-pooled residuals. ``not_evaluated_reason`` is non-empty exactly
-    when ``evaluable`` is False (mirrors ``CLAIM_NOT_EVALUATED``, #1868).
+    when ``evaluable`` is False (#1868).
     """
 
     position_id: str

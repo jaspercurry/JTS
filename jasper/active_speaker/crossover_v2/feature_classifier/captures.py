@@ -14,7 +14,6 @@ import numpy as np
 from ...measurement_programs import PURPOSE_SPEAKER
 from ...run_manifest import kept_measurements
 from ..journey import (
-    PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -26,7 +25,7 @@ from ..position_cycle import (
 )
 
 
-ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY, PHASE_LATERAL})
+ADMISSIBLE_PHASES = frozenset({PHASE_VERIFY, PHASE_LATERAL})
 
 
 @dataclass(frozen=True)

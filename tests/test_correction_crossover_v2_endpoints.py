@@ -58,8 +58,6 @@ from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorCont
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_MEASURE,
-    PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -346,9 +344,9 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     )
     bank = retained_take_writer(store, "cap_retake_session", asyncio.run)
 
-    position_id = f"{PHASE_CLOUD_MEASURE}_10"
+    position_id = f"{PHASE_VERIFY}_10"
     base = {
-        "position_id": position_id, "phase": PHASE_CLOUD_MEASURE, "index": 10,
+        "position_id": position_id, "phase": PHASE_VERIFY, "index": 10,
         "wide": False, "role": "onax", "captured_at": 1.0,
         "session_id": "cap_retake_session",
         # What ``spatial.take_kind`` stamps on every built record, and what the
@@ -438,9 +436,9 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
     bank_id = bank(
         WiredCaptureAnswer(wav=oversize),
-        {"position_id": f"{PHASE_CLOUD_MEASURE}_04",
-         "take_id": f"{PHASE_CLOUD_MEASURE}_04_a04", "measure_kind": "",
-         "phase": PHASE_CLOUD_MEASURE, "index": 4, "attempt": 4,
+        {"position_id": f"{PHASE_VERIFY}_04",
+         "take_id": f"{PHASE_VERIFY}_04_a04", "measure_kind": "",
+         "phase": PHASE_VERIFY, "index": 4, "attempt": 4,
          "wide": False, "role": "onax", "captured_at": 1.0,
          "session_id": "cap_record_session", "prompt": "on the mark",
          "gate_window_ms": 8.0, "validity_floor_hz": 140.0,
@@ -452,7 +450,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     entries = json.loads((bundle_dir / "info.json").read_text())["summed_captures"]
     assert len(entries) == 1
     entry = entries[0]
-    assert entry["group"] == f"{PHASE_CLOUD_MEASURE}_04_a04"
+    assert entry["group"] == f"{PHASE_VERIFY}_04_a04"
     assert (bundle_dir / entry["artifact_path"]).read_bytes() == oversize
     assert (bundle_dir / entry["capture_json_path"]).is_file()
 
@@ -495,7 +493,6 @@ def _bundle_store(tmp_path):
         (PHASE_MEASURE, CAPTURE_KIND_SEQUENTIAL),
         (PHASE_LATERAL, CAPTURE_KIND_SEQUENTIAL),
         (PHASE_VERIFY, "summed"),
-        (PHASE_CLOUD_MEASURE, "summed"),
     ],
 )
 def test_a_banked_take_records_the_kind_its_phase_actually_played(
@@ -507,8 +504,7 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     value; now they are banked as what they are. A lateral pose belongs with
     the other two because ``programs.program_for_phase`` answers it with
     MEASURE's program OBJECT verbatim — the same stimulus under a third name.
-    VERIFY and the cloud position groups really do play one summed sweep and
-    keep the old label.
+    VERIFY really does play one summed sweep and keeps the old label.
     """
 
     store = _bundle_store(tmp_path)
@@ -569,13 +565,13 @@ def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch)
     }
     v2state.save_v2_state({
         "session_id": "cap_original_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
+        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, "cloud_measure"],
         "candidate": {"fingerprint": "fp-original"},
         "applied": True,
-        "cloud": {PHASE_CLOUD_MEASURE: passing_group, PHASE_CLOUD_VERIFY: passing_group},
+        "cloud": {"cloud_measure": passing_group, "cloud_verify": passing_group},
         "evidence": {
             "bundle_session_id": "bundle-1",
-            "cloud_artifacts": {PHASE_CLOUD_MEASURE: "artifact-fingerprint-abc"},
+            "cloud_artifacts": {"cloud_measure": "artifact-fingerprint-abc"},
             "household_findings": [{"household_copy": "An old finding.", "at": 1.0}],
         },
     })

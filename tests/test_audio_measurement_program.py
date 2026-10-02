@@ -972,13 +972,13 @@ def test_program_phase_names_stay_disjoint_from_journey_phase_names():
 
     ``jasper.audio_measurement.program`` answers *which composer built this
     stimulus* (three phases). ``jasper.active_speaker.crossover_v2.journey``
-    answers *where is the round in its walk* (eleven — ``PHASE_LATERAL``,
-    ``PHASE_REVIEW``, ``PHASE_DONE``, …). Until master-plan ticket 2.9 both
+    answers *which phase a take was planned under* (``PHASE_LATERAL``,
+    ``PHASE_TIMING``, …). Until master-plan ticket 2.9 both
     spelled ``PHASE_CHECK`` / ``PHASE_MEASURE`` / ``PHASE_VERIFY`` — identical
     names AND identical string values for different concepts — so an import
     site could take the wrong family and still typecheck, run, and agree.
     A production file importing from BOTH families (a stimulus name like
-    ``PROGRAM_PHASE_CHECK`` alongside a journey one like ``PHASE_DONE``) is
+    ``PROGRAM_PHASE_CHECK`` alongside a journey one like ``PHASE_TIMING``) is
     where a wrong pick would be read first.
 
     **No positive control here, deliberately.** A name-set intersection can

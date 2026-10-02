@@ -135,7 +135,7 @@ def _bundle(
     root: Path,
     ir: np.ndarray,
     *,
-    phases: tuple[str, ...] = ("verify", "cloud_verify", "cloud_verify"),
+    phases: tuple[str, ...] = ("verify", "lateral", "lateral"),
     seed: int = 11,
     role: str = "summed",
     position_deg: int | None = None,

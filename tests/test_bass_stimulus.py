@@ -376,7 +376,7 @@ def test_pass_alignment_peaks_and_edges(bass_fixture, edge):
     assert set(alignment.offsets_samples.values()) == {0}
 
 
-@pytest.mark.parametrize("program_phase,kind", [("cloud_verify", POSE_KIND_SEAT), ("verify", POSE_KIND_BEARING)])
+@pytest.mark.parametrize("program_phase,kind", [("lateral", POSE_KIND_SEAT), ("verify", POSE_KIND_BEARING)])
 def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, program_phase, kind):
     spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="trial", program_phase=program_phase)
     stimulus = compose_plan_program(SimpleNamespace(excitation=bass_fixture[3], set_program=lambda *args: None),

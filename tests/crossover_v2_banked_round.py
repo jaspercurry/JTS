@@ -82,8 +82,6 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REFERENCE_MARK_DESIGN_AXIS,
 )
 from jasper.active_speaker.crossover_v2.journey import (
-    LATERAL_CONSUMER_FC_SELECTOR,
-    LATERAL_CONSUMER_FORWARD_MODEL,
     PHASE_CHECK,
     PHASE_LATERAL,
     PHASE_MEASURE,
@@ -682,7 +680,7 @@ def bank_measure_round(
             geometry=spatial.PositionGeometry(
                 spatial.POSITION_AXIS_HORIZONTAL, 7, spatial.MARK_DISTANCE_M,
             ),
-            lateral_consumer=LATERAL_CONSUMER_FC_SELECTOR,
+            lateral_consumer="fc_selector",
             claim=TakeClaim(candidate_id=candidate_id), **stamp,
         )
         for rung, candidate_id in enumerate(candidates or ("",))
@@ -829,7 +827,7 @@ def bank_seat_round(
                     ),
                 ),
                 geometry=position_geometry(stop.prompt),
-                lateral_consumer=LATERAL_CONSUMER_FORWARD_MODEL,
+                lateral_consumer="forward_model_evidence",
                 gating_applied=False,
                 **stamp,
             ), **_seat_capture(store, program, stop.index, magnitude), "measurement_purpose": measurement_programs.PURPOSE_ROOM}

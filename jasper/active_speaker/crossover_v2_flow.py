@@ -39,7 +39,6 @@ from jasper.active_speaker.crossover_v2.durable_state import (
     V2ConductorSnapshot,
 )
 from jasper.active_speaker.crossover_v2.journey import (
-    GROUP_PHASES,
     PHASE_CHECK,
     PHASE_LATERAL,
 )
@@ -83,8 +82,8 @@ MEASUREMENT_DISTANCE_M = 1.0
 class AnalyzeCapture(Protocol):
     """analyze(program, capture_result, priors, geometry, *, phase) → ProgramAnalysis.
 
-    ``phase`` is the SESSION's flow phase, never ``program.phase``, which is always
-    "verify" for every cloud position (#1855). Required and keyword-only.
+    ``phase`` is the SESSION's flow phase, never ``program.phase``, which is
+    "verify" for a timing take (#1855). Required and keyword-only.
     """
 
     def __call__(
@@ -213,7 +212,8 @@ class CrossoverV2Session:
             else None
         )
         self._verify_program = self._excitation.verify_program()
-        # The position groups' twin: same sweep, same clamp, no courtesy prelude.
+        # VERIFY's sweep without the courtesy prelude: a summed lateral pose plays
+        # it, and a branch pose builds on it.
         self._cloud_program = self._excitation.cloud_program()
         branch_spec = next(
             (
@@ -228,8 +228,8 @@ class CrossoverV2Session:
             if branch_spec is not None
             else None
         )
-        # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
-        # ``phase:index`` inside a group. ONE meter per slot.
+        # Per-SLOT attempt bookkeeping: the phase, or ``phase:index`` for a
+        # lateral pose. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
         self._timing_prior = timing_prior
 
@@ -343,7 +343,7 @@ class CrossoverV2Session:
     def _slot_of_index(self, index: int) -> str:
         """The retry-budget key for one capture index."""
         phase = self.phase_of_index(index)
-        return f"{phase}:{index}" if phase in GROUP_PHASES else phase
+        return f"{phase}:{index}" if phase == PHASE_LATERAL else phase
 
     def snapshot(self) -> V2ConductorSnapshot:
         return V2ConductorSnapshot(
@@ -436,7 +436,6 @@ class CrossoverV2Session:
                 check=self._check_program,
                 measure=self._measure_program,
                 verify=self._verify_program,
-                cloud=self._cloud_program,
             )
         except _programs.NoProgramForPhaseError as exc:
             raise CrossoverV2FlowError(str(exc)) from exc
