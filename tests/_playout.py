@@ -63,6 +63,9 @@ class FakeOutputdStream:
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
 
+    def drop_if_peer_closed(self) -> bool:
+        return False
+
     def program_duck(self, on: bool) -> None:
         self.ducks.append(on)
 
@@ -166,6 +169,7 @@ class FakeTts:
         on_drain: Callable[[], Awaitable[None]] | None = None,
         on_meter_pause: Callable[[float], Awaitable[None]] | None = None,
         on_meter_resume: Callable[[], Awaitable[None]] | None = None,
+        on_refresh: Callable[[], Awaitable[None]] | None = None,
         on_call: Callable[[str], None] | None = None,
     ) -> None:
         self._accept = accept
@@ -177,6 +181,7 @@ class FakeTts:
         self._on_drain = on_drain
         self._on_meter_pause = on_meter_pause
         self._on_meter_resume = on_meter_resume
+        self._on_refresh = on_refresh
         self._on_call = on_call
         self.calls: list[str] = []
         self.prepares: list[dict] = []
@@ -232,6 +237,11 @@ class FakeTts:
     async def pause_content_meter(self) -> None:
         self._note("pause_content_meter")
         self.meter_pauses += 1
+
+    async def refresh_connection(self) -> None:
+        self._note("refresh_connection")
+        if self._on_refresh is not None:
+            await self._on_refresh()
 
     async def pause_content_meter_for_measurement(
         self, deadline_monotonic: float,
