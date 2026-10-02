@@ -44,9 +44,12 @@ from jasper.audio_control.transport_coherence import (
     transport_topology_for_coupling,
 )
 from jasper.platform.env_load import EnvFileState
+from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 from jasper.dsp_control.fanin_coupling import (
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_CAPTURE_DEVICE,
     TRANSPORT_DAC_CONTENT_RING,
     TRANSPORT_OFF_RING,
     capture_kwargs_for_coupling,
@@ -162,6 +165,30 @@ def test_validate_outputd_env_reads_the_override_store(tmp_path):
     assert str(store) in printed
     assert "created_at=2026-07-02T00:00:00Z" in printed
     assert "reason=latency-tuning-outputd-dac-buffer-1536-verified-floor" in printed
+
+
+def test_validate_outputd_env_accepts_a_parked_box(tmp_path):
+    """The parked graph plays into a File sink, so it has no ring end for an
+    outputd.env candidate to match: its 3 muted outputs are not a 3-channel
+    ring writer (#6113)."""
+    base_env = tmp_path / "jasper.env"
+    base_env.write_text("", encoding="utf-8")
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("", encoding="utf-8")
+    parked = tmp_path / "active_speaker_parked.yml"
+    parked.write_text(emit_active_speaker_parked_config(output_count=3), encoding="utf-8")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {parked}\n", encoding="utf-8")
+
+    ok, lines = validate_outputd_env(
+        base_env=str(base_env),
+        outputd_env=str(outputd_env),
+        camilla_statefile=str(statefile),
+        camilla2_statefile=str(statefile),
+        overrides=str(tmp_path / "audio_runtime_overrides.json"),
+    )
+
+    assert ok is True, lines
 
 
 def test_audio_runtime_plan_import_does_not_load_runtime_contract():
@@ -789,6 +816,36 @@ def test_output_endpoint_evidence_marks_non_output_graph_unknown(tmp_path):
 
     assert evidence.devices is not None
     assert evidence.endpoint_recognized is False
+
+
+@pytest.mark.parametrize(("primary_graph", "crossover_graph", "parked"), [("parked", "ring", True), ("missing", "parked", False)])
+def test_only_a_parked_primary_statefile_parks_the_endpoint_evidence(
+    tmp_path, primary_graph, crossover_graph, parked
+):
+    """A reset box (#6113): camilla#1 holds the parked graph while camilla#2's
+    install-seeded statefile still names an old ring graph, which is not the
+    live endpoint. A parked camilla#2 seed parks nothing: it is inert."""
+    graphs = {
+        "parked": emit_active_speaker_parked_config(output_count=3),
+        "ring": "devices:\n"
+        f"  capture:\n    type: Alsa\n    device: {RING_CAPTURE_DEVICE}\n"
+        f"  playback:\n    type: Alsa\n    device: {RING_ACTIVE_PLAYBACK_DEVICE}\n",
+    }
+    statefiles = []
+    for name, graph in (("primary", primary_graph), ("crossover", crossover_graph)):
+        config = tmp_path / f"{name}.yml"
+        if graph in graphs:
+            config.write_text(graphs[graph], encoding="utf-8")
+        statefile = tmp_path / f"{name}-statefile.yml"
+        statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+        statefiles.append(statefile)
+
+    evidence = output_endpoint_evidence_from_statefiles(*statefiles)
+
+    assert evidence.parked is parked
+    if parked:
+        assert evidence.devices is None
+        assert evidence.endpoint_recognized is False
 
 
 def test_runtime_plan_to_dict_exposes_topology_and_correction_latency_gate():

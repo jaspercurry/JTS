@@ -50,6 +50,7 @@ _JTS_RING_PCMS = (
 assert tuple(name for name, _tool, _ring in _JTS_RING_PCMS) == ring_conf.RING_CONF_PCMS
 
 REASON_SPLIT_BONDED_RETURN_RING = "split_bonded_return_ring"
+REASON_SPLIT_PARKED = "split_parked"
 REASON_SPLIT_MARKER_CONTRADICTED = "split_marker_contradicted"
 REASON_SPLIT_RING_UNCONSUMED = "split_ring_unconsumed"
 REASON_SPLIT_RING_UNFED = "split_ring_unfed"
@@ -339,6 +340,9 @@ def check_content_transport_coherence() -> CheckResult:
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
         evidence_statefile(), crossover_statefile()
     )
+    # A parked graph feeds no ring by decision, so only the graph-independent
+    # ring-path check below still applies to it.
+    parked = endpoint_evidence.parked
     playback_device = (endpoint_evidence.devices or {}).get("playback_device")
     graph_on_ring = playback_device in (
         RING_PLAYBACK_DEVICE,
@@ -348,7 +352,7 @@ def check_content_transport_coherence() -> CheckResult:
         f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, loaded graph playback="
         f"{playback_device or '(none)'}"
     )
-    if graph_on_ring != outputd_on_ring:
+    if not parked and graph_on_ring != outputd_on_ring:
         if graph_on_ring:
             return _crossed_transport_pair(
                 label,
@@ -384,6 +388,14 @@ def check_content_transport_coherence() -> CheckResult:
             f"{OUTPUTD_RING_PATH_ENV_VAR}={carried} but this box's endpoint "
             f"marker derives {derived}; outputd refuses that pair at startup "
             "(exit 78, no restart)",
+        )
+    if parked:
+        return CheckResult(
+            label,
+            "ok",
+            "CamillaDSP holds the parked graph, so every output is muted and no "
+            f"post-DSP ring is fed; {OUTPUTD_RING_PATH_ENV_VAR}={carried}",
+            reason=REASON_SPLIT_PARKED,
         )
     return CheckResult(
         label, "ok", f"{pair}, {OUTPUTD_RING_PATH_ENV_VAR}={carried}"

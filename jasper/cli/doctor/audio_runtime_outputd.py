@@ -560,7 +560,11 @@ def _outputd_transport_health(
         evidence_statefile(), crossover_statefile()
     )
     transport_evidence_warning = ""
-    if (
+    if endpoint_evidence.parked:
+        # Nothing to compare: the parked graph feeds no post-DSP endpoint by
+        # decision, and the active-speaker runtime graph check warns about it.
+        pass
+    elif (
         endpoint_evidence.devices is None
         or not endpoint_evidence.endpoint_recognized
     ):
@@ -590,7 +594,9 @@ def _outputd_transport_health(
         # outputd's live STATUS (at the endpoint rung outputd has refused to
         # start, so this function returns its systemd failure long before
         # reaching here).
-    local_pipe_detail = f"content_source={actual_content_source}"
+    local_pipe_detail = f"content_source={actual_content_source}" + (
+        ", loaded graph=parked" if endpoint_evidence.parked else ""
+    )
     if dac.get("pcm") != expected_dac_pcm:
         return CheckResult(
             "jasper-outputd",

@@ -117,11 +117,15 @@ _ACTIVE_ENDPOINT_DEVICES = frozenset(
 
 @dataclass(frozen=True)
 class OutputEndpointEvidence:
-    """Loaded CamillaDSP endpoint evidence plus any unreadable inputs."""
+    """Loaded CamillaDSP endpoint evidence plus any unreadable inputs.
+
+    ``parked``: the primary statefile names the all-muted parked graph, which
+    feeds no post-DSP endpoint, so ``devices`` is ``None``."""
 
     devices: Mapping[str, Any] | None
     errors: tuple[str, ...] = ()
     endpoint_recognized: bool = True
+    parked: bool = False
 
 
 @dataclass(frozen=True)
@@ -1030,6 +1034,7 @@ def output_endpoint_evidence_from_statefiles(
     """
 
     from jasper.active_speaker.environment import (  # lazy: import cost, keeps the plan off the active-speaker tree (ADR-0226)
+        active_graph_is_parked,
         parse_camilla_statefile_config_path,
     )
 
@@ -1046,7 +1051,7 @@ def output_endpoint_evidence_from_statefiles(
         RING_PLAYBACK_DEVICE,
         RING_ACTIVE_PLAYBACK_DEVICE,
     }
-    for statefile_path in paths:
+    for index, statefile_path in enumerate(paths):
         try:
             statefile_text = Path(statefile_path).read_text(encoding="utf-8")
         except OSError as e:
@@ -1069,6 +1074,17 @@ def output_endpoint_evidence_from_statefiles(
                 devices=devices,
                 errors=tuple(errors),
                 endpoint_recognized=True,
+            )
+        if index == 0 and active_graph_is_parked(config_path):
+            # A parked primary is the box's own decision, so no later statefile
+            # names its endpoint. Only the primary counts: install seeds
+            # camilla#2's statefile (parked on a roleful box) and it stays inert
+            # until a bond arms it.
+            return OutputEndpointEvidence(
+                devices=None,
+                errors=tuple(errors),
+                endpoint_recognized=False,
+                parked=True,
             )
     return OutputEndpointEvidence(
         devices=fallback,

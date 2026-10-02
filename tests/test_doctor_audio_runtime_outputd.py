@@ -873,6 +873,17 @@ def _case_transport_evidence_unavailable(monkeypatch, tmp_path):
     )
 
 
+def _case_transport_evidence_parked(monkeypatch, tmp_path):
+    _seed_units()
+    _patch_status_reader(monkeypatch, _outputd_status_payload())
+    monkeypatch.setattr(
+        "jasper.audio_control.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
+        lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
+            devices=None, endpoint_recognized=False, parked=True
+        ),
+    )
+
+
 def _case_tts_ceiling(overrides):
     def _case(monkeypatch, tmp_path):
         _seed_units()
@@ -1011,6 +1022,7 @@ _SILENT = {"speaker_silent": True}
         pytest.param(_case_single_alsa_active_lane, "ok", "", None, id="test_outputd_service_ok_with_single_alsa_active_lane"),
         pytest.param(_case_active_graph_feeds_passive_reader, "fail", _R.REASON_OUTPUTD_TRANSPORT_ROUTE_UNPAIRED, None, id="test_outputd_service_fails_when_active_graph_feeds_passive_reader"),
         pytest.param(_case_transport_evidence_unavailable, "warn", _R.REASON_OUTPUTD_TRANSPORT_EVIDENCE_UNKNOWN, None, id="test_outputd_service_warns_when_transport_evidence_is_unavailable"),
+        pytest.param(_case_transport_evidence_parked, "ok", "", None, id="test_outputd_service_ok_while_the_box_is_parked"),
         pytest.param(_case_tts_ceiling({"connections_rejected": 3}), "ok", _R.REASON_OUTPUTD_TTS_CONNECTIONS_REJECTED, None, id="test_outputd_service_reports_tts_ceiling_counters_without_escalating[connections-rejected]"),
         pytest.param(_case_tts_ceiling({"frame_timeouts": 2}), "ok", _R.REASON_OUTPUTD_TTS_FRAME_TIMEOUTS, None, id="test_outputd_service_reports_tts_ceiling_counters_without_escalating[frame-timeouts]"),
         pytest.param(_case_loudness_owned_by_fanin, "ok", "", None, id="test_outputd_service_ok_when_loudness_is_owned_by_fanin"),

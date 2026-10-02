@@ -22,11 +22,7 @@ from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyEr
 from jasper.audio_routes.output_topology_store import load_output_topology_strict, stamp_statefile_topology
 
 from .camilla_yaml import PARKED_CONFIG_NAME
-from .environment import (
-    CAMILLA_CLASS_ACTIVE_PARKED,
-    classify_camilla_config_text,
-    read_camilla_statefile_config_path,
-)
+from .environment import read_camilla_statefile_config_path
 from .graph.active_verifier import LINEARIZATION_HEADROOM_UNPROVEN_CODE
 from .graph_types import (
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
@@ -166,27 +162,6 @@ def parked_muted_config_path(path: str | Path | None = None) -> Path:
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR  # lazy: test_runtime_convergence redirects staging.DEFAULT_CAMILLA_CONFIG_DIR
 
     return Path(path) if path else Path(DEFAULT_CAMILLA_CONFIG_DIR) / PARKED_CONFIG_NAME
-
-
-def active_graph_is_parked(config_path: str | Path | None) -> bool:
-    """True when ``config_path`` holds the parked graph.
-
-    Content-keyed on the emitted ``# Source:`` provenance marker, not on the
-    filename — a renamed or hand-copied file must not be able to claim (or
-    disclaim) parked status. Fail-soft: False on any read or parse problem, so a
-    reporting surface degrades to "not parked" rather than raising. Callers that
-    need SAFETY, not reporting, use ``classify_camilla_graph`` — this predicate
-    proves nothing about the graph's contents.
-    """
-
-    if not config_path:
-        return False
-    try:
-        text = Path(config_path).read_text(encoding="utf-8")
-        summary = classify_camilla_config_text(text)
-    except (OSError, UnicodeError, ValueError, TypeError, RecursionError, yaml.YAMLError):
-        return False
-    return summary.get("classification") == CAMILLA_CLASS_ACTIVE_PARKED
 
 
 def build_parked_muted_graph(

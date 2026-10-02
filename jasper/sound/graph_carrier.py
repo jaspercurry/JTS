@@ -429,6 +429,22 @@ class _UnknownCarrier:
         )
 
 
+class _ParkedCarrier(_UnknownCarrier):
+    """The all-muted PARKED graph (#2135). It hosts no EQ and feeds no ring,
+    so a reconcile has nothing to re-emit."""
+
+    kind = "parked"
+
+    def prepare_eq(self) -> NoReturn:
+        from jasper.active_speaker.graph_selector import parked_muted_exits  # lazy: import cost, the graph tree loads only for a parked graph
+
+        raise CarrierCannotHostEq(
+            "speaker_parked",
+            "The speaker is parked, so every output is muted. Next: "
+            f"{parked_muted_exits()}.",
+        )
+
+
 def _bonded_active_member() -> bool:
     """True when this speaker is an ACTIVE member of a running bond.
 
@@ -570,8 +586,10 @@ def carrier_for_loaded_config(current_path, *, config_dir):
         is_baseline = summary.get("source") == ACTIVE_BASELINE_SOURCE
         return _ActiveGraphCarrier(current_path, is_baseline=is_baseline)
     if summary:
-        from jasper.active_speaker.environment import CAMILLA_CLASS_PROGRAM_BAKE
+        from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED, CAMILLA_CLASS_PROGRAM_BAKE  # lazy: import cost, as _classify_loaded_config
 
+        if summary.get("classification") == CAMILLA_CLASS_ACTIVE_PARKED:
+            return _ParkedCarrier(current_path)
         if summary.get("classification") == CAMILLA_CLASS_PROGRAM_BAKE:
             return _ProgramBakeCarrier(current_path)
         if (

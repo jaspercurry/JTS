@@ -62,9 +62,9 @@ from jasper.active_speaker.graph_types import (
     GRAPH_PROGRAM_BAKE_PIPE,
     GRAPH_UNSAFE,
 )
+from jasper.active_speaker.environment import active_graph_is_parked
 from jasper.active_speaker.graph_selector import (
     PARKED_MUTED_STATUS,
-    active_graph_is_parked,
     build_parked_muted_graph,
     apply_safe_graph_decision_to_statefile,
     safe_graph_for_current_topology,

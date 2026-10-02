@@ -19,6 +19,7 @@ from jasper.audio_hardware.dac import (
     LatencyFloor,
     latency_floor_for,
 )
+from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
 from jasper.fanin import coupling_reconcile
@@ -1431,6 +1432,41 @@ def _arrange(
     crossover = _write_pair(tmp_path, "crossover", crossover_playback_device)
     evidence.seed("camilla_config", (str(primary), None))
     monkeypatch.setattr("jasper.platform.paths.DEFAULT_CAMILLA2_STATEFILE", crossover)
+
+
+@pytest.mark.parametrize(
+    ("env_lines", "status", "reason"),
+    [
+        ("", "ok", audio_runtime_ring.REASON_SPLIT_PARKED),
+        # The disarm lag a reset leaves: marker cleared, path still the active ring.
+        (
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/active-content.ring\n",
+            "fail",
+            audio_runtime_ring.REASON_RING_PATH_LAGS_MARKER,
+        ),
+    ],
+)
+def test_a_parked_box_is_not_a_split_but_its_ring_path_is_still_judged(
+    monkeypatch, tmp_path, env_lines, status, reason
+) -> None:
+    """A reset box (#6113): the parked graph feeds no ring by decision, and
+    camilla#2's install-seeded statefile still names an old ring graph. The
+    ring-path half does not depend on the graph, so it still runs."""
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        bridge="shm_ring",
+        playback_device=None,
+        crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        env_lines=env_lines,
+    )
+    (tmp_path / "primary-config.yml").write_text(
+        emit_active_speaker_parked_config(output_count=3), encoding="utf-8"
+    )
+
+    result = audio_runtime_ring.check_content_transport_coherence()
+    assert result.status == status, result
+    assert result.reason == reason
 
 
 @pytest.mark.parametrize(

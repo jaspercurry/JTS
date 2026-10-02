@@ -48,6 +48,7 @@ from jasper.dsp_control.fanin_coupling import (
     capture_kwargs_for_coupling,
 )
 from jasper.sound.camilla_yaml import BASE_CONFIG_PATH, emit_sound_config
+from jasper.fanin.coupling_reconcile import SPEAKER_PARKED_REFUSAL
 from jasper.sound.graph_carrier import (
     CarrierCannotHostEq,
     ReemitResult,
@@ -207,7 +208,8 @@ def test_parked_graph_is_never_reemitted_as_a_stereo_sound_config(tmp_path):
     # immediately after the statefile seed. If the parked graph resolved to a
     # stereo carrier, that step would re-emit a flat full-range graph over it —
     # on a roleful topology, exactly the forbidden state parking exists to
-    # avoid. It must resolve to the refusing unknown carrier instead.
+    # avoid. It must resolve to the refusing parked carrier instead, whose
+    # refusal jasper-fanin-coupling-reconcile accepts as converged.
     from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 
     config_dir = tmp_path / "configs"
@@ -217,8 +219,9 @@ def test_parked_graph_is_never_reemitted_as_a_stereo_sound_config(tmp_path):
 
     carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
     assert carrier.kind not in _STEREO_HOST_KINDS
-    with pytest.raises(CarrierCannotHostEq):
+    with pytest.raises(CarrierCannotHostEq) as err:
         carrier.reemit(mock.sentinel.profile, profile_id="x")
+    assert err.value.reason_code == SPEAKER_PARKED_REFUSAL
 
 
 def test_non_baseline_active_graph_is_content_fenced(tmp_path):
