@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from jasper.playback_state.install_profile import system_capabilities_for_profile
-from jasper.web import wifi_setup
+from jasper.net.wifi import CONNECT_NEW_TIMEOUT_CEILING
 from jasper.web.landing import render_landing
 from jasper.web.nav import hub_paths, render_hub
 
@@ -804,7 +804,7 @@ def test_both_nginx_profiles_allow_bounded_wifi_connect_rollback() -> None:
         match = re.search(r"proxy_read_timeout (\d+)s;", wifi)
         assert match
         proxy_timeout = int(match.group(1))
-        assert proxy_timeout >= wifi_setup.CONNECT_NEW_TIMEOUT_CEILING + 20
+        assert proxy_timeout >= CONNECT_NEW_TIMEOUT_CEILING + 20
 
 
 @pytest.mark.parametrize("path", hub_paths())

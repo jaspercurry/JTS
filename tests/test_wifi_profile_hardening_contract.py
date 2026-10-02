@@ -9,7 +9,7 @@ link-local IPv6 on —
 is written from THREE places so a recovered profile is as resilient as a
 freshly-connected one:
 
-  1. the /wifi/ wizard          jasper.web.wifi_setup._harden_wifi_profile
+  1. the /wifi/ wizard          jasper.net.wifi._harden_wifi_profile
   2. install-time              deploy/lib/install/renderers.sh  tune_wifi_for_airplay
   3. WiFi recovery             deploy/bin/jasper-wifi-guardian  harden_profile
 
@@ -19,6 +19,8 @@ changes a value in one writer and not the others, this fails — keeping the
 contract single-source-of-truth in spirit even though it lives in three files.
 """
 from __future__ import annotations
+
+from jasper.net import wifi
 
 import re
 import subprocess
@@ -44,7 +46,6 @@ def _python_harden_argv() -> list[str]:
 
     Tests real behaviour, not source text — so a docstring that merely
     mentions the keys can't make this pass."""
-    import jasper.web.wifi_setup as wifi_setup
 
     captured: dict[str, list[str]] = {}
 
@@ -52,8 +53,8 @@ def _python_harden_argv() -> list[str]:
         captured["cmd"] = list(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    with patch.object(wifi_setup, "_run_nmcli", side_effect=fake):
-        wifi_setup._harden_wifi_profile("SomeProfile")
+    with patch.object(wifi, "_run_nmcli", side_effect=fake):
+        wifi._harden_wifi_profile("SomeProfile")
     return captured["cmd"]
 
 

@@ -152,7 +152,7 @@ fi
 # so an SSID/profile name containing a colon (e.g. "Cafe:Work") is matched
 # rather than truncated. A literal backslash in an SSID ('\\') is left
 # as-is — SSIDs with backslashes are not a real-world case; the canonical
-# full-fidelity parser is jasper.web.wifi_setup._parse_terse if ever needed.
+# full-fidelity parser is jasper.net.wifi._parse_terse if ever needed.
 nm_unescape() {
     printf '%s' "${1//\\:/:}"
 }
@@ -162,7 +162,7 @@ nm_unescape() {
 # off, and link-local IPv6 for fast `.local` mDNS resolution. Best-effort —
 # a failure here must never undo the recovery we just achieved. The identical
 # key set is written by the /wifi/ wizard
-# (jasper.web.wifi_setup._harden_wifi_profile) and at install
+# (jasper.net.wifi._harden_wifi_profile) and at install
 # (tune_wifi_for_airplay); drift across the three is guarded by
 # tests/test_wifi_profile_hardening_contract.py.
 harden_profile() {
@@ -304,7 +304,7 @@ if [[ $rc -eq 0 ]]; then
 fi
 
 # Failed: nmcli left behind a broken profile (it creates the profile
-# before activating, then fails activation). Mirror wifi_setup.connect_new's
+# before activating, then fails activation). Mirror wifi.connect_new's
 # cleanup: delete the broken profile so the saved list doesn't accumulate
 # garbage. Best-effort.
 "$NMCLI" connection delete "$SSID" >/dev/null 2>&1 || true

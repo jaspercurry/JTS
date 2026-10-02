@@ -67,6 +67,7 @@ PREFIX_OWNERS: dict[str, tuple[str, ...]] = {
     "wake": ("jasper", "service_state", "voice", "web"),
     "wake_corpus": ("wake_corpus", "web"),
     "weather": ("service_state", "web"),
+    "wifi": ("net", "web"),
 }
 
 # Event names a jasper/ reader names but no jasper/ site emits: `usbsink_name.*`
