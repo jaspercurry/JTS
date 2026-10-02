@@ -34,18 +34,16 @@ def _first_takes(group: SetTakes) -> list[Mapping[str, Any]]:
 
 
 def _call(command: str, row: CatalogRow, round_dir: Path, *, set_id: str | None = None, take_id: str | None = None,
-          role: str = "", program: str | None = None, one_set: bool = False,
+          role: str = "", program: str | None = None, by_set: bool = True,
           needs: Sequence[str] = ()) -> dict[str, Any]:
     """One call of ``row``, and the file its argv writes beside the round."""
     words = list(row.argv)
-    if one_set and row.bookkeeping and "--set" in words:
-        at = words.index("--set")
-        del words[at:at + 2]
     fill = {TAKES_THIS_ROUND: str(round_dir), "<set-id>": set_id, "<take-id>": take_id, "<program>": program}
     artifact = None
     if row.artifact and not needs:
+        named = "<set-id>" in words and (by_set or not row.bookkeeping)
         artifact = (take_artifact_name(row.artifact, take_id, role) if row.per_take and take_id
-                    else set_artifact_name(row.artifact, set_id if "<set-id>" in words else None))
+                    else set_artifact_name(row.artifact, set_id if named else None))
     return {"tool": command, "argv": [*shlex.split(command), *(fill.get(word) or word for word in words)],
             "set_id": set_id, "take_id": take_id, "needs": list(needs), "artifact": artifact}
 
@@ -57,10 +55,10 @@ def round_calls(round_dir: Path, manifest: Mapping[str, Any], *, purposes: Colle
     ``<this-round>`` is the round; ``<set-id>`` each set whose purpose the tool's
     programs read, less the base for a tool that grades against it and a summed
     set for one that reads ``driver_sets``; ``<take-id>`` that set's
-    :func:`_first_takes`; ``<program>`` each program the round serves. On a
-    one-set round a view the bank publishes leaves out ``--set``, so it files
-    what the bank filed; every other call names its set, since some views read
-    other takes without one.
+    :func:`_first_takes`; ``<program>`` each program the round serves. A view
+    the bank publishes is filed where the bank files it, in a one-set round too
+    (:func:`~.crossover_v2.round_inputs.files_by_set`); every other view, under
+    its set's name.
     A tool that also needs an input no round holds (another round, a document)
     is one call, those inputs left in ``needs``. ``manifest`` is joined with its
     records; ``purposes`` and ``set_id`` narrow the calls.
@@ -83,7 +81,7 @@ def round_calls(round_dir: Path, manifest: Mapping[str, Any], *, purposes: Colle
             calls += [_call(command, row, round_dir, program=program) for program in PURPOSES if program in reads]
         elif "<set-id>" in holes:
             calls += [_call(command, row, round_dir, set_id=group.set_id, take_id=take["take_id"] if take else None,
-                            role=group.role, one_set=not files_by_set(sets))
+                            role=group.role, by_set=files_by_set(sets))
                       for group, base, firsts in groups if not (base and row.grades_against_base)
                       and not (row.driver_sets and group.role == "summed")
                       for take in (firsts if "<take-id>" in holes else [None])]

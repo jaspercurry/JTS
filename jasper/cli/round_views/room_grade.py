@@ -25,9 +25,9 @@ from ._common import (
     _write,
     add_set_argument, answer,
     calibration_id,
-    default_out,
     refused_by_name,
     round_inputs,
+    set_view_out,
     subject,
 )
 
@@ -62,7 +62,7 @@ def _cmd_room_grade(args: argparse.Namespace) -> int:
     for band in artifact["bands"]:
         print(_band_line(band), file=sys.stderr)
     spec = ARTIFACT_BY_VIEW[args.command]
-    written = _write(artifact, None, default_out(inputs, directory, spec.artifact, args.set), schema=spec.schema)
+    written = _write(artifact, None, set_view_out(inputs, spec.artifact, args.set), schema=spec.schema)
     basis = (artifact["evidence"] or {}).get("basis") or {}
     regressed = artifact["regressed_bands"]
     comparison = artifact["comparison"]

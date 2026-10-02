@@ -23,7 +23,7 @@ from jasper.cli._refusal import EXIT_REFUSED, EXIT_UNREADABLE, failed
 from ._common import (
     ARTIFACT_BY_VIEW, REASON_UNREADABLE, RoundSetRefused, _ROUND_DIR_HELP, _ROUND_DIR_METAVAR, _ROUND_TOOL_ERRORS,
     _write, add_set_argument, answer, calibration_id, default_out, read_run_manifest, resolve_set, resolved_out,
-    round_inputs, subject,
+    round_inputs, set_view_out, subject,
 )
 
 
@@ -112,8 +112,9 @@ def _cmd(args: argparse.Namespace) -> int:
         else:
             root = args.round_dir if args.command == "bass" else args.round_dir[-1]
             inputs = round_inputs(root)
-            destination = default_out(inputs, root, ARTIFACT_BY_VIEW[args.command].artifact,
-                                      args.set if args.command == "bass" else None)
+            artifact = ARTIFACT_BY_VIEW[args.command].artifact
+            destination = (set_view_out(inputs, artifact, args.set) if args.command == "bass"
+                           else default_out(inputs, root, artifact))
             if args.command == "bass":
                 payload = bass_payload(inputs, args.set)
                 summary = {"takes": len(payload["takes"])}

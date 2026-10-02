@@ -32,7 +32,7 @@ from jasper.active_speaker.crossover_v2.room_views import (
     room_median_sha256,
 )
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
-from jasper.active_speaker.crossover_v2.round_inputs import ROUND_PACKET_SCHEMA, resolve_set, round_inputs
+from jasper.active_speaker.crossover_v2.round_inputs import ROUND_PACKET_SCHEMA, resolve_set, round_inputs, set_view_out
 from jasper.active_speaker.crossover_v2.room_prescription import (
     BOOST_NOT_ADMITTED,
     COMPOSED_BOOST_EXCEEDED,
@@ -56,7 +56,6 @@ from jasper.active_speaker.round_bookkeeping import run_bookkeeping
 from jasper.platform.biquad import PeqFilter
 from jasper.cli import crossover_prescriber as cli
 from jasper.cli import round_views
-from jasper.cli.round_views._common import default_out
 
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_seat_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
@@ -393,10 +392,17 @@ def _bank_room_round(tmp_path: Path, *, split: int | None = None) -> Path:
                       view_runner=run_bookkeeping, **absent).path
 
 
-def _banked_room_views(bank: Path) -> dict[str, Path]:
-    """Each set's room view, by the file the bank's own index names."""
+def _banked_room_views(bank: Path, view: str = "room") -> dict[str, Path]:
+    """Each set's ``view`` file, by the file the bank's own index names."""
     packet = json.loads((bank / "packet.json").read_text())
-    return {row["set_id"]: Path(row["out"]) for row in packet["artifacts"]["room_views"] if row["view"] == "room"}
+    return {row["set_id"]: Path(row["out"]) for row in packet["artifacts"]["room_views"]
+            if row["view"] == view and row["status"] == "written"}
+
+
+def _rerun(capsys: pytest.CaptureFixture[str], bank: Path, view: str, *flags: str) -> Path:
+    """Re-run ``view`` on ``bank`` and where it filed its answer."""
+    assert round_views.main([view, str(bank), *flags]) == 0
+    return Path(json.loads(capsys.readouterr().out)["out"])
 
 
 def _prescribe(tmp_path: Path, capsys: pytest.CaptureFixture[str], bank: Path, argv: list[str], sha: str) -> tuple[int, Any]:
@@ -411,12 +417,17 @@ def _prescribe(tmp_path: Path, capsys: pytest.CaptureFixture[str], bank: Path, a
     return code, json.loads(capsys.readouterr().out)
 
 
-def test_a_one_set_room_round_is_served_by_its_set_whether_it_is_named_or_not(tmp_path, capsys):
-    """The bank files a one-set round's room view under no set name, and the round's set names that
-    view all the same: judge, its preview, compose and room-grade answer with --set and without."""
+def test_a_one_set_room_round_is_filed_and_served_by_its_set_whether_it_is_named_or_not(tmp_path, capsys):
+    """The bank files a one-set round's room views under no set name, and the round's set names them
+    all the same: a re-run of room or room-grade files where the bank does, and judge, its preview,
+    compose and room-grade answer with --set and without."""
     bank = _bank_room_round(tmp_path)
     (set_id, view), = _banked_room_views(bank).items()
     assert view.name == "room.json"
+    (_, grade), = _banked_room_views(bank, "room-grade").items()
+    for name, filed in (("room", view), ("room-grade", grade)):
+        for flags in ([], ["--set", set_id]):
+            assert _rerun(capsys, bank, name, *flags) == filed
     sha = json.loads(view.read_text())["room_median_sha256"]
     for argv in (["judge", "--preview"], ["judge"], ["compose"]):
         for flags in ([], ["--set", set_id]):
@@ -425,17 +436,16 @@ def test_a_one_set_room_round_is_served_by_its_set_whether_it_is_named_or_not(tm
             assert answer["subject"]["set_id"] == set_id
             if "--preview" not in argv:
                 assert answer["packet_contracts"]["contract_current"] is True
-    assert round_views.main(["room-grade", str(bank), "--set", set_id]) == 0
-    assert json.loads(capsys.readouterr().out)["set_id"] == set_id
 
 
-def test_a_two_set_room_round_is_served_by_the_set_named_and_asks_for_one_when_none_is(tmp_path, capsys):
+def test_a_two_set_room_round_is_filed_and_served_by_the_set_named_and_asks_for_one_when_none_is(tmp_path, capsys):
     bank = _bank_room_round(tmp_path, split=3)
-    shas = {set_id: json.loads(view.read_text())["room_median_sha256"]
-            for set_id, view in _banked_room_views(bank).items()}
+    views = _banked_room_views(bank)
+    shas = {set_id: json.loads(view.read_text())["room_median_sha256"] for set_id, view in views.items()}
     assert len(set(shas.values())) == 2
     served = {}
     for set_id, sha in shas.items():
+        assert _rerun(capsys, bank, "room", "--set", set_id) == views[set_id]
         code, answer = _prescribe(tmp_path, capsys, bank, ["judge", "--preview", "--set", set_id], sha)
         assert code == 0, answer
         served[set_id] = answer["preview"]["room_median_sha256"]
@@ -568,7 +578,7 @@ def test_document_room_section_uses_selected_median_and_keeps_basis(tmp_path, ca
         "graph_fingerprint": "played-graph",
     }
     median["evidence"] = {"basis": basis, "take_ids": [p["id"] for p in median["positions"]]}
-    room_path = default_out(round_inputs(round_dir), round_dir, "room.json", set_id)
+    room_path = set_view_out(round_inputs(round_dir), "room.json", set_id)
     room_path.write_text(json.dumps({"median": median, "incumbent": {"round_id": "old"}}))
     document = tmp_path / "prescription.json"
     document.write_text(json.dumps({

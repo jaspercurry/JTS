@@ -357,16 +357,20 @@ def view_path(inputs: RoundInputs, name: str, set_id: str | None = None) -> Path
 
 def files_by_set(sets: Sequence[Mapping[str, Any]]) -> bool:
     """Whether a round names its sets (``sets`` is :func:`view_sets`): a round of several does. A call must then
-    name one (:func:`resolve_set`), and the bank runs each per-set view once for each set and files it under that
-    set's name. A round of one runs each view once, for the round, and files it under none."""
+    name one (:func:`resolve_set`), and each per-set view of the bank is filed under its set's name, by the bank
+    and by the verbs that re-run it (:func:`set_view_out`). A round of one files each view under none."""
     return len(sets) > 1
 
 
 def set_view_path(inputs: RoundInputs, name: str, set_id: str | None, sets: Sequence[Mapping[str, Any]]) -> Path:
-    """Where set ``set_id``'s view ``name`` is filed: under the set's name, else, in a round of one view set,
-    under none, as its bank files it (:func:`files_by_set`)."""
-    path = view_path(inputs, name, set_id)
-    return path if files_by_set(sets) or path.is_file() else view_path(inputs, name)
+    """Where set ``set_id``'s view ``name`` is filed: under the set's name in a round of several view sets,
+    else under none (:func:`files_by_set`)."""
+    return view_path(inputs, name, set_id if files_by_set(sets) else None)
+
+
+def set_view_out(inputs: RoundInputs, name: str, set_id: str | None) -> Path:
+    """Where a verb files set ``set_id``'s view ``name`` when the operator named no ``--out``: where the bank files it."""
+    return set_view_path(inputs, name, set_id, view_sets(read_run_manifest(inputs)))
 
 
 def bank_of(inputs: RoundInputs) -> Path | None:
