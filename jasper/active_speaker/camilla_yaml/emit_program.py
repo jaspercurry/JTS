@@ -152,7 +152,6 @@ def emit_active_speaker_program_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     parked_target_ids: Collection[str] = (),
@@ -199,7 +198,6 @@ def emit_active_speaker_program_config(
     chunksize, target_level, queuelimit = _camilla_latency(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
     protective_hp_min_corner_hz = _finite_float(
         protective_hp_min_corner_hz, "protective_hp_min_corner_hz"
     )
@@ -207,10 +205,6 @@ def emit_active_speaker_program_config(
         protective_hp_min_slope_db_per_octave,
         "protective_hp_min_slope_db_per_octave",
     )
-    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
-        raise ActiveSpeakerConfigError(
-            "limiter_clip_limit_db must be between -120 and 0 dB"
-        )
 
     tweeter_hp_name = None
     if protection_sections_by_role is None:
@@ -265,7 +259,6 @@ def emit_active_speaker_program_config(
     filter_yaml = _emit_commissioning_filter_definitions(
         preset,
         startup_headroom_db=COMMISSIONING_HEADROOM_DB,
-        limiter_clip_limit_db=limiter_clip_limit_db,
         audible_outputs=audible,
         audible_gain_db=0.0,
         filter_mode=filter_mode,

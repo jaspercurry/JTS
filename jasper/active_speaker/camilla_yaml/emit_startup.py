@@ -26,7 +26,7 @@ from .devices import (
     forbidden_playback_token,
 )
 from .document import _atomic_write_text, logger
-from .filters import STARTUP_HEADROOM_DB, STARTUP_LIMITER_CLIP_LIMIT_DB, _emit_filter_definitions
+from .filters import STARTUP_HEADROOM_DB, _emit_filter_definitions
 from .gates import _assert_tweeter_outputs_protected
 from .pipeline import _emit_pipeline, _emit_split_mixer
 from .topology import _output_count
@@ -43,7 +43,6 @@ def emit_active_speaker_startup_config(
     chunksize: int | None = None,
     target_level: int | None = None,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
-    limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
@@ -71,16 +70,8 @@ def emit_active_speaker_startup_config(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
     startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
-    limiter_clip_limit_db = _finite_float(
-        limiter_clip_limit_db,
-        "limiter_clip_limit_db",
-    )
     if startup_headroom_db < 0 or startup_headroom_db > 80:
         raise ActiveSpeakerConfigError("startup_headroom_db must be between 0 and 80")
-    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
-        raise ActiveSpeakerConfigError(
-            "limiter_clip_limit_db must be between -120 and 0 dB"
-        )
 
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
@@ -90,7 +81,6 @@ def emit_active_speaker_startup_config(
     filter_yaml = _emit_filter_definitions(
         preset,
         startup_headroom_db=startup_headroom_db,
-        limiter_clip_limit_db=limiter_clip_limit_db,
     )
     mixer_yaml = _emit_split_mixer(preset)
     pipeline_yaml = _emit_pipeline(preset)

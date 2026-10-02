@@ -133,7 +133,6 @@ def _emit_filter_definitions(
     preset: ActiveSpeakerPreset,
     *,
     startup_headroom_db: float,
-    limiter_clip_limit_db: float,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
@@ -168,14 +167,11 @@ def _emit_filter_definitions(
         ))
         lines.extend(_emit_limiter_filter(
             driver_limiter_name(role),
-            clip_limit_db=limiter_clip_limit_db,
+            clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
             soft_clip=True,
         ))
     if preset.local_subwoofer is not None:
-        lines.extend(_emit_sub_startup_definitions(
-            preset.local_subwoofer.crossover_fc_hz,
-            limiter_clip_limit_db=limiter_clip_limit_db,
-        ))
+        lines.extend(_emit_sub_startup_definitions(preset.local_subwoofer.crossover_fc_hz))
     return "\n".join(lines)
 
 
@@ -498,18 +494,14 @@ def _emit_driver_linearization_definitions(
 def _emit_baseline_driver_definitions(
     preset: ActiveSpeakerPreset,
     *,
-    limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
     linearization: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[str]:
-    """The driver-domain (Layer A) filter definitions shared by the solo/leader
-    baseline and the follower's driver-domain-only graph.
+    """The baseline graph's driver-domain (Layer A) filter definitions.
 
     The per-region Linkwitz-Riley crossover pair, then each driver's [delay,
     non-positive baseline gain, soft-clip limiter] chain. The *intra-speaker*
-    half only — no program-domain headroom, no preference EQ — so the follower's
-    relocated Layer A is byte-for-byte the chain a solo speaker runs.
-    ``linearization`` is threaded only by the solo/leader baseline caller.
+    half only — no program-domain headroom, no preference EQ.
     """
     lines: list[str] = []
     for region in _ordered_regions(preset):
@@ -544,16 +536,13 @@ def _emit_baseline_driver_definitions(
         ))
         lines.extend(_emit_limiter_filter(
             driver_baseline_limiter_name(role),
-            clip_limit_db=limiter_clip_limit_db,
+            clip_limit_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
             soft_clip=True,
         ))
     # The local-sub lane definitions: LR4 low-pass (band-limit) + non-positive
     # baseline gain + soft-clip limiter (excursion), same protection a main gets.
     if sub is not None:
-        lines.extend(_emit_sub_baseline_definitions(
-            sub.crossover_fc_hz,
-            limiter_clip_limit_db=limiter_clip_limit_db,
-        ))
+        lines.extend(_emit_sub_baseline_definitions(sub.crossover_fc_hz))
     return lines
 
 
@@ -574,11 +563,7 @@ def _emit_bass_management_hp_definition(preset: ActiveSpeakerPreset) -> list[str
     )
 
 
-def _emit_sub_startup_definitions(
-    crossover_fc_hz: float,
-    *,
-    limiter_clip_limit_db: float,
-) -> list[str]:
+def _emit_sub_startup_definitions(crossover_fc_hz: float) -> list[str]:
     """The local-sub startup/commissioning lane definitions: LR4 low-pass +
     soft-clip limiter + hard mute.
 
@@ -593,18 +578,14 @@ def _emit_sub_startup_definitions(
         ),
         *_emit_limiter_filter(
             sub_startup_limiter_name(),
-            clip_limit_db=limiter_clip_limit_db,
+            clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
             soft_clip=True,
         ),
         *emit_gain_filter(sub_startup_mute_name(), STARTUP_MUTE_GAIN_DB, mute=True),
     ]
 
 
-def _emit_sub_commissioning_definitions(
-    crossover_fc_hz: float,
-    *,
-    limiter_clip_limit_db: float,
-) -> list[str]:
+def _emit_sub_commissioning_definitions(crossover_fc_hz: float) -> list[str]:
     """The local-sub commissioning lane definitions: LR4 low-pass + soft-clip
     limiter only.
 
@@ -620,17 +601,13 @@ def _emit_sub_commissioning_definitions(
         ),
         *_emit_limiter_filter(
             sub_startup_limiter_name(),
-            clip_limit_db=limiter_clip_limit_db,
+            clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
             soft_clip=True,
         ),
     ]
 
 
-def _emit_sub_baseline_definitions(
-    crossover_fc_hz: float,
-    *,
-    limiter_clip_limit_db: float,
-) -> list[str]:
+def _emit_sub_baseline_definitions(crossover_fc_hz: float) -> list[str]:
     """The local-sub baseline filter definitions: LR4 low-pass + gain + limiter.
 
     The durable graph's sub protection is this ``gain <= 0`` + soft-clip
@@ -648,7 +625,7 @@ def _emit_sub_baseline_definitions(
         *emit_gain_filter(sub_baseline_gain_name(), 0.0),
         *_emit_limiter_filter(
             sub_baseline_limiter_name(),
-            clip_limit_db=limiter_clip_limit_db,
+            clip_limit_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
             soft_clip=True,
         ),
     ]
@@ -658,7 +635,6 @@ def _emit_baseline_filter_definitions(
     preset: ActiveSpeakerPreset,
     *,
     headroom_db: float,
-    limiter_clip_limit_db: float,
     corrections: dict[str, dict[str, float | bool]],
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
@@ -708,7 +684,6 @@ def _emit_baseline_filter_definitions(
     )
     lines.extend(_emit_baseline_driver_definitions(
         preset,
-        limiter_clip_limit_db=limiter_clip_limit_db,
         corrections=corrections,
         linearization=linearization,
     ))
@@ -724,7 +699,6 @@ def _emit_commissioning_filter_definitions(
     preset: ActiveSpeakerPreset,
     *,
     startup_headroom_db: float,
-    limiter_clip_limit_db: float,
     audible_outputs: frozenset[int],
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
@@ -770,17 +744,14 @@ def _emit_commissioning_filter_definitions(
             lines.extend(emit_delay_filter(driver_delay_name(role), delay_ms=0.0))
         lines.extend(_emit_limiter_filter(
             driver_limiter_name(role),
-            clip_limit_db=limiter_clip_limit_db,
+            clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
             soft_clip=True,
         ))
     # The local-sub lane definitions (LR4 low-pass + soft-clip limiter): the sub
     # output is band-limited AND excursion-limited even in the commissioning
     # graph. Its muting is the per-output commission mask below.
     if preset.local_subwoofer is not None:
-        lines.extend(_emit_sub_commissioning_definitions(
-            preset.local_subwoofer.crossover_fc_hz,
-            limiter_clip_limit_db=limiter_clip_limit_db,
-        ))
+        lines.extend(_emit_sub_commissioning_definitions(preset.local_subwoofer.crossover_fc_hz))
     # Per-output commissioning mute: only audible outputs pass, so exactly one
     # physical driver is excited through the real graph; the empty default is
     # fully muted. An audible output carries ``audible_gain_db``, which defaults

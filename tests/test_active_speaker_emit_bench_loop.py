@@ -439,11 +439,6 @@ def test_the_report_is_json_serialisable(exact_report) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_emit_kwargs_may_not_carry_the_linearization(tmp_path) -> None:
-    with pytest.raises(EmitLoopError, match="must not carry 'linearization'"):
-        _run(tmp_path, emit_kwargs={"linearization": {}})
-
-
 def test_a_failing_binary_refuses_rather_than_grading(tmp_path) -> None:
     broken = tmp_path / "camilladsp"
     broken.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
@@ -464,7 +459,7 @@ def test_a_failing_binary_refuses_rather_than_grading(tmp_path) -> None:
 
 
 def test_a_hot_render_refuses_instead_of_grading_an_unattributable_residual(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
     """A render near the clip limit is not graded, because it cannot be.
 
@@ -473,14 +468,12 @@ def test_a_hot_render_refuses_instead_of_grading_an_unattributable_residual(
     refuses rather than reporting a residual it cannot attribute.
     """
 
+    # 2 dB under the emitter's -1 dBFS baseline clip limit.
+    monkeypatch.setattr(loop, "OFFLINE_STIMULUS_PEAK_DBFS", -3.0)
     # The refusal lands before any deconvolution, so this case needs a render,
     # not an accurate one — the shortest sweep keeps it cheap.
     with pytest.raises(EmitLoopError, match="soft clip"):
-        _run(
-            tmp_path,
-            sweep_seconds=0.5,
-            emit_kwargs={"limiter_clip_limit_db": -25.0},
-        )
+        _run(tmp_path, sweep_seconds=0.5)
 
 
 def test_a_stimulus_past_the_fft_cap_refuses_instead_of_being_truncated(
