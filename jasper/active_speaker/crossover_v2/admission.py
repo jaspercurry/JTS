@@ -15,7 +15,7 @@ docs/historical/crossover-measurement-v2-campaign-record.md.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from .refusal_copy import TakeCharge
 
@@ -33,9 +33,6 @@ __all__ = [
 MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
 # Six extra takes per pose bound USB-fault work; planned configs/repeats spend none.
 MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
-
-#: The ledger's own free charge, for a take the executor admits without spending a retry (#5722).
-SlotCharge = TakeCharge | Literal["replay"]
 
 
 class AttemptOverspendError(RuntimeError):
@@ -67,7 +64,7 @@ class SlotAttempts:
     admitted: int = 0
     by_household: int = 0
     by_speaker: int = 0
-    charge: SlotCharge = "operator"
+    charge: TakeCharge = "operator"
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
     @property
@@ -82,10 +79,10 @@ class SlotAttempts:
     def automatic_left(self) -> int:
         return max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_household - self.by_speaker)
 
-    def can_retry(self, charge: SlotCharge = "operator") -> bool:
+    def can_retry(self, charge: TakeCharge = "operator") -> bool:
         return charge == "replay" or (self.automatic_left if charge == "speaker" else self.extras_left) > 0
 
-    def can_admit(self, charge: SlotCharge) -> bool:
+    def can_admit(self, charge: TakeCharge) -> bool:
         return not self.admitted or self.can_retry(charge)
 
     def admit(self) -> None:
@@ -94,7 +91,7 @@ class SlotAttempts:
             self.spend(self.charge)
         self.admitted += 1
 
-    def spend(self, charge: SlotCharge) -> None:
+    def spend(self, charge: TakeCharge) -> None:
         if not self.can_retry(charge):
             raise AttemptOverspendError("slot has no attempts left for this initiator")
         if charge == "speaker":
@@ -128,7 +125,7 @@ def assess_begin(
     *,
     ledger: SlotAttempts | None,
     default_code: str,
-    retry_charge: SlotCharge = "operator",
+    retry_charge: TakeCharge = "operator",
 ) -> BeginDecision:
     """Admit (or refuse) one phone ``begin_capture`` (§5.7)."""
     if ledger is None or not ledger.admitted:

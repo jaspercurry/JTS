@@ -1440,7 +1440,8 @@ CAPTURE_QUALITY_REFUSAL_CODES = frozenset(
 
 
 TakeNext = Literal["accept", "retake_same", "retake_louder", "retake_quieter", "fix_and_retake", "stop"]
-TakeCharge = Literal["speaker", "operator", "none"]
+#: Who pays for the take that follows. ``replay`` pays no one: a planned play, such as a level probe's next one (#5722).
+TakeCharge = Literal["speaker", "operator", "none", "replay"]
 
 
 @dataclass(frozen=True)
