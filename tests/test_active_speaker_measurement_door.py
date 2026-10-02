@@ -90,13 +90,7 @@ def box(tmp_path, monkeypatch):
 
 
 def _profile() -> MeasurementGraphProfile:
-    """The applied speaker, in the PROTECTED-NEUTRAL shape a door always emits.
-
-    The protection sections are not decoration in a test either: the emitter
-    refuses a measurement delay against the unprotected shape, because that one
-    already carries its own zeroed delay lane and a second mapping key would
-    play with no delay and bank as a delayed take.
-    """
+    """The applied speaker, in the PROTECTED-NEUTRAL shape a door always emits."""
     preset = _preset()
     return MeasurementGraphProfile(
         preset=preset,
@@ -423,25 +417,6 @@ async def test_a_stale_record_from_a_crashed_run_does_not_lock_the_door(
     assert box.loaded[-1] == (tmp_path / ENTRY_CONFIG).read_text()
 
 
-async def test_the_variant_axes_reach_the_emitter_through_the_door(tmp_path, box):
-    """Three axes, no ``variant`` parameter — the graph seam's own arity.
-
-    Driven through the door's own graph so the axes are proven to survive the
-    binding, not merely to exist on the emitter: a door that bound a
-    profile-only emit would silently drop every flip, delay and trim and bank
-    records naming coordinates that never played.
-    """
-    async with _door(tmp_path, box) as door:
-        base = door.graph_fingerprint
-        flipped = await door.graph.install(("tweeter",), {"woofer": 120.0}, {})
-        levelled = await door.graph.install((), {}, {"tweeter": -9.5})
-
-    assert len({base, flipped, levelled}) == 3, (
-        "each variant axis must make a different graph with its own fingerprint"
-    )
-    assert "# inverted_roles=" in box.loaded[1]
-
-
 def test_the_door_compiles_a_take_with_the_layers_its_purpose_clears(tmp_path, box):
     """The door compiles the named candidate with the layers the take's purpose
     clears emptied, as that take's own graph (ADR-0370)."""
@@ -457,11 +432,7 @@ def test_the_door_compiles_a_take_with_the_layers_its_purpose_clears(tmp_path, b
     assert played != compile_tuning_graph(profile, candidate=candidate)
 
 
-@pytest.mark.parametrize("inverted,delays,trims", [
-    ((), {}, {}),
-    (("tweeter",), {"woofer": 120.0}, {"tweeter": -9.5}),
-])
-def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverted, delays, trims):
+def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from jasper.active_speaker.measurement_emit import emit_measurement_graph
@@ -479,9 +450,7 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
         program_for_phase=lambda phase: None,
     )
 
-    actual = playback.graph.graph_yaml(inverted, delays, trims)
-    expected = emit_measurement_graph(profile, inverted, delays, trims)
-    assert actual == expected
+    assert playback.graph.graph_yaml() == emit_measurement_graph(profile)
 
 
 async def test_door_needs_a_watch_before_any_volume_write(tmp_path, box):

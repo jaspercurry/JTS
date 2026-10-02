@@ -15,7 +15,6 @@ from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND
 from jasper.active_speaker.crossover_v2 import pose_curve, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KINDS,
-    POLARITY_INVERTED,
     REFERENCE_MARK_DESIGN_AXIS,
 )
 from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
@@ -209,8 +208,7 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 _ENGINE_RECORD_FIELDS = (
     "run_id", "measure_kind", "baseline_record_id", "position_deg",
     "position_axis", "vertical_deg", "prompt", "candidate_id",
-    "polarity", "level_matched", "graph_fingerprint", "level_db",
-    "stimulus_dbfs", "incident", "wav_path",
+    "graph_fingerprint", "level_db", "stimulus_dbfs", "incident", "wav_path",
 )
 
 
@@ -220,12 +218,11 @@ _ENGINE_RECORD_FIELDS = (
 def test_every_take_builder_carries_the_whole_engine_record(builder):
     """All of them, on all four — parametrized, because it is one question.
 
-    Six of these were banked by NO builder before this pin: the comparand
+    Five of these were banked by NO builder before this pin: the comparand
     (``baseline_record_id``), which candidate was under test (``candidate_id``),
-    which way the driver was wired (``polarity``), the PROVEN fader level
-    (``level_db``), the ladder rung (``stimulus_dbfs``) and what went wrong
-    (``incident``) — and ``wav_path``, the pointer that lets a banked record
-    reach its own capture, was carried by none of the four.
+    the PROVEN fader level (``level_db``), the ladder rung (``stimulus_dbfs``)
+    and what went wrong (``incident``) — and ``wav_path``, the pointer that lets
+    a banked record reach its own capture, was carried by none of the four.
 
     Presence, not value: what a caller does not state is honestly empty, and
     the fields' contents are each other tests' subject.
@@ -235,16 +232,13 @@ def test_every_take_builder_carries_the_whole_engine_record(builder):
     assert set(_ENGINE_RECORD_FIELDS) <= set(record)
 
 
-#: The six that no builder banked, each with a value nothing else on a record
+#: The five that no builder banked, each with a value nothing else on a record
 #: could be mistaken for. Presence alone would go green against carriers that
 #: emitted a constant empty, which is what these are until the retention lift
 #: states them.
 _STATED_CLAIM = TakeClaim(
     baseline_record_id="rec-before-7",
     candidate_id="cand-fp-42",
-    polarity=POLARITY_INVERTED,
-    level_matched=True,
-    level_match_trims_db={"tweeter": -9.5},
     level_db=-18.5,
     stimulus_dbfs=-9.0,
     incident="unproven_level",
@@ -259,9 +253,6 @@ _STATED_CLAIM = TakeClaim(
     [
         ("baseline_record_id", "rec-before-7"),
         ("candidate_id", "cand-fp-42"),
-        ("polarity", POLARITY_INVERTED),
-        ("level_matched", True),
-        ("level_match_trims_db", {"tweeter": -9.5}),
         ("level_db", -18.5),
         ("stimulus_dbfs", -9.0),
         ("incident", "unproven_level"),
@@ -270,10 +261,10 @@ _STATED_CLAIM = TakeClaim(
 def test_a_stated_claim_reaches_the_record_it_was_stated_for(
     builder, engine_field, stated,
 ):
-    """Each of the six CARRIES, rather than merely appearing.
+    """Each of the five CARRIES, rather than merely appearing.
 
     A carrier that emitted a constant empty would satisfy a presence pin
-    forever — and these six are inert in production until the retention lift
+    forever — and these five are inert in production until the retention lift
     binds a claim, so a presence pin is exactly the shape that would rot
     unnoticed. Distinct values per field, so a builder that stamped one of them
     into another's slot is red rather than lucky.

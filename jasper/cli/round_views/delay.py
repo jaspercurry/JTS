@@ -50,7 +50,7 @@ def _landscape_from_bank(
             bundle, phases=(PHASE_MEASURE, PHASE_LATERAL), position_deg=None,
             roles=(args.lower_role, args.upper_role), take_id=args.take, search_detail=search_detail,
         )
-        args.inverted_role = args.inverted_role or (pair.document.get("inverted_role") if pair else None) or args.upper_role
+        args.inverted_role = args.inverted_role or args.upper_role
         if args.fc_hz is None:
             raise DelayLandscapeError("The bank has no crossover corner; supply --fc-hz")
         banked = landscape_from_bank(

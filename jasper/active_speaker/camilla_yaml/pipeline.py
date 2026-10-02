@@ -29,7 +29,6 @@ from ..camilla_names import (
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 from ..crossover_section import CrossoverSection
-from .devices import _finite_float
 from .filters import (
     APPLIED_RESPONSE_FILTER_MODE,
     COMMISSIONING_FILTER_MODE,
@@ -327,7 +326,6 @@ def _commissioning_driver_filter_chain(
     *,
     filter_mode: str,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    measurement_delay_roles: frozenset[str] = frozenset(),
 ) -> list[str]:
     """The startup chain minus the per-role mute.
 
@@ -336,14 +334,9 @@ def _commissioning_driver_filter_chain(
     per-output mute layer is applied in the pipeline instead. Bring-up retains
     the dedicated tweeter high-pass; automatic response measurement removes only
     that extra filter so it measures the applied crossover shoulder.
-
-    ``measurement_delay_roles`` names the roles that carry a ``Delay`` at the
-    head of the chain. Position is free (a pure delay is LTI and commutes with
-    every stage here); the applied chains place theirs after the crossover.
     """
     if protection_sections_by_role is not None:
         return [
-            *([driver_delay_name(role)] if role in measurement_delay_roles else []),
             *(
                 program_protection_name(role, index)
                 for index, _section in enumerate(protection_sections_by_role[role])
@@ -361,7 +354,6 @@ def _emit_commissioning_pipeline(
     *,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    measurement_delay_roles: frozenset[str] = frozenset(),
     capture_channels: int = 2,
 ) -> str:
     lines = [
@@ -379,7 +371,6 @@ def _emit_commissioning_pipeline(
                 role,
                 filter_mode=filter_mode,
                 protection_sections_by_role=protection_sections_by_role,
-                measurement_delay_roles=measurement_delay_roles,
             )
         )
         lines.extend([
@@ -407,62 +398,6 @@ def _emit_commissioning_pipeline(
     return "\n".join(lines)
 
 
-def _validated_inverted_roles(
-    preset: ActiveSpeakerPreset, inverted_roles: Sequence[str],
-) -> frozenset[str]:
-    """The reverse-null's named branches, refused unless this cabinet has them.
-
-    Fail-closed for the same reason :func:`_validate_program_role_channels` is:
-    a role no output declares would flip nothing, the graph would emit
-    byte-identical to its non-inverted twin, and the banked record would claim
-    a reverse-null nobody measured.
-    """
-    flipped = frozenset(inverted_roles)
-    declared = {output.driver_role for output in preset.channel_map.outputs}
-    unknown = flipped - declared
-    if unknown:
-        raise ActiveSpeakerConfigError(
-            "cannot invert driver role(s) this preset declares no output for: "
-            + ", ".join(sorted(unknown))
-        )
-    return flipped
-
-
-def _validated_measurement_trims(
-    preset: ActiveSpeakerPreset, trims_db: Mapping[str, float] | None,
-) -> dict[str, float]:
-    """The measurement's per-role level match, refused unless it can be honoured.
-
-    Fail-closed for :func:`_validated_inverted_roles`'s reason: a trim naming a
-    role no output declares would attenuate nothing while the banked record
-    claimed a level match nobody played.
-
-    **Attenuation only** — a positive value is refused rather than clamped,
-    because this is the one seam that could raise a measurement's drive above
-    the level the session was admitted at. Every hearing clamp is untouched:
-    ``volume_limit``, the per-driver limiter and the tweeter protection
-    high-pass are downstream of this mixer and unreachable from here.
-    """
-    if not trims_db:
-        return {}
-    declared = {output.driver_role for output in preset.channel_map.outputs}
-    validated: dict[str, float] = {}
-    for role, value in trims_db.items():
-        if role not in declared:
-            raise ActiveSpeakerConfigError(
-                "cannot level-match a driver role this preset declares no "
-                f"output for: {role}"
-            )
-        trim_db = _finite_float(value, f"measurement level trim for {role}")
-        if trim_db > 0.0:
-            raise ActiveSpeakerConfigError(
-                "a measurement level trim is attenuation only; "
-                f"{role} asked for {trim_db:g} dB"
-            )
-        validated[role] = trim_db
-    return validated
-
-
 def program_channel_count(role_channels: Mapping[str, int]) -> int:
     """A program graph's capture width: every channel the program routes, and
     never fewer than Ring A carries.
@@ -479,22 +414,8 @@ def _emit_role_routed_mixer(
     role_channels: dict[str, int],
     *,
     apply_region_polarity: bool = True,
-    inverted_roles: Sequence[str] = (),
-    level_trims_db: Mapping[str, float] | None = None,
 ) -> str:
     """Emit the program graph's role-routed split mixer.
-
-    ``inverted_roles`` is the measurement's reverse-null flip: each named role's
-    sign is reversed RELATIVE to whatever polarity this graph would otherwise
-    carry, so it XORs onto the region polarity rather than replacing it. It is
-    level-neutral by construction — every ``dest`` here has exactly ONE source,
-    so flipping ``inverted`` negates each sample and leaves every peak the
-    limiter and the volume ceiling answer for bit-identical.
-
-    ``level_trims_db`` is the ONE thing that moves a ``gain``: each named role's
-    single source is attenuated so the branches meet the crossover at comparable
-    level and a reverse null can form. Attenuation only
-    (:func:`_validated_measurement_trims`), so every peak can only fall.
 
     Unlike :func:`_emit_split_mixer` (which routes a stereo bus by output
     *side*), this routes by PHYSICAL TARGET: a primary output's key is its role,
@@ -519,8 +440,6 @@ def _emit_role_routed_mixer(
         if apply_region_polarity
         else {role: False for role in region_polarity}
     )
-    flipped = _validated_inverted_roles(preset, inverted_roles)
-    trims = _validated_measurement_trims(preset, level_trims_db)
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     channels_in = program_channel_count(role_channels)
@@ -530,9 +449,7 @@ def _emit_role_routed_mixer(
         channel = role_channels.get(
             measurement_target_id(role, output.output_variant)
         )
-        mapping.append((output.index, [] if channel is None else [(
-            channel, trims.get(role, 0.0), polarity[role] != (role in flipped),
-        )]))
+        mapping.append((output.index, [] if channel is None else [(channel, 0.0, polarity[role])]))
     labels = [output.label for output in outputs]
     return emit_mixer(
         f"split_active_{preset.way_count}way",

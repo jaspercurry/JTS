@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any, Mapping, Sequence
 
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
@@ -730,48 +729,9 @@ def _emit_commissioning_filter_definitions(
     audible_gain_db: float = STARTUP_MUTE_GAIN_DB,
     filter_mode: str = COMMISSIONING_FILTER_MODE,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
-    measurement_delays_us: Mapping[str, float] | None = None,
 ) -> str:
     lines: list[str] = []
     lines.extend(emit_gain_filter("active_startup_headroom", -startup_headroom_db))
-    # The delay lane: definitions only for the roles the caller named.
-    #
-    # ONE `fmt` pass over the raw microsecond value and no intermediate
-    # rounding — `emit_delay_filter` formats through `jasper.audio_routes.camilla_emit.fmt`,
-    # which IS `delay_graph.quantized_delay_ms`'s implementation, so a proof
-    # recomputing from the same `delay_us` matches by construction.
-    delays = dict(measurement_delays_us or {})
-    if delays:
-        if protection_sections_by_role is None:
-            # The unprotected shape already defines a zero Delay filter per
-            # role, so a named delay would emit a duplicate mapping key whose
-            # later zero wins on parse — a capture that plays undelayed and
-            # banks as a delayed take.
-            raise ActiveSpeakerConfigError(
-                "a measurement delay needs the protected-neutral program shape; "
-                "the unprotected shape carries its own zeroed delay lane"
-            )
-        known = set(required_driver_roles(preset.way_count))
-        unknown = sorted(set(delays) - known)
-        if unknown:
-            # An unreferenced Delay filter would leave the capture undelayed
-            # while its graph fingerprint claimed otherwise.
-            raise ActiveSpeakerConfigError(
-                f"measurement delays name roles this preset has no branch for: "
-                f"{unknown}"
-            )
-        for role, delay_us in sorted(delays.items()):
-            value = float(delay_us)
-            if not math.isfinite(value):
-                # A non-finite value emits `delay: .nan`, which parses back as a
-                # float and would read as a bound question rather than a
-                # nonsense one. The RANGE is `_assert_measurement_delays_bound`'s.
-                raise ActiveSpeakerConfigError(
-                    f"measurement delay for {role!r} is not finite: {delay_us!r}"
-                )
-            lines.extend(emit_delay_filter(
-                driver_delay_name(role), delay_ms=value / 1000.0,
-            ))
     for region in (() if protection_sections_by_role is not None else _ordered_regions(preset)):
         lines.extend(emit_linkwitz_riley(
             _crossover_filter_name(region.lower_driver, region, highpass=False),

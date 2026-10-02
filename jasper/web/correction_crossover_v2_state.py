@@ -19,7 +19,6 @@ from typing import Any, Iterator, Mapping, Sequence
 
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
-from jasper.active_speaker import driver_base_trim
 from jasper.platform.log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -187,44 +186,6 @@ def observe_apply_success(selected_candidate: Mapping[str, Any] | None) -> None:
     # timeout) can land while this apply is in flight, and the record needs
     # both facts.
     save_v2_state(state)
-
-
-def resolve_measurement_level_trims(
-    spec: Any, *, preset: Any, topology: Any,
-) -> tuple[dict[str, float], str]:
-    """This box's own per-driver level match, and which evidence answered.
-
-    ``({}, "")`` for a spec that asks for none — the ordinary walk, which pays
-    nothing: no statefile is read and no preview is loaded.
-
-    The answer is NOT decided here:
-    :func:`~jasper.active_speaker.driver_base_trim.measured_level_trims` owns
-    it, and this function only loads the declaration that answer is keyed to.
-
-    **No/unreadable evidence answers empty WITHOUT raising, and there is no
-    catch to dress a genuine fault up as no-evidence.** The preview loader
-    fails soft — an absent, unreadable or corrupt-but-readable document returns
-    a status dict, never a raise — and the estimator is fail-closed, answering
-    empty trims for every unusable-evidence case. So a box with nothing to
-    level by reaches the caller's ``WALK_LEVEL_MATCH_NO_EVIDENCE`` refusal
-    through the empty return, and NO exception is expected here at all. There is therefore nothing to catch: an
-    exception that does arise is a real fault in the derivation, and it
-    propagates with its traceback pointing straight at this function rather
-    than being swallowed and misread as "this box has not measured its trims".
-    """
-    if not spec.level_matched:
-        return {}, ""
-    from jasper.active_speaker.crossover_preview import build_crossover_preview
-    from jasper.active_speaker.design_draft import load_design_draft
-
-    draft = load_design_draft()
-    trims, meta = driver_base_trim.measured_level_trims(
-        preset, build_crossover_preview(draft), design_draft=draft,
-    )
-    return (
-        {str(role): float(db) for role, db in trims.items()},
-        str(meta.get("source") or ""),
-    )
 
 
 def persist_conductor_state(

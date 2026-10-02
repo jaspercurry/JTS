@@ -191,7 +191,7 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None,
 
 def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
-                  trims: Any, ceiling_s: float, ceiling_db_spl: float | None,
+                  ceiling_s: float, ceiling_db_spl: float | None,
                   camilla_factory: Any, provenance: Any = None,
                   ladder: LevelLadder | None = None, finds_fader: bool = True, margin_db: float = 0.0,
                   capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
@@ -219,7 +219,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             manifest.run_id, host.bind_v2_engine_seams(
                 session_graph=door.graph, compose_stimulus=production.compose,
                 capture_stimulus=capture, records=records, volume_claim=door.claim,
-            ), door.measurement_volume_db, allocate_take_id, level_match_trims_db=trims,
+            ), door.measurement_volume_db, allocate_take_id,
         )
 
     door = RunDoor(
@@ -243,7 +243,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
             selected = prepare_level_captures(plan, roles_bands=conductor.roles_bands)
             child_door, child_analyze, child_assessor, _ = bind_run_door(
                 host=host, device=device, evidence_store=evidence_store, manifest=child,
-                production=production, conductor=conductor, refs=refs, trims=trims,
+                production=production, conductor=conductor, refs=refs,
                 ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
                 provenance=provenance, finds_fader=plan.level.level_db is None, margin_db=margin_db, context=context,
                 capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),

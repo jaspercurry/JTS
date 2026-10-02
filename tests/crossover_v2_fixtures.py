@@ -42,7 +42,7 @@ import numpy as np
 from jasper.active_speaker.bundles import BUNDLE_SCHEMA_VERSION
 from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
-from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING
+from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, Pose
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -1039,7 +1039,7 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
 
 
 def _inline_spec():
-    request = ac.per_driver_at([0])
+    request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),))
     captures = prepare_plan_captures(request, roles_bands=_roles())
     return build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],

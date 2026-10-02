@@ -316,10 +316,6 @@ def test_delay_defaults_come_from_the_selected_banked_take(tmp_path, capsys, ove
                    phase=PHASE_LATERAL, position_deg=15, take_id="lateral")
     _bank(bundle, curves=[_curve("woofer"), _curve("tweeter")], phase=PHASE_MEASURE, position_deg=0, take_id="measure")
     (bundle / "info.json").write_text(json.dumps({"session_id": "session"}))
-    take = next(bundle.glob("evidence/v1/artifacts/**/positions/measure.json"))
-    document = json.loads(take.read_text())
-    document["inverted_role"] = "woofer"
-    take.write_text(json.dumps(document))
     profile = _applied_profile(_active_topology("mono", "active_2_way"))
     profile.update(kind=BASELINE_PROFILE_KIND, artifact_schema_version=SCHEMA_VERSION)
     profile["recomposition_snapshot"]["preset"]["crossover_regions"][0]["fc_hz"] = FC_HZ
@@ -329,6 +325,6 @@ def test_delay_defaults_come_from_the_selected_banked_take(tmp_path, capsys, ove
     assert main(["delay-landscape", str(bank), *flags]) == 0
     output = _banked(json.loads(capsys.readouterr().out))
     assert output["phase"] == ("lateral" if override else "measure")
-    assert output["landscape"]["inverted_role"] == ("tweeter" if override else "woofer")
+    assert output["landscape"]["inverted_role"] == "tweeter"
     assert output["landscape"]["spec"]["crossover_fc_hz"] == (2000 if override else FC_HZ)
     assert output["take_path"].endswith("lateral.json" if override else "measure.json")

@@ -241,15 +241,11 @@ def park_muted_outputs(text: str) -> str:
 
 def emit_measurement_graph(
     profile: MeasurementGraphProfile,
-    inverted_roles: tuple[str, ...] = (),
-    measurement_delays_us: Mapping[str, float] | None = None,
-    level_trims_db: Mapping[str, float] | None = None,
     excited_channels: Mapping[str, int] | None = None,
 ) -> str:
     """Compile the protected neutral graph for separate driver analysis.
 
-    Trims arrive resolved by ``driver_base_trim.measured_level_trims``. Device
-    fields travel together because ring capture and playback share one wire.
+    Device fields travel together because ring capture and playback share one wire.
 
     ``excited_channels`` is one take's own choice of target, keyed by
     measurement target id (:func:`~.crossover_v2.measure_spec.branch_channels_for`):
@@ -268,8 +264,5 @@ def emit_measurement_graph(
         playback_device=profile.playback_device,
         protection_sections_by_role=profile.protection_sections_by_role,
         **devices.emit_kwargs(),
-        inverted_roles=inverted_roles,
-        measurement_delays_us=measurement_delays_us,
-        measurement_level_trims_db=level_trims_db,
         parked_target_ids=profile.parked_target_ids,
     )

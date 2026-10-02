@@ -26,13 +26,7 @@ from jasper.platform.log_event import log_event
 from jasper.platform.volume_latch import fader_matches
 from ..restore_wait import resilient_restore
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
-from .measure_spec import (
-    MeasureSpec,
-    branch_channels_for,
-    inverted_roles_for,
-    level_trims_for,
-    measurement_delays_for,
-)
+from .measure_spec import MeasureSpec, branch_channels_for
 
 from .playback_transaction import STAGE_RESTORE, PlaybackInterrupted, PlaybackOutcome
 from .session_seams import EngineSeams
@@ -208,14 +202,6 @@ class TuningSession:
     #: them."* A level ladder moves the stimulus, never this.
     measurement_level_db: float
     allocate_take_id: Callable[[], str]
-    #: The per-role attenuation a ``level_matched`` spec's graph carries, in dB
-    #: and never positive. Resolved ONCE by the host that opened this session,
-    #: from the box's own banked evidence — the session applies it and never
-    #: derives it, which keeps one speaker's level match off another's
-    #: measurement. Empty means no spec here may ask for one; the host refuses
-    #: that pairing at open, so :func:`~.measure_spec.level_trims_for` answers
-    #: empty rather than raising mid-walk.
-    level_match_trims_db: Mapping[str, float] = field(default_factory=dict)
 
     _graph_installed: bool = field(default=False, init=False)
     _volume_held: bool = field(default=False, init=False)
@@ -264,15 +250,6 @@ class TuningSession:
         except BaseException as opening_exc:  # noqa: BLE001 - re-raised below
             await self._release_both_after_failed_open(opening_exc)
             raise
-
-    async def restore_graph(self) -> None:
-        """Restore normal routing while keeping the volume lease and session open.
-
-        Record enrichment can call this during ``measure``, so it must not take
-        an operation lock. The next stimulus reinstalls its graph; ``close``
-        remains able to retry a failed restoration.
-        """
-        await self.seams.graph.restore()
 
     async def close(self) -> None:
         """Release both held slots, even if releasing one raises.
@@ -474,11 +451,7 @@ class TuningSession:
         self.seams.graph.select_scope(
             spec.graph_scope, spec.candidate_id, branch_channels_for(spec), spec.cleared_layers,
         )
-        self._graph_fingerprint = await self.seams.graph.install(
-            inverted_roles_for(spec),
-            measurement_delays_for(spec),
-            level_trims_for(spec, self.level_match_trims_db),
-        )
+        self._graph_fingerprint = await self.seams.graph.install()
         proven_level_db = await self._proven_level()
         record_id, incident, error = "", "", None
         interruption: PlaybackInterrupted | None = None
@@ -582,13 +555,8 @@ class TuningSession:
         The index reads six of these — run, kind, position, candidate,
         timestamp, path — and the store supplies the last two, since only it
         knows where it put the record and when. The rest are what a reader needs
-        to tell two captures of the same position apart: which polarity, which
-        ladder rung, which graph, at what proven level.
-
-        ``polarity`` and ``inverted_role`` travel together for the reason
-        :class:`~.measure_spec.MeasureSpec` checks them together: a reverse-null
-        pair is only comparable to a reader that knows WHICH branch was flipped.
-        ``""`` on every normal capture.
+        to tell two captures of the same position apart: which ladder rung,
+        which graph, at what proven level.
 
         ``baseline_record_id`` rides as ``""``: pairing a capture with its
         comparand is the tuning tools' read over the bank (ADR-0198), and the
@@ -600,10 +568,6 @@ class TuningSession:
         (``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex). ``""``
         when no bytes were placed.
         """
-        # Asked through the ONE translation the install used, never re-derived
-        # from the flag: the record then states the trims the stimulus actually
-        # played through rather than a second answer to the same question.
-        applied_trims = level_trims_for(spec, self.level_match_trims_db)
         return {
             "run_id": self.session_id,
             "take_id": take_id,
@@ -621,15 +585,6 @@ class TuningSession:
             "targets": list(spec.branch_target_ids),
             # The parent's layers this take's graph played emptied (ADR-0370).
             "cleared_layers": list(spec.cleared_layers),
-            "polarity": spec.polarity,
-            "inverted_role": spec.inverted_role,
-            # Derived from what INSTALLED, not from what the spec ASKED: a spec
-            # can ask for a level match the session was opened with no trims to
-            # supply, and a record reading ``level_matched`` off the flag would
-            # claim a match its own graph did not carry. Reading it off
-            # ``applied_trims`` makes the boolean and the numbers one fact.
-            "level_matched": bool(applied_trims),
-            "level_match_trims_db": applied_trims,
             "graph_fingerprint": self._graph_fingerprint,
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,
