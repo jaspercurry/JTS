@@ -14,7 +14,6 @@ from jasper.platform.speaker_layout import measurement_target_id
 
 from ..camilla_names import (
     STARTUP_MUTE_GAIN_DB,
-    driver_delay_name,
     driver_limiter_name,
     output_commission_mute_name,
 )
@@ -402,56 +401,6 @@ def _assert_graph_references_closed(
         "refusing to emit an active-speaker config whose pipeline references "
         "undefined mixer/filter name(s): " + "; ".join(errors)
     )
-
-
-def _assert_measurement_delays_bound(
-    yaml_text: str,
-    measurement_delays_us: Mapping[str, float] | None,
-    *,
-    role_channels: Mapping[str, int],
-    preset: ActiveSpeakerPreset,
-) -> None:
-    """Prove each requested delay actually landed, through the shared proof.
-
-    :func:`~jasper.active_speaker.delay_graph.prove_static_delay_binding` is
-    the tree's one answer to "does this graph carry that delay": the value
-    through the same quantizer a later proof would use, the filter in EXACTLY
-    ONE pipeline step wired to exactly the role's channels, the 20 ms DSP bound,
-    and ``devices.volume_limit``. Structural, so it catches an orphan filter or
-    a duplicate definition a value check alone would miss.
-    """
-    if not measurement_delays_us:
-        return
-    import yaml as yaml_lib
-
-    from jasper.active_speaker.delay_graph import (
-        prove_static_delay_binding,  # lazy: numpy import cost
-    )
-    from jasper.audio_measurement.null_walk import (
-        NullWalkError,  # lazy: numpy import cost
-    )
-
-    parsed = yaml_lib.safe_load(yaml_text)
-    if not isinstance(parsed, dict):
-        raise ActiveSpeakerConfigError("emitted program graph did not parse")
-    for role, delay_us in sorted(measurement_delays_us.items()):
-        channels = tuple(sorted(_channels_for_role(preset, role) or ()))
-        if not channels:
-            channels = (int(role_channels[role]),)
-        try:
-            prove_static_delay_binding(
-                parsed,
-                delay_filter_name=driver_delay_name(role),
-                channels=channels,
-                delay_us=float(delay_us),
-            )
-        except NullWalkError as exc:
-            # The proof's whole error family: `DelayGraphProofError` carries the
-            # typed failure code and subclasses this.
-            raise ActiveSpeakerConfigError(
-                f"the emitted program graph does not carry the requested "
-                f"{role!r} measurement delay: {exc}"
-            ) from exc
 
 
 def _assert_program_graph_proven(

@@ -29,7 +29,6 @@ from ..camilla_names import (
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
 from ..crossover_section import CrossoverSection
-from .devices import _finite_float
 from .filters import (
     APPLIED_RESPONSE_FILTER_MODE,
     COMMISSIONING_FILTER_MODE,
@@ -397,62 +396,6 @@ def _emit_commissioning_pipeline(
             f"    names: [{output_commission_mute_name(index)}]",
         ])
     return "\n".join(lines)
-
-
-def _validated_inverted_roles(
-    preset: ActiveSpeakerPreset, inverted_roles: Sequence[str],
-) -> frozenset[str]:
-    """The reverse-null's named branches, refused unless this cabinet has them.
-
-    Fail-closed for the same reason :func:`_validate_program_role_channels` is:
-    a role no output declares would flip nothing, the graph would emit
-    byte-identical to its non-inverted twin, and the banked record would claim
-    a reverse-null nobody measured.
-    """
-    flipped = frozenset(inverted_roles)
-    declared = {output.driver_role for output in preset.channel_map.outputs}
-    unknown = flipped - declared
-    if unknown:
-        raise ActiveSpeakerConfigError(
-            "cannot invert driver role(s) this preset declares no output for: "
-            + ", ".join(sorted(unknown))
-        )
-    return flipped
-
-
-def _validated_measurement_trims(
-    preset: ActiveSpeakerPreset, trims_db: Mapping[str, float] | None,
-) -> dict[str, float]:
-    """The measurement's per-role level match, refused unless it can be honoured.
-
-    Fail-closed for :func:`_validated_inverted_roles`'s reason: a trim naming a
-    role no output declares would attenuate nothing while the banked record
-    claimed a level match nobody played.
-
-    **Attenuation only** — a positive value is refused rather than clamped,
-    because this is the one seam that could raise a measurement's drive above
-    the level the session was admitted at. Every hearing clamp is untouched:
-    ``volume_limit``, the per-driver limiter and the tweeter protection
-    high-pass are downstream of this mixer and unreachable from here.
-    """
-    if not trims_db:
-        return {}
-    declared = {output.driver_role for output in preset.channel_map.outputs}
-    validated: dict[str, float] = {}
-    for role, value in trims_db.items():
-        if role not in declared:
-            raise ActiveSpeakerConfigError(
-                "cannot level-match a driver role this preset declares no "
-                f"output for: {role}"
-            )
-        trim_db = _finite_float(value, f"measurement level trim for {role}")
-        if trim_db > 0.0:
-            raise ActiveSpeakerConfigError(
-                "a measurement level trim is attenuation only; "
-                f"{role} asked for {trim_db:g} dB"
-            )
-        validated[role] = trim_db
-    return validated
 
 
 def program_channel_count(role_channels: Mapping[str, int]) -> int:
