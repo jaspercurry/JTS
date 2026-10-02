@@ -39,7 +39,7 @@ from .assistant_output import (
 )
 from .content_activity import ContentActivityTracker
 from .conversation import continuous_watchdog
-from .speech_activity import SpeechActivity
+from .turn_input import TurnInputState
 from .conversation_capture import ConversationCapture
 from .output_gate import AssistantOutputEpisode
 from .peering_client import PeeringClient
@@ -154,32 +154,7 @@ class TurnLifecycle:
         self.output_episode: AssistantOutputEpisode | None = None
         self.barge_in_active: bool = False
 
-        # End-of-utterance detection state (per-turn), written by the loop's
-        # frame handlers. `audio_stream_end` MUST be sent the moment the
-        # user stops speaking, not at turn cleanup: without it the server
-        # stays in "listening for end of turn-1" and the next turn's audio
-        # is silently swallowed. Silero gives per-frame speech probability;
-        # consecutive silence after speech accumulates until it crosses the
-        # threshold, then turn.end_input() sends the marker.
-        self.user_speech_seen: bool = False
-        self.input_ended: bool = False
-        # Read on the asyncio loop clock to match what the silence detector
-        # reads; anchors NO_SPEECH_ABORT_SEC, HARD_RECORDING_CAP_SEC and the
-        # push-to-talk hold cap.
-        self.started_at_loop: float = 0.0
-        self.max_silero_aec: float = 0.0
-        self.max_silero_raw: float = 0.0
-        self.silero_aec_armed_at_ms: int | None = None
-        self.silero_raw_armed_at_ms: int | None = None
-        # Decided once per turn in `begin_inner`: true when this turn's
-        # session audio comes from a push-to-talk source, so the button owns
-        # both boundaries and local VAD must not become a second writer of
-        # end-of-input.
-        self.manual_endpoint_this_turn: bool = False
-        # Frames the push-to-talk source delivered to this turn, whatever the
-        # provider then did with them: none is the typed no_frames failure.
-        self.manual_frames: int = 0
-        self.speech = SpeechActivity()
+        self.input = TurnInputState()
 
         # Turns since daemon start that were asked a question and produced no
         # answer. Published as /state.voice.silent_responses_session.
@@ -217,29 +192,12 @@ class TurnLifecycle:
         # sched_lag is wake→picked-up-by-the-loop; a turn no wake opened has
         # no lag to report and must not charge itself the episode await.
         t_wake = anchor_at or t_begin
-        # One endpointer decision per turn. A turn whose audio comes from a
-        # push-to-talk source is closed by the button release
-        # (`manual_session_end`), so local Silero must not also try.
-        # `active_source` is set by `manual_session_start` before it
-        # calls us and is the same flag `_manual_mic_loop` gates on, so "the
-        # button owns this turn" and "manual-source frames are the session
-        # audio" are one fact, not two.
-        self.manual_endpoint_this_turn = (
-            self._push_to_talk.active_source is not None
-        )
-        self.manual_frames = 0
         # Silero's internal LSTM state must not leak across turns.
         self._reset_input()
-        self.user_speech_seen = False
-        self.input_ended = False
-        self.speech = SpeechActivity()
-        self.started_at_loop = (
-            anchor_at or self._acquire_anchor() or asyncio.get_event_loop().time()
+        self.input = TurnInputState(
+            started_at=anchor_at or self._acquire_anchor() or asyncio.get_event_loop().time(),
+            manual=self._push_to_talk.active_source is not None,
         )
-        self.max_silero_aec = 0.0
-        self.max_silero_raw = 0.0
-        self.silero_raw_armed_at_ms = None
-        self.silero_aec_armed_at_ms = None
         self._resolve_barge_in_for_turn()
         t_after_state = time.monotonic()
         self._content_activity.pause()
@@ -309,7 +267,7 @@ class TurnLifecycle:
             continuous_watchdog(
                 self.turn, self._output.tts, followup_seconds=self._output.cfg.followup_timeout_sec,
                 stall_seconds=self._output.cfg.response_stall_timeout_sec,
-                speech=self.speech, playback=self.playback_report,
+                speech=self.input.speech, playback=self.playback_report,
                 spend_allowed=self._spend_cap.allowed,
             ) if continuous else idle_watchdog(
                 self.turn,
@@ -425,7 +383,7 @@ class TurnLifecycle:
         ``cfg.mic_device`` — a different stream — so the self-interrupt guard
         has not cleared the audio barge-in would run on."""
         want = read_barge_in_enabled(self._output.cfg.voice_provider)
-        if want and self.manual_endpoint_this_turn:
+        if want and self.input.manual:
             # Its own latch, not `_barge_in_no_ref_warned`: on a speaker with
             # both a room mic and a remote, sharing one would let a
             # push-to-talk turn swallow the different no-reference warning a
@@ -547,7 +505,7 @@ class TurnLifecycle:
         a button turn never takes that path, so it has no row to label —
         see ``corpus_endpointer_label``.
         """
-        if self.manual_endpoint_this_turn:
+        if self.input.manual:
             return "push_to_talk"
         continuous = self.turn is not None and self.turn.continuous_input
         return "continuous_audio" if continuous else "silero_aec"
@@ -683,19 +641,19 @@ class TurnLifecycle:
         # Capture event_id BEFORE the outcome write clears it.
         session_vad_eid = self._telemetry.current_event_id
         terminal_outcome = (
-            "session_failed" if failed else "completed" if self.user_speech_seen else "no_speech"
+            "session_failed" if failed else "completed" if self.input.speech_seen else "no_speech"
         )
         await self._telemetry.outcome(terminal_outcome, reason)
 
         if session_vad_eid is not None:
             await self._telemetry.record_session_vad(
                 session_vad_eid,
-                max_silero_aec=self.max_silero_aec or None,
-                max_silero_raw=self.max_silero_raw or None,
-                silero_aec_armed_at_ms=self.silero_aec_armed_at_ms,
-                silero_raw_armed_at_ms=self.silero_raw_armed_at_ms,
+                max_silero_aec=self.input.max_silero_aec or None,
+                max_silero_raw=self.input.max_silero_raw or None,
+                silero_aec_armed_at_ms=self.input.silero_aec_armed_at_ms,
+                silero_raw_armed_at_ms=self.input.silero_raw_armed_at_ms,
                 endpointer=self.corpus_endpointer_label(
-                    user_speech_seen=self.user_speech_seen,
+                    user_speech_seen=self.input.speech_seen,
                 ),
                 music_playing_at_turn=self._content_activity.music_is_playing(),
                 music_db_at_turn=self._content_activity.music_dbfs,
@@ -782,7 +740,7 @@ class TurnLifecycle:
             ("turn_outcome", lambda: self._record_turn_outcome(reason)),
             ("peering_end", lambda: self._peering.session_ended(reason)),
         ]
-        if self.input_ended or self.user_speech_seen or self.manual_endpoint_this_turn:
+        if self.input.ended or self.input.speech_seen or self.input.manual:
             phases.append(("end_input", lambda: asyncio.wait_for(turn.end_input(), timeout=2.0)))
         cleanup_base_error = await run_cleanup_phases(
             phases, event="turn.cleanup_phase_failed",
@@ -828,7 +786,7 @@ class TurnLifecycle:
                 endpointer=self.endpointer_label(),
                 turn_lost=lost_mid_reply,
             )
-        elif self.manual_endpoint_this_turn and not self.manual_frames:
+        elif self.input.manual and not self.input.manual_frames:
             # The same typed failure a press the remote cannot carry ends in
             # (issue #3346): a hold is a question the household asked.
             play_no_answer_cue = self._log_no_answer(
@@ -849,7 +807,7 @@ class TurnLifecycle:
             )
         elif bytes_sent > 0 and (silent or lost_mid_reply):
             model = self._output.cfg.active_voice_model
-            if self.input_ended:
+            if self.input.ended:
                 diagnosis: dict[str, object] = (
                     {}
                     if reason in NO_ANSWER_CUE_SUPPRESSED_REASONS
@@ -867,7 +825,7 @@ class TurnLifecycle:
                     chunks_received=chunks_received,
                     turn_lost=lost_mid_reply,
                 )
-            elif silent and self.manual_endpoint_this_turn:
+            elif silent and self.input.manual:
                 log_event(
                     logger,
                     "turn.silent_response",

@@ -29,12 +29,12 @@ def _make_wakeloop():
     wl._turns.turn = _FakeTurn()
     wl._turns.session_id = 7
     wl._turns.bg_tasks = set()
-    wl._turns.user_speech_seen = True
-    wl._turns.max_silero_aec = 0.0
-    wl._turns.max_silero_raw = 0.0
-    wl._turns.silero_aec_armed_at_ms = None
-    wl._turns.silero_raw_armed_at_ms = None
-    wl._turns.input_ended = False
+    wl._turns.input.speech_seen = True
+    wl._turns.input.max_silero_aec = 0.0
+    wl._turns.input.max_silero_raw = 0.0
+    wl._turns.input.silero_aec_armed_at_ms = None
+    wl._turns.input.silero_raw_armed_at_ms = None
+    wl._turns.input.ended = False
     wl._turns.ending = False
 
     async def _noop_stage(_stage):
@@ -139,7 +139,7 @@ async def _response_loop(pcm=bytes(8)):
     wl = _make_wakeloop()
     turn = wl._turns.turn
     turn._bytes_sent, turn._chunks_received = 4096, 1
-    wl._turns.input_ended = True
+    wl._turns.input.ended = True
     wl._turn_timeline.anchor_at()
     wl._turns.output_episode = await wl._output_gate.begin_turn()
     wl._wake_telemetry.outcome = AsyncMock()

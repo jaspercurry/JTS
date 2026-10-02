@@ -419,8 +419,8 @@ def test_capture_gap_resets_wake_history_and_reports_input_age():
     rt.recent_score_at = time.monotonic()
     rt.capture_ring.append(b"old")
     wl._pre_roll.append(b"old")
-    wl._turns.speech.run_started_at = time.monotonic()
-    wl._turns.speech.signalled = True
+    wl._turns.input.speech.run_started_at = time.monotonic()
+    wl._turns.input.speech.signalled = True
     rt.mic = SimpleNamespace(
         last_frame=InputFrame(b"new", time.monotonic() - 0.5, True),
         dropped_frames=7,
@@ -433,8 +433,8 @@ def test_capture_gap_resets_wake_history_and_reports_input_age():
     rt.shadow_vad.reset.assert_called_once()
     assert rt.recent_score == 0.0
     assert not rt.capture_ring and not wl._pre_roll
-    assert wl._turns.speech.run_started_at == 0.0
-    assert not wl._turns.speech.signalled
+    assert wl._turns.input.speech.run_started_at == 0.0
+    assert not wl._turns.input.speech.signalled
     status = wl.session_status()["input_audio"]
     assert status["gaps"] == 1
     assert status["capture_dropped_frames"] == 7

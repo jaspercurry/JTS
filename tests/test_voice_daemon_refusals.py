@@ -193,11 +193,11 @@ def _prepare_teardown(
     wl._turns.bg_tasks = set()
     wl._wake_telemetry.store = None
     wl._turns.session_id = "sess-refusals"
-    wl._turns.input_ended = input_ended
-    wl._turns.user_speech_seen = user_speech
-    wl._turns.manual_endpoint_this_turn = manual
+    wl._turns.input.ended = input_ended
+    wl._turns.input.speech_seen = user_speech
+    wl._turns.input.manual = manual
     # Audio the provider took came from frames the button delivered.
-    wl._turns.manual_frames = int(bytes_sent > 0)
+    wl._turns.input.manual_frames = int(bytes_sent > 0)
     return turn
 
 

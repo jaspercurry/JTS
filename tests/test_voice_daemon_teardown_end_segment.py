@@ -61,12 +61,12 @@ def _make_wakeloop(tts: FakeTts):
     wl._turns.turn = _FakeTurn()
     wl._turns.session_id = 7
     wl._turns.bg_tasks = set()
-    wl._turns.user_speech_seen = True
-    wl._turns.max_silero_aec = 0.0
-    wl._turns.max_silero_raw = 0.0
-    wl._turns.silero_aec_armed_at_ms = None
-    wl._turns.silero_raw_armed_at_ms = None
-    wl._turns.input_ended = False
+    wl._turns.input.speech_seen = True
+    wl._turns.input.max_silero_aec = 0.0
+    wl._turns.input.max_silero_raw = 0.0
+    wl._turns.input.silero_aec_armed_at_ms = None
+    wl._turns.input.silero_raw_armed_at_ms = None
+    wl._turns.input.ended = False
     wl._turns.ending = False
 
     async def _noop_stage(_stage):
