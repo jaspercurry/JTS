@@ -57,11 +57,9 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_REVIEW,
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
-    PHASE_DONE,
     PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -671,70 +669,6 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
         failure_code=None,
     )
     assert "fc_selection" not in (v2state.load_v2_state() or {})
-
-
-def test_a_corrupt_session_phases_list_never_reads_as_done():
-    """S5: ``session_phases`` filters to the empty tuple on garbage, and a
-    zero-length walk falls through to PHASE_DONE — i.e. a garbled state file
-    would tell a household "Your speaker is tuned". Fail toward the fallback
-    instead."""
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK],
-        "session_phases": ["nonsense", "also-not-a-phase"],
-        "applied": False,
-    })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_MEASURE
-
-    # A partially-recognisable list keeps only what it can name — and that IS
-    # enough to walk, so it is used rather than discarded.
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": ["nonsense", PHASE_VERIFY],
-        "applied": True,
-    })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_VERIFY
-
-
-def test_apply_completes_a_plan_without_verify():
-    v2state.save_v2_state({
-        "session_id": "cap_x", "applied": False,
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-    })
-    v2state.observe_apply_success({"fingerprint": "candidate"})
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE
-
-
-def test_a_session_that_verified_still_resolves_to_done():
-    """The review branch keys on a session that never intended to VERIFY, so
-    every shape that DID keeps its shipped terminal — a full pre-cloud session
-    and a verify-only re-arm alike. Without this the fix would silently move
-    the RESULT screen for the flows that already work."""
-    for phases in (
-        [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-        [PHASE_VERIFY],
-        [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE, PHASE_VERIFY,
-         PHASE_CLOUD_VERIFY],
-    ):
-        v2state.save_v2_state({
-            "session_id": "cap_x",
-            "accepted_phases": list(phases),
-            "session_phases": list(phases),
-            "applied": True,
-        })
-        assert v2status.crossover_v2_status_block()["phase"] == PHASE_DONE, phases
-
-
-def test_a_measured_fallback_walk_waits_for_review_without_a_candidate():
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "session_phases": ["nonsense", "also-not-a-phase"],
-        "applied": False,
-    })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
 def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
@@ -1430,25 +1364,13 @@ def test_plan_flow_stored_calibration_refuses_on_device_mismatch(
     assert saved.model_key == "minidsp_umik2"
 
 
-def test_status_block_reports_needs_recovery_and_phase():
+def test_the_status_block_is_the_stored_failure_and_the_recovery_flag():
     class _NeedsRecovery:
         needs_recovery = True
 
     v2volume.set_volume_plan_for_tests(_NeedsRecovery())
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK],
-        "applied": False,
-    })
-    block = v2status.crossover_v2_status_block()
-    assert block["needs_recovery"] is True
-    assert block["phase"] == PHASE_MEASURE
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": False,
-    })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
+    v2state.save_v2_state({"session_id": "cap_x", "failure": {"code": "clipped"}})
+    assert v2status.crossover_v2_status_block() == {"failure": {"code": "clipped"}, "needs_recovery": True}
 
 
 def _linearization_summary(linearization=None, *, outcome=None, analysis=None):
@@ -3251,30 +3173,6 @@ def test_a_restore_by_fingerprint_moves_the_declaration_back(monkeypatch, tmp_pa
     draft = load_design_draft()
     assert draft["revision"] == 3
     assert draft["manual_settings"]["crossover_candidates"][0]["frequency_hz"] == 2500
-
-
-def test_a_measure_only_session_resolves_to_review_never_done():
-    """**The work order's premise 6, and PR-T2's first pin.**
-
-    ``crossover_v2_phase`` walks the recorded ``session_phases`` and returns
-    PHASE_DONE once each is accepted. Its one special case — VERIFY unaccepted
-    with MEASURE accepted and not applied ⇒ PHASE_APPLYING — cannot fire when
-    VERIFY is not in the recorded phases at all. So a stage-1 session (CHECK,
-    MEASURE, CLOUD_MEASURE, no VERIFY) fell straight through to PHASE_DONE:
-    the RESULT screen, whose copy is "Your speaker is tuned", over a speaker
-    that had been measured and never touched. A direct collision, not a
-    theoretical one — and the acceptance criterion is explicit that "a stage-1
-    session never renders 'your speaker is tuned'".
-    """
-    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
-
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_CLOUD_MEASURE],
-        "applied": False,
-    })
-    assert v2status.crossover_v2_status_block()["phase"] == PHASE_REVIEW
 
 
 @pytest.mark.parametrize("layers", [(), ("room",), ("bass",), ("room", "bass")])

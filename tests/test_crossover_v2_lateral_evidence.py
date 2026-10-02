@@ -65,44 +65,6 @@ def _walk(conductor, *, through: int = LAST_LATERAL_INDEX) -> list[dict]:
     return out
 
 
-def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
-    """The third guard of the completeness claim — it fails if a SURFACE was
-    missed rather than a rule broken. Driven end to end: a real conductor's
-    recorded ``session_phases``, through ``crossover_v2_phase``, into the
-    envelope, flag-on and mid-walk.
-    """
-    from jasper.active_speaker.crossover_envelope_v2 import (
-        build_crossover_envelope_v2,
-        crossover_v2_phase,
-    )
-
-    fakes = FakeSeams()
-    c = _lateral_conductor(fakes)
-    _walk(c, through=FIRST_LATERAL_INDEX)  # anchor done, walk under way
-    session_phases = c.snapshot().session_phases
-    assert PHASE_LATERAL in session_phases
-
-    # What the durable state looks like standing at pose two of six.
-    phase = crossover_v2_phase({
-        "session_phases": list(session_phases),
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": False,
-    }, review_declined=False)
-    assert phase == PHASE_LATERAL
-
-    env = build_crossover_envelope_v2({
-        "active": True,
-        "capture": {"status": "awaiting_capture"},
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": {"phase": phase},
-    })
-    assert env["screen"] == "measure"
-    # The stepper is genuinely past step 1.
-    steps = {s["id"]: s["status"] for s in env["steps"]}
-    assert steps["microphone_check"] == "done"
-    assert steps["measure"] == "active"
-
-
 @pytest.mark.parametrize("purpose", ["speaker", "room"])
 def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     request = ac.AngleCaptureRequest((

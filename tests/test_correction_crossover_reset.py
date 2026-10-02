@@ -164,8 +164,6 @@ def test_handle_reset_clears_stale_v2_state_under_v2_flow(monkeypatch, tmp_path)
 def test_handle_reset_while_applied_keeps_applied(monkeypatch, tmp_path):
     """Start-over while a candidate is APPLIED keeps `applied` and clears the
     journey fields, so the envelope serves the clean start screen."""
-    from jasper.web import correction_crossover_v2_status as v2status
-
     v2state.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
         v2state.save_v2_state({
@@ -191,8 +189,6 @@ def test_handle_reset_while_applied_keeps_applied(monkeypatch, tmp_path):
         assert state["failure"] is None
         assert state["gain_plan_db"] is None
         assert state["session_id"] is None
-        block = v2status.crossover_v2_status_block()
-        assert block is not None and block["phase"] == "check"
     finally:
         v2state.set_state_path_for_tests(None)
 
