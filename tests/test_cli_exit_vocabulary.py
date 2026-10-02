@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import errno
 import importlib
 import importlib.util
 import json
@@ -252,6 +253,39 @@ def test_every_tuning_cli_publishes_the_shared_refusal_document(
     assert printed.err.startswith(
         f"{document['status']} ({document['reason']}): "
     )
+
+
+@pytest.mark.parametrize("resolve", round_cli.LOCAL_STATE_PATHS, ids=lambda resolve: resolve.__name__)
+@pytest.mark.parametrize("module_name, argv", [
+    ("jasper.cli.round", ["list"]),
+    ("jasper.cli.round", ["status", "--run", "run-1"]),
+    ("jasper.cli.round", ["run", "--program", "speaker"]),
+    ("jasper.cli.round_views", ["catalog"]),
+    ("jasper.cli.crossover_prescriber", ["status"]),
+    ("jasper.cli.audition", ["status"]),
+])
+def test_a_tuning_cli_refuses_local_state_this_user_cannot_read(
+    module_name: str, argv: list[str], resolve: Callable[[], Path],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The shared loaders read an unreadable file as an empty speaker, so a non-root run answered
+    ``0 banked round(s)`` instead of refusing."""
+    path = resolve()
+    open_path = Path.open
+
+    def open_unless_denied(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return open_path(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_unless_denied)
+
+    code = importlib.import_module(module_name).main(argv)
+
+    document = json.loads(capsys.readouterr().out)
+    assert code == _refusal.EXIT_REFUSED
+    assert (document["code"], document["detail"]["evidence"]) == ("local_state_unreadable", {"path": str(path)})
+    assert document["next_action"]["id"] == "run_as_root"
 
 
 @pytest.mark.parametrize("module_name,verb", [

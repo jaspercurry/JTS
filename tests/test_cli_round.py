@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import io
-import errno
 import json
 import asyncio
 from collections import Counter
@@ -619,29 +618,6 @@ def test_preflight_answers_without_posting(preflight_ready, monkeypatch, capsys)
     opener = _opener()
     code, body = _run(["run", "--dry-run"], opener, monkeypatch, capsys)
     assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"] and not body["issues"]
-    assert not opener.requests
-
-
-@pytest.mark.parametrize("path_owner", ["topology_path", "baseline_profile_state_path", "household_mic_path"])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_run_refuses_local_state_permission_fault(path_owner, dry_run, monkeypatch, capsys):
-    path = getattr(_run_request, path_owner)()
-    original_open = Path.open
-
-    def open_state(self, *args, **kwargs):
-        if self == path:
-            raise PermissionError(errno.EACCES, "Permission denied", str(path))
-        return original_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", open_state)
-    facts = Mock(side_effect=AssertionError("preflight must not read missing facts"))
-    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
-    opener = _opener()
-    code, body = _run(["run", "--program", "speaker", *(["--dry-run"] if dry_run else [])], opener, monkeypatch, capsys)
-    assert code == cli.EXIT_REFUSED and body["code"] == "local_state_unreadable"
-    assert body["detail"]["evidence"] == {"path": str(path)}
-    assert body["next_action"]["id"] == "run_as_root"
-    facts.assert_not_called()
     assert not opener.requests
 
 

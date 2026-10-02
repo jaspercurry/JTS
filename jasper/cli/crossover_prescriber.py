@@ -19,6 +19,7 @@ from ._refusal import (
     EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE, EXIT_WRITE_FAILED, answer, envelope, failed, help_from_rows,
     read_source_bytes,
 )
+from .round import refuse_unreadable_state
 from .round_views._common import (
     _ROUND_DIR_HELP, RoundSetRefused, add_set_argument, context_artifacts, round_ref,
 )
@@ -720,6 +721,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if (refused := refuse_unreadable_state()) is not None:
+        return refused
     if args.command == "judge" and args.vary and (not args.preview or not args.out_dir):
         parser.error("--vary requires --preview and --out-dir")
     if args.command == "judge" and args.out and (not args.preview or args.vary):

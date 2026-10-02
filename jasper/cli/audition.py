@@ -53,6 +53,7 @@ from jasper.active_speaker.audition import (
 )
 from jasper.audio_control.camilla import primary_controller
 from jasper.cli._refusal import EXIT_OK as EXIT_OK, EXIT_REFUSED, answered, failed
+from jasper.cli.round import refuse_unreadable_state
 from jasper.platform.log_event import log_event
 from jasper.platform.logging_setup import configure_logging
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
@@ -269,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     # whose whole job is to leave the speaker exactly as it found it.
     install_env_canonical_target_provider()
     args = build_parser().parse_args(argv)
+    if (refused := refuse_unreadable_state()) is not None:
+        return refused
     return int(args.func(args))
 
 
