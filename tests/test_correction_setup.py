@@ -434,7 +434,7 @@ def _capture(monkeypatch, status, run="wired-live"):
 
 def _spy_slow_reads(monkeypatch, tmp_path):
     """Log the crossover status answer's slow reads; each read answers with its call ordinal."""
-    from jasper.active_speaker import controllability_ledger, setup_status
+    from jasper.active_speaker import setup_status
     from jasper.web import correction_crossover_backend as backend
     from jasper.web import correction_crossover_v2_state as v2state
 
@@ -454,7 +454,6 @@ def _spy_slow_reads(monkeypatch, tmp_path):
     monkeypatch.setattr(backend, "load_applied_baseline_profile_state", lambda: applied)
     monkeypatch.setattr(setup_status, "read_active_speaker_setup_status", read("setup", {"active": False}))
     monkeypatch.setattr(backend, "latest_banked_rounds", read("rounds", {}))
-    monkeypatch.setattr(controllability_ledger, "read_controllability_ledger", read("ledger", {"rounds": []}))
     return calls, applied
 
 
@@ -477,31 +476,13 @@ def test_a_live_capture_reuses_its_first_status_answer_until_an_apply_or_another
     assert set(again) == set(idle)
     assert (idle["snapshot_at"], first["snapshot_at"], again["snapshot_at"]) == (None, None, first["generated_at"])
     assert [again[key] for key in ("setup", "timing")] == [first[key] for key in ("setup", "timing")]
-    assert again["crossover_v2"]["controllability"] == first["crossover_v2"]["controllability"]
     assert (envelope["capture"]["session_id"], envelope["snapshot_at"]) == ("wired-live", first["generated_at"])
     applied["config"] = {"sha256": "b" * 64}
     assert flow.handle_status(capture=capture)[0]["snapshot_at"] is None
-    assert calls == ["setup", "rounds", "ledger"]
+    assert calls == ["setup", "rounds"]
     calls.clear()
     assert flow.handle_status(capture=_capture(monkeypatch, status, run="wired-next"))[0]["snapshot_at"] is None
-    assert calls == ["setup", "rounds", "ledger"]
-
-
-def test_a_live_capture_reuses_an_unreadable_ledger_without_rescanning(monkeypatch, tmp_path):
-    from jasper.active_speaker import controllability_ledger
-    from jasper.web import correction_crossover_flow as flow
-
-    calls, _ = _spy_slow_reads(monkeypatch, tmp_path)
-
-    def unreadable():
-        calls.append("ledger")
-        raise OSError("bundle root unreadable")
-
-    monkeypatch.setattr(controllability_ledger, "read_controllability_ledger", unreadable)
-    capture = _capture(monkeypatch, "awaiting_capture")
-    answers = [flow.handle_status(capture=capture)[0] for _ in range(2)]
-    assert calls == ["setup", "rounds", "ledger"]
-    assert [answer["crossover_v2"]["controllability"] for answer in answers] == [None, None]
+    assert calls == ["setup", "rounds"]
 
 
 @pytest.mark.parametrize("status", [None, "complete", "stopped", "failed"])
@@ -511,9 +492,8 @@ def test_status_outside_a_live_capture_reads_every_slow_block_fresh(monkeypatch,
     calls, _ = _spy_slow_reads(monkeypatch, tmp_path)
     capture = _capture(monkeypatch, status)
     answers = [flow.handle_status(capture=capture)[0] for _ in range(2)]
-    assert calls == ["setup", "rounds", "ledger"] * 2
-    assert [(answer["snapshot_at"], answer["setup"]["read"], answer["crossover_v2"]["controllability"]["read"])
-            for answer in answers] == [(None, 1, 3), (None, 4, 6)]
+    assert calls == ["setup", "rounds"] * 2
+    assert [(answer["snapshot_at"], answer["setup"]["read"]) for answer in answers] == [(None, 1), (None, 3)]
 
 def test_capture_stop_callback_is_atomic_with_starting_state():
     stopped = threading.Event()
