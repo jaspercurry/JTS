@@ -3422,208 +3422,22 @@ def test_exit_trap_finishes_the_unpark_when_its_own_logging_fails(tmp_path):
     assert run.returncode == 5, run.stderr
 
 
-# Seeds every `file` target the retirement table names (iterating the table, not
-# a second copy of its paths), reports what the sandbox could actually create,
-# then runs the retirement.
-_RETIRE_DRIVER = r"""
-for path in $(
-    for row in "${JASPER_RETIRED_LEFTOVERS[@]}"; do
-        IFS='|' read -r kind targets _ <<<"${row}"
-        [[ "${kind}" == file ]] && printf '%s\n' ${targets}
-    done
-); do
-    touch "${path}" 2>/dev/null || true
-    [[ -e "${path}" ]] && echo "SEEDED ${path}"
-done
-retire_leftovers
-"""
-
-# Overrides the real table (sourced beforehand) with a fixture confined to
-# tmp_path -- the real table's `file` rows name absolute host paths, and these
-# tests must never touch anything outside tmp_path.
-_RETIRE_TEST_TABLE = r"""
-JASPER_RETIRED_LEFTOVERS=(
-    "unit|jasper-retired-test-a.service jasper-retired-test-b.timer|fixture: two retired units"
-    "file|${STATE_DIR}/retired_test_a.json ${SYSTEMD_DIR}/retired_test_b.service|fixture: two retired files"
-    "env|${ENV_DIR}/jasper.env SPOTIFY_CLIENT_ID SPOTIFY_OAUTH_MODE JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN JASPER_RESEARCH_*|fixture: bare and prefix keys"
-    "env|${ENV_DIR}/jasper.env JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824 JASPER_MIC_DEVICE_CANDIDATES=Array JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch|fixture: anchored seeds"
-)
-"""
-
-
-def test_retire_leftovers_clears_units_then_files_then_tombstones(tmp_path):
-    """Behavioural: the retirement table's units are disabled and stopped, its
-    files are gone, and the not-found tombstone a removed unit leaves is reset
-    only AFTER the daemon-reload that made systemd forget the unit file -- a
-    reset-failed before the reload clears nothing.
-    """
-    bindir, state_dir, systemd_dir = (
-        tmp_path / "bin",
-        tmp_path / "state",
-        tmp_path / "systemd",
-    )
-    for directory in (bindir, state_dir, systemd_dir):
-        directory.mkdir()
-    log = tmp_path / "systemctl.log"
-    stub = bindir / "systemctl"
-    stub.write_text(
-        "#!/usr/bin/env bash\n"
-        f'printf "%s\\n" "$*" >> {shlex.quote(str(log))}\n',
-        encoding="utf-8",
-    )
-    stub.chmod(0o755)
-
+def test_retire_leftovers_removes_only_listed_files_and_is_idempotent(tmp_path):
+    retired = tmp_path / "retired.json"
+    retired.write_text("obsolete")
+    current = tmp_path / "current.json"
+    current.write_text("current")
     result = run_bash(
         [
-            "-c",
-            f"export PATH={shlex.quote(str(bindir))}:$PATH && "
-            f"source {_INSTALL_LIB_DIR / 'retirements.sh'} && "
-            f"{_RETIRE_TEST_TABLE}{_RETIRE_DRIVER}",
+            "-euc",
+            f"source {shlex.quote(str(_INSTALL_LIB_DIR / 'retirements.sh'))}\n"
+            f"JASPER_RETIRED_FILES=({shlex.quote(str(retired))} "
+            f"{shlex.quote(str(tmp_path / 'absent.json'))})\n"
+            "retire_leftovers\nretire_leftovers\n",
         ],
         timeout=15,
-        env={
-            **os.environ,
-            "ENV_DIR": str(tmp_path / "etc"),
-            "STATE_DIR": str(state_dir),
-            "SYSTEMD_DIR": str(systemd_dir),
-            "CAMILLA_CONF": str(tmp_path / "camilla"),
-            "LOCAL_SBIN_DIR": str(tmp_path / "sbin"),
-        },
     )
 
     assert result.returncode == 0, result.stderr
-    # Self-check: a driver that seeded nothing passes every "it is gone" below
-    # for the wrong reason.
-    seeded = {
-        Path(line.split(" ", 1)[1]).name
-        for line in result.stdout.splitlines()
-        if line.startswith(f"SEEDED {tmp_path}")
-    }
-    assert seeded == {
-        "retired_test_a.json",
-        "retired_test_b.service",
-    }, seeded
-    assert [p for d in (state_dir, systemd_dir) for p in d.iterdir()] == []
-
-    calls = [line.split() for line in log.read_text(encoding="utf-8").splitlines()]
-    reload_at = next(i for i, call in enumerate(calls) if call[0] == "daemon-reload")
-    retired_units = {
-        "jasper-retired-test-a.service",
-        "jasper-retired-test-b.timer",
-    }
-    for verb, before_reload in (
-        ("disable", True),
-        ("stop", True),
-        ("reset-failed", False),
-    ):
-        seen = {
-            (index < reload_at, unit)
-            for index, call in enumerate(calls)
-            if call[0] == verb
-            for unit in call[1:]
-            if unit != "--now"
-        }
-        assert seen == {(before_reload, unit) for unit in retired_units}, (
-            verb,
-            calls,
-        )
-
-
-_RETIRE_ENV_CASES = [
-    ("JASPER_HOSTNAME=jts.local", True),
-    ("SPOTIFY_CLIENT_ID=abc123", False),
-    ("SPOTIFY_OAUTH_MODE=bounce", False),
-    ("SPOTIFY_REDIRECT_URI=http://jts.local/cb", True),
-    ("SPOTIFY_CACHE_PATH=/var/lib/jasper-intsecrets/.spotify-cache", True),
-    ("JASPER_CAPTURE_RELAY_REGISTRATION_TOKEN=tok", False),
-    ("JASPER_RESEARCH_ENABLED=1", False),
-    ("JASPER_RESEARCHER=keep", True),
-    ("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824", False),
-    ("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=268435456", True),
-    ("JASPER_MIC_DEVICE_CANDIDATES=Array", False),
-    ("JASPER_MIC_DEVICE_CANDIDATES=Array,L16K6Ch", False),
-    ("JASPER_MIC_DEVICE_CANDIDATES=UsbMic,Array", True),
-]
-
-
-def _run_retire_env_rows(tmp_path: Path, seeded: str | None):
-    """Drive the fixture table's `env` rows with ENV_DIR confined to tmp_path.
-
-    The table expands ENV_DIR when it is assigned, so it is exported. Only the
-    env applier runs."""
-    env_dir = tmp_path / "etc"
-    env_dir.mkdir(exist_ok=True)
-    if seeded is not None:
-        (env_dir / "jasper.env").write_text(seeded, encoding="utf-8")
-    env_lib = _INSTALL_LIB_DIR.parent / "jasper-env-file.sh"
-    return subprocess.run(
-        [
-            "bash",
-            "-euc",
-            f". {shlex.quote(str(env_lib))}\n"
-            f". {shlex.quote(str(_INSTALL_LIB_DIR / 'retirements.sh'))}\n"
-            f"{_RETIRE_TEST_TABLE}"
-            "_retire_apply env _retire_env_lines\n",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=15,
-        env={
-            **os.environ,
-            "ENV_DIR": str(env_dir),
-            "STATE_DIR": str(tmp_path / "state"),
-            "SYSTEMD_DIR": str(tmp_path / "systemd"),
-            "CAMILLA_CONF": str(tmp_path / "camilla"),
-            "LOCAL_SBIN_DIR": str(tmp_path / "sbin"),
-        },
-    )
-
-
-@pytest.mark.parametrize(
-    ("line", "survives"),
-    _RETIRE_ENV_CASES,
-    ids=[line.split("=", 1)[0].lower() + ("-kept" if keep else "-retired")
-         for line, keep in _RETIRE_ENV_CASES],
-)
-def test_retired_env_rows_strip_stale_seeds_and_keep_overrides(
-    tmp_path: Path, line: str, survives: bool,
-) -> None:
-    """A bare key takes every value, an anchored `KEY=VALUE` row takes only the
-    stale seed (a deliberate override survives), and the `KEY*` row takes a
-    whole retired prefix without touching keys that merely start with the same
-    letters."""
-    proc = _run_retire_env_rows(tmp_path, f"JASPER_MARKER=1\n{line}\n")
-    assert proc.returncode == 0, proc.stderr
-    lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
-    assert "JASPER_MARKER=1" in lines
-    assert (line in lines) is survives
-
-
-def test_retired_env_rows_are_a_noop_before_the_env_file_exists(tmp_path):
-    """retire_leftovers runs after the step that seeds jasper.env, but a row
-    that fires before it must not fail the install under `set -e`."""
-    proc = _run_retire_env_rows(tmp_path, None)
-    assert proc.returncode == 0, proc.stderr
-    assert not (tmp_path / "etc" / "jasper.env").exists()
-
-
-@pytest.mark.parametrize(
-    ("seeded", "survivors"),
-    [
-        pytest.param(
-            "JASPER_MIC_DEVICE_CANDIDATES=Custom\nJASPER_MIC_DEVICE_CANDIDATES=Array\n",
-            {"JASPER_MIC_DEVICE_CANDIDATES=Custom", "JASPER_MIC_DEVICE_CANDIDATES=Array"},
-            id="anchored_row_leaves_a_twice_stated_key_alone",
-        ),
-        pytest.param(
-            "  JASPER_RESEARCH_FOO=1\nJASPER_RESEARCHER=keep\n",
-            {"JASPER_RESEARCHER=keep"},
-            id="prefix_row_takes_an_indented_key",
-        ),
-    ],
-)
-def test_retired_env_rows_match_what_systemd_reads(tmp_path, seeded, survivors):
-    proc = _run_retire_env_rows(tmp_path, seeded)
-    assert proc.returncode == 0, proc.stderr
-    lines = (tmp_path / "etc" / "jasper.env").read_text().splitlines()
-    assert {line.strip() for line in lines if line.strip()} == survivors
+    assert not retired.exists()
+    assert current.read_text() == "current"

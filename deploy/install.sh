@@ -251,7 +251,7 @@ INSTALL_STEPS=(
     # After every step that creates state, before the unit install restarts the
     # daemons that read /var/lib/jasper as group `jasper`.
     "state_modes|both|heal_shared_state_modes|heal the group modes on shared state files an upgrade left behind"
-    "retired|both|retire_leftovers|retire the units and files earlier releases left behind"
+    "retired|both|retire_leftovers|retire the files earlier releases left behind"
     "control_polkit|both|install_jasper_control_polkit|install the jasper-control polkit rules"
     "systemd_units|full|install_systemd_units|install, enable and start the full-tier systemd units"
     "systemd_units|streambox|install_streambox_systemd_units|install, enable and start the streambox systemd units"
