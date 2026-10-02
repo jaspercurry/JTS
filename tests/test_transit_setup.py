@@ -21,6 +21,8 @@ without shelling out to systemctl.
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import os
 import threading
 import urllib.error
@@ -640,7 +642,7 @@ def wizard_server(tmp_path: Path, monkeypatch):
     # the handler imports it from _common into its own namespace.
     monkeypatch.setattr(
         transit_setup, "restart_voice_daemon",
-        lambda: restarts.append(None) or RestartOutcome.RAN,
+        lambda: RestartResult(restarts.append(None) or RestartOutcome.RAN),
     )
     server = transit_setup.make_server(
         ("127.0.0.1", 0),

@@ -5,6 +5,8 @@
 """Voice configuration, credential persistence, and setup form behavior."""
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import os
 import sqlite3
 import threading
@@ -530,12 +532,12 @@ def test_e2e_save_writes_file_and_redirects(
     # Prevent the test from actually shelling out to systemctl.
     called = []
     monkeypatch.setattr(
-        service_restart, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
+        service_restart, "restart_voice_daemon", lambda: RestartResult(called.append(True) or RestartOutcome.RAN),
     )
     # The voice_setup module imported the symbol directly; patch it
     # there too.
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
+        voice_setup, "restart_voice_daemon", lambda: RestartResult(called.append(True) or RestartOutcome.RAN),
     )
 
     server, base, _ = _start_server(tmp_path)
@@ -572,7 +574,7 @@ def test_e2e_a_saver_describes_the_restart_it_actually_got(
     otherwise /voice tells two stories about one daemon. The config IS saved
     either way, so the answer stays a 303."""
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: outcome,
+        voice_setup, "restart_voice_daemon", lambda: RestartResult(outcome),
     )
     state_path = tmp_path / "voice_provider.env"
     atomic_io.write_env_file(str(state_path), {
@@ -608,7 +610,7 @@ def test_e2e_spend_cap_save_writes_voice_env_and_restarts(
 ):
     called = []
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
+        voice_setup, "restart_voice_daemon", lambda: RestartResult(called.append(True) or RestartOutcome.RAN),
     )
     state_path = tmp_path / "voice_provider.env"
     atomic_io.write_env_file(str(state_path), {
@@ -645,7 +647,7 @@ def test_e2e_refresh_models_writes_cache_without_restarting_voice(
 ):
     called = []
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: called.append(True) or RestartOutcome.RAN,
+        voice_setup, "restart_voice_daemon", lambda: RestartResult(called.append(True) or RestartOutcome.RAN),
     )
     state_path = tmp_path / "voice_provider.env"
     atomic_io.write_env_file(str(state_path), {
@@ -697,7 +699,7 @@ def test_e2e_save_and_test_runs_one_bounded_loudness_seed(
     monkeypatch.setattr(
         voice_setup,
         "restart_voice_daemon",
-        lambda: events.append(("restart",)) or RestartOutcome.RAN,
+        lambda: RestartResult(events.append(("restart",)) or RestartOutcome.RAN),
     )
 
     def seed_fn(cfg, *, path, force, max_attempts, retry_backoff_sec):
@@ -770,7 +772,7 @@ def test_e2e_save_and_test_redacts_provider_error_and_still_saves(
     monkeypatch.setattr(
         voice_setup,
         "restart_voice_daemon",
-        lambda: restarted.append(True) or RestartOutcome.RAN,
+        lambda: RestartResult(restarted.append(True) or RestartOutcome.RAN),
     )
 
     def seed_fn(cfg, **_kwargs):
@@ -803,7 +805,7 @@ def test_e2e_save_and_test_handles_seed_skip_and_restarts(
     monkeypatch.setattr(
         voice_setup,
         "restart_voice_daemon",
-        lambda: restarted.append(True) or RestartOutcome.RAN,
+        lambda: RestartResult(restarted.append(True) or RestartOutcome.RAN),
     )
 
     server, base, _ = _start_server(tmp_path, loudness_seed_fn=lambda *a, **k: None)
@@ -842,7 +844,7 @@ def test_e2e_rejected_save_keeps_choices_without_echoing_key(
 ):
     monkeypatch.setenv("JASPER_ENV_FILE", str(tmp_path / "jasper.env"))
     restarts = []
-    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: restarts.append(True))
+    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: RestartResult(restarts.append(True)))
     server, base, _ = _start_server(tmp_path)
     try:
         status, _, body = _post(f"{base}/{route}", {
@@ -869,7 +871,7 @@ def test_e2e_save_accepts_a_key_only_the_operator_env_holds(tmp_path, monkeypatc
     operator_env = tmp_path / "jasper.env"
     operator_env.write_text("GEMINI_API_KEY=AIza-from-etc\n")
     monkeypatch.setenv("JASPER_ENV_FILE", str(operator_env))
-    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN)
+    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: RestartResult(RestartOutcome.RAN))
     server, base, _ = _start_server(tmp_path)
     try:
         status, _, _ = _post(f"{base}/save", _form_for(active="gemini"))
@@ -911,7 +913,7 @@ def test_e2e_clear_credentials_removes_provider_keys(
     tmp_path: Path, monkeypatch,
 ):
     monkeypatch.setattr(
-        voice_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
+        voice_setup, "restart_voice_daemon", lambda: RestartResult(RestartOutcome.RAN),
     )
     state_path = tmp_path / "voice_provider.env"
     atomic_io.write_env_file(str(state_path), {

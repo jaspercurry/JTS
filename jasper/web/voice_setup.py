@@ -327,7 +327,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         new = _save_provider_state(handler, form)
         if new is None:
             return
-        outcome = restart_voice_daemon()
+        outcome = restart_voice_daemon().outcome
         active = new.get("JASPER_VOICE_PROVIDER", "")
         send_see_other(
             handler, "./",
@@ -382,7 +382,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     result="skipped",
                     level=logging.WARNING,
                 )
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         if seed_error:
             send_see_other(
                 handler,
@@ -423,7 +423,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write voice provider env file")
             send_see_other(handler, f"./?provider={pid}", flash=f"Could not save: {e}")
             return
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         log_event(
             logger,
             "voice.clear",
@@ -516,7 +516,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write spend-cap env settings")
             send_see_other(handler, _costs_location(form), flash=f"Could not save spend cap: {e}")
             return
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         log_event(logger, "voice.spend_cap", client=handler.address_string())
         send_see_other(
             handler,
@@ -563,7 +563,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             provider=provider.id,
             models=len(new_models),
         )
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         send_see_other(
             handler, _costs_location(form),
             flash=f"Saved {provider.label} pricing.{clause}",
@@ -607,7 +607,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             imported=len(models),
             total=len(merged),
         )
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         send_see_other(
             handler, _costs_location(form),
             flash=f"Imported rates for {len(models)} model(s).{clause}",

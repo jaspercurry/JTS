@@ -842,7 +842,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.exception("could not write wake-model env file")
             send_see_other(handler, "./", flash=f"Could not save: {e}")
             return
-        clause = RESTART_CLAUSE[restart_voice_daemon()]
+        clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
         extra = f" (sensitivity {picked.threshold})" if picked.threshold else ""
         send_see_other(
             handler, "./",

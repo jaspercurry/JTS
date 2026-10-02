@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import http
 import logging
 import shutil
@@ -385,7 +387,7 @@ def test_playlist_remove_uses_guarded_voice_restart(monkeypatch, outcome):
     monkeypatch.setattr(
         spotify_setup,
         "restart_voice_daemon",
-        lambda: effects.append("restart") or outcome,
+        lambda: RestartResult(effects.append("restart") or outcome),
     )
 
     body = urllib.parse.urlencode({

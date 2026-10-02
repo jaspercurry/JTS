@@ -796,7 +796,7 @@ def _get_callback(cfg: dict[str, Any], handler: BaseHTTPRequestHandler) -> None:
         )
         flash_error(handler, "Auth exchange failed", e)
         return
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     # No account name / token in the line — personal data + secret.
     log_event(logger, "google.link", client=handler.address_string())
     send_see_other(
@@ -829,7 +829,7 @@ def _post_setup_credentials(
         logger.exception("could not write credentials file")
         flash_error(handler, "Could not save credentials", e)
         return
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     # Action + requester only — never the client_id/secret.
     log_event(logger, "google.credentials", client=handler.address_string())
     send_see_other(
@@ -850,7 +850,7 @@ def _post_reset_credentials(
         logger.exception("could not delete credentials file")
         flash_error(handler, "Could not clear credentials", e)
         return
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     log_event(logger, "google.reset", client=handler.address_string())
     send_see_other(handler, "./", flash=f"Credentials cleared.{clause}")
 
@@ -910,7 +910,7 @@ def _post_remove(
     registry.save()
     with suppress(OSError):
         os.unlink(removed.token_path)
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     log_event(logger, "google.unlink", client=handler.address_string())
     send_see_other(handler, "./", flash=f"Removed {name}.{clause}")
 

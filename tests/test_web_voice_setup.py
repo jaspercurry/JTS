@@ -5,6 +5,8 @@
 """Voice setup shell and HTTP routing."""
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import http
 import threading
 import urllib.error
@@ -154,7 +156,7 @@ def test_choose_provider_is_read_only_and_disclosures_start_closed(tmp_path, mon
     state = {"JASPER_VOICE_PROVIDER": "gemini", "JASPER_GEMINI_MODEL": "custom-live"}
     atomic_io.write_env_file(str(state_path), state)
     calls = []
-    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: calls.append("restart"))
+    monkeypatch.setattr(voice_setup, "restart_voice_daemon", lambda: RestartResult(calls.append("restart")))
     monkeypatch.setattr(voice_setup, "refresh_provider_cache", lambda *a, **k: calls.append("refresh"))
     h, _ = make_real_handler(_handler_cls(tmp_path), f"{page}?provider={provider.id}")
     h.do_GET()

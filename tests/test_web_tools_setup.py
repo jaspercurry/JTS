@@ -22,6 +22,9 @@ mocked / pointed at tmp_path, mirroring the other hardware-free web tests.
 """
 from __future__ import annotations
 
+from jasper.control import service_restart
+from jasper.control.service_restart import RestartResult
+
 import http
 import json
 import subprocess
@@ -347,7 +350,7 @@ def test_post_toggle_unknown_route_404s(tmp_path):
 def test_post_toggle_unknown_tool_is_400(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [{"name": "get_weather"}])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle(
         _handler_cls(str(cat), str(tmp_path / "state.env")),
         {"name": "totally_made_up", "enabled": False},
@@ -360,7 +363,7 @@ def test_post_toggle_unknown_tool_is_400(tmp_path, monkeypatch):
 def test_post_toggle_bad_body_is_400(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [{"name": "get_weather"}])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     # enabled must be a bool, not a string.
     h = _post_toggle(
         _handler_cls(str(cat), str(tmp_path / "state.env")),
@@ -376,7 +379,7 @@ def test_post_toggle_needs_setup_tool_is_rejected(tmp_path, monkeypatch):
     tools)."""
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [_tool("home_assistant", status="needs_setup")])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle(
         _handler_cls(str(cat), str(tmp_path / "state.env")),
         {"name": "home_assistant", "enabled": False},
@@ -393,7 +396,7 @@ def test_post_toggle_disable_stages_without_restart(tmp_path, monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: RestartResult(restarted.__setitem__("n", restarted["n"] + 1)),
     )
     h = _post_toggle(
         _handler_cls(str(cat), str(state)),
@@ -418,7 +421,7 @@ def test_post_toggle_enable_removes_from_disabled_set(tmp_path, monkeypatch):
         state,
         ToolState(disabled_tools=frozenset({"spotify_play", "get_weather"})),
     )
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle(
         _handler_cls(str(cat), str(state)),
         {"name": "spotify_play", "enabled": True},
@@ -442,7 +445,7 @@ def test_post_toggle_pack_stages_pack_without_restart(tmp_path, monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: RestartResult(restarted.__setitem__("n", restarted["n"] + 1)),
     )
     h = _post_toggle_pack(
         _handler_cls(str(cat), str(state)),
@@ -503,7 +506,7 @@ def test_post_toggle_singleton_pack_writes_child_tool_state(tmp_path, monkeypatc
         "schema_version": 2,
         "tools": [_tool("standalone_tool", category="Utilities")],
     })
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle_pack(
         _handler_cls(str(cat), str(state)),
         {"id": "tool:standalone_tool", "enabled": False},
@@ -533,7 +536,7 @@ def test_post_toggle_pack_needs_setup_records_setup_intent(tmp_path, monkeypatch
             },
         )],
     })
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle_pack(
         _handler_cls(str(cat), str(state)),
         {"id": "home-assistant", "enabled": True},
@@ -573,7 +576,7 @@ def test_post_toggle_pack_needs_setup_off_clears_setup_intent(tmp_path, monkeypa
         str(state),
         ToolState(setup_enabled_packs=frozenset({"home-assistant"})),
     )
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle_pack(
         _handler_cls(str(cat), str(state)),
         {"id": "home-assistant", "enabled": False},
@@ -601,7 +604,7 @@ def test_post_tool_toggle_rejects_pack_disabled_tool(tmp_path, monkeypatch):
         str(state),
         ToolState(disabled_packs=frozenset({"spotify"})),
     )
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     h = _post_toggle(
         _handler_cls(str(cat), str(state)),
         {"name": "spotify_play", "enabled": True},
@@ -621,7 +624,7 @@ def test_post_toggle_no_op_does_not_rewrite(tmp_path, monkeypatch):
         state,
         ToolState(disabled_tools=frozenset({"spotify_play"})),
     )
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     calls = {"n": 0}
     real_write = write_tool_state
     monkeypatch.setattr(
@@ -655,7 +658,7 @@ def test_post_prompt_override_and_reset_stage_without_restart(tmp_path, monkeypa
     restarted = {"n": 0}
     monkeypatch.setattr(
         tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: RestartResult(restarted.__setitem__("n", restarted["n"] + 1)),
     )
     handler = tools_setup._make_handler({
         "catalog_path": str(cat),
@@ -747,11 +750,11 @@ def test_post_apply_restarts_once(tmp_path, monkeypatch):
 
     def _restart_voice_daemon():
         restarted["n"] += 1
-        return RestartOutcome.RAN
+        return RestartResult(RestartOutcome.RAN)
 
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", _restart_voice_daemon)
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
     h.do_POST()
     assert h.status == 200
@@ -766,10 +769,10 @@ def test_post_apply_no_provider_does_not_restart(tmp_path, monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: RestartResult(restarted.__setitem__("n", restarted["n"] + 1)),
     )
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
     h.do_POST()
     assert h.status == 200
@@ -785,10 +788,10 @@ def test_post_apply_bonded_follower_does_not_restart(tmp_path, monkeypatch):
     restarted = {"n": 0}
     monkeypatch.setattr(
         tools_setup, "restart_voice_daemon",
-        lambda: restarted.__setitem__("n", restarted["n"] + 1),
+        lambda: RestartResult(restarted.__setitem__("n", restarted["n"] + 1)),
     )
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: True)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: True)
     h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
     h.do_POST()
     assert h.status == 200
@@ -812,9 +815,9 @@ def test_post_apply_reports_a_non_ran_restart_honestly(
     # checks and the call — the response must not lie and claim a restart.
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [_tool("spotify_play")])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: outcome)
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(outcome))
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     h = _post_apply(_handler_cls(str(cat), str(tmp_path / "state.env")))
     h.do_POST()
     assert h.status == 200
@@ -833,11 +836,11 @@ def test_post_apply_is_rate_limited(tmp_path, monkeypatch):
 
     def _restart_voice_daemon():
         restarted["n"] += 1
-        return RestartOutcome.RAN
+        return RestartResult(RestartOutcome.RAN)
 
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", _restart_voice_daemon)
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     hc = _handler_cls(str(cat), str(state))
 
     h1 = _post_apply(hc)
@@ -863,11 +866,11 @@ def test_post_apply_throttle_survives_ts_write_failure(tmp_path, monkeypatch):
 
     def _restart_voice_daemon():
         restarted["n"] += 1
-        return RestartOutcome.RAN
+        return RestartResult(RestartOutcome.RAN)
 
     monkeypatch.setattr(tools_setup, "restart_voice_daemon", _restart_voice_daemon)
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     # An unwritable ts path: the parent dir doesn't exist, so every write
     # fails (and every read returns 0.0). Only the in-memory floor can throttle.
     bad_ts = str(tmp_path / "nonexistent-dir" / "apply.ts")
@@ -894,10 +897,10 @@ def test_post_apply_ignores_non_finite_ts(tmp_path, monkeypatch):
     ts = tmp_path / "apply.ts"
     _write_catalog(cat, [_tool("spotify_play")])
     monkeypatch.setattr(
-        tools_setup, "restart_voice_daemon", lambda: RestartOutcome.RAN,
+        tools_setup, "restart_voice_daemon", lambda: RestartResult(RestartOutcome.RAN),
     )
-    monkeypatch.setattr(tools_setup, "read_active_provider", lambda: "gemini")
-    monkeypatch.setattr(tools_setup, "bonded_follower_active", lambda: False)
+    monkeypatch.setattr(service_restart, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(service_restart, "bonded_follower_active", lambda: False)
     for bogus in ("inf", "nan", "-inf"):
         ts.write_text(bogus)
         tools_setup._LAST_APPLY[0] = 0.0  # isolate from the floor
@@ -918,7 +921,7 @@ def test_concurrent_toggles_do_not_lose_updates(tmp_path, monkeypatch):
     state = tmp_path / "s.env"
     names = [f"tool_{i}" for i in range(12)]
     _write_catalog(cat, [_tool(n) for n in names])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
+    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: RestartResult(None))
     hc = _handler_cls(str(cat), str(state))
 
     barrier = threading.Barrier(len(names))

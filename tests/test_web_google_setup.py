@@ -28,6 +28,8 @@ The public surface (`_index_html` analogue render fns, `make_server`,
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import importlib
 import http
 import logging
@@ -267,7 +269,7 @@ def patched_common():
          mock.patch.object(web_common, "send_see_other", send_see_other), \
          mock.patch.object(
              google_setup, "restart_voice_daemon",
-             return_value=web_common.RestartOutcome.RAN,
+             return_value=RestartResult(web_common.RestartOutcome.RAN),
          ) as rvd:
         yield SimpleNamespace(
             begin_request=br, send_html_response=shr,
@@ -421,7 +423,7 @@ def test_reset_credentials_deletes_creds_file(patched_common, tmp_path):
 def test_reset_credentials_describes_the_restart_it_actually_got(
     patched_common, tmp_path, outcome,
 ):
-    patched_common.restart_voice_daemon.return_value = outcome
+    patched_common.restart_voice_daemon.return_value = RestartResult(outcome)
     cfg = _cfg(creds_path=_write_creds(tmp_path / "creds.env"))
     fake = _post_handler(cfg, "/reset-credentials")
     with mock.patch.object(google_setup, "_delete_creds_file"):

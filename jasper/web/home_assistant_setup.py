@@ -1136,7 +1136,7 @@ def _post_save(
     ):
         return
 
-    outcome = restart_voice_daemon()
+    outcome = restart_voice_daemon().outcome
     # URL + token were validated against the live HA above; log the
     # connect. No URL/token in the line — the token is a secret and the
     # URL is mild network topology.
@@ -1163,7 +1163,7 @@ def _post_disconnect(
     except OSError as e:
         flash_error(handler, "Could not disconnect", e)
         return
-    clause = RESTART_CLAUSE[restart_voice_daemon()]
+    clause = RESTART_CLAUSE[restart_voice_daemon().outcome]
     log_event(logger, "ha.disconnect", client=handler.address_string())
     send_see_other(handler, "./", flash=f"Disconnected.{clause}")
 

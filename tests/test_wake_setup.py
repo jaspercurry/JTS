@@ -20,6 +20,8 @@ on a random port to match `tests/test_voice_setup.py`.
 """
 from __future__ import annotations
 
+from jasper.control.service_restart import RestartResult
+
 import json
 import os
 import threading
@@ -454,7 +456,7 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
     called = []
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
-        lambda: called.append("restart") or RestartOutcome.RAN,
+        lambda: RestartResult(called.append("restart") or RestartOutcome.RAN),
     )
     post_with_csrf(base, "/save", {"model": "alexa"})
     # Wizard wrote the env file at mode 0644 (path-only, no secret).
@@ -474,7 +476,7 @@ def test_http_post_save_describes_the_restart_it_actually_got(
 
     base, state_path = running_server
     _stage_bundled_asset(monkeypatch, Path(state_path).parent)
-    monkeypatch.setattr(wake_setup, "restart_voice_daemon", lambda: outcome)
+    monkeypatch.setattr(wake_setup, "restart_voice_daemon", lambda: RestartResult(outcome))
     jar = post_with_csrf(base, "/save", {"model": "alexa"})
     flash = next(
         urllib.parse.unquote(c.value)
@@ -497,7 +499,7 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
     called = []
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
-        lambda: called.append("restart") or RestartOutcome.RAN,
+        lambda: RestartResult(called.append("restart") or RestartOutcome.RAN),
     )
     # Seed wake_model.env as if /sensitivity had previously landed.
     with open(state_path, "w") as f:
@@ -523,7 +525,7 @@ def test_http_post_save_refusal_writes_nothing(running_server, monkeypatch, mode
     base, state_path = running_server
     _stage_bundled_asset(monkeypatch, Path(state_path).parent, present=False)
     restarts = []
-    monkeypatch.setattr(wake_setup, "restart_voice_daemon", lambda: restarts.append(1))
+    monkeypatch.setattr(wake_setup, "restart_voice_daemon", lambda: RestartResult(restarts.append(1)))
     Path(state_path).write_text("JASPER_WAKE_MODEL=alexa\n")
 
     jar = post_with_csrf(base, "/save", {"model": model})
