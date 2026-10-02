@@ -28,6 +28,7 @@ from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.refusal_copy import CrossoverV2Refused
 from .design_draft import load_design_draft
+from .capture_schedule import takes_timing
 from .measured_crossover_candidate import MeasuredCrossoverCandidate, candidate_room_peqs, plays_rear
 from .measurement import active_driver_targets
 from .measurement_emit import compile_tuning_graph, load_tuning_declaration, room_layer_charge_db, timing_floor_db
@@ -124,10 +125,10 @@ def read_preflight_facts(
             candidates[name] = candidate_bank.find_banked_candidate(name).candidate
         except candidate_bank.CandidateBankRefusal as exc:
             candidates[name] = PreflightIssue.from_code(exc.code, f"{name}: {exc.detail}")
-    # A summed take at the run's fader plays its candidate's own graph; with no applied tune
-    # the base is the draft, read as unity (ADR-0385).
+    # Only over a timing take does a summed take at the run's fader count its candidate's own
+    # graph; with no applied tune the base is the draft, read as unity (ADR-0385, ADR-0226).
     summed = {candidate_identity(stop.candidate_id) for stop in plan.stops
-              if stop.regime == REGIME_SUMMED and not stop.pose.driver}
+              if stop.regime == REGIME_SUMMED and not stop.pose.driver} if takes_timing(plan) else set()
     played = {name: candidate for name, candidate in ((BASE_CANDIDATE, applied), *candidates.items())
               if name in summed and isinstance(candidate, MeasuredCrossoverCandidate)}
     declared = None

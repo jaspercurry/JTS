@@ -196,9 +196,10 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     mutes and a later take plays adds the coherent sum of the woofers sharing its
     band. Over a timing take, each front driver counts the loudest a later take's
     graph plays it, with that graph's rear woofer in phase on the front woofer's
-    band (unity for a driver it was not read for), over the least the timing graph
-    plays it: its floor under the applied charge that graph folds into its trims
-    (ADR-0403 §4, ADR-0370, ADR-0385). Empty when no take plays at the
+    band (unity for a driver it was not read for, and for every driver of a take
+    that clears a layer), over the least the timing graph plays it: its floor
+    under the applied charge that graph folds into its trims (ADR-0403 §4,
+    ADR-0370, ADR-0385). Empty when no take plays at the
     run's fader. Raises
     ``ValueError`` when a take clears a room layer the probe plays and that layer
     or its charge could not be read, or plays over a timing take and the applied
@@ -254,7 +255,9 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
             raise ValueError("the timing take plays no front woofer, so a take over it has no known rise")
 
         def loudest(capture: Any, role: str) -> float:
-            peaks = facts.driver_peaks_db.get(candidate_identity(capture.stop.candidate_id), {})
+            # The peaks are of a candidate's whole graph; one with a layer cleared plays another, unread.
+            peaks = {} if capture.spec.cleared_layers else facts.driver_peaks_db.get(
+                candidate_identity(capture.stop.candidate_id), {})
             if role != "woofer":
                 return peaks.get(role, 0.0)
             # The graph's own rear peak where it was read; else the rear plays at unity if it may play.
