@@ -347,7 +347,7 @@ def test_every_registry_code_renders_without_error(code, template):
     env = build_crossover_envelope_v2(_status(failure={"code": code}))
     assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION
     assert env["screen"]
-    assert env["verdict_text"]
+    assert env["verdict_text"] == REASON_REGISTRY[code].message
 
 
 def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():
