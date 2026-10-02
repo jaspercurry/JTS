@@ -227,7 +227,6 @@ def test_a_timing_action_leads_to_the_door_that_does_its_job(action_id, runs_a_r
     ("position_hold_expired", "restart_session", "/sound/speaker/crossover/reset"),
     ("commissioning_evidence_persist_failed", "restart_session", "/sound/speaker/crossover/reset"),
     ("clipped", None, None),
-    ("verify_crossover_region", "crossover_v2_retake", "/sound/speaker/crossover/v2/retake"),
 ])
 def test_failure_templates_preserve_their_own_actions(fault, action_id, target):
     env = build_crossover_envelope_v2({

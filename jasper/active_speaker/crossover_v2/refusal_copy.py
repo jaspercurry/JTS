@@ -17,8 +17,6 @@ from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNRE
 from jasper.audio_measurement.wired_capture import CODE_CAPTURE_GAIN_UNVERIFIED
 from jasper.platform.speaker_layout import MAIN_DRIVER_ROLES_BY_MODE, measurement_target_name, measurement_target_parts
 
-from .spatial import GEOMETRY_RETRY_POSITIONS
-
 logger = logging.getLogger(__name__)
 
 LOCATE_RETRY_ACTION = "Check the volume and the microphone, then try again."
@@ -160,10 +158,6 @@ REASON_VERIFY_INCONCLUSIVE = "verify_inconclusive"
 # A distinct VERIFY outcome: the recording chain drifted between VERIFY
 # attempts, not the speaker going out of tolerance.
 REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
-# The applied result tracks the model but does NOT meet the candidate's own
-# crossover target through the handoff — a defect present in both the
-# measurement and the model cancels out of a measured-vs-model grade.
-REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # The apply transaction came back blocked or raised.
 # ``persist_terminal_failure`` scopes its §5.6 evidence reset away from this
 # code: an apply failure says nothing about the mic position.
@@ -192,12 +186,6 @@ REASON_LEVEL_UNSOLVED = "level_unsolved"
 REASON_POSITION_HOLD_EXPIRED = "position_hold_expired"
 REASON_POSITION_TARGET_MISSING = "position_target_missing"
 REASON_SESSION_CEILING_EXPIRED = "session_ceiling_expired"
-# The pre-apply cloud closed with its geometry `locked` — every position's
-# echo estimate landed on the same tau, so the nulls are not moving and
-# spatial averaging cannot fill them. Not a bad capture. The group asks for that position again from a wider spot, at most
-# ``GEOMETRY_RETRY_POSITIONS`` times, then proceeds with the verdict recorded
-# rather than blocking on a defect no mic move can decorrelate.
-REASON_CLOUD_GEOMETRY_LOCKED = "cloud_geometry_locked"
 class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
 
@@ -1318,17 +1306,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "wired_capture_failed": "The microphone could not complete the recording.",
         "program_not_composed": "The speaker could not prepare the test signal.",
     }.items()},
-    REASON_VERIFY_CROSSOVER_REGION: _retriable_reason(
-        REASON_VERIFY_CROSSOVER_REGION, TEMPLATE_VERIFY_FAIL, 2,
-        # Says what was measured, no diagnosis — a handoff dip can be
-        # alignment, spacing, Fc, or the horn, and this cannot tell them apart.
-        # The hint does not lead with "try again": a retry re-checks the SAME
-        # applied graph and this defect is deterministic.
-        RetryableReasonCopy(
-            "The two drivers didn't blend as designed where they hand over.",
-            "Re-measure to fit it again.",
-        ),
-    ),
     REASON_VERIFY_INCONCLUSIVE: _retriable_reason(
         REASON_VERIFY_INCONCLUSIVE, TEMPLATE_VERIFY_FAIL, 2,
         # Names no reflection: a gate window capped at the search ceiling proves
@@ -1400,26 +1377,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The whole measurement ran out of time while it was still waiting for "
         "the microphone to reach a position. Start over from this page once "
         "the microphone can be moved through the walk more quickly.",
-    ),
-    REASON_CLOUD_GEOMETRY_LOCKED: _retriable_reason(
-        REASON_CLOUD_GEOMETRY_LOCKED, TEMPLATE_FIX_AND_RETRY,
-        # RETRIABLE (any non-zero value; see ``ReasonSpec.retry_budget``). The
-        # count is the session's own ceiling on wider-spot asks, not what
-        # admits the retake: every rung spends one of the POSITION's pooled
-        # extras.
-        GEOMETRY_RETRY_POSITIONS,
-        # The old diagnosis ("too close
-        # together") is factually false on a wide walk — the estimator reads
-        # only tau, never mic spread, so tau agreement at wide spread is
-        # positive evidence FOR a source-fixed defect, not proof the operator
-        # huddled. The honest sentence is a finding, not a chore: it names
-        # what the dip looks like, not a diagnosis a household cannot judge.
-        # The action (a wider-spot retake) is UNCHANGED — the spread-aware
-        # skip that would remove it stays deferred pending hardware evidence.
-        RetryableReasonCopy(
-            "This dip looks like it belongs to the speaker rather than the room.",
-            "Take this one from further out and we will use it instead.",
-        ),
     ),
     REASON_ANCHOR_TOO_QUIET: _retriable_reason(
         REASON_ANCHOR_TOO_QUIET, TEMPLATE_FIX_AND_RETRY, 1,

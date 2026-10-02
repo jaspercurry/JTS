@@ -390,9 +390,6 @@ def _intra_package_edges(package: Path, dotted: str) -> dict[str, set[str]]:
     package — so a graph containing it is cyclic by construction and would say
     nothing about whether the MODULES depend on each other in one direction.
 
-    Names that are not modules of this package are dropped rather than
-    trusted: ``from . import GEOMETRY_RETRY_POSITIONS`` would otherwise invent
-    an edge to a module that does not exist.
     """
 
     modules = {path.stem for path in package.glob("*.py")} - {"__init__"}

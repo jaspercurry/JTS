@@ -38,7 +38,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "REASON_APPLY_FAILED",
         "REASON_CHANNEL_MAP_MISMATCH",
         "REASON_CLIPPED",
-        "REASON_CLOUD_GEOMETRY_LOCKED",
         "REASON_DELAY_EXCEEDS_SEARCH_WINDOW",
         "REASON_DRIFT_BASELINES_DISAGREE",
         "REASON_INTERNAL_ERROR",
@@ -52,7 +51,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "REASON_REGISTRY",
         "REASON_SNR_FLOOR",
         "REASON_USER_STOPPED",
-        "REASON_VERIFY_CROSSOVER_REGION",
         "REASON_VERIFY_INCONCLUSIVE",
         "REASON_VERIFY_LEVEL_SHIFT",
         "REASON_VOLUME_UNRESOLVED",
@@ -68,7 +66,6 @@ MOVED_NAMES: dict[str, tuple[str, ...]] = {
         "_retriable_reason",
         "reason_message",
     ),
-    "spatial": ("GEOMETRY_RETRY_POSITIONS",),
     "capture_dispatch": (
         "_gate_window_ms",
         "_pilot_transfer_by_role",

@@ -69,7 +69,6 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # prompt table — the largest single block of household copy this flow has.
     # Without these rows the sweep would still pass and cover none of them.
     "jasper/active_speaker/crossover_v2/spatial/__init__.py",
-    "jasper/active_speaker/crossover_v2/spatial/group_floor.py",
     "jasper/active_speaker/crossover_v2/spatial/records.py",
     "jasper/active_speaker/crossover_v2/capture_plan.py",
     "jasper/active_speaker/crossover_v2/intervention.py",
