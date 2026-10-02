@@ -1606,6 +1606,16 @@ def test_the_parked_emitter_takes_its_queue_from_its_governing_device():
     assert devices["enable_rate_adjust"] is False
 
 
+def test_the_parked_graph_measures_its_capture_rate_over_an_hour():
+    """See #6148."""
+    import yaml
+
+    devices = yaml.safe_load(
+        active_camilla_yaml.emit_active_speaker_parked_config(output_count=2)
+    )["devices"]
+    assert devices["rate_measure_interval"] == 3600.0
+
+
 def test_the_ring_geometry_reaches_the_emitted_yaml():
     """...and the parameters actually carry the ring's values when asked."""
     preset = _mono_two_way_preset()

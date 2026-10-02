@@ -82,16 +82,23 @@ def emit_devices_block(
     playback_target: str,
     playback_format: str,
     file_sink: bool = False,
+    rate_measure_interval_s: float | None = None,
 ) -> str:
     """The ``devices:`` block every JTS CamillaDSP config carries.
 
     ``volume_limit`` is always :data:`DEFAULT_VOLUME_LIMIT_DB` (0.0): no caller
     can spell another, which is AGENTS.md non-negotiable 1 by construction.
     ``playback_target`` is an ALSA device, or with ``file_sink`` the file a
-    File sink writes (a snapserver pipe, the parked sink). Returns the block
-    without a trailing newline.
+    File sink writes (a snapserver pipe, the parked sink).
+    ``rate_measure_interval_s`` is emitted only when given; CamillaDSP's
+    default is 1 s. Returns the block without a trailing newline.
     """
     sink_type, target_key = ("File", "filename") if file_sink else ("Alsa", "device")
+    rate_measure_line = (
+        ""
+        if rate_measure_interval_s is None
+        else f"  rate_measure_interval: {float(rate_measure_interval_s)!r}\n"
+    )
     return (
         "devices:\n"
         f"  samplerate: {samplerate}\n"
@@ -100,6 +107,7 @@ def emit_devices_block(
         f"  target_level: {target_level}\n"
         f"  volume_limit: {DEFAULT_VOLUME_LIMIT_DB!r}\n"
         f"  enable_rate_adjust: {_bool(enable_rate_adjust)}\n"
+        f"{rate_measure_line}"
         "  capture:\n"
         "    type: Alsa\n"
         f"    channels: {capture_channels}\n"
