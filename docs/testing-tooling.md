@@ -55,9 +55,8 @@ scripts/check-rust.sh
 ```
 
 Local and CI source of truth for Rust formatting and Clippy. Reads the pinned
-`RUST_TOOLCHAIN` from `.github/workflows/tests.yml` and runs `cargo fmt --all
--- --check` plus release/locked/all-target Clippy with warnings denied over
-every crate in the CI Rust job; `jasper-host-clock` alone gets `--all-features`.
+`RUST_TOOLCHAIN` from `.github/workflows/tests.yml`; checks formatting and runs
+Clippy across the workspace with all targets and features, denying warnings.
 
 - Needs `pkg-config`; Linux needs real ALSA headers (`libasound2-dev` /
   `alsa-lib-devel`). On macOS it cross-targets Linux and stubs `alsa.pc` — the
@@ -197,10 +196,8 @@ and has no rollback**; `--out` is its preview. `--force` there re-stages the
 all-muted anchor mid-commission and is refused by default, because that anchor
 is what `commission-rollback` and `ack --outcome too_loud` reload.
 
-The `/sound/active-speaker/…` web surface exposes read-only status GETs plus
-CSRF-protected POSTs for design-draft, stop, calibration-level,
-the `commission-*` verbs, summed validation and baseline apply. **No endpoint
-changes normal listening volume**.
+The [sound server](../jasper/web/sound_setup.py) owns the active-speaker web
+routes. Follow the [operator runbook](tuning-operator-runbook.md) for measurement.
 
 ---
 

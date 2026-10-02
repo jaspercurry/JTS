@@ -587,17 +587,16 @@ ssh pi@jts.local 'sudo systemctl restart jasper-usbgadget'
 
 ## Phase 4 — Initial volume calibration (2 min)
 
-The Apple dongle's `Headphone` control is the **fixed analog
-ceiling, pinned at 100% by `jasper-dac-init` at boot** — software
-never adjusts it. CamillaDSP's `main_volume` is the canonical
-software volume knob (supported remotes, voice tools, and the HTTP API all
-converge on it). For first-boot calibration:
+The Apple dongle's `Headphone` control is the **fixed analog ceiling, pinned
+at 100% by `jasper-dac-init` at boot**. Remotes, voice tools and the HTTP API
+set one user volume through `VolumeCoordinator`; its
+[source-specific carrier](audio-paths.md) applies it. For first-boot calibration:
 
 ```sh
 # Verify the dongle is at 100% (jasper-dac-init enforces this)
 amixer -c A sget Headphone | grep '\[on\]'
 
-# Set CamillaDSP main_volume to a quiet starting level
+# Set user volume to a quiet starting level
 curl -s -X POST -H 'Content-Type: application/json' \
     -d '{"db": -30.0}' http://localhost:8780/volume/set
 ```

@@ -24,6 +24,7 @@ the tracking issue for anything current.
 | 2026-09-22 | `3ebdd1b7f` | codebase-health refresh — 5 read-only Codex investigators (root+docs, platform god files, duplicates + local imports, reconciler/deploy family, cartography); fixes built and merged the same night | [2026-09-22-codebase-health-refresh.md](2026-09-22-codebase-health-refresh.md) | #5521 | investigator reports + ledger as comments on #5521 | current baseline |
 | 2026-09-22 (toolbox) | `7111e55d0` | agent toolbox and tuning-structure review ("REW for agents") — 6 read-only Claude reviewers (REW research, toolbox, refusals, tuning structure, tuning duplication/dead code/prose, platform); fixes built and merged the same night and next day (56 PRs) | [2026-09-22-toolbox-and-structure-review.md](2026-09-22-toolbox-and-structure-review.md) | #5658 | reviewer reports as comments on #5658 | scoped review (tuning) |
 | 2026-09-23 | `bdba966e4` | platform cleanup review — 6 Claude + 3 Codex read-only investigators outside the tuning zone; fixes built and merged the same night in 7 batch PRs | [2026-09-23-platform-cleanup-review.md](2026-09-23-platform-cleanup-review.md) | #5642 | investigator reports + second-vendor reviews as comments on #5642 | scoped review (platform) |
+| 2026-10-02 | `2290b8924` | cleanup and ownership review — 6 read-only investigators with conductor verification | [2026-10-02-cleanup-review.md](2026-10-02-cleanup-review.md) | [#6159](https://github.com/jaspercurry/JTS/issues/6159) | — | scoped review (cleanup) |
 
 ## How to run the next one
 
