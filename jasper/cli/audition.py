@@ -65,6 +65,10 @@ logger = logging.getLogger(__name__)
 #: ``END_*`` words: those say why the hold ENDED, this says what is playing.
 NOT_RESTORED = "audition_not_restored"
 
+#: The verbs that read none of the speaker's local state: ``stop`` puts the applied graph back, and ``status``
+#: reads the audition record. Only ``start`` reads the applied profile and the output topology.
+NO_STATE_VERBS = ("stop", "status")
+
 
 def _play_cue(slug: str) -> None:
     """Ask the running daemon to speak one cue.
@@ -270,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
     # whose whole job is to leave the speaker exactly as it found it.
     install_env_canonical_target_provider()
     args = build_parser().parse_args(argv)
-    if (refused := refuse_unreadable_state()) is not None:
+    if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
         return refused
     return int(args.func(args))
 

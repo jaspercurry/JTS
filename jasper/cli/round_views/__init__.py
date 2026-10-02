@@ -70,6 +70,9 @@ _FAMILIES = tuple(import_module(f".{name}", __name__) for name in (
     "rear_fit",
 ))
 
+#: The views that read none of the speaker's local state: the catalog lists tools, and the two renders read the files they are given.
+NO_STATE_VERBS = ("catalog", "dsp-replay", "dsp-levels")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -126,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if (refused := refuse_unreadable_state()) is not None:
+    if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
         return refused
     try:
         return int(args.func(args))

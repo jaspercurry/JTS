@@ -59,7 +59,7 @@ from jasper.active_speaker.movers import MOVERS
 from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
-from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import deny_reading, isolated_candidate_bank as isolated_candidate_bank
 from tests.active_speaker_fixtures import mono_output_topology, standard_design_draft
 from tests.crossover_v2_banked_round import bank_measure_round
 from tests.crossover_v2_fixtures import _RecordingCheckStore, with_rear_target
@@ -735,6 +735,25 @@ def test_placed_releases_only_confirmed_holds(joining, mover, monkeypatch, capsy
     else:
         assert code == 1 and body["code"] == "walk_mover_mismatch"
         assert not posts
+
+
+@pytest.mark.parametrize("argv,capture,page,posted", [
+    (["stop", "--run", "run-1"], {"status": "running"},
+     (wc.CAPTURE_CANCEL_PATH, '{"capture": {"session_id": "run-1", "status": "stopping"}}'), wc.CAPTURE_CANCEL_PATH),
+    (["status", "--run", "run-1"], {"status": "running"}, None, None),
+    (["placed", "--run", "run-1"], {"status": "running", "position_pending": {"index": 1, "attempt": 1, "mover": "confirmed"}},
+     ("/sound/speaker/crossover/v2/position-ready", '{"ok": true}'), "/sound/speaker/crossover/v2/position-ready"),
+    (["apply", _FINGERPRINT], {}, None, wc.APPLY_PATH),
+])
+def test_a_verb_that_only_calls_the_speaker_runs_for_a_user_who_cannot_read_its_state(
+        argv, capture, page, posted, monkeypatch, capsys):
+    """``stop`` ends a sounding run: no guard stands in front of it."""
+    deny_reading(monkeypatch, *(resolve() for resolve in cli.LOCAL_STATE_PATHS))
+    opener = _run_opener(capture)
+    opener.pages.update([page] if page else [])
+    code, body = _run(argv, opener, monkeypatch, capsys)
+    assert code == cli.EXIT_OK and body.get("code") is None
+    assert bool(opener.posted_to(posted)) if posted else not opener.posts()
 
 
 def test_status_reads_progress_once(monkeypatch, capsys):

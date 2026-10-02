@@ -721,12 +721,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if (refused := refuse_unreadable_state()) is not None:
-        return refused
     if args.command == "judge" and args.vary and (not args.preview or not args.out_dir):
         parser.error("--vary requires --preview and --out-dir")
     if args.command == "judge" and args.out and (not args.preview or args.vary):
         parser.error("--out requires --preview without --vary")
+    if (refused := refuse_unreadable_state(args.command)) is not None:
+        return refused
     if args.command in {"judge", "compose"}:
         args.session_dir = args.round
     result: int = args.func(args)

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import errno
 import importlib
 import importlib.util
 import json
@@ -46,6 +45,7 @@ from jasper.active_speaker.answer_schemas import ANSWER_SCHEMAS
 from jasper.active_speaker.round_view_artifacts import CATALOG
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.cli import _refusal, _run_request, crossover_prescriber, round as round_cli, round_views
+from tests.active_speaker_fixtures import deny_reading
 from tests.crossover_v2_banked_round import (
     bank_executor_take,
     bank_measure_round,
@@ -258,11 +258,11 @@ def test_every_tuning_cli_publishes_the_shared_refusal_document(
 @pytest.mark.parametrize("resolve", round_cli.LOCAL_STATE_PATHS, ids=lambda resolve: resolve.__name__)
 @pytest.mark.parametrize("module_name, argv", [
     ("jasper.cli.round", ["list"]),
-    ("jasper.cli.round", ["status", "--run", "run-1"]),
+    ("jasper.cli.round", ["wait", "--run", "run-1"]),
     ("jasper.cli.round", ["run", "--program", "speaker"]),
-    ("jasper.cli.round_views", ["catalog"]),
+    ("jasper.cli.round_views", ["frequency", "round-a"]),
     ("jasper.cli.crossover_prescriber", ["status"]),
-    ("jasper.cli.audition", ["status"]),
+    ("jasper.cli.audition", ["start"]),
 ])
 def test_a_tuning_cli_refuses_local_state_this_user_cannot_read(
     module_name: str, argv: list[str], resolve: Callable[[], Path],
@@ -271,14 +271,7 @@ def test_a_tuning_cli_refuses_local_state_this_user_cannot_read(
     """The shared loaders read an unreadable file as an empty speaker, so a non-root run answered
     ``0 banked round(s)`` instead of refusing."""
     path = resolve()
-    open_path = Path.open
-
-    def open_unless_denied(self: Path, *args: Any, **kwargs: Any) -> Any:
-        if self == path:
-            raise PermissionError(errno.EACCES, "Permission denied", str(path))
-        return open_path(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", open_unless_denied)
+    deny_reading(monkeypatch, path)
 
     code = importlib.import_module(module_name).main(argv)
 
@@ -286,6 +279,43 @@ def test_a_tuning_cli_refuses_local_state_this_user_cannot_read(
     assert code == _refusal.EXIT_REFUSED
     assert (document["code"], document["detail"]["evidence"]) == ("local_state_unreadable", {"path": str(path)})
     assert document["next_action"]["id"] == "run_as_root"
+
+
+@pytest.mark.parametrize("module_name, argv", [
+    ("jasper.cli.round_views", ["catalog"]),
+    ("jasper.cli.audition", ["status"]),
+    ("jasper.cli.audition", ["stop"]),
+])
+def test_a_verb_that_reads_no_local_state_runs_for_a_user_who_cannot_read_it(
+    module_name: str, argv: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``jasper-audition stop`` puts the applied graph back: no guard stands in front of it."""
+    deny_reading(monkeypatch, *(resolve() for resolve in round_cli.LOCAL_STATE_PATHS))
+
+    code = importlib.import_module(module_name).main(argv)
+
+    assert code == _refusal.EXIT_OK
+    assert "local_state_unreadable" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("module_name, argv, expected", [
+    ("jasper.cli.round", ["reset", "--program", "rear", "--keep-timing"], (2, None)),
+    ("jasper.cli.round", ["run", "--dry-run", "--base-url", "http://speaker.example"],
+     (_refusal.EXIT_REFUSED, "dry_run_requires_local_host")),
+    ("jasper.cli.crossover_prescriber", ["judge", "doc.json", "--vary", "a=1"], (2, None)),
+])
+def test_an_argument_error_comes_before_the_state_refusal(
+    module_name: str, argv: list[str], expected: tuple[int, str | None],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A bad flag combination is a usage error, or its own refusal, whoever runs it."""
+    deny_reading(monkeypatch, *(resolve() for resolve in round_cli.LOCAL_STATE_PATHS))
+    try:
+        code = importlib.import_module(module_name).main(argv)
+    except SystemExit as usage_error:
+        code = usage_error.code
+    answered = capsys.readouterr().out
+    assert (code, json.loads(answered)["reason"] if answered else None) == expected
 
 
 @pytest.mark.parametrize("module_name,verb", [

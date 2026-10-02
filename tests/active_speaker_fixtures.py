@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import errno
 import re
 from pathlib import Path
 
@@ -535,6 +536,18 @@ def declare_applied_fixture(monkeypatch, topology, applied, *, live_endpoint=Fal
 @pytest.fixture
 def isolated_candidate_bank(tmp_path, monkeypatch):
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_SESSIONS_DIR", str(tmp_path / "sessions"))
+
+
+def deny_reading(monkeypatch, *paths: Path) -> None:
+    """Opening any of ``paths`` raises ``PermissionError``, as for a user the speaker's state is closed to."""
+    open_path = Path.open
+
+    def open_unless_denied(self: Path, *args, **kwargs):
+        if self in paths:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return open_path(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_unless_denied)
 
 
 def declared_profile_fixture(topology, *, design_draft, config_path, write=False):

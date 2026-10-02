@@ -12,7 +12,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Collection, Iterable, Sequence
 from urllib.parse import urlsplit
 
 from jasper.net.http_security import is_loopback_name
@@ -466,14 +466,20 @@ def build_parser() -> argparse.ArgumentParser:
 #: The speaker's local state the tuning CLIs read, each resolved at call time.
 LOCAL_STATE_PATHS = (topology_path, baseline_profile_state_path, household_mic_path)
 
+#: The verbs that read none of it: each only calls the speaker's web service. ``stop`` ends a sounding run,
+#: so the guard never stands in front of it.
+NO_STATE_VERBS = ("placed", "stop", "status", "apply")
 
-def refuse_unreadable_state() -> int | None:
+
+def refuse_unreadable_state(command: str, no_state: Collection[str] = ()) -> int | None:
     """The refusal exit code when this user cannot read the speaker's local state, else ``None``.
 
-    The tuning CLIs call it at entry. Shared loaders suppress read faults, so a
-    non-root run would otherwise answer from a speaker that seems to hold nothing;
-    drop this when they expose them.
+    The tuning CLIs call it at entry with their verb. A verb in ``no_state`` reads none of that state and is
+    never refused. Shared loaders suppress read faults, so a non-root run would otherwise answer from a speaker
+    that seems to hold nothing; drop this when they expose them.
     """
+    if command in no_state:
+        return None
     for resolve in LOCAL_STATE_PATHS:
         try:
             with resolve().open("rb"):
@@ -489,13 +495,13 @@ def refuse_unreadable_state() -> int | None:
 def main(argv: Sequence[str] | None = None, *, opener: Any | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if (refused := refuse_unreadable_state()) is not None:
-        return refused
     if args.command == "reset" and args.keep_timing and args.program not in (None, "speaker"):
         parser.error("--keep-timing requires resetting everything or --program speaker")
     if args.command in ("run", "trial") and args.dry_run and not is_loopback_name(urlsplit(args.base_url).hostname or ""):
         from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY  # lazy: refused run copy
         return failed(EXIT_REFUSED, "dry_run_requires_local_host", REASON_REGISTRY["dry_run_requires_local_host"].message)
+    if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
+        return refused
     if args.command in ("list", "show", "presets"):
         return int(args.func(args))
     client = WizardClient(
