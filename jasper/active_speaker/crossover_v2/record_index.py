@@ -219,30 +219,14 @@ def measurement_documents(bundle_dir: Path) -> Iterator[tuple[Measurement, Mappi
             yield Measurement(*row), document
 
 
-def bundle_measurements(
-    bundle_dir: Path,
-    *,
-    kind: str | None = None,
-    phase: str | None = None,
-    position_deg: int | None = None,
-    vertical_deg: int | None = None,
-    candidate_id: str | None = None,
-) -> tuple[Measurement, ...]:
-    """One bundle's takes, matching every filter — the offline reader's door.
+def bundle_measurements(bundle_dir: Path, *, phase: str | None = None) -> tuple[Measurement, ...]:
+    """One bundle's takes, or only those of one ``phase`` — the offline reader's door.
 
     ``phase`` is what a take IS (the walk pose, the entry baseline, a CHECK);
-    ``kind`` is what it MEASURES (baseline / candidate / verify).
-    A pose is a bearing AND a height, so a caller naming only ``position_deg``
-    is handed raised seats too; every axis is ``None``-means-no-filter, and it
-    is the pose readers above this that pin the height they mean. The rows
+    ``kind`` is what it MEASURES (baseline / candidate / verify). The rows
     select; the take files still decide — every caller re-reads the file it was
     pointed at through its own accept rule.
     """
     return tuple(
-        row for row, _ in measurement_documents(bundle_dir)
-        if (kind is None or row.kind == kind)
-        and (phase is None or row.phase == phase)
-        and (position_deg is None or row.position_deg == position_deg)
-        and (vertical_deg is None or row.vertical_deg == vertical_deg)
-        and (candidate_id is None or row.candidate_id == candidate_id)
+        row for row, _ in measurement_documents(bundle_dir) if phase is None or row.phase == phase
     )

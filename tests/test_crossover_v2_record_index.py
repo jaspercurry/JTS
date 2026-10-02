@@ -25,7 +25,6 @@ from jasper.active_speaker.commissioning_evidence_store import (
 from jasper.active_speaker.crossover_v2.candidate_ladder import candidate_ladder
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.active_speaker.crossover_v2.contracts import (
-    MEASURE_KIND_CANDIDATE,
     POSITION_EVIDENCE_KIND,
     ROUND_RECEIPT_KIND,
 )
@@ -85,53 +84,12 @@ def _builder_take(**overrides: Any) -> dict[str, Any]:
     return {**_take(), "captured_at": "2026-08-28T11:22:33Z", **overrides}
 
 
-@pytest.mark.parametrize(
-    "field,value",
-    [("kind", MEASURE_KIND_CANDIDATE), ("position_deg", 30)],
-)
-async def test_a_banked_take_is_findable_by(store, field, value):
-    """The point of the reader: a take found without globbing a directory.
-
-    Both axes the reader ships — the two ``position_cycle`` was asked for.
-    """
-    record_id = await store.bank(_builder_take(
-        kind=MEASURE_KIND_CANDIDATE, position_deg=30, candidate_id="cand-7",
-    ))
-
-    found = _found(store, **{field: value})
-
-    assert [row.path for row in found] == [record_id]
-
-
-async def test_the_candidate_axis_separates_two_variants_of_one_pose(store):
-    """The candidate axis: two takes, one pose, one label apart.
-
-    A one-spot compare (``jasper-round run --poses 0 --candidates``) banks takes
-    like the two below, which differ in nothing a reader can otherwise select
-    on, so a filter that ignored the label would return both and the comparison
-    could not be set up at all.
-    """
-    wanted = await store.bank(_builder_take(
-        candidate_id="null_a1", take_id="candidate_00_a00",
-    ))
-    await store.bank(_builder_take(
-        candidate_id="null_a2", take_id="candidate_01_a00",
-    ))
-
-    found = _found(store, candidate_id="null_a1")
-
-    assert [row.path for row in found] == [wanted]
-    assert [row.candidate_id for row in found] == ["null_a1"]
-
-
-async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
-    store,
-):
+async def test_a_banked_walk_pose_carries_the_candidate_it_measured(store):
     """The cycle's label reaches the reader through the WALK's own builder.
 
     Two poses at one bearing, one candidate apart: a per-pose cycle is only
-    worth banking if a reader can afterwards ask for one variant's takes, and
-    the pose record is where that label has to survive.
+    worth banking if a reader can afterwards tell one variant's takes from the
+    other's, and the pose record is where that label has to survive.
     """
     def _pose_record(index: int, candidate_id: str) -> dict[str, Any]:
         pose = LateralPose(
@@ -146,13 +104,12 @@ async def test_a_banked_walk_pose_is_selectable_by_the_candidate_it_measured(
             claim=TakeClaim(candidate_id=candidate_id),
         )
 
-    wanted = await store.bank(_pose_record(1, "fp-a"))
-    await store.bank(_pose_record(2, "fp-b"))
+    first = await store.bank(_pose_record(1, "fp-a"))
+    second = await store.bank(_pose_record(2, "fp-b"))
 
-    found = _found(store, phase=PHASE_LATERAL, candidate_id="fp-a")
+    found = _found(store, phase=PHASE_LATERAL)
 
-    assert [row.path for row in found] == [wanted]
-    assert [row.candidate_id for row in found] == ["fp-a"]
+    assert {row.path: row.candidate_id for row in found} == {first: "fp-a", second: "fp-b"}
 
 
 @pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_TIMING])
