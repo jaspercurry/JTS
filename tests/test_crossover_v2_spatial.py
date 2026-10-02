@@ -18,10 +18,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     POLARITY_INVERTED,
     REFERENCE_MARK_DESIGN_AXIS,
 )
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CLOUD_MEASURE,
-    PHASE_VERIFY,
-)
+from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
 )
@@ -50,7 +47,7 @@ from tests.crossover_v2_banked_round import (
 def _cloud_record(**overrides):
     """One retained cloud position, with only the field under test named."""
     fields = {
-        "position_id": "cloud_measure_03", "phase": PHASE_CLOUD_MEASURE,
+        "position_id": "cloud_measure_03", "phase": PHASE_VERIFY,
         "index": 3, "attempt": 7, "prompt": "stand here", "wide": False,
         "role": "onax",
         "geometry": spatial.PositionGeometry(

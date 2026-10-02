@@ -65,7 +65,6 @@ _WAY1_INDEX_PHASE_MAP = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_TIMING}
 def test_the_way1_stage_one_walk_names_one_role():
     conductor = _way1_conductor(FakeSeams(), index_phase_map=_WAY1_INDEX_PHASE_MAP)
 
-    assert conductor.snapshot().session_phases == (PHASE_CHECK, PHASE_MEASURE, PHASE_TIMING)
     # The missing upper driver is absent, never aliased onto the lone branch.
     assert conductor._tweeter is None
     assert conductor.roles_bands[0].role == "full_range"

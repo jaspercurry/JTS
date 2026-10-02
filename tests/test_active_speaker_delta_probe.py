@@ -713,26 +713,12 @@ def test_the_spread_widening_tolerance_is_pinned_to_its_stated_value():
     """**N5.** The literal, with its rationale — like the N3 pins, and NOT a
     relation that would hold for any value.
 
-    1.0 dB of RAW across-position sigma growth is the line. The envelope spends
-    that spread as ``sigma_db / sqrt(n_positions)`` when deciding how much
-    correction depth a band may have at all, so at the production cloud size
-    this widening is several times the depth those terms would have licensed —
-    a correction that buys flatness at the mark by trading it this far
-    elsewhere is fitting one microphone position, not flattening the speaker.
-    Moving the constant is a product decision about that line and should fail
-    here first.
+    1.0 dB of RAW across-position sigma growth is the line: a correction that
+    buys flatness at the mark by trading it this far elsewhere is fitting one
+    microphone position, not flattening the speaker. Moving the constant is a
+    product decision about that line and should fail here first.
     """
-    from jasper.active_speaker.crossover_v2.contracts import (
-        DEFAULT_CLOUD_MEASURE_POSITIONS,
-    )
-
     assert DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB == 1.0
-    # …and the "several times" in the rationale is real at the shipped cloud
-    # size, not a figure of speech.
-    licensed_depth_db = DELTA_PROBE_SPREAD_WIDENING_TOLERANCE_DB / math.sqrt(
-        DEFAULT_CLOUD_MEASURE_POSITIONS - 1
-    )
-    assert licensed_depth_db < 0.4
 
 
 # --------------------------------------------------------------------------- #

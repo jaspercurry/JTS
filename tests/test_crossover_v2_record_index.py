@@ -24,10 +24,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
 )
 from jasper.active_speaker.crossover_v2.candidate_ladder import candidate_ladder
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
-from jasper.active_speaker.crossover_v2.contracts import (
-    POSITION_EVIDENCE_KIND,
-    ROUND_RECEIPT_KIND,
-)
+from jasper.active_speaker.crossover_v2.contracts import POSITION_EVIDENCE_KIND
 from jasper.active_speaker.crossover_v2.feature_classifier import load_round_pose_curves
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
@@ -37,7 +34,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 )
 from jasper.active_speaker.crossover_v2.position_cycle import select_pose_curve_pair
 from jasper.active_speaker.crossover_v2.record_index import bundle_measurements
-from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+from jasper.active_speaker.crossover_v2.record_store import CHECK_EVIDENCE_KIND, BankedRecordStore
 from jasper.active_speaker.crossover_v2.round_inputs import round_inputs
 from jasper.active_speaker.measurement_programs import PURPOSE_REAR, PURPOSE_ROOM, PURPOSE_SPEAKER
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
@@ -183,9 +180,9 @@ async def test_the_read_clock_is_the_records_own(store, captured_at, expected):
 
 
 async def test_an_artifact_that_is_not_a_measurement_is_not_selected(store):
-    """Five of the six banked kinds are not takes, and none of them get a row."""
+    """A banked artifact that is not a take gets no row, even one that names a phase."""
     await store.bank({
-        "kind": ROUND_RECEIPT_KIND, "session_id": "engine-session",
+        "kind": CHECK_EVIDENCE_KIND, "session_id": "engine-session",
         "phase": "verify",
     })
 

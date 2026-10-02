@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE
 from jasper.active_speaker.capture_provenance import CaptureProvenanceRecorder, record_capture_provenance
 from jasper.audio_measurement.calibration import configured_calibration_root
 from jasper.audio_measurement.household_mic import (
@@ -143,9 +142,8 @@ def bind_production_analyze(
     ``phase`` (required, keyword-only) is the conductor's own flow phase —
     ``correction_run_host.bind_plan_analysis`` always passes it, and
     ``crossover_v2_flow.AnalyzeCapture`` declares it. It is NOT the same
-    value as ``program.phase``: every cloud position plays the verify-shaped
-    summed sweep, so ``program.phase == "verify"`` even during
-    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. It keys the per-phase calibration
+    value as ``program.phase``: a timing take plays VERIFY's summed sweep, so
+    ``program.phase == "verify"`` for it. It keys the per-phase calibration
     annotation and labels this binding's log lines, so those name the capture
     rather than the shared program object.
     """
@@ -364,7 +362,6 @@ def bind_production_play(
     """Bind the shared graph and stimulus owners to this session's state."""
     from jasper.active_speaker.crossover_v2.composition import bind_program_composer
     from jasper.active_speaker.crossover_v2.door import bind_measurement_graph
-    from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
     from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, measurement_graph_evidence
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
 
@@ -382,10 +379,7 @@ def bind_production_play(
             return program_for_spec(spec, stimulus_dbfs)
         if stimulus_dbfs is not None:
             raise ValueError("The round's program owns its stimulus level.")
-        phase = spec.program_phase
-        if spec.graph_scope != "drivers" and phase not in SUMMED_SWEEP_PHASES:
-            phase = PHASE_CLOUD_MEASURE
-        return program_for_phase(phase)
+        return program_for_phase(spec.program_phase)
 
     async def _before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         await v2volume.session_volume_plan().hold_measurement_volume(

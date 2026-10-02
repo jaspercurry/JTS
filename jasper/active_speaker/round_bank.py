@@ -165,31 +165,6 @@ def _link_or_copy(source: str, destination: str) -> None:
         shutil.copy2(source, destination)
 
 
-def _round_id(session_dir: Path, session_id: str) -> str:
-    """The bundle's own ``round_id`` when it banked a receipt, else its session id.
-
-    Located with the public ``round_artifact_dir``, so the receipt a packet
-    would be built from is the one read here. A ``round_id`` that is not a plain
-    :data:`_ROUND_ID_RE` token falls back to the session id rather than banking
-    outside the store.
-    """
-    from .crossover_v2.round_inputs import round_artifact_dir  # lazy: keep bank constants cheap
-
-    round_dir, _why = round_artifact_dir(session_dir)
-    if round_dir is None:
-        return session_id
-    try:
-        receipt = json.loads(
-            (round_dir / "round_receipt.json").read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError):
-        return session_id
-    candidate = receipt.get("round_id") if isinstance(receipt, Mapping) else None
-    if isinstance(candidate, str) and _ROUND_ID_RE.fullmatch(candidate):
-        return candidate
-    return session_id
-
-
 def _index_poses(target: Path) -> list[str]:
     """Derive the banked round's pose index into ``target``.
 
@@ -318,7 +293,7 @@ def bank_round(
             "bank it once the session has finished",
         )
     session_id = str(info.get("session_id") or session_dir.name)
-    target = Path(campaign_root) / _round_id(session_dir, session_id)
+    target = Path(campaign_root) / session_id
     if target.exists():
         existing = json.loads((target / "provenance.json").read_text())
         if existing.get("session_id") == session_id:

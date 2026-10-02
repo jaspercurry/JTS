@@ -403,6 +403,8 @@ def _conductor(
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
     supplied_prior = "timing_prior" in kwargs
+    if index_phase_map is None:
+        index_phase_map = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: journey.PHASE_VERIFY}
     conductor = CrossoverV2Session(
         session_id=kwargs.pop("session_id", SESSION),
         source_preset=source_preset,
@@ -412,13 +414,10 @@ def _conductor(
         session_volume_db=SESSION_VOLUME_DB,
         seams=seams,
         driver_spacing_m=driver_spacing_m,
-        index_phase_map=(
-            {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: journey.PHASE_VERIFY}
-            if index_phase_map is None else index_phase_map
-        ),
+        index_phase_map=index_phase_map,
         **kwargs,
     )
-    if not supplied_prior and journey.PHASE_TIMING not in conductor.snapshot().session_phases:
+    if not supplied_prior and journey.PHASE_TIMING not in index_phase_map.values():
         conductor.set_timing_prior("fixture-timing-take")
     return conductor
 
@@ -969,19 +968,6 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     return _open_prepared(monkeypatch, prepared)
 
 
-def _seed_applied_stage_1_state() -> dict[str, Any]:
-    state = {
-        "session_id": "cap_stage1_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "session_phases": [PHASE_CHECK, PHASE_MEASURE],
-        "applied": True,
-        "candidate": {"fingerprint": "fp-stage-1"},
-        "gain_plan_db": {"woofer": -3.0, "tweeter": -6.0},
-    }
-    v2state.save_v2_state(state)
-    return state
-
-
 class _AcceptingStore:
 
     session_id = "bundle-test"
@@ -1023,19 +1009,14 @@ def _regradable_fixture() -> tuple[Any, Any, Any]:
 
 
 _PERSISTED_TOP_LEVEL_KEYS = {
-    "accepted_phases",
-    "applied",
     "candidate",
     "evidence",
     "failure",
     "gain_plan_db",
     "kind",
     "measure_gain_ceiling_db",
-    "round_ordinal_epoch",
-    "round_receipt",
     "schema_version",
     "session_id",
-    "session_phases",
     "sound_design_revision",
     "updated_at",
 }

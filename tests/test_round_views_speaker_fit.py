@@ -87,9 +87,6 @@ def speaker_round(tmp_path):
     root = bank_measure_round(tmp_path)
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
-    state = json.loads(inputs.state_path.read_text())
-    state.update(session_phases=["check", "measure", "verify"])
-    inputs.state_path.write_text(json.dumps(state))
     row, record = next((row, dict(doc)) for row, doc in measurement_documents(inputs.session_dir) if row.phase == "measure")
     program = build_measure_program(
         {"woofer": -20.0, "tweeter": -24.0},
@@ -130,18 +127,8 @@ def speaker_round(tmp_path):
     return root, record, program, classes, region
 
 
-@pytest.mark.parametrize("cloud_planned,post_apply_verifies", [(False, True), (True, True), (False, False)])
-def test_speaker_fit_matches_explicit_math_and_banked_decisions(
-    speaker_round, cloud_planned, post_apply_verifies, capsys,
-):
+def test_speaker_fit_matches_explicit_math_and_banked_decisions(speaker_round, capsys):
     root, record, program, classes, region = speaker_round
-    inputs = round_inputs(root)
-    state = json.loads(inputs.state_path.read_text())
-    if not post_apply_verifies:
-        state["session_phases"].remove("verify")
-    if cloud_planned:
-        state["session_phases"].insert(1, "cloud_measure")
-    inputs.state_path.write_text(json.dumps(state))
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     assert round_views.main(["speaker-fit", str(root), "--set", "speaker-set"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -253,18 +240,13 @@ def test_fit_resolves_trim_after_tweeter_cut(speaker_round, monkeypatch, cut_db)
 
 
 @pytest.mark.parametrize("changes", [
-    {"poses": 1}, {"poses": 2}, {}, {"role": "woofer"}, {"role": "main"},
-    {"verifies": False}, {"verifies": False, "cloud_planned": False}, {"floor": 100.0}, {"floor": 8000.0},
+    {"poses": 1}, {"poses": 2}, {}, {"role": "woofer"}, {"role": "main"}, {"floor": 100.0}, {"floor": 8000.0},
     {"horn_positions": 3}, {"horn_positions": 1}, {"disagree": True}, {"stimulus": "reference_axis"}, {"basis_role": "summed"},
 ])
 def test_design_cloud_discloses_evidence_for_each_roles_fit(speaker_round, capsys, changes):
     root, record, program, *_ = speaker_round
     inputs = round_inputs(root)
     role, poses = changes.get("role", "tweeter"), changes.get("poses", 3)
-    state = json.loads(inputs.state_path.read_text())
-    state["session_phases"] = (["check", "measure"] + (["cloud_measure"] if changes.get("cloud_planned", True) else [])
-                               + (["verify"] if changes.get("verifies", True) else []))
-    inputs.state_path.write_text(json.dumps(state))
     directory, _ = round_artifact_dir(inputs.session_dir)
     candidate = json.loads((directory / "candidate.json").read_text())
     if role == "main":
@@ -681,9 +663,6 @@ def test_empty_manifest_has_no_packet_fits(speaker_round):
 def test_design_cloud_joins_retakes_without_borrowing_graphs(speaker_round, other_identity):
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
-    state = json.loads(inputs.state_path.read_text())
-    state["session_phases"].insert(1, "cloud_measure")
-    inputs.state_path.write_text(json.dumps(state))
     directory, _ = round_artifact_dir(inputs.session_dir)
     analysis = json.loads((directory / "candidate.json").read_text())["analysis"]
     path = next(row.path for row, _ in measurement_documents(inputs.session_dir) if row.phase == "measure")
@@ -843,21 +822,13 @@ def test_only_a_speaker_purpose_take_earns_a_packet_fit(speaker_round, program, 
     assert {fit["role"] for fit in packet["fits"]} == roles_fitted
 
 
-@pytest.mark.parametrize("pose_count,candidate_count,cloud_planned,verifies", [
-    (1, 1, True, True), (2, 2, True, True), (3, 3, True, True), (3, 1, True, True), (3, 3, False, False),
-])
+@pytest.mark.parametrize("pose_count,candidate_count", [(1, 1), (2, 2), (3, 3), (3, 1)])
 def test_banked_speaker_packet_fits_every_selected_pose_and_role(
-    speaker_round, tmp_path, monkeypatch, capsys, pose_count, candidate_count, cloud_planned, verifies,
+    speaker_round, tmp_path, monkeypatch, capsys, pose_count, candidate_count,
 ):
 
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
-    state = json.loads(inputs.state_path.read_text())
-    if cloud_planned:
-        state["session_phases"].insert(1, "cloud_measure")
-    if not verifies:
-        state["session_phases"].remove("verify")
-    inputs.state_path.write_text(json.dumps(state))
     directory, _ = round_artifact_dir(inputs.session_dir)
     for curve in record["curves"]:
         curve.update(gate_window_ms=7.0, validity_floor_hz=142.9, floor_source=FLOOR_SEARCH_BOUND)

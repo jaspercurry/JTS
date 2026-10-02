@@ -36,7 +36,8 @@ from jasper.active_speaker.capture_provenance import (
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_VERIFY,
+    PHASE_LATERAL,
+    PHASE_TIMING,
     PHASE_VERIFY,
 )
 from jasper.audio_measurement.program import (
@@ -624,20 +625,19 @@ def test_the_stimulus_phase_is_the_capture_s_own_not_the_program_object_s(
 ):
     """One program object serves several phases, so it cannot name the capture.
 
-    ``crossover_v2.programs.program_for_phase`` answers every
-    ``GROUP_SUMMED_SWEEP_PHASES`` position, the compared VERIFY/entry-baseline
-    pair, and MEASURE/LATERAL with ONE composed object each, by identity — so
-    ``program.phase`` is the name of whichever phase composed it, and a record
-    that took its label from there said "verify" for a cloud position and
-    "measure" for a lateral pose. The capture's own phase is the one the play
+    ``crossover_v2.programs.program_for_phase`` answers the compared
+    VERIFY/timing pair and MEASURE/LATERAL with ONE composed object each, by
+    identity — so ``program.phase`` is the name of whichever phase composed it,
+    and a record that took its label from there said "verify" for a timing
+    take and "measure" for a lateral pose. The capture's own phase is the one the play
     seam was called with, which is also the phase the banked record carries.
     """
     provenance = _drive_one_capture(
-        monkeypatch, tmp_path, phase=PHASE_CLOUD_VERIFY, cam=_FakeCam(volume_db=-20.0),
+        monkeypatch, tmp_path, phase=PHASE_TIMING, cam=_FakeCam(volume_db=-20.0),
     )
     assert provenance is not None
-    assert build_verify_program(2000.0, sweep_s=0.3).phase != PHASE_CLOUD_VERIFY
-    assert provenance["stimulus"]["phase"] == PHASE_CLOUD_VERIFY
+    assert build_verify_program(2000.0, sweep_s=0.3).phase != PHASE_TIMING
+    assert provenance["stimulus"]["phase"] == PHASE_TIMING
 
 
 def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
@@ -673,7 +673,7 @@ def test_the_shared_engine_observes_and_holds_each_graph_scope(monkeypatch, tmp_
     """The admission's graph evidence is the graph the take plays, its cleared
     layers emptied (ADR-0370)."""
     from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
-    phase = PHASE_CHECK if scope == "drivers" else PHASE_CLOUD_VERIFY
+    phase = PHASE_CHECK if scope == "drivers" else PHASE_LATERAL
     cam, plan = _FakeCam(volume_db=-20.0), _FakePlan()
     carried = _drive_one_capture(
         monkeypatch, tmp_path, phase=phase, cam=cam, graph_scope=scope, plan=plan,

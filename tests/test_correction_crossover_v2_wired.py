@@ -606,7 +606,7 @@ def _plan_host(monkeypatch, tmp_path, box, *, gate=None, signals=None, phase=Non
     return runner, session, fakes, manifest, control, flow
 
 
-@pytest.mark.parametrize("phase", [None, "verify", "cloud_verify"])
+@pytest.mark.parametrize("phase", [None, "verify"])
 def test_plan_host_completes_without_publishing_or_applying_a_candidate(monkeypatch, tmp_path, box, phase):
     from tests.test_plan_run import AnsweredGate
     from jasper.active_speaker import plan_run

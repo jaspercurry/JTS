@@ -32,7 +32,6 @@ from jasper.active_speaker.crossover_v2 import position_cycle, spatial
 from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
-    ROUND_RECEIPT_KIND,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir
 from jasper.active_speaker.crossover_v2.record_store import (
@@ -337,7 +336,7 @@ def _candidate() -> MeasuredCrossoverCandidate:
 
 
 def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
-    """All four routes: the three publishers' kinds plus the position take.
+    """All three routes: the two publishers' kinds plus the position take.
 
     Parametrized together and not sampled, because the route table is where a
     kind gets forgotten.
@@ -350,11 +349,6 @@ def _fold_records() -> list[tuple[str, dict[str, Any], str]]:
             "check.json",
         ),
         ("candidate", _candidate().to_dict(), "candidate.json"),
-        (
-            "receipt",
-            {"schema_version": 2, "kind": ROUND_RECEIPT_KIND, "round_id": "r1"},
-            "round_receipt.json",
-        ),
     ]
 
 
@@ -370,8 +364,8 @@ async def test_a_folded_kind_lands_where_its_reader_looks(
     Whether the store envelopes differs per route and is not a style choice:
     ``MeasuredCrossoverCandidate.from_mapping`` refuses any key it does not
     know, so wrapping a candidate the way a position take is wrapped would
-    make the file unreadable by its own reader. The candidate and receipt
-    routes run that reader at the write, so a wrongly-enveloped payload raises
+    make the file unreadable by its own reader. The candidate route runs that
+    reader at the write, so a wrongly-enveloped payload raises
     out of ``bank`` here rather than landing — which is why this pin asserts
     the path and lets the route's own verify carry the envelope.
     """
@@ -450,20 +444,6 @@ async def test_a_candidate_that_changed_on_readback_refuses(real_store):
     """
     with pytest.raises(MeasuredCrossoverCandidateError):
         await real_store.bank({**_candidate().to_dict(), "fingerprint": "not-mine"})
-
-
-async def test_a_receipt_that_changed_on_readback_refuses(real_store):
-    """F4's other half — R21's accept-receipt pattern, kept by the fold."""
-    receipt = {
-        "schema_version": 2,
-        "kind": ROUND_RECEIPT_KIND,
-        # A tuple is not what comes back out of canonical JSON, which is
-        # exactly the class of change the guard exists to catch.
-        "evidence_identities": ("a", "b"),
-    }
-
-    with pytest.raises(RuntimeError, match="changed on exact readback"):
-        await real_store.bank(receipt)
 
 
 async def test_a_record_carrying_a_store_owned_key_refuses(real_store):

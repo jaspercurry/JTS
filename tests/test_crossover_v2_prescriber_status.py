@@ -147,11 +147,11 @@ def test_status_finds_notes_and_current_evidence(
         info_path.write_text(json.dumps(info))
         sessions.append((destination, bundle))
     note = sessions[0][0] / "agent_notes.md"
-    note.write_text("Question and next human action; evidence: r1/round_receipt.json")
+    note.write_text("Question and next human action; evidence: r1/run_manifest.json")
     current, bundle = sessions[1]
     artifacts = next((bundle / "evidence/v1/artifacts/crossover_v2").iterdir())
     state = tmp_path / "flow state.json"
-    state.write_text(json.dumps({"session_id": artifacts.name, "phase": "done"}))
+    state.write_text(json.dumps({"session_id": artifacts.name}))
     inputs = [str(current), "--state", str(state)]
     recipe = [cli.PROG, "status", *inputs]
     assert cli.main(recipe[1:]) == cli.EXIT_OK
@@ -321,7 +321,7 @@ def test_the_status_reads_the_builder_the_doors_read(tmp_path, capsys, monkeypat
     assert payload["banked"]["bundle_session_id"] == "from-the-builder"
 
 
-def test_a_banked_walk_is_visible_before_any_round_receipt_is():
+def test_a_banked_walk_is_visible_from_its_accepted_takes():
     """The done-signal for a walk: ``lateral_poses`` is filled by accepted
     takes, whatever else the round banked."""
     payload = cli.status_document(

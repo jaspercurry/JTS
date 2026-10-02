@@ -34,16 +34,10 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import candidate_bank, commissioning_coordinator, measurement_view
-from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx, coordinator
+from jasper.active_speaker.crossover_v2 import conductor_context as v2ctx
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS
 from tests.active_speaker_fixtures import isolated_candidate_bank as isolated_candidate_bank
 from jasper.web import correction_crossover_v2 as v2host
-from jasper.web import correction_crossover_v2_status as v2status
-
-
-from tests.crossover_v2_round_harness import (
-    _seed_round_state,
-)
 
 from tests.crossover_v2_fixtures import (
     _isolated_v2_state as _isolated_v2_state,
@@ -74,145 +68,12 @@ def _recorded_write_calls(monkeypatch) -> list[str]:
 
 
 def test_an_ordinary_conductor_persist_is_not_fsynced(monkeypatch):
-    conductor, state = _stage_1(monkeypatch)
-    assert state["round_receipt"] is None
+    conductor, _state = _stage_1(monkeypatch)
     calls = _recorded_write_calls(monkeypatch)
 
     v2state.persist_conductor_state(conductor, failure_code=None)
 
     assert calls == ["chmod", "replace"]
-
-
-@pytest.mark.parametrize(
-    ("case", "raw", "ordinal"),
-    [
-        ("no state at all", {}, 1),
-        ("no receipt yet", {"session_id": "s"}, 1),
-        ("receipt is not a mapping", {"round_receipt": "corrupt"}, 1),
-        (
-            "a receipt written before #2602 knew about ordinals",
-            {"round_receipt": {"row": "row1_trusted_safe_passed"}},
-            1,
-        ),
-        (
-            "round 1 banked its objectives",
-            {"round_receipt": {
-                "round_ordinal": 1,
-                "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
-            }},
-            2,
-        ),
-        (
-            "an ordinal with no objectives beside it",
-            {"round_receipt": {"round_ordinal": 2}},
-            3,
-        ),
-        (
-            "a bool is not an ordinal",
-            {"round_receipt": {"round_ordinal": True}},
-            1,
-        ),
-        (
-            "a nonsense ordinal",
-            {"round_receipt": {"round_ordinal": 0}},
-            1,
-        ),
-    ],
-    ids=[
-        "no_state", "no_receipt", "corrupt_receipt", "pre_2602_receipt",
-        "after_round_one", "ordinal_without_objectives", "bool_ordinal",
-        "zero_ordinal",
-    ],
-)
-def test_the_series_position_reader(case, raw, ordinal):
-
-    position = coordinator.series_position_from_state(raw)
-
-    assert position.ordinal == ordinal, case
-
-
-def test_a_topology_change_between_rounds_resets_the_series(monkeypatch):
-
-    monkeypatch.setattr(
-        coordinator, "topology_config_fingerprint", lambda _topology: "new-topology",
-    )
-
-    position = coordinator.series_position_from_state({"round_receipt": {
-        "round_ordinal": 4,
-        "objectives": {"tilt_db": 1.0, "ripple_db": 0.5},
-        "topology_fingerprint": "old-topology",
-    }})
-
-    assert position.ordinal == 1
-
-
-def test_a_matching_topology_fingerprint_keeps_the_series_going(monkeypatch):
-    """The read-side guard does not fire when nothing about the topology moved."""
-
-    monkeypatch.setattr(
-        coordinator, "topology_config_fingerprint", lambda _topology: "same-topology",
-    )
-
-    position = coordinator.series_position_from_state({"round_receipt": {
-        "round_ordinal": 4,
-        "objectives": {"tilt_db": 1.0, "ripple_db": 0.5},
-        "topology_fingerprint": "same-topology",
-    }})
-
-    assert position.ordinal == 5
-
-
-def test_a_receipt_with_no_topology_fingerprint_is_not_a_mismatch():
-
-    position = coordinator.series_position_from_state({"round_receipt": {
-        "round_ordinal": 4,
-        "objectives": {"tilt_db": 1.0, "ripple_db": 0.5},
-    }})
-
-    assert position.ordinal == 5
-
-
-@pytest.mark.parametrize(
-    ("case", "receipt"),
-    [
-        ("objectives absent", {"round_ordinal": 9}),
-        (
-            "objectives present",
-            {
-                "round_ordinal": 9,
-                "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
-            },
-        ),
-    ],
-    ids=["objectives_absent", "objectives_present"],
-)
-def test_the_reader_never_clamps_the_cap_itself(case, receipt):
-
-    position = coordinator.series_position_from_state({"round_receipt": receipt})
-
-    assert position.ordinal == 10, case
-
-
-def test_the_status_block_forwards_the_receipt_to_the_screen():
-
-    receipt = {
-        "round_id": "s1",
-        "adoption": "keep_for_iteration",
-        "row": "row6_trusted_safe_passed_reachable",
-        "reason": "flatter_result_reachable",
-        "round_ordinal": 1,
-        "objectives": {"tilt_db": 2.37, "ripple_db": 0.9},
-    }
-    state = _seed_round_state()
-    state["round_receipt"] = receipt
-    v2state.save_v2_state(state)
-
-    block = v2status.crossover_v2_status_block()
-
-    assert block is not None
-    assert block["round_receipt"] == receipt, (
-        "the screen cannot name a round the status block never forwards"
-    )
 
 
 @pytest.mark.parametrize(

@@ -6,10 +6,7 @@
 
 from __future__ import annotations
 
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CHECK,
-    PHASE_MEASURE,
-)
+from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 
 from tests.crossover_v2_fixtures import (
     FakeSeams,
@@ -60,11 +57,7 @@ def test_measure_priors_carry_no_ambient_when_check_never_ran():
     measured somewhere else.
     """
     fakes = FakeSeams()
-    c = _conductor(
-        fakes,
-        accepted_phases=(PHASE_CHECK,),
-        gain_plan_db={"woofer": -11.0, "tweeter": -13.0},
-    )
+    c = _conductor(fakes, gain_plan_db={"woofer": -11.0, "tweeter": -13.0})
     _run_phase(c, 2, 2)   # MEASURE, with no CHECK consumed by THIS conductor
 
     measure_priors = next(

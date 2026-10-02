@@ -12,7 +12,6 @@ import yaml
 from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_CLOUD_VERIFY,
     PHASE_TIMING,
     PHASE_MEASURE,
     PHASE_VERIFY,
@@ -89,10 +88,6 @@ def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
         for s in c.program_for_phase(PHASE_TIMING).segments
         if s.kind == KIND_COURTESY_TONE
     }
-    assert not [
-        s for s in c.program_for_phase(PHASE_CLOUD_VERIFY).segments
-        if s.kind == KIND_COURTESY_TONE
-    ]
 
 
 def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strictly(

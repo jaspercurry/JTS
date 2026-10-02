@@ -10,7 +10,6 @@ import pytest
 
 from jasper.active_speaker.crossover_envelope_v2 import (
     CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION,
-    _PHASE_STEP,
     build_crossover_envelope_v2,
 )
 from jasper.active_speaker.measurement_programs import PROGRAM_ROWS, preset
@@ -27,7 +26,9 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
 )
 from jasper.active_speaker.round_copy import RUN_ENDED, RUN_UNDER_WAY, round_lines
 
-V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "verify")
+V2_STEP_IDS = ("speaker_setup", "microphone_check", "measure", "done")
+#: A run under way, as the capture slot holds it.
+LIVE = {"status": "awaiting_capture"}
 
 
 @pytest.mark.parametrize("placed, terminal", [(False, False), (True, False), (True, True)])
@@ -40,7 +41,7 @@ def test_round_lines_and_pose_actions_come_from_the_coordinator(placed, terminal
         facts["status"] = "complete"
     capture = {"status": "complete" if terminal else "awaiting_capture", "run": facts,
                "position_pending": None if placed else {"mover": "human", "actions": [action]}}
-    env = build_crossover_envelope_v2({**_status(phase="measure"), "capture": capture})
+    env = build_crossover_envelope_v2({**_status(), "capture": capture})
     assert env["round_lines"] == round_lines(facts, pending=not placed)
     if terminal:
         assert env["verdict_text"] == RUN_ENDED
@@ -58,14 +59,12 @@ def test_round_lines_and_pose_actions_come_from_the_coordinator(placed, terminal
     assert actions[-1]["body"] == actions[-2]["body"] == {}
 
 
-def _status(**v2) -> dict:
+def _status(capture: dict | None = None, **v2) -> dict:
     return {
         "active": True,
         "setup": {"active": True, "status": "ready"},
         "crossover_v2": v2,
-        "capture": {"status": "awaiting_capture"} if v2.get("phase") in {
-            "measure", "verify", "cloud_measure", "cloud_verify", "lateral", "timing",
-        } and not v2.get("failure") else None,
+        "capture": capture,
     }
 
 
@@ -77,44 +76,48 @@ def _every_screen_envelope() -> dict[str, dict]:
     return {
         "inactive": build_crossover_envelope_v2({"active": False}),
         "speaker_setup": build_crossover_envelope_v2({"active": True}),
-        **{phase: build_crossover_envelope_v2(_status(phase=phase))
-           for phase in ("check", "measure", "verify", "closing")},
-        "finished": build_crossover_envelope_v2({
-            **_status(), "capture": {"status": "complete", "run": {"status": "complete"}},
-        }),
+        "volume_recovery": build_crossover_envelope_v2(_status(needs_recovery=True)),
+        "awaiting_plan": build_crossover_envelope_v2(_status()),
+        "measure": build_crossover_envelope_v2(_status(LIVE)),
+        "failure": build_crossover_envelope_v2(_status(LIVE, failure={"code": "agc_behavioral_fail"})),
+        "finished": build_crossover_envelope_v2(_status({"status": "complete", "run": {"status": "complete"}})),
     }
 
 
 def test_schema_version_and_v2_step_tuple():
-    env = build_crossover_envelope_v2(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 19
+    env = build_crossover_envelope_v2(_status())
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 20
     assert env["flow"] == "v2"
     assert tuple(step["id"] for step in env["steps"]) == V2_STEP_IDS
 
 
-def test_every_journey_phase_has_a_phase_step_entry():
-    """``build_crossover_envelope_v2`` now does a direct ``_PHASE_STEP[phase]``
-    lookup (a bare ``.get(phase, "microphone_check")`` used to paper over a
-    gap by walking the stepper BACKWARDS to step 1 on the final capture — see
-    the table's own comments), so a phase missing from the table raises
-    instead of mis-stepping.
+#: A tune applied by the speaker page, as the setup block reports it.
+APPLIED_TUNE = {"active": True, "status": "ready", "applied_crossover": {"valid": True, "owner": "automatic"}}
 
-    This is the reverse direction from the ``set(_PHASE_STEP)`` tests below
-    (search ``others = set(_PHASE_STEP)``): those walk the table's OWN keys
-    and assume they are exhaustive. This one walks ``journey``'s ``PHASE_*``
-    names — the vocabulary's actual source — and checks the table covers
-    every one of them, so a phase added there without a matching entry here
-    fails at test time rather than at runtime.
-    """
-    from jasper.active_speaker.crossover_v2 import journey
 
-    phase_values = {
-        value for name, value in vars(journey).items()
-        if name.startswith("PHASE_") and isinstance(value, str)
-    }
-    assert phase_values, "journey should export at least one PHASE_* constant"
-    missing = phase_values - set(_PHASE_STEP)
-    assert not missing, f"_PHASE_STEP has no entry for: {sorted(missing)}"
+@pytest.mark.parametrize("status, screen, steps", [
+    pytest.param({"active": True}, "speaker_setup", ["active", "pending", "pending", "pending"],
+                 id="setup_unfinished"),
+    pytest.param(_status(), "awaiting_plan", ["done", "active", "pending", "pending"], id="fresh_box"),
+    pytest.param(_status({**LIVE, "run": {"program": "speaker/mark"}}), "measure",
+                 ["done", "done", "active", "pending"], id="run_in_progress"),
+    pytest.param(_status({"status": "complete", "run": {"status": "complete"}}), "finished",
+                 ["done", "done", "done", "active"], id="finished_run"),
+    pytest.param(_status({"status": "failed", "run": {"fault": "clipped"}}), "finished",
+                 ["done", "done", "done", "active"], id="failed_run"),
+    pytest.param(_status({**LIVE, "run": {"fault": "agc_behavioral_fail"}}), "finished",
+                 ["done", "done", "active", "pending"], id="live_run_with_a_fault"),
+    pytest.param(_status({**LIVE, "run": {"fault": "capture_overrun"}}), "finished",
+                 ["done", "done", "active", "pending"], id="live_run_retrying_silently"),
+    pytest.param({**_status(), "setup": APPLIED_TUNE}, "awaiting_plan",
+                 ["done", "active", "pending", "pending"], id="applied_tune"),
+])
+def test_the_stepper_reads_the_setup_and_the_live_run(status, screen, steps):
+    """#5925: the stepper follows one run; an applied tune is the chip's, not a step's."""
+    env = build_crossover_envelope_v2(status)
+    assert env["screen"] == screen
+    assert [(step["id"], step["status"]) for step in env["steps"]] == list(zip(V2_STEP_IDS, steps))
+    assert (env["applied"]["state"] != "none") is (status.get("setup") is APPLIED_TUNE)
 
 
 def test_legacy_env_still_serves_v2_envelope(monkeypatch):
@@ -131,8 +134,8 @@ def test_legacy_env_still_serves_v2_envelope(monkeypatch):
     from jasper.web.correction_crossover_flow import _build_envelope_logged
 
     monkeypatch.setenv("JASPER_CROSSOVER_FLOW", "legacy")
-    env = _build_envelope_logged(_status(phase="check"))
-    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 19
+    env = _build_envelope_logged(_status())
+    assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION == 20
     assert env["flow"] == "v2"
 
 
@@ -153,31 +156,16 @@ def test_first_experiment_needs_driver_limits_but_no_applied_profile(floor_decla
         "active": True,
         "setup": {"active": True, "status": setup_status},
         "driver_safety_profile": {"issues": [] if floor_declared else [{"code": "tweeter:required_highpass_missing"}]},
-        "crossover_v2": {"phase": "check"},
     })
     assert env["screen"] == screen
     assert _step_statuses(env)["speaker_setup"] == ("done" if floor_declared else "active")
 
 
-@pytest.mark.parametrize("phase", ["check", "measure", "verify", "closing"])
-def test_awaiting_plan_without_a_staged_run(phase):
-    env = build_crossover_envelope_v2({**_status(phase=phase), "capture": None})
+def test_awaiting_plan_without_a_staged_run():
+    env = build_crossover_envelope_v2(_status())
     assert env["screen"] == "awaiting_plan"
     assert env["next_action"] is None
     assert env["alternate_actions"] == []
-
-
-@pytest.mark.parametrize("phase", ["review", "applying", "done"])
-@pytest.mark.parametrize("receipt, current_ordinal", [(None, 1), ({"round_ordinal": 3}, 4)])
-def test_durable_completion_survives_an_empty_capture_slot(phase, receipt, current_ordinal):
-    env = build_crossover_envelope_v2({
-        **_status(phase=phase, round_receipt=receipt), "capture": None,
-    })
-    assert (env["screen"], env["terminal_status"], env["phase"]) == ("finished", "complete", phase)
-    assert env["round_ordinal"] == (None if phase == "done" else current_ordinal)
-    assert env["verdict_text"] == RUN_ENDED
-    assert env["next_action"]["id"] == "reset"
-    assert env["action_note"] is None
 
 
 @pytest.mark.parametrize("profile,round_,expected", [
@@ -212,7 +200,7 @@ def test_timing_status_lines(profile, round_, expected):
 ])
 def test_a_timing_action_leads_to_the_door_that_does_its_job(action_id, runs_a_round):
     """#5925: a speaker round measures timing; a reset or an apply opens the speaker page's tuning prompt."""
-    env = build_crossover_envelope_v2({**_status(phase="check"), "timing": {"next_action": {"id": action_id}}})
+    env = build_crossover_envelope_v2({**_status(), "timing": {"next_action": {"id": action_id}}})
     action = env["next_action"]
     assert action["id"] == action_id
     if runs_a_round:
@@ -267,10 +255,7 @@ def test_retaking_a_failure_requires_a_live_run(capture_status, expected_action)
     ("failed", "measurement_graph_unavailable"), ("failed", "unregistered_fault"),
 ])
 def test_finished_run_uses_the_registry_action_and_reset(terminal, fault):
-    env = build_crossover_envelope_v2({
-        **_status(phase="verify", candidate={"fingerprint": "candidate"}),
-        "capture": {"status": terminal, "run": {"status": terminal, "fault": fault}},
-    })
+    env = build_crossover_envelope_v2(_status({"status": terminal, "run": {"status": terminal, "fault": fault}}))
     reset = {"id": "reset", "label": "Start over",
              "endpoint": "/sound/speaker/crossover/reset", "body": {}}
     spec = REASON_REGISTRY.get(fault)
@@ -292,23 +277,20 @@ def test_staged_run_uses_the_measure_screen_and_the_existing_prompt(mover, previ
     assert env["next_action"] is None
 
 
-def test_measure_phase_is_phone_driven():
-    env = build_crossover_envelope_v2(_status(phase="measure"))
+def test_a_live_run_is_phone_driven():
+    env = build_crossover_envelope_v2(_status(LIVE))
     assert env["screen"] == "measure"
     assert env["next_action"] is None
-    assert _step_statuses(env)["measure"] == "active"
 
 
-def _lateral_headline(program: str | None) -> str:
+def _live_headline(program: str | None) -> str:
     run = {} if program is None else {"program": program}
-    status = {**_status(phase="lateral"), "capture": {"status": "awaiting_capture", "run": run}}
-    return build_crossover_envelope_v2(status)["verdict_text"]
+    return build_crossover_envelope_v2(_status({**LIVE, "run": run}))["verdict_text"]
 
 
 @pytest.mark.parametrize("row", PROGRAM_ROWS, ids=lambda row: row.purpose)
-def test_a_walks_headline_is_the_run_programs_own(row):
-    """Every take but the speaker's per-driver ones walks in the lateral phase, so the run's program words it."""
-    assert _lateral_headline(preset(row.purpose).preset) == row.run_headline
+def test_a_runs_headline_is_the_run_programs_own(row):
+    assert _live_headline(preset(row.purpose).preset) == row.run_headline
 
 
 def test_no_two_programs_share_a_headline():
@@ -317,7 +299,7 @@ def test_no_two_programs_share_a_headline():
 
 @pytest.mark.parametrize("program", [None, "", "nearfield/each"])
 def test_a_walk_no_program_owns_gets_the_neutral_headline(program):
-    assert _lateral_headline(program) == RUN_UNDER_WAY
+    assert _live_headline(program) == RUN_UNDER_WAY
 
 
 def _candidate_summary(**overrides) -> dict:
@@ -332,21 +314,13 @@ def _candidate_summary(**overrides) -> dict:
     return base
 
 
-def test_verify_phase_screen():
-    env = build_crossover_envelope_v2(_status(phase="verify", applied=True))
-    assert env["screen"] == "verify"
-    assert env["next_action"] is None
-    assert _step_statuses(env)["verify"] == "active"
-
-
 def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
     """A crash-hydrated active plan surfaces NO unresolved payload but still
     needs draining — the screen must key on needs_recovery alone."""
-    env = build_crossover_envelope_v2(_status(phase="check", needs_recovery=True))
+    env = build_crossover_envelope_v2(_status(needs_recovery=True))
     assert env["screen"] == "volume_recovery"
     assert env["next_action"]["endpoint"] == "/sound/speaker/crossover/recover-volume"
-    # And needs_recovery false ⇒ no recovery screen even with a phase set.
-    env = build_crossover_envelope_v2(_status(phase="check", needs_recovery=False))
+    env = build_crossover_envelope_v2(_status(needs_recovery=False))
     assert env["screen"] == "awaiting_plan"
 
 
@@ -354,7 +328,6 @@ def test_volume_recovery_keys_on_needs_recovery_not_unresolved():
 def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record(code):
     """A state file from an older build may still carry the retired evidence keys."""
     env = build_crossover_envelope_v2(_status(
-        applied=False,
         failure={"code": code, "pilot_heard": True},
         verify={"gate": {"reflection_measured": True}},
     ))
@@ -385,25 +358,10 @@ def test_no_registry_sentence_names_undo():
     (code, spec.template) for code, spec in REASON_REGISTRY.items()
 ])
 def test_every_registry_code_renders_without_error(code, template):
-    env = build_crossover_envelope_v2(_status(phase="measure", failure={"code": code}))
+    env = build_crossover_envelope_v2(_status(failure={"code": code}))
     assert env["schema_version"] == CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION
     assert env["screen"]
     assert env["verdict_text"]
-
-
-@pytest.mark.parametrize("phase,screen", [
-    ("measure", "measure"),
-    ("verify", "verify"),
-    ("cloud_verify", "verify"),
-])
-def test_live_session_phase_screen_is_untouched(phase, screen):
-    """No regression to the live path: a session the household is inside
-    renders the screen it renders today."""
-    env = build_crossover_envelope_v2(_status(
-        phase=phase, session_id="cap_live", applied=phase.endswith("verify"), tier="full",
-    ))
-    assert env["screen"] == screen
-    assert env["nudges"] == []
 
 
 def test_every_in_flow_action_the_envelope_mints_is_machine_actionable():

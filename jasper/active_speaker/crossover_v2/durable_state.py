@@ -13,8 +13,6 @@ from typing import Any, Mapping, Sequence
 
 from jasper.platform.json_fields import finite_float as _finite
 
-from .coordinator import ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state
-from .journey import PHASE_MEASURE
 from .topology_prescription import candidate_topology
 
 logger = logging.getLogger(__name__)
@@ -32,13 +30,11 @@ __all__ = [
 
 @dataclass(frozen=True)
 class V2ConductorSnapshot:
-    """The session's phase state, bound to its capture session (§5.6)."""
+    """The session's level state, bound to its capture session (§5.6)."""
 
     session_id: str
-    accepted_phases: tuple[str, ...] = ()
     gain_plan_db: Mapping[str, float] | None = None
     measure_gain_ceiling_db: Mapping[str, float] | None = None
-    session_phases: tuple[str, ...] = ()
 
 
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
@@ -224,13 +220,8 @@ def build_conductor_state(
 
     snap = conductor.snapshot()
     same_session = prior.get("session_id") == snap.session_id
-    # Every MEASURE-scoped carry keys on the phases this document records (#4806).
-    runs_measure = PHASE_MEASURE in snap.session_phases
     state: dict[str, Any] = {
         "session_id": snap.session_id,
-        "accepted_phases": list(snap.accepted_phases),
-        "session_phases": list(snap.session_phases),
-        "applied": prior.get("applied") is True and same_session,
         "gain_plan_db": dict(snap.gain_plan_db) if snap.gain_plan_db else None,
         "measure_gain_ceiling_db": dict(
             getattr(snap, "measure_gain_ceiling_db", None) or {}
@@ -258,12 +249,8 @@ def build_conductor_state(
         ),
         "evidence": dict(evidence) if evidence else None,
     }
-    if isinstance(prior.get("candidate"), Mapping) and (
-        same_session or (prior.get("applied") is True and not runs_measure)
-    ):
+    if isinstance(prior.get("candidate"), Mapping) and same_session:
         state["candidate"] = dict(prior["candidate"])
     if state["evidence"] is None and isinstance(prior.get("evidence"), Mapping) and same_session:
         state["evidence"] = dict(prior["evidence"])
-    state["round_receipt"] = prior.get("round_receipt")
-    state[ROUND_ORDINAL_EPOCH_STATE_KEY] = round_ordinal_epoch_from_state(prior)
     return state

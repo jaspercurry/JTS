@@ -167,15 +167,8 @@ def handle_reset(
 
     reset_result = backend.reset_measurement_journey()
 
-    # Reset the durable v2 session JOURNEY too (W6.10 fold-in). Without this,
-    # Start-over left the stale v2 candidate/verify/failure in place, so the v2
-    # envelope re-rendered "Ready to start again" with stale verify-fail actions
-    # and no start button instead of the clean microphone_check start screen
-    # (round-1 finding #4). Start-over means "restart the measurement" — the
-    # applied crossover keeps playing via the legacy applied-crossover contract,
-    # so this only resets the guided journey, not what the speaker is emitting.
-    # SELECTIVE: while a candidate is applied, the reset keeps `applied` and
-    # `attempts_loop` (``reset_v2_journey_state``).
+    # The stored failure goes too, or the page would keep its failure screen.
+    # The applied crossover keeps playing: Start Over resets the run, not the tune.
     from .correction_crossover_v2_state import reset_v2_journey_state
 
     reset_v2_journey_state()

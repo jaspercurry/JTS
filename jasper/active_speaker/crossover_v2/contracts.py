@@ -24,12 +24,10 @@ from jasper.platform.json_fields import require_finite
 from ..crossover_section import CrossoverSection
 
 __all__ = [
-    "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
     "CandidateAcousticContext",
     "CandidateFcDisagreementError",
     "CrossoverV2ContractError",
     "CrossoverV2FlowError",
-    "DEFAULT_CLOUD_MEASURE_POSITIONS",
     "DESIGN_AXIS_DEG",
     "DRIVER_ROLES",
     "DRIVER_ROLE_TWEETER",
@@ -49,16 +47,11 @@ __all__ = [
     "POSITION_AXIS_HORIZONTAL",
     "POSITION_AXIS_VERTICAL",
     "REFERENCE_MARK_DESIGN_AXIS",
-    "ROUND_RECEIPT_KIND",
     "ResponseCurve",
     "VERIFY_TOLERANCE_DB",
 ]
 
 SCHEMA_VERSION = 3
-
-#: What a banked round receipt calls itself — the discriminator a store routes
-#: on, named beside the type that emits it.
-ROUND_RECEIPT_KIND = "jts_crossover_v2_round_receipt"
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -286,28 +279,10 @@ class CandidateAcousticContext(FingerprintedRecord):
 LINEARIZATION_OUTCOME_SINGLE_BRANCH = "fitted_single_branch"
 
 
-# --------------------------------------------------------------------------- #
-# --------------------------------------------------------------------------- #
-
-# Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor
-# included, so the plan emits ``N − 1`` additional prompted positions after
-# MEASURE. Read that literally: the cloud carries ``N − 1`` SUMMED CURVES, not
-# N — the anchor is a per-driver MEASURE capture with no ``summed_response``.
-#
-# 9 gives ``N − 1`` = 8 curves, the "N≈8-12 gated sweeps" floor of
-# docs/historical/linearization-campaign-2026-07.md fundamental 1. Beyond that
-# floor it is a WALL-CLOCK choice, not a statistical optimum: more positions is
-# strictly better and the session-length ceiling is what stops us at 9. Treat it
-# as a constant, never as a promise about accuracy.
-DEFAULT_CLOUD_MEASURE_POSITIONS = 9
 # VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
 # measured against the notch-excluded max
 # (`program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
-# …and the key that number is compared against, which is why it lives beside it:
-# the absolute VERIFY tracking error read by both the live attempts loop and the
-# offline repeat-floor replay. Lower is better.
-ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 
 #: The spot CHECK asks the household to stand the microphone on. An identity,
 #: not a coordinate: nothing measures where the mark physically is.
@@ -393,9 +368,3 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 #: prompted move of its own is a design-axis capture at `0`. `None` is a
 #: different fact — "no side was declared" — never a synonym for this.
 DESIGN_AXIS_DEG = 0
-
-#: The three states a plan §7 claim can be in; ``not_evaluated`` is first-class
-#: and never collapses into the other two (R18).
-CLAIM_PASS = "pass"
-CLAIM_FAIL = "fail"
-CLAIM_NOT_EVALUATED = "not_evaluated"

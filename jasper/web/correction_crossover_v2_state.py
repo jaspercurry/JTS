@@ -18,9 +18,6 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from jasper.platform.atomic_io import advisory_file_lock, atomic_write_text
-from jasper.active_speaker.crossover_v2.coordinator import (
-    ROUND_ORDINAL_EPOCH_STATE_KEY, round_ordinal_epoch_from_state,
-)
 from jasper.active_speaker.crossover_v2.durable_state import build_conductor_state
 from jasper.active_speaker import driver_base_trim
 from jasper.platform.log_event import log_event
@@ -160,8 +157,10 @@ def persist_execution_result(session_id: str, **result: Any) -> None:
         save_v2_state(state, durable=True)
 
 
-def clear_v2_state() -> None:
-    with _state_lock:
+def reset_v2_journey_state() -> None:
+    """Start Over forgets the run. The applied tune is the applied profile's, not this file's."""
+    # Held, so an apply's read-modify-write cannot write the old run back after the unlink.
+    with v2_state_locked():
         try:
             _state_path().unlink()
         except FileNotFoundError:
@@ -174,44 +173,16 @@ def clear_v2_state() -> None:
             )
 
 
-def reset_v2_journey_state() -> None:
-    """Clear the journey; keep the applied flag and the round-ordinal epoch."""
-    # One hold across the read and the write: an apply between them would
-    # otherwise lose the record it just wrote.
-    with v2_state_locked():
-        state = load_v2_state()
-        if state is None:
-            return
-        epoch = round_ordinal_epoch_from_state(state)
-        applied = bool(state.get("applied"))
-        if not applied and not epoch:
-            clear_v2_state()
-            return
-        receipt = state.get("round_receipt")
-        if applied and receipt is not None:
-            epoch += 1
-            ordinal = receipt.get("round_ordinal") if isinstance(receipt, Mapping) else None
-            log_event(logger, "correction.crossover_v2_journey_reset_advanced_epoch",
-                      round_ordinal_epoch=epoch,
-                      reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
-        save_v2_state({"session_id": None, "accepted_phases": [], "applied": applied,
-                       "gain_plan_db": None, "candidate": None, "failure": None, "evidence": None,
-                       ROUND_ORDINAL_EPOCH_STATE_KEY: epoch})
-        log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
-                  else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
-
-
 def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:
     return (lambda path: camilla.set_config_file_path(path, best_effort=False),
             lambda: camilla.get_config_file_path(best_effort=False))
 
 
 def observe_apply_success(selected_candidate: Mapping[str, Any] | None) -> None:
-    """Record the completed apply and the candidate it installed."""
+    """Record the candidate a completed apply installed."""
     state = load_v2_state() or {}
     if selected_candidate is not None:
         state["candidate"] = dict(selected_candidate)
-    state["applied"] = True
     # ``failure`` stays as found: a run's terminal code (a Stop, a capture
     # timeout) can land while this apply is in flight, and the record needs
     # both facts.
@@ -313,31 +284,9 @@ def persist_terminal_failure(
     conductor: Any, code: str, *, refusals: Sequence[str] = (), detail: str = "",
     failed_roles: Sequence[str] = (),
 ) -> None:
-    """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
-    with the session (restart at CHECK); post-apply, the applied candidate
-    survives.
-
-    ``REASON_APPLY_FAILED`` is exempted
-    from the pre-apply evidence reset. The §5.6 rationale for wiping
-    ``accepted_phases``/``gain_plan_db`` is that a DEAD session makes the mic
-    position unverifiable — but an auto-apply that came back blocked or
-    errored says nothing about the mic position; MEASURE's own evidence is
-    still exactly as good as it was. Keeping MEASURE accepted here is what
-    lets ``crossover_v2_phase`` resolve to ``PHASE_APPLYING`` (not
-    ``PHASE_CHECK``) so the envelope's apply-step failure screen — and the
-    specific blocked-issue nudge layered onto it — can actually render.
-    """
-    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
-
+    """Write a session's terminal failure; a write past a commit point waits longer."""
     with v2_state_locked(timeout_s=POST_COMMIT_STATE_LOCK_TIMEOUT_S):
         persist_conductor_state(
             conductor, failure_code=code, failure_refusals=refusals, failure_detail=detail,
             failure_roles=failed_roles,
         )
-        state = load_v2_state()
-        if state is None:
-            return
-        if not state.get("applied") and code != REASON_APPLY_FAILED:
-            state["accepted_phases"] = []
-            state["gain_plan_db"] = None
-        save_v2_state(state)

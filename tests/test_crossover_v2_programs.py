@@ -58,7 +58,6 @@ from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
     COURTESY_PRELUDE_PHASES,
-    GROUP_SUMMED_SWEEP_PHASES,
     SUMMED_SWEEP_PHASES,
     NoProgramForPhaseError,
     SessionExcitation,
@@ -171,7 +170,6 @@ def test_the_verify_program_is_the_one_that_shipped():
     ("check", "drivers", -60.0, "5910bb4eaab0311a5bbf88b64a24682da01cc6270fe3994b0552748d3a22de8f"),
     ("measure", "drivers", None, GOLDEN_UNANNOUNCED["measure"]),
     ("verify", "timing", None, GOLDEN_DEEP_CAP["verify"]),
-    ("cloud_verify", "timing", None, GOLDEN_UNANNOUNCED["cloud"]),
     ("verify", "candidate_branches", None, "1a8a0f18d2748f345a50422466c567431c478a3f73c39580e577a494d6985816"),
 ])
 def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, expected):
@@ -284,25 +282,16 @@ def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
     assert ex.measure_program(GAIN_PLAN_DB).stimulus_id == GOLDEN_DEEP_CAP["measure"]
 
 
-def test_a_position_plays_the_verify_sweep_with_the_prelude_taken_off(monkeypatch):
-    """The cloud twin is the summed sweep at the same clamp, unannounced.
-
-    Same round trip as MEASURE's, and it is what says the split costs nothing
-    acoustically: announce the position groups again and the cloud program
-    becomes the VERIFY program's own id, so the two differ in the prelude and in
-    nothing else — not in the min-cap clamp that is their only level guard.
+def test_a_position_plays_the_verify_sweep_with_the_prelude_taken_off():
+    """The cloud twin is the summed sweep at the same clamp, unannounced: it
+    differs from VERIFY's program in the prelude and in nothing else — not in
+    the min-cap clamp that is their only level guard.
     """
     ex = _excitation(CAPS)
 
     assert ex.cloud_program().stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
     assert ex.cloud_program().stimulus_id != ex.verify_program().stimulus_id
-
-    monkeypatch.setattr(
-        programs, "COURTESY_PRELUDE_PHASES",
-        frozenset(COURTESY_PRELUDE_PHASES | GROUP_SUMMED_SWEEP_PHASES),
-    )
-
-    assert ex.cloud_program().stimulus_id == GOLDEN_DEEP_CAP["verify"]
+    assert ex.verify_program(courtesy_prelude=False).stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
 
 
 def test_the_conductor_composes_through_the_same_owner():
@@ -320,10 +309,6 @@ def test_the_conductor_composes_through_the_same_owner():
     assert (
         c.program_for_phase(journey.PHASE_MEASURE).stimulus_id
         == GOLDEN_UNANNOUNCED["measure"]
-    )
-    assert (
-        c.program_for_phase(journey.PHASE_CLOUD_VERIFY).stimulus_id
-        == GOLDEN_UNANNOUNCED["cloud"]
     )
 
 
@@ -426,28 +411,10 @@ def test_the_compared_pair_gets_the_same_object():
     c = _conductor(CAPS)
     verify = c.program_for_phase(journey.PHASE_VERIFY)
 
-    for phase in sorted(SUMMED_SWEEP_PHASES - GROUP_SUMMED_SWEEP_PHASES):
+    for phase in sorted(SUMMED_SWEEP_PHASES):
         assert c.program_for_phase(phase) is verify
 
     assert journey.PHASE_TIMING in SUMMED_SWEEP_PHASES
-    assert journey.PHASE_TIMING not in GROUP_SUMMED_SWEEP_PHASES
-
-
-def test_every_position_group_gets_the_same_object():
-    """The other half of the invariant, and it is ``is`` for the same reason.
-
-    A group's positions are combined into one curve, so a composer that handed
-    two of them different-but-equal programs would be combining across a
-    difference nothing downstream can see.
-    """
-    c = _conductor(CAPS)
-    cloud = c.program_for_phase(journey.PHASE_CLOUD_MEASURE)
-
-    for phase in sorted(GROUP_SUMMED_SWEEP_PHASES):
-        assert c.program_for_phase(phase) is cloud
-
-    assert cloud is not c.program_for_phase(journey.PHASE_VERIFY)
-    assert GROUP_SUMMED_SWEEP_PHASES < SUMMED_SWEEP_PHASES
 
 
 def test_a_lateral_pose_replays_the_measure_object_verbatim():
@@ -467,7 +434,6 @@ def test_measure_before_the_gain_solve_refuses_rather_than_guessing():
             check=ex.check_program(),
             measure=None,
             verify=ex.verify_program(),
-            cloud=ex.cloud_program(),
         )
 
 
@@ -479,7 +445,6 @@ def test_an_unplanned_phase_refuses():
             check=ex.check_program(),
             measure=None,
             verify=ex.verify_program(),
-            cloud=ex.cloud_program(),
         )
 
 
@@ -510,15 +475,11 @@ def test_a_capture_the_household_began_inside_a_running_session_is_not():
 
     MEASURE and each lateral pose are begun by the household's own tap at a
     position it has just walked to, inside a session whose measurement window is
-    already held; a prompted cloud position likewise. 3.6 s each, twelve times
-    on a Full journey.
+    already held. 3.6 s each, twelve times on a Full journey.
     """
     c = _conductor(CAPS)
 
-    for phase in (
-        journey.PHASE_MEASURE, journey.PHASE_LATERAL,
-        journey.PHASE_CLOUD_MEASURE, journey.PHASE_CLOUD_VERIFY,
-    ):
+    for phase in (journey.PHASE_MEASURE, journey.PHASE_LATERAL):
         assert not _has_prelude(c.program_for_phase(phase)), phase
         assert not courtesy_prelude_for_phase(phase), phase
 
