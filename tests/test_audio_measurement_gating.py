@@ -478,32 +478,6 @@ def test_gate_impulse_response_ungateable_returns_ir_unchanged():
     assert applied is False
 
 
-def test_apply_gate_fragment_reuses_signal_gate_without_inspecting_noise():
-    """A paired IR receives the exact half-Hann operator chosen by signal."""
-
-    n_samples = 2000
-    signal, _ = _delta_ir_with_reflection(n_samples, 500, 4.0, -6.0)
-    signal += 1e-3
-    paired = np.linspace(-0.5, 0.5, n_samples, dtype=np.float64)
-
-    gated_signal, fragment = gating.gate_impulse_response(signal, SR)
-    gated_paired = gating.apply_gate_fragment(paired, SR, fragment)
-
-    signal_window = np.divide(
-        gated_signal,
-        signal,
-        out=np.zeros_like(gated_signal),
-        where=signal != 0,
-    )
-    paired_window = np.divide(
-        gated_paired,
-        paired,
-        out=np.zeros_like(gated_paired),
-        where=paired != 0,
-    )
-    assert paired_window == pytest.approx(signal_window, abs=1e-5)
-
-
 def test_gate_impulse_response_empty_ir_does_not_raise():
     gated, fragment = gating.gate_impulse_response(np.array([], dtype=np.float64), SR)
     assert gated.shape == (0,)
@@ -670,16 +644,14 @@ def test_gate_decisions_are_unchanged_by_the_disclosure_contract(name):
 
 
 def test_the_window_is_built_from_the_onset_not_the_reported_arrival():
-    """The structural reason a reported ToA cannot move a window.
-
-    ``apply_gate_fragment`` rebuilds the operator from ``direct_peak_ms``
-    and ``window_ms`` ALONE. If the reported arrival ever leaked into the
-    window, the rebuild would disagree with what was actually applied.
-    """
+    """Reflection arrival is reported separately from the onset bounding the window."""
     ir, _ = _delta_ir_with_reflection(int(0.030 * SR), 500, 4.0, -6.0)
     ir = ir + 1e-3
     gated, fragment = gating.gate_impulse_response(ir, SR)
-    rebuilt = gating.apply_gate_fragment(ir, SR, fragment)
+    peak = round(fragment["direct_peak_ms"] * SR / 1000.0)
+    end = round(fragment["reflection_onset_ms"] * SR / 1000.0)
+    window = gating.build_gate_window(ir.size, peak_idx=peak, span=end - peak)
+    rebuilt = (ir * window).astype(np.float32)
     assert np.array_equal(gated, rebuilt)
     # ... and the arrival really is a DIFFERENT number from the bound here,
     # so the equality above is not passing by coincidence.
@@ -1129,24 +1101,6 @@ def test_the_trusted_floor_does_not_reach_the_gate_window_or_validity_floor():
         gating.f_trusted_floor_hz(window_s)
     )
     assert fragment["f_trusted_hz"] > fragment["f_valid_floor_hz"]
-
-
-def test_apply_gate_fragment_still_ignores_every_contract_field():
-    """The paired-noise seam reads ``direct_peak_ms``/``window_ms`` only, so
-    stripping the contract's additions must not change the operator."""
-    n = 2000
-    signal, _ = _delta_ir_with_reflection(n, 500, 4.0, -6.0)
-    signal += 1e-3
-    paired = np.linspace(-0.5, 0.5, n, dtype=np.float64)
-    _gated, fragment = gating.gate_impulse_response(signal, SR)
-    stripped = {
-        k: v for k, v in fragment.items()
-        if k in {"direct_peak_ms", "window_ms", "floor_source"}
-    }
-    assert np.array_equal(
-        gating.apply_gate_fragment(paired, SR, fragment),
-        gating.apply_gate_fragment(paired, SR, stripped),
-    )
 
 
 def test_exempt_gating_block_empty_ir_does_not_raise():
