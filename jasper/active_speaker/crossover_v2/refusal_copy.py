@@ -109,8 +109,8 @@ REASON_DRIVER_SENSITIVITY_UNDECLARED = "driver_sensitivity_undeclared"
 # above this session's SPL ceiling, from the speaker or from the room
 # (``audio_measurement.wired_capture.WiredSplCeilingExceeded``, wrapped as
 # ``crossover_v2.program_transaction.StimulusCaptureStopped``). Its own code,
-# not ``internal_error``: the household can act on this by waiting for quiet or
-# lowering the level, which is not true of a genuine host fault. Terminal.
+# not ``internal_error``: the household can act on this by waiting for quiet,
+# which is not true of a genuine host fault. Terminal.
 REASON_SPL_CEILING_EXCEEDED = SPL_CEILING_EXCEEDED
 
 REASON_MEASUREMENT_BASELINE_UNAVAILABLE = "measurement_baseline_unavailable"
@@ -170,6 +170,8 @@ REASON_ARM_HOST_STUCK = "arm_host_stuck"
 REASON_RETRIES_SPENT = "retries_spent"
 #: A take of a set that levels itself, whose set found no level to play at (ADR-0361 §3, ADR-0403).
 REASON_LEVEL_UNSOLVED = "level_unsolved"
+#: A planned take the run never began, because it stopped first (``RunManifest.not_measured``).
+REASON_NOT_REACHED = "not_reached"
 # The position gate's three refusals, reachable by EITHER gated shape
 # (``TIER_REMOTE`` and a hand-walked round on the WIRED capture source), so the
 # copy names neither mover. All three TEMPLATE_SESSION_RESTART: no retry can
@@ -290,11 +292,12 @@ class ReasonSpec:
     # specific 1 vs 2 does not change behaviour. See
     # :data:`NON_RETRIABLE_CODES`.
     retry_budget: int
-    # Short banner shown while a transient code auto-retries (template 1). Empty
+    # A silent auto-retry's diagnosis and the retry JTS makes (template 1). Empty
     # for codes whose template is a decision screen.
     banner: str
-    # The fix/action copy the decision-screen template renders. One reason, one
-    # action (the Language guide).
+    # What a run that ended on this code says: the fix/action copy the
+    # decision-screen template renders (one reason, one action: the Language
+    # guide), or a silent auto-retry's diagnosis alone, whose retry is over.
     message: str
     # The row's own action: the HARD-STOP screen's button (its default is
     # a generic destination rather than a load-bearing control) and the
@@ -324,7 +327,10 @@ def _retriable_reason(
     auto_retry: bool = False,
     capture_quality: bool = False,
 ) -> ReasonSpec:
-    """Build a retryable registry row from one structured copy source."""
+    """Build a retryable registry row from one structured copy source.
+
+    A silent auto-retry's banner says JTS is measuring again, so a run that ended
+    on it says its diagnosis alone."""
     if retry_budget <= 0:
         raise ValueError("a retryable reason needs a positive retry budget")
     return ReasonSpec(
@@ -332,7 +338,7 @@ def _retriable_reason(
         template,
         retry_budget,
         copy.message if auto_retry else "",
-        "" if auto_retry else copy.message,
+        copy.diagnosis if auto_retry else copy.message,
         capture_quality=capture_quality,
     )
 
@@ -1285,7 +1291,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         REASON_SPL_CEILING_EXCEEDED, TEMPLATE_HARD_STOP, 0, "",
         "The measurement stopped because the microphone heard a sound over this speaker's level stop. "
         "The sound may have come from the speaker or from the room. "
-        "Wait for quiet, then measure again. If it stops again, lower the level.",
+        "Wait for quiet, then measure again. If it stops again in a quiet room, report it.",
     ),
     REASON_INTERNAL_ERROR: ReasonSpec(
         REASON_INTERNAL_ERROR, TEMPLATE_FIX_AND_RETRY, 0, "",
@@ -1298,6 +1304,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
         REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so no measurement was taken there.",
+        REASON_NOT_REACHED: "The run stopped before JTS measured this position.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
         "cancelled": "The measurement was stopped before it finished.",
@@ -1425,9 +1432,7 @@ def reason_message(
     """
     if code == REASON_CHANNEL_MAP_MISMATCH:
         return channel_map_mismatch_message(failed_roles)
-    # ``or spec.banner`` for the silent-auto-retry codes, whose household
-    # text IS the banner and whose ``message`` is empty by construction.
-    return spec.message or spec.banner
+    return spec.message
 
 
 # Conditions no extra attempt can clear.

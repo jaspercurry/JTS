@@ -208,7 +208,7 @@ def test_classifier_returns_none_outside_the_program_family():
 def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
     """A capture stop is outside the program family (it stops a TAKE, not an
     admission), but a ceiling trip must not fall back to internal_error — the
-    household can act on this one by lowering the level."""
+    household can act on this one by waiting for quiet."""
     ceiling_trip = StimulusCaptureStopped(
         "spl_ceiling_exceeded", "measured above ceiling", PlaybackObservation(),
     )

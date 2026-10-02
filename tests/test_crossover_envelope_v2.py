@@ -22,6 +22,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
     REASON_REGISTRY,
     REASON_VERIFY_INCONCLUSIVE,
+    TRANSIENT_AUTO_RETRY_CODES,
     reason_message,
 )
 from jasper.active_speaker.round_copy import RUN_ENDED, RUN_UNDER_WAY, round_lines
@@ -359,6 +360,16 @@ def test_a_failure_renders_its_no_evidence_copy_over_an_old_evidence_record(code
     ))
 
     assert env["verdict_text"] == REASON_REGISTRY[code].message
+
+
+@pytest.mark.parametrize("code", sorted(TRANSIENT_AUTO_RETRY_CODES))
+def test_a_run_that_ended_on_a_silent_retry_code_says_no_retry(code):
+    """The banner says JTS is measuring again, which a run that ended is not."""
+    spec = REASON_REGISTRY[code]
+
+    env = build_crossover_envelope_v2(_status(applied=False, failure={"code": code}))
+
+    assert env["verdict_text"] == spec.message != spec.banner
 
 
 def test_no_registry_sentence_names_undo():

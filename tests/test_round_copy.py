@@ -6,8 +6,8 @@ import re
 import pytest
 
 from jasper.active_speaker.crossover_v2.refusal_copy import (
-    CAPTURE_QUALITY_REFUSAL_CODES, REASON_CAPTURE_OVERRUN, REASON_CLIPPED, REASON_LEVEL_UNSOLVED,
-    REASON_RETRIES_SPENT, REASON_SNR_FLOOR, TRANSIENT_AUTO_RETRY_CODES, refusal_copy_for,
+    CAPTURE_QUALITY_REFUSAL_CODES, REASON_CAPTURE_OVERRUN, REASON_CLIPPED, REASON_LEVEL_UNSOLVED, REASON_NOT_REACHED,
+    REASON_SNR_FLOOR, TRANSIENT_AUTO_RETRY_CODES, refusal_copy_for,
 )
 from jasper.active_speaker import round_copy
 from jasper.active_speaker.round_copy import (
@@ -50,24 +50,33 @@ def test_retake_uses_registry_words_without_codes(reason):
     assert refusal_copy_for(reason)[0] in line
     assert "_" not in line
     coverage = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": [{"pose": {"azimuth_deg": 20}, "reason": reason}]})
-    assert refusal_copy_for(REASON_RETRIES_SPENT if reason in TRANSIENT_AUTO_RETRY_CODES else reason)[0] in coverage[-1]
+    assert refusal_copy_for(reason)[0] in coverage[-1]
     assert "_" not in coverage[-1]
 
 
-@pytest.mark.parametrize("reasons, said", [
-    *(([retry, REASON_LEVEL_UNSOLVED], [REASON_LEVEL_UNSOLVED]) for retry in sorted(TRANSIENT_AUTO_RETRY_CODES)),
-    ([REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED], [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]),
-    ([REASON_CLIPPED, REASON_CAPTURE_OVERRUN], [REASON_RETRIES_SPENT]),
+@pytest.mark.parametrize("reasons", [
+    *([retry, REASON_LEVEL_UNSOLVED] for retry in sorted(TRANSIENT_AUTO_RETRY_CODES)),
+    [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED],
+    [REASON_CLIPPED, REASON_CAPTURE_OVERRUN],
 ])
-def test_a_not_measured_line_gives_the_reasons_that_still_stand(reasons, said):
-    """A retry's copy says JTS is measuring again, which a round that ended cannot: a pose whose retakes
-    ran out says they did, unless another reason says more. A set that found no level says so alone."""
+def test_a_not_measured_line_keeps_every_cause_of_its_pose(reasons):
+    """A pose that lists a retry's cause and another reason says both: JTS was busy, and then found no level."""
     rows = [{"pose": {"azimuth_deg": 20}, "reason": reason} for reason in reasons]
 
     line = coverage_lines({}, {"honoured": {"retakes": 0}, "not_measured": rows})[-1]
 
-    assert line.endswith(" ".join(refusal_copy_for(code)[0] for code in said))
-    assert not [code for code in TRANSIENT_AUTO_RETRY_CODES - set(said) if refusal_copy_for(code)[0] in line]
+    assert line.endswith(" ".join(refusal_copy_for(code)[0] for code in reasons))
+
+
+def test_each_not_measured_pose_says_its_own_reason():
+    """A pose the run never reached does not take the stop reason of the pose it stopped at."""
+    rows = [{"pose": {"azimuth_deg": 0}, "reason": REASON_CLIPPED},
+            {"pose": {"azimuth_deg": 30}, "reason": REASON_NOT_REACHED}]
+
+    stopped, unreached = coverage_lines({}, {"honoured": {"retakes": 7}, "not_measured": rows})[-2:]
+
+    assert stopped.endswith(refusal_copy_for(REASON_CLIPPED)[0])
+    assert unreached.endswith(refusal_copy_for(REASON_NOT_REACHED)[0])
 
 
 def test_manual_redo_and_ended_round_lines():

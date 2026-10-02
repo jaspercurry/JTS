@@ -23,7 +23,7 @@ from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.measure_spec import MeasureSpec
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.record_index import Measurement, measurement_documents, take_purpose
-from .crossover_v2.refusal_copy import TakeVerdict
+from .crossover_v2.refusal_copy import REASON_NOT_REACHED, TakeVerdict
 from .crossover_v2.session_seams import RecordStore
 from .measurement_programs import POSE_KIND_CLOSE, BASE_CANDIDATE, candidate_identity
 
@@ -213,6 +213,7 @@ class RunManifest:
     _context: dict[str, Any] = field(default_factory=dict, repr=False)
     _ordinal: int = 0
     _attempts: int = 0
+    _begun: set[int] = field(default_factory=set, repr=False)
     _sets: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
     _chosen: dict[tuple[int, int], str] = field(default_factory=dict, repr=False)
     _banked: dict[str, Mapping[str, Any]] = field(default_factory=dict, repr=False)
@@ -244,7 +245,12 @@ class RunManifest:
         landed = {index for index, _ordinal in self._chosen}
         missing = {take["index"] for take in self.takes
                    if (take["index"], take["stimulus_ordinal"]) not in self._chosen}
-        return [{**stop, "reason": stop.get("reason") or self.reason or "take_incomplete"}
+        # The run's stop reason belongs to the stops it began. A stop it never began was not reached,
+        # unless the operator completed the run early, which waives the rest.
+        halted = self.reason not in ("", "complete_requested")
+        return [{**stop, "reason": stop.get("reason") or (
+                    REASON_NOT_REACHED if halted and stop["index"] not in self._begun
+                    else self.reason or "take_incomplete")}
                 for stop in self.planned if stop["index"] not in landed or stop["index"] in missing]
 
     @property
@@ -258,6 +264,7 @@ class RunManifest:
     def begin(self, stop: Mapping[str, Any], *, attempt: int, pose_index: int, replay: bool = False) -> None:
         self.pending_records.clear()
         self._attempts += 1
+        self._begun.add(stop["index"])
         self._context = {**stop, "attempt": attempt, "pose_index": pose_index, **({"replay": True} if replay else {})}
 
     def discard_pose(self, pose_index: int) -> None:

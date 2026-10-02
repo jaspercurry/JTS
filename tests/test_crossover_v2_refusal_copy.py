@@ -166,6 +166,7 @@ def test_a_round_view_refusal_resolves_to_its_registry_action(code, action):
     # The commissioning stop stays a stop no retry clears (non-negotiable 1); its copy names the room as a cause.
     (refusal_copy.REASON_SPL_CEILING_EXCEEDED, refusal_copy.TEMPLATE_HARD_STOP, "speaker_setup"),
     (refusal_copy.REASON_LEVEL_UNSOLVED, refusal_copy.TEMPLATE_SESSION_RESTART, "restart_session"),
+    (refusal_copy.REASON_NOT_REACHED, refusal_copy.TEMPLATE_SESSION_RESTART, "restart_session"),
 ])
 def test_a_stop_with_no_action_of_its_own_offers_its_templates(code, template, action):
     spec = refusal_copy.REASON_REGISTRY[code]

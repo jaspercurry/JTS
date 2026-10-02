@@ -378,6 +378,11 @@ class _Control(Exception):
     pass
 
 
+def _is_replay(attempt: int, ledger: SlotAttempts, spent: int) -> bool:
+    """A take after the first that spent no retry, such as the play after a level probe (#5722)."""
+    return attempt > 1 and ledger.by_household + ledger.by_speaker == spent
+
+
 async def _grant(gate: PositionGate | None, index: int, attempt: int, entry: Any, signals: RunSignals,
                  admit: Callable[[], None] | None = None) -> None:
     while True:
@@ -644,12 +649,12 @@ async def _run(
             if retry and retry.next == "fix_and_retake" and retry.fault and entry:
                 entry = SimpleNamespace(screen={**entry.screen, "body": f"{REASON_REGISTRY[retry.fault].message} {PLACE_MICROPHONE}"})
             take_started: float | None = None
+            spent = ledger.by_household + ledger.by_speaker
             try:
                 if signals.stop.is_set():
                     raise CaptureStopped("capture stopped")
                 # A take spends a retry only when it retries a pose that already admitted one (#5722).
                 ledger.charge = retry.charge if retry is not None and ledger.admitted else "replay"
-                spent = ledger.by_household + ledger.by_speaker
                 if gate:
                     gate.publish(progress)
                 await _grant(gate, placed + 1, placed + 1 + grant_epoch, entry, signals,
@@ -674,7 +679,7 @@ async def _run(
                     gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index,
-                               replay=attempt > 1 and ledger.by_household + ledger.by_speaker == spent)
+                               replay=_is_replay(attempt, ledger, spent))
                 # The bank judges each take before it writes the record (ADR-0383).
                 manifest.judge = partial(judge, item, spec)
                 held: list[Callable[[], None]] = []
@@ -796,7 +801,8 @@ async def _run(
                 manifest.cancelled = isinstance(exc, asyncio.CancelledError)
                 manifest.stopped_at = {"pose_index": item.pose_index, "index": item.stop["index"]}
                 if attempts[offset] != attempt:
-                    manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index)
+                    manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index,
+                                   replay=_is_replay(attempt, ledger, spent))
                 fault = manifest.reason if manifest.reason in REASON_REGISTRY else REASON_INTERNAL_ERROR
                 already_banked = {take["record_id"] for take in manifest.takes}
                 for record, record_id in attempt_records():

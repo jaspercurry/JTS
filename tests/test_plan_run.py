@@ -44,7 +44,8 @@ from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
     REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_LEVEL_OFF_TARGET, REASON_RETRIES_SPENT,
-    REASON_INTERNAL_ERROR, REASON_CAPTURE_OVERRUN, REASON_LEVEL_UNSOLVED, REASON_SNR_FLOOR, TakeVerdict,
+    REASON_INTERNAL_ERROR, REASON_CAPTURE_OVERRUN, REASON_LEVEL_UNSOLVED, REASON_NOT_REACHED, REASON_SNR_FLOOR,
+    REASON_USER_STOPPED, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -324,11 +325,12 @@ def test_unresolved_stop_skips_only_capture_quality_refusals(monkeypatch, qualit
     assert result.status == "partial"
     assert result.reason == ("" if quality_refusal else reason)
     assert fakes.play.bearings == ([0, 20, 20, 20, 20, 40] if quality_refusal else [0, 20])
-    assert [stop["index"] for stop in result.not_measured] == ([2] if quality_refusal else [2, 3])
-    assert all(stop["reason"] == reason for stop in result.not_measured)
+    assert [(stop["index"], stop["reason"]) for stop in result.not_measured] == (
+        [(2, reason)] if quality_refusal else [(2, reason), (3, REASON_NOT_REACHED)])
 
 
 def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
+    """The stop that clipped keeps the run's reason. A stop the run never began was not reached."""
     verdicts = iter([
         TakeVerdict(True),
         *(TakeVerdict(False, REASON_CLIPPED, next="retake_quieter", next_gain_db=-24,
@@ -340,7 +342,8 @@ def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
 
     assert result.reason == REASON_CLIPPED
     assert fakes.play.bearings == [0, *([20] * 7)]
-    assert [stop["index"] for stop in result.not_measured] == [2, 3]
+    assert [(stop["index"], stop["reason"]) for stop in result.not_measured] == [
+        (2, REASON_CLIPPED), (3, REASON_NOT_REACHED)]
 
 
 @pytest.mark.parametrize("action", ["retake", "complete"])
@@ -362,7 +365,7 @@ def test_host_signals_finish_current_take_and_keep_prior_evidence(action):
     else:
         assert fakes.play.bearings == [0]
         assert result.status == "partial"
-        assert len(result.not_measured) == 1
+        assert [row["reason"] for row in result.not_measured] == ["complete_requested"]
 
 
 def test_progress_and_manifest_are_published_during_the_run():
@@ -397,8 +400,8 @@ def test_incomplete_take_obeys_verdict_and_accounts_for_remaining_stops(monkeypa
     assert result.takes[0]["quality"]["status"] == TAKE_INCOMPLETE
     assert result.takes[0]["fault"] == REASON_CLIPPED
     assert result.takes[0]["next"] == ("stop" if action == "accept" else action)
-    assert [stop["index"] for stop in result.not_measured] == ([] if retried else [1, 2])
-    assert all(stop["reason"] == REASON_CLIPPED for stop in result.not_measured)
+    assert [(stop["index"], stop["reason"]) for stop in result.not_measured] == (
+        [] if retried else [(1, REASON_CLIPPED), (2, REASON_NOT_REACHED)])
 
 
 @pytest.mark.parametrize("failure,code,reason", [
@@ -944,7 +947,7 @@ def _heard_analysis(record):
 
 
 def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at=(), web=True, chain=None,
-                  room_gain_db=0.0, verdicts=None, redo_when_unmeasured=None, caps_db=None):
+                  room_gain_db=0.0, verdicts=None, redo_when_unmeasured=None, caps_db=None, stop_at=None):
     """A plan whose recordings pass, admitted by the conductor as a web run's are
     (or, not ``web``, run as the bass ladder runs it: no gate, no ``admit``) and
     judged on the level each take read; the microphone is re-placed at take
@@ -955,7 +958,7 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
     over 0 dBFS. ``verdicts`` answers a take by
     its number instead of its assessment, where it returns one. The operator
     presses Redo just as the planned take ``redo_when_unmeasured`` is left
-    unmeasured."""
+    unmeasured, and Stop as take ``stop_at`` is judged."""
     fakes, takes, signals = FakeSeams(), count(1), plan_run.RunSignals()
     gate = _RedoOnPlacementGate(signals) if 0 in redo_at else AnsweredGate()
     manifest = RunManifest("run", _Store(fakes.records))
@@ -974,6 +977,8 @@ def _run_levelled(request, readings, *, replace_at=None, ceiling_db=0.0, redo_at
         take = next(takes)
         if take in redo_at:
             signals.retake.set()
+        if take == stop_at:
+            signals.request_stop()
         if take == replace_at:
             return TakeVerdict(False, next="fix_and_retake", charge="operator")
         return (verdicts and verdicts(take)) or capture_dispatch.assess(analysis, **kwargs)
@@ -1035,6 +1040,21 @@ def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, rungs, 
     assert [p.get("retake_reason") for p in played.values()] == notices
     assert result.to_dict()["honoured"]["retakes"] == gate.progress[-1]["retakes"] == retakes
     assert gate.progress[-1]["budget"]["by_speaker"] == retakes
+
+
+@pytest.mark.parametrize("readings, stop_at, retakes", [
+    ((66.0,), 1, 0), ((66.0, 86.0), 2, 0), ((66.0, 86.0, 86.0), 3, 1),
+], ids=["after-the-probe", "after-a-missed-take", "after-a-retake"])
+def test_a_stop_counts_no_retake_for_a_play_it_kept_from_starting(readings, stop_at, retakes):
+    """Stop pressed as a take is judged ends the run before the next play. That play is no retake: it
+    never played, and a probe's next play spends none. A retake that played still counts."""
+    request = ac.request_for_preset(Preset("nearfield/each", (
+        Pose(0, 0, kind="close", distance_m=0.015, driver="woofer"),), purposes=("reference",), stimulus=NEAR_FIELD))
+
+    result, fakes, _, gate = _run_levelled(request, readings, stop_at=stop_at)
+
+    assert (len(fakes.play.rungs), result.reason) == (stop_at, REASON_USER_STOPPED)
+    assert result.to_dict()["honoured"]["retakes"] == gate.progress[-1]["retakes"] == retakes
 
 
 def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
@@ -2612,7 +2632,7 @@ async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, t
             play.assert_not_awaited()
         await packet.finish()
         assert packet.runs["run"]["reason"] == reason
-        assert all(row["reason"] == reason for row in manifest.not_measured)
+        assert [row["reason"] for row in manifest.not_measured] == [reason, REASON_NOT_REACHED]
     saved = store.snapshots[-1]
     assert saved["reason"] == reason
     if site == "transaction":
