@@ -422,6 +422,12 @@ def mains_lowest_driver_indexes(contract: OutputContract) -> set[int]:
     return out
 
 
+def bass_extension_output_indexes(contract: OutputContract) -> set[int]:
+    """Physical output indices a dynamic bass extension boosts: the subwoofers, else
+    each main side's lowest driver."""
+    return subwoofer_output_indexes(contract) or mains_lowest_driver_indexes(contract)
+
+
 def flat_full_range_outputs(contract: OutputContract) -> frozenset[int]:
     """The physical outputs a flat full-range graph is allowed to emit on.
 

@@ -272,6 +272,9 @@ def _session(
         {"kind": MEASURE_KIND_BASELINE, "branch_levels_dbfs": (-30.0,)},
         {"kind": MEASURE_KIND_BASELINE, "graph_scope": "candidate_branches", "candidate_id": "fp",
          "branch_target_ids": ("woofer", "tweeter"), "branch_levels_dbfs": (-30.0,)},
+        # A bass reserve is a finite boost, 0 dB or more (ADR-0359).
+        {"kind": MEASURE_KIND_BASELINE, "bass_reserve_db": {"woofer": float("nan")}},
+        {"kind": MEASURE_KIND_BASELINE, "bass_reserve_db": {"woofer": -1.0}},
         {"kind": MEASURE_KIND_BASELINE, "positions": (0, 22), "pose_prompts": ("a",)},
         # Only a candidate graph has layers to clear (ADR-0370).
         {"kind": MEASURE_KIND_BASELINE, "cleared_layers": ("room_correction",)},

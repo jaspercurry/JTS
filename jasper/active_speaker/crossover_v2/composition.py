@@ -38,7 +38,7 @@ from .program_transaction import (
 from .session_seams import EngineSeams, RecordStore, VolumeClaim
 from ..commissioning_admission import ActiveCommissioningAdmissionError, running_graph_fingerprint
 from ..measurement import active_driver_targets
-from ..output_contract import classify_output_contract, mains_lowest_driver_indexes, subwoofer_output_indexes
+from ..output_contract import bass_extension_output_indexes, classify_output_contract
 from ..program_playback import ProgramPlaybackError
 from .measure_spec import GRAPH_SCOPE_DRIVERS
 
@@ -54,8 +54,7 @@ def bass_reserve_db(topology: Any, evidence: Mapping[str, Any] | None, targets: 
     descriptor = (evidence or {}).get("bass_extension") or {}
     if not descriptor:
         return {}
-    contract = classify_output_contract(topology)
-    channels = subwoofer_output_indexes(contract) or mains_lowest_driver_indexes(contract)
+    channels = bass_extension_output_indexes(classify_output_contract(topology))
     bass = {measurement_target_id(target["role"], target.get("output_variant", "primary"))
             for target in active_driver_targets(topology) if target["output_index"] in channels}
     reserve = dynamic_bass_gain_reserve_db(descriptor)

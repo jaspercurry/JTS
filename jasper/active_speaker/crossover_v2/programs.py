@@ -139,11 +139,14 @@ def _stimulus_backoff_db(spec: Any, stimulus_dbfs: float | None) -> float:
 
 def _alone_gains_db(excitation: SessionExcitation, spec: Any) -> dict[str, float]:
     """Each branch of a branch take alone at its own level, by the sum's stimulus rule,
-    under its own driver's cap less the bass reserve its output keeps (ADR-0407, ADR-0359)."""
+    under the tightest cap of the take's two branches less the bass reserve each output
+    keeps: the ceiling admission holds every channel of the take to (ADR-0407, ADR-0359)."""
+    if not spec.branch_levels_dbfs:
+        return {}
     reserve = spec.bass_reserve_db or {}
+    ceiling = min(excitation.caps_dbfs[target] - reserve.get(target, 0.0) for target in spec.branch_target_ids)
     return {target: back_off_gain(BASE_STIMULUS_PEAK_DBFS - _stimulus_backoff_db(spec, level),
-                                  excitation.session_volume_db,
-                                  excitation.caps_dbfs[target] - reserve.get(target, 0.0))
+                                  excitation.session_volume_db, ceiling)
             for target, level in zip(spec.branch_target_ids, spec.branch_levels_dbfs)}
 
 

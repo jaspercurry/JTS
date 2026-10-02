@@ -853,9 +853,9 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
          "jts3 B's 19.6 dB bass reserve at a 0 dB fader", "no branch levels: one level"])
 def test_a_branch_plays_alone_at_its_own_level_and_its_sum_at_the_takes(caps, reserve, levels, alone):
     """Each branch-alone sweep of a branch take, and its repeat, plays at that
-    branch's own level, under the base peak (−12 dBFS here) and under its own
-    driver's cap less the bass reserve its output keeps, so admission's gain +
-    fader + reserve ≤ cap holds; the sum plays at the take's level (ADR-0407)."""
+    branch's own level, under the base peak (−12 dBFS here) and under the tightest
+    cap of the take's two branches less the bass reserve each output keeps; the
+    sum plays at the take's level (ADR-0407)."""
     targets = ("woofer", "woofer:rear")
     band = FrequencyBand(20.0, 4000.0)
     excitation = SessionExcitation((RoleBand("woofer", 0, band),), {**dict.fromkeys(targets, 0.0), **caps}, 0.0, None,

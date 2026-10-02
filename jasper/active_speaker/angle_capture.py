@@ -381,10 +381,11 @@ def walk_template(**spec_fields: object) -> MeasureSpec:
 #: always built, with no overlay and no stimulus stated.
 DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
 
-#: The template fields the EXECUTOR assigns per capture, and which a walk
-#: therefore may not state: a stated one would be silently replaced at every
-#: stop and silently kept on the design-axis spec.
-_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe")
+#: The template fields the EXECUTOR or its composition seam assigns per capture,
+#: and which a walk therefore may not state: a stated one would be silently
+#: replaced at every stop and silently kept on the design-axis spec.
+_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe",
+                      "bass_reserve_db")
 
 
 @dataclass(frozen=True)

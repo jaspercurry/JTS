@@ -1562,12 +1562,12 @@ def test_a_measurement_program_graph_is_refused_by_its_own_name(tmp_path):
     assert {issue["code"] for issue in result.issues} == {"active_graph_program_shape_unproven"}
 
 
-def _fresh_cardioid(monkeypatch, *, rear_calibration=None):
+def _fresh_cardioid(monkeypatch, *, rear_calibration=None, woofer_peak=-30.0, tweeter_peak=-30.0):
     """A cardioid declared afresh, as after "Reset speaker setup": with no rear
     tune, its rear output ends in the pending mute (ADR-0316, #6113)."""
     topology, safety, targets = _profile_and_targets(
-        rear=True, woofer_peak=-30, tweeter_peak=-30, woofer_floor=20, woofer_highpass=20, woofer_upper=4000,
-        max_sweep_duration_s=8)
+        rear=True, woofer_peak=woofer_peak, tweeter_peak=tweeter_peak, woofer_floor=20, woofer_highpass=20,
+        woofer_upper=4000, max_sweep_duration_s=8)
     cardioid = _rear_pair("mono")[0]
     monkeypatch.setattr(design_draft, "load_design_draft", lambda **kw: {"driver_safety_profile": safety})
     monkeypatch.setattr(conductor_context, "ensure_crossover_preview_ready", lambda draft: None)
@@ -1624,6 +1624,26 @@ def _fresh_take(shape, candidate_id):
     return MeasureSpec(kind="verify", candidate_id=candidate_id, **shape)
 
 
+def _production_composer(tmp_path, fader, fresh, graph, reference):
+    """The run host's composer over ``graph``, bound as a run binds it, and the
+    artifacts it renders."""
+    from jasper.web.correction_run_host import compose_plan_program  # lazy: the web host imports the engine under test
+
+    topology, safety, context, candidate = fresh
+    host = SimpleNamespace(excitation=excitation_from_context(context, fader),
+                           gain_plan_db={"woofer": -40.0, "tweeter": -40.0}, set_program=lambda *args: None)
+    paths: list = []
+    compose = bind_program_composer(
+        program_for_spec=lambda spec, level: compose_plan_program(host, spec, level, context=context),
+        store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=paths.append),
+        capture_session_id="fresh", cam_factory=lambda: None, config_dir=str(tmp_path), topology=topology,
+        safety_profile=safety, role_targets=context.role_targets, graph_yaml=lambda: graph,
+        level_reference_yaml=reference, roles=context.roles_bands,
+        graph_evidence_for_spec=lambda spec: measurement_graph_evidence(
+            scope=spec.graph_scope, candidate=candidate, cleared_layers=spec.cleared_layers))
+    return compose, paths
+
+
 def _split_sources(graph_text, output_index):
     entry, = (entry for name, mixer in yaml.safe_load(graph_text)["mixers"].items() if name.startswith("split_active_")
               for entry in mixer["mapping"] if entry["dest"] == output_index)
@@ -1638,27 +1658,15 @@ async def test_a_fresh_cardioid_base_admits_every_take_with_its_muted_rear_parke
     way. A summed take excites the front drivers only; a take that measures the
     rear plays it on its own; no other take feeds the rear. The park moves no
     sound: each take's PCM is byte-identical to what the unparked graphs compose."""
-    from jasper.web.correction_run_host import compose_plan_program  # lazy: the web host imports the engine under test
-
     topology, safety, context, profile, candidate = _fresh_cardioid(monkeypatch)
     shape, excited = FRESH_CARDIOID_TAKES[take]
     spec = _fresh_take(shape, candidate.fingerprint)
     door = bind_measurement_graph(profile, camilla_factory=lambda: None, config_dir=tmp_path, candidate=candidate)
     door.select_scope(spec.graph_scope, spec.candidate_id, branch_channels_for(spec), spec.cleared_layers)
     fader = probe_fader_db(context.driver_caps_dbfs)
-    host = SimpleNamespace(excitation=excitation_from_context(context, fader),
-                           gain_plan_db={"woofer": -40.0, "tweeter": -40.0}, set_program=lambda *args: None)
 
     async def admitted_pcm(graph, reference):
-        paths: list = []
-        compose = bind_program_composer(
-            program_for_spec=lambda spec, level: compose_plan_program(host, spec, level, context=context),
-            store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=paths.append),
-            capture_session_id="fresh", cam_factory=lambda: None, config_dir=str(tmp_path), topology=topology,
-            safety_profile=safety, role_targets=context.role_targets, graph_yaml=lambda: graph,
-            level_reference_yaml=reference, roles=context.roles_bands,
-            graph_evidence_for_spec=lambda spec: measurement_graph_evidence(
-                scope=spec.graph_scope, candidate=candidate, cleared_layers=spec.cleared_layers))
+        compose, paths = _production_composer(tmp_path, fader, (topology, safety, context, candidate), graph, reference)
         played = await compose(spec=spec, level_db=fader)
         return await played.seams["readmit"](), (tmp_path / paths[-1]).read_bytes()
 
@@ -1674,6 +1682,47 @@ async def test_a_fresh_cardioid_base_admits_every_take_with_its_muted_rear_parke
         profile, candidate, scope=spec.graph_scope, branch_channels=branch_channels_for(spec) or None,
         cleared_layers=spec.cleared_layers)
     assert (await admitted_pcm(unparked, compile_tuning_graph(profile, candidate)))[1] == pcm
+
+
+_BASS_RESERVE_DB = dynamic_bass_gain_reserve_db(BASS_EXTENSION)
+#: A branch take on a fresh cardioid: its (woofer, tweeter) caps and fader, the level
+#: each branch asks alone, whether its candidate boosts the bass, and where each
+#: branch alone then plays.
+ALONE_CEILINGS = {
+    # The tweeter's tighter cap holds a crossover take's woofer alone.
+    "crossover, fixture caps": ("branches", (0.0, -65.0), -20.0, (-40.0, -50.0), False, (-45.01, -50.0)),
+    "crossover, jts3-like caps": ("branches", (0.0, -25.0), 0.0, (-22.0, -40.0), False, (-25.01, -40.0)),
+    # The rear pair shares its limits: the tweeter it does not play holds neither branch.
+    "rear pair": ("rear_pair", (0.0, -65.0), -20.0, (-40.0, -30.0), False, (-40.0, -30.0)),
+    # The bass boost the take's graph keeps on both woofers holds both (ADR-0359).
+    "rear pair, bass boost": ("rear_pair", (-20.0, -25.0), 0.0, (-12.0, -12.0), True, (-20.01 - _BASS_RESERVE_DB,) * 2),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ALONE_CEILINGS))
+@pytest.mark.asyncio
+async def test_each_branch_alone_plays_under_the_ceiling_admission_holds_its_take_to(tmp_path, monkeypatch, case):
+    """ADR-0407: a branch take composed and admitted the production way plays each
+    branch alone at its own level, under the tightest cap of the take's two
+    branches less the bass reserve each output keeps. Admission holds every
+    channel of the take to that ceiling."""
+    take, (woofer_cap, tweeter_cap), fader, levels, bass, alone = ALONE_CEILINGS[case]
+    topology, safety, context, profile, candidate = _fresh_cardioid(
+        monkeypatch, woofer_peak=woofer_cap, tweeter_peak=tweeter_cap)
+    if bass:
+        candidate = replace(candidate, bass_extension=BASS_EXTENSION)
+    spec = replace(_fresh_take(FRESH_CARDIOID_TAKES[take][0], candidate.fingerprint), branch_levels_dbfs=levels)
+    door = bind_measurement_graph(profile, camilla_factory=lambda: None, config_dir=tmp_path, candidate=candidate)
+    door.select_scope(spec.graph_scope, spec.candidate_id, branch_channels_for(spec), spec.cleared_layers)
+    compose, _paths = _production_composer(tmp_path, fader, (topology, safety, context, candidate),
+                                           door.graph_yaml(), door.level_reference_yaml)
+
+    played = await compose(spec=spec, level_db=fader, stimulus_dbfs=-46.0)
+
+    admission = await played.seams["readmit"]()
+    assert admission.allowed, admission.to_dict()
+    assert {segment.role: segment.gain_db for segment in played.program.stimulus_segments()
+            if segment.kind == KIND_SWEEP} == pytest.approx(dict(zip(spec.branch_target_ids, alone)))
 
 
 def test_a_summed_take_that_feeds_its_muted_rear_still_refuses_and_names_it(tmp_path, monkeypatch):
