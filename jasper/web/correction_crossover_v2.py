@@ -244,8 +244,10 @@ def prepare_v2_session(
     signals = RunSignals()
     position_gate = PositionGate(mover=request.mover)
     capture_session_id = "wired-" + secrets.token_hex(8)
+    schedule = preview_schedule(request, ladder_captures(request, levels, captures), context)
     spec = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        measurements_per_pose=schedule["measurements_per_pose"],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         safety_profile=context.safety_profile, role_targets=context.role_targets,
         excitation=excitation_from_context(context),
@@ -254,7 +256,6 @@ def prepare_v2_session(
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
     )
     evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
-    schedule = preview_schedule(request, ladder_captures(request, levels, captures), context)
     if position_gate:
         position_gate.publish(schedule)
 

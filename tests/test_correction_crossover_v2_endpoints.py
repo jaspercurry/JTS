@@ -32,9 +32,11 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -66,6 +68,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
+    POSITION_BATCH_CONFIG_KEY,
+    POSITION_BATCH_SIZE_KEY,
+    POSITION_BATCH_START_KEY,
     V2_FIRST_BEGIN_TIMEOUT_S,
     build_inline_session_spec,
     LATERAL_MARK_PROMPT,
@@ -3236,6 +3241,26 @@ def test_inline_session_creation_persists_the_plan_and_holds_nothing(monkeypatch
     # A saved level sets no level: the run finds its own (ADR-0403 §4).
     assert (plan["level"]["level_db"], plan["level_source"]) == (None, "program_default")
     assert v2state.load_v2_state() == before
+
+
+@pytest.mark.parametrize("levels", [None, (-18, -23)], ids=["one pass", "a ladder"])
+def test_a_placement_prompt_counts_the_measurements_the_schedule_plays_there(monkeypatch, tmp_path, levels):
+    """The first prompt at each position counts what the run plays there, the count the plan's
+    schedule states; a level ladder plays every rung at a position, not one rung's takes."""
+    from jasper.active_speaker.angle_capture import request_for_preset
+    from jasper.active_speaker.measurement_programs import preset
+
+    selected = preset("bass")
+    body = {"plan": request_for_preset(selected, mover=selected.mover or "human", levels=levels).to_dict()} if levels else _inline_body()
+    prepared, _ = _inline_prepared(monkeypatch, tmp_path, body)
+    entries = prepared.join_spec.capture_plan.entries
+    per_pose = prepared.position_gate.published()["run"]["measurements_per_pose"]
+    firsts = [entry.screen for entry in entries if entry.screen[POSITION_BATCH_CONFIG_KEY] == "1"]
+    listed = Counter(entry.screen[POSITION_BATCH_START_KEY] for entry in entries)
+
+    assert [int(screen[POSITION_BATCH_SIZE_KEY]) for screen in firsts] == per_pose
+    assert [[int(number) for number in re.findall(r"\d+", screen["progress"])] for screen in firsts] == [[1, n] for n in per_pose]
+    assert per_pose == [len(levels or (0,)) * listed[screen[POSITION_BATCH_START_KEY]] for screen in firsts]
 
 
 @pytest.mark.parametrize("levels,phases", [
