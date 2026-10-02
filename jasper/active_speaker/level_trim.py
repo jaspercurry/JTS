@@ -9,15 +9,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.platform.json_fields import issue
 
 from ._common import coerce_finite_float
 from .driver_pad import effective_sensitivity_db
-
-
-#: Floor for any single per-driver attenuation, in dB. Exported so anything
-#: that resolves, persists or re-validates a trim checks the same number.
-MAX_ATTENUATION_DB = -60.0
 
 
 def declared_driver_gains(
@@ -41,9 +37,9 @@ def declared_driver_gains(
         if gain > 0:
             issues.append(issue("warning", "positive_driver_gain_ignored", f"positive gain for {role} was ignored; baseline gains only attenuate"))
             gain = 0.0
-        if gain < MAX_ATTENUATION_DB:
-            issues.append(issue("warning", "driver_gain_clamped", f"gain for {role} was clamped to -60 dB"))
-            gain = MAX_ATTENUATION_DB
+        if gain < DRIVER_TRIM_MIN_DB:
+            issues.append(issue("warning", "driver_gain_clamped", f"gain for {role} was clamped to {DRIVER_TRIM_MIN_DB:g} dB"))
+            gain = DRIVER_TRIM_MIN_DB
         source = str(driver.get("gain_offset_db_provenance") or "").strip()
         # Missing provenance preserves an operator's deliberate attenuation.
         provenance[role] = source if source in {"research_estimate", "sensitivity_estimate"} else "operator_pinned"
@@ -57,5 +53,5 @@ def declared_driver_gains(
                 gains.pop(role, None)
                 provenance[role] = "sensitivity_estimate"
                 if trim < -0.05:
-                    datasheet[role] = max(round(trim, 1), MAX_ATTENUATION_DB)
+                    datasheet[role] = max(round(trim, 1), DRIVER_TRIM_MIN_DB)
     return {**dict.fromkeys(roles, 0.0), **datasheet, **gains}, provenance, datasheet, issues

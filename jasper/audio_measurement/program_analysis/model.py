@@ -179,11 +179,8 @@ RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 # step so a sharp minimum isn't widened into a plateau by quantization).
 RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 
-# A trim is a passive level-match: never net gain, never beyond the shared
-# -60 dB floor (jasper.active_speaker.level_trim.MAX_ATTENUATION_DB,
-# mirrored locally — this module does not import jasper.active_speaker).
+# A trim is a passive level-match: never net gain.
 RIPPLE_TRIM_MAX_DB = 0.0
-RIPPLE_TRIM_MIN_DB = -60.0
 
 # How far the two branches' realized levels (mirrored +/-1-octave
 # half-bands about Fc) may sit apart after the committed trim and still count

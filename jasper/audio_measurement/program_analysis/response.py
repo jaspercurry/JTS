@@ -29,6 +29,7 @@ from jasper.audio_measurement.program import (
 )
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.recorded_impulse import kept_end
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.platform.log_event import log_event
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
@@ -50,7 +51,6 @@ from .model import (
     VERIFY_TRACKING_SMOOTHING_FRACTION,
     RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB,
     RIPPLE_TRIM_MAX_DB,
-    RIPPLE_TRIM_MIN_DB,
     RIPPLE_TRIM_SEARCH_STEP_DB,
     RIPPLE_TRIM_SEARCH_WINDOW_DB,
     SEGMENT_SEARCH_S,
@@ -932,7 +932,7 @@ def solve_ripple_optimal_trim(
 
     Search window: ``seed_trim_db +/- window_db`` at ``step_db`` steps
     (default +/-10 dB / 0.1 dB), clamped to
-    [:data:`RIPPLE_TRIM_MIN_DB`, :data:`RIPPLE_TRIM_MAX_DB`] so the scan
+    [:data:`DRIVER_TRIM_MIN_DB`, :data:`RIPPLE_TRIM_MAX_DB`] so the scan
     never evaluates an unphysical candidate.
 
     Selection is flat-minimum-regularized: among candidates within
@@ -956,11 +956,11 @@ def solve_ripple_optimal_trim(
     n_steps = int(round(window_db / step_db))
     raw_candidates = [seed_trim_db + i * step_db for i in range(-n_steps, n_steps + 1)]
     candidate_trims = [
-        trim for trim in raw_candidates if RIPPLE_TRIM_MIN_DB <= trim <= RIPPLE_TRIM_MAX_DB
+        trim for trim in raw_candidates if DRIVER_TRIM_MIN_DB <= trim <= RIPPLE_TRIM_MAX_DB
     ]
     if not candidate_trims:
         # No physically valid value in the seed's own window: clamp the seed itself.
-        candidate_trims = [min(max(seed_trim_db, RIPPLE_TRIM_MIN_DB), RIPPLE_TRIM_MAX_DB)]
+        candidate_trims = [min(max(seed_trim_db, DRIVER_TRIM_MIN_DB), RIPPLE_TRIM_MAX_DB)]
     ripples_db = [
         ripple_at_trim(
             freqs_band,

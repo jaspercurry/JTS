@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.active_speaker import camilla_yaml
 from jasper.active_speaker.camilla_yaml import LINEARIZATION_BIQUAD_TYPES
 from jasper.active_speaker.design_draft import build_design_draft, design_draft_view
@@ -1290,7 +1291,7 @@ def test_an_absent_pin_is_the_ordinary_round_and_names_nothing(packet):
     # Positive is the hearing-relevant one: the emitted graph refuses a positive
     # per-driver Gain, and a pin is not a way past it.
     {"tweeter": 0.5},
-    {"tweeter": dp.MAX_ATTENUATION_DB - 0.001},
+    {"tweeter": DRIVER_TRIM_MIN_DB - 0.001},
     # A role this document prescribes nothing for. A pin travels with the chain
     # it protects; on its own it is the bare level command the blocklist refuses.
     {"woofer": -3.0},
@@ -1308,7 +1309,7 @@ def test_the_pin_is_judged_once_and_refuses_under_one_name(packet, pin, filters)
     assert dp.TRIM_PIN_MALFORMED in dp.DRIVER_PRESCRIPTION_REFUSAL_REASONS
 
 
-@pytest.mark.parametrize("db", [0.0, -0.0, dp.MAX_ATTENUATION_DB, -12.25])
+@pytest.mark.parametrize("db", [0.0, -0.0, DRIVER_TRIM_MIN_DB, -12.25])
 def test_the_pin_s_range_is_the_solver_s_own_and_its_edges_are_inclusive(packet, db):
     """One bound, consumed rather than restated.
 

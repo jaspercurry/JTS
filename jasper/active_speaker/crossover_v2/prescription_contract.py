@@ -38,6 +38,7 @@ from jasper.active_speaker import rear_calibration
 from jasper.audio_measurement import room_limits as rl
 from jasper.bass_extension import dynamic as bass
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.platform.biquad import HEADROOM_MARGIN_DB, PEAK_EPS_DB
 from jasper.platform.json_fields import as_mapping, finite_float
 from jasper.audio_routes.output_topology import OutputTopology, SpeakerChannel, SpeakerGroup, unknown_output_hardware
@@ -270,7 +271,7 @@ def _speaker(draft: Mapping[str, Any], preset: ActiveSpeakerPreset | None,
                 blend.PACKET_FINGERPRINT_FIELD: {"type": "string"},
                 "filters": {"type": "array", "items": _filter(driver_role=True)},
                 "pinned_trim_db": {"type": "object", "additionalProperties":
-                                   _number(driver.MAX_ATTENUATION_DB, 0.0)},
+                                   _number(DRIVER_TRIM_MIN_DB, 0.0)},
                 driver.EXPECTED_DELTA_FIELD: _number(-driver.EXPECTED_DELTA_BOUND_DB, driver.EXPECTED_DELTA_BOUND_DB),
                 driver.DECLARED_TILT_FIELD: _number(-driver.DECLARED_TILT_BOUND_DB_PER_OCTAVE, driver.DECLARED_TILT_BOUND_DB_PER_OCTAVE),
             }),

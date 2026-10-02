@@ -49,7 +49,7 @@ from jasper.active_speaker.driver_protection import (
 # Three modules must agree on this key name or a hearing-relevant ceiling goes
 # quiet.
 from jasper.active_speaker.linearization_fit import MIC_TIER_FIELD
-from jasper.active_speaker.level_trim import MAX_ATTENUATION_DB
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 
 from .blend_prescription import (
     PACKET_FINGERPRINT_FIELD,
@@ -992,15 +992,15 @@ def _parse_pinned_trim(
                 f"{value!r}",
                 role=role,
             )
-        if db > 0.0 or db < MAX_ATTENUATION_DB:
+        if db > 0.0 or db < DRIVER_TRIM_MIN_DB:
             refuse(
                 TRIM_PIN_MALFORMED,
-                f"pinned_trim_db[{role!r}] must be between {MAX_ATTENUATION_DB} "
+                f"pinned_trim_db[{role!r}] must be between {DRIVER_TRIM_MIN_DB} "
                 "and 0 dB: a per-driver trim attenuates, and the emitted graph "
                 "refuses a positive per-driver gain",
                 role=role,
                 pinned_trim_db=db,
-                floor_db=MAX_ATTENUATION_DB,
+                floor_db=DRIVER_TRIM_MIN_DB,
             )
         out[role] = db
     return tuple(sorted(out.items()))
@@ -1245,7 +1245,7 @@ def driver_prescription_response_format() -> dict[str, Any]:
             "prescriber": {"model": "optional author", "operator": "optional operator"},
             "pinned_trim_db": (
                 "{<role>: <dB, between "
-                f"{MAX_ATTENUATION_DB} and 0>}} — pin that driver's LEVEL "
+                f"{DRIVER_TRIM_MIN_DB} and 0>}} — pin that driver's LEVEL "
                 "instead of letting this round re-solve it. Only for a role "
                 "whose chain you replace or clear; filters: [] clears every "
                 "role's chain and admits trim pins. Use it when the chain you are "

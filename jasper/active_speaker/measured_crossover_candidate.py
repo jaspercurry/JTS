@@ -46,6 +46,7 @@ from jasper.audio_measurement.room_limits import (
 )
 from jasper.bass_extension.dynamic import validate_dynamic_bass_descriptor
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
+from jasper.platform.driver_gain import DRIVER_TRIM_MIN_DB
 from jasper.platform.biquad import PeqFilter, total_positive_boost_db
 from jasper.platform.json_fields import finite_float, issue, require_sha256_hex
 
@@ -59,7 +60,6 @@ from .camilla_yaml import (
 from .crossover_v2.contracts import LINEARIZATION_OUTCOME_SINGLE_BRANCH, POLARITY_INVERT, POLARITY_KEEP
 from .crossover_v2.room_prescription import ROOM_MEDIAN_FIELD
 from .graph_safety import unprotected_tweeter_outputs, view_from_yaml_dict
-from .level_trim import MAX_ATTENUATION_DB
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER
 from .profile import (
     SIDES_BY_LAYOUT,
@@ -509,12 +509,12 @@ class MeasuredCrossoverCandidate:
                 or not isinstance(value, (int, float))
                 or not math.isfinite(float(value))
                 or float(value) > 0.0
-                or float(value) < MAX_ATTENUATION_DB
+                or float(value) < DRIVER_TRIM_MIN_DB
             ):
                 _refuse(
                     "attenuation_out_of_range",
                     f"attenuation for {role!r} must be between "
-                    f"{MAX_ATTENUATION_DB} and 0 dB",
+                    f"{DRIVER_TRIM_MIN_DB} and 0 dB",
                 )
             normalized_trims[role] = float(value)
         object.__setattr__(self, "role_attenuations_db", normalized_trims)
