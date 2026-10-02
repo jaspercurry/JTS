@@ -281,8 +281,11 @@ PILOT_FADE_TRIM_S = 0.005
 # in-band power clears ambient power by enough margin that residual bias
 # from ambient nonstationarity stays a small fraction of
 # `LINEARITY_TOLERANCE_DB`. Solving for the minimum trustworthy in-band SNR
-# gives `PILOT_MIN_SNR_DB` ≈ 12.4 dB; real jts3 hardware measures ≈26-30 dB,
-# so this floor exists for the genuinely marginal case, not the common one.
+# gives `PILOT_MIN_SNR_DB` ≈ 12.4 dB. It routes a step that fails, and sets
+# the CHECK gain solve's pilot arm. `PILOT_STEP_MIN_SNR_DB` ≈ 9.4 dB is where
+# the same bias spends the whole tolerance: from it up, a step read inside
+# tolerance keeps a take (#6113); under it the step is unknown, because a
+# phone's AGC lifts the silent window and squeezes the step, and they cancel.
 AMBIENT_NONSTATIONARITY_DB = 3.0
 LINEARITY_SNR_BIAS_BUDGET_FRACTION = 0.5
 _pilot_snr_k = 10.0 ** (AMBIENT_NONSTATIONARITY_DB / 10.0)
@@ -290,6 +293,7 @@ _pilot_snr_linear_min = (10.0 / math.log(10.0)) * (_pilot_snr_k - 1.0) / (
     LINEARITY_TOLERANCE_DB * LINEARITY_SNR_BIAS_BUDGET_FRACTION
 )
 PILOT_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min)
+PILOT_STEP_MIN_SNR_DB = 10.0 * math.log10(_pilot_snr_linear_min * LINEARITY_SNR_BIAS_BUDGET_FRACTION)
 
 # Channel-map discriminator TARGET rise, dB (`_channel_map_ok`): an absolute
 # floor — a driver whose declared band never rose over the room did not play.
@@ -773,10 +777,10 @@ class PilotObservation:
     ``delta_implausible`` is True when ``captured_delta_db`` diverges from
     ``programmed_delta_db`` by more than `DELTA_IMPLAUSIBLE_GAP_DB` (#2647) --
     a gap no real wiring can produce, so CHECK's ladder reads it as
-    mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``
-    (unlike ``linearity_ok``): a gap this size means one of the two readings
-    floored while the other did not, and a floored reading's own
-    ``snr_valid`` can itself be an artifact of the wrong window being read.
+    mis-anchoring evidence, not a wiring finding. UNGATED by ``snr_valid``:
+    a gap this size means one of the two readings floored while the other
+    did not, and a floored reading's own ``snr_valid`` can itself be an
+    artifact of the wrong window being read.
     """
 
     role: str

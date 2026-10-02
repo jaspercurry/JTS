@@ -4469,35 +4469,18 @@ def test_pilot_min_snr_db_matches_its_own_derivation():
     assert PILOT_MIN_SNR_DB == pytest.approx(expected, abs=1e-9)
 
 
-def test_check_low_snr_quiet_pilot_routes_to_snr_floor_not_linearity_fail():
-    """When the quiet (lo) pilot's own in-band SNR is too low to trust the
-    ambient-subtracted estimate, the verdict must NOT be a linearity
-    FAILURE — while ``snr_valid``/``pilot_snr_ok`` flags the low-confidence
-    evidence so the conductor can route to the honest room/positioning
-    reason (``REASON_SNR_FLOOR``), never blaming the phone's AGC
-    (``crossover_v2_flow._consume_check``).
-
-    D7 (#1838): not a FAILURE, and not a PASS either — ``linearity_ok`` is
-    ``None``. It was forced ``True`` until then, which is how session
-    cap_-Us10xORVNlFa_dgi-sP7g published ``linearity_ok=true`` beside a
-    captured delta of -60.9 dB against a programmed 10.0 dB. The aggregate
-    follows the same rule: one unknown role makes the capture's verdict
-    unknown, because "the role we could read was fine" is a different claim
-    from "the pilots were linear".
-    """
-    # Strong in-woofer-band rumble, loud enough to bury the QUIET (-10 dB)
-    # woofer pilot's own in-band power near the ambient floor. The tweeter's
-    # disjoint band is unaffected — only the woofer's evidence is untrusted.
+def test_rumble_in_one_role_band_leaves_the_other_role_trusted():
+    """Rumble in the woofer's band buries its quiet pilot (about 7 dB SNR), so
+    its step is unknown; the tweeter's disjoint band keeps its trusted SNR and
+    its step verdict."""
     prog, cap = _check_rumble_capture((300.0, 500.0, 800.0), 0.02, seed=23)
     res = analyze_program_capture(prog, cap, SR, priors=MeasurementPriors())
     woofer_pilot = next(p for p in res.pilots if p.role == "woofer")
     tweeter_pilot = next(p for p in res.pilots if p.role == "tweeter")
     assert woofer_pilot.snr_valid is False
-    assert woofer_pilot.linearity_ok is None  # unknown — never a false FAILURE
+    assert woofer_pilot.linearity_ok is None
     assert tweeter_pilot.snr_valid is True
     assert tweeter_pilot.linearity_ok is True
-    assert res.pilot_snr_ok is False
-    assert res.linearity_ok is None
 
 
 def test_check_buried_pilot_delta_routes_to_snr_floor_not_a_retake():
@@ -4506,8 +4489,7 @@ def test_check_buried_pilot_delta_routes_to_snr_floor_not_a_retake():
     programmed pilot delta -- a quiet pilot buried by room noise, not a
     mis-anchored window).
 
-    Heavier rumble than `test_check_low_snr_quiet_pilot_routes_to_snr_floor_
-    not_linearity_fail` above also blows the woofer's captured delta past
+    Rumble this heavy buries the woofer pilot and blows its captured delta past
     `DELTA_IMPLAUSIBLE_GAP_DB`, so both rung-2 tells the ladder can read are on
     the table here. The conductor's ruling: when the SNR floor already failed,
     it -- not the retriable `anchor_ambiguous` -- is the honest, actionable

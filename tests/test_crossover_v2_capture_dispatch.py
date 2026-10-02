@@ -92,7 +92,7 @@ async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, caplo
 def test_check_run_host_reads_mute_once(monkeypatch, muted):
     read = Mock(return_value={} if muted is None else {"muted": muted})
     monkeypatch.setattr(cd, "read_output_volume", read)
-    conductor = _conductor(FakeSeams(check=lambda _: _analysis(locations=(), pilot_snr_ok=False)),
+    conductor = _conductor(FakeSeams(check=lambda _: _analysis(locations=(), pilot_snr_ok=False, linearity_ok=False)),
                            index_phase_map={1: "check"})
     manifest = RunManifest("check", SimpleNamespace(bank=AsyncMock(return_value="manifest")))
     manifest.begin({"index": 1, "candidate_id": "base", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}},
@@ -495,7 +495,7 @@ def test_low_snr_prices_a_louder_take(phase, pilot_ok, objective):
     response = replace(_driver_response("woofer", 8.0), snr={"alignment": band})
     from jasper.audio_measurement.program_analysis.model import CrossoverCandidate
 
-    verdict = cd.assess(_analysis(driver_responses=(response,), pilot_snr_ok=pilot_ok,
+    verdict = cd.assess(_analysis(driver_responses=(response,), pilot_snr_ok=pilot_ok, linearity_ok=pilot_ok,
         candidate=CrossoverCandidate({}, "normal", 0, 1, .9, alignment_objective=objective)), phase=phase,
                         gain_db=GAINS, gain_ceiling_db={"woofer": -20.0})
     assert verdict.ok is pilot_ok
@@ -508,7 +508,7 @@ def test_low_snr_prices_a_louder_take(phase, pilot_ok, objective):
 
 @pytest.mark.parametrize("phase", PHASES)
 def test_quiet_pilot_explains_a_false_glitch(phase):
-    verdict = cd.assess(_analysis(pilot_snr_ok=False, glitch_detected=True), phase=phase)
+    verdict = cd.assess(_analysis(pilot_snr_ok=False, linearity_ok=False, glitch_detected=True), phase=phase)
     assert verdict.fault == (refusal_copy.REASON_SNR_FLOOR if phase == "check" else refusal_copy.REASON_PILOT_LEVEL_COLLAPSE)
     assert verdict.next == "fix_and_retake"
 

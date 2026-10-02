@@ -118,14 +118,11 @@ def test_check_agc_and_snr_and_channel_map_verdicts():
 
 
 def test_check_low_pilot_snr_routes_to_snr_floor_not_agc():
-    """Band-relative ambient-compensated linearity fix (2026-07-20): when the
-    quiet pilot's own in-band SNR is too low to trust the ambient-subtracted
-    estimate, ``program_analysis`` forces ``linearity_ok`` True (never a false
-    linearity FAILURE) and flags ``pilot_snr_ok=False`` instead. The conductor
-    must route that on its own — before ever reaching the linearity branch —
-    to the honest room/positioning reason, never blaming the phone's AGC."""
+    """A pilot step that fails under the pilot SNR floor routes, before the
+    linearity branch, to the honest room/positioning reason, never blaming the
+    phone's AGC."""
     fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis(program, pilot_snr_ok=False)
+    fakes.check = lambda program: _check_analysis(program, pilot_snr_ok=False, linearity=False)
     c = _conductor(fakes)
     verdict = _run_phase(c, 1, 1)
     assert verdict.fault == "snr_floor"
