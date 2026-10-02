@@ -1297,7 +1297,7 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "The retakes for this position are used up. Start another run to measure it again.",
     ),
     **{code: ReasonSpec(code, TEMPLATE_SESSION_RESTART, 0, "", message) for code, message in {
-        REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so this measurement did not play.",
+        REASON_LEVEL_UNSOLVED: "No measuring level was found at this position, so no measurement was taken there.",
         "retry_gain_missing": "The retake has no test level to use.",
         "take_stopped": "The measurement stopped before the capture was accepted.",
         "cancelled": "The measurement was stopped before it finished.",

@@ -131,7 +131,9 @@ def measured_line(count: int, retakes: int = 0) -> str:
 def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> list[str]:
     """``manifest`` has every take read with its record (ADR-0395): a refused
     take's verdict names the drivers a channel-map stop failed."""
-    from .crossover_v2.refusal_copy import channel_map_failed_roles, refusal_copy_for  # lazy: keeps the CLI parser numpy-free
+    from .crossover_v2.refusal_copy import (  # lazy: keeps the CLI parser numpy-free
+        REASON_RETRIES_SPENT, TRANSIENT_AUTO_RETRY_CODES, channel_map_failed_roles, refusal_copy_for,
+    )
     from .run_manifest import driver_level_mismatches  # lazy: keeps the CLI parser numpy-free
 
     takes = [t for g in packet.get("sets", ()) for t in g["takes"] if t["selected"]]
@@ -150,8 +152,12 @@ def coverage_lines(packet: Mapping[str, Any], manifest: Mapping[str, Any]) -> li
         name = pose_name(json.loads(pose))
         count_label = f" ({len(reasons)} planned measurements)" if len(reasons) > 1 else ""
         prefix = "Waived" if set(reasons) == {"complete_requested"} else "Not measured"
-        details = " ".join(refusal_copy_for(reason, failed_roles=failed_roles)[0] for reason in dict.fromkeys(reasons)
-                           if reason != "complete_requested")
+        stated = [reason for reason in dict.fromkeys(reasons) if reason != "complete_requested"]
+        # A retry's copy says JTS is measuring again, and here its retakes are over: say they ran out, unless another reason says more.
+        final = [reason for reason in stated if reason not in TRANSIENT_AUTO_RETRY_CODES]
+        if stated and not final:
+            final = [REASON_RETRIES_SPENT]
+        details = " ".join(refusal_copy_for(reason, failed_roles=failed_roles)[0] for reason in final)
         lines.append(f"{prefix}: {name}{count_label}. {details}".rstrip())
     lines += level_mismatch_lines(driver_level_mismatches(manifest))
     lines += list(dict.fromkeys(f"Unqualified band ({t['role']}): below {t['trusted_floor_hz']:g} Hz."
