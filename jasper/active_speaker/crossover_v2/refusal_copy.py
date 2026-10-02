@@ -131,12 +131,10 @@ REASON_ARM_PARK_UNCONFIRMED = "arm_park_unconfirmed"
 REASON_WALK_OVER_MOVER_ENVELOPE = "walk_over_mover_envelope"
 REASON_WALK_LEVEL_POLICY_INVALID = "walk_level_policy_invalid"
 REASON_VOLUME_RESTORE_DEFERRED = "volume_restore_deferred"
-REASON_WALK_SCHEMA_VERSION_UNSUPPORTED = "walk_schema_version_unsupported"
 REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-REASON_WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 REASON_WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
 REASON_WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
 REASON_WALK_DELAY_NOT_ACCEPTED = "walk_delay_not_accepted"
@@ -1199,12 +1197,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         own_action={"id": "new_measurement_session", "label": "Start a new measurement after playback settles",
                     "href": "/sound/speaker/crossover/"},
     ),
-    REASON_WALK_SCHEMA_VERSION_UNSUPPORTED: ReasonSpec(
-        REASON_WALK_SCHEMA_VERSION_UNSUPPORTED, TEMPLATE_HARD_STOP, 0, "",
-        'Submit the measurement plan in the current request format.',
-        own_action={"id": "review_plan", "label": "Review measurement settings",
-                    "href": "/sound/speaker/crossover/"},
-    ),
     REASON_MEASURE_SPL_CALIBRATION_REQUIRED: ReasonSpec(
         REASON_MEASURE_SPL_CALIBRATION_REQUIRED, TEMPLATE_HARD_STOP, 0, "",
         'JTS needs microphone calibration to check the sound level during this measurement. '
@@ -1231,12 +1223,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This plan has more recordings than one session can hold. Split the positions across '
         'separate sessions.',
         own_action={"id": 'split_walk', "label": 'Split the measurement plan',
-                    "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_STOP_NO_LONGER_VALID: ReasonSpec(
-        REASON_WALK_STOP_NO_LONGER_VALID, TEMPLATE_HARD_STOP, 0, "",
-        'A saved measurement position is no longer valid. Correct that position before starting.',
-        own_action={"id": 'correct_walk_stop', "label": 'Correct the saved position',
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_TEMPLATE_NOT_ACCEPTED: ReasonSpec(
