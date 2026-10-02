@@ -106,22 +106,29 @@ from jasper.audio_measurement.admission.excitation_admission import FrequencyBan
 from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
 from jasper.audio_measurement.program_analysis import locate as locate_mod
-from jasper.audio_measurement.program_analysis.model import DriftEstimate, DISCONTINUITY_UNRESOLVED
-from jasper.audio_measurement.program_analysis import (
+from jasper.audio_measurement.program_analysis.model import (
+    DriftEstimate,
+    DISCONTINUITY_UNRESOLVED,
     ANCHOR_DISCRIMINATION_RATIO,
     CHANNEL_MAP_TARGET_RISE_DB,
-    INTEGRITY_CHECK_SWEEP_HEARD,
     LOCATOR_RATE_HZ,
     SEGMENT_SEARCH_S,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
     SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
+)
+from jasper.audio_measurement.program_analysis import (
+    INTEGRITY_CHECK_SWEEP_HEARD,
     MeasurementPriors,
-    locate_global_offset,
-    locate_segments,
     analyze_program_capture,
 )
 from jasper.audio_measurement.program_analysis.check import _band_rms_dbfs
-from jasper.audio_measurement.program_analysis.locate import _earliest_strong_peak, _locate_in_window, _stimulus_shape
+from jasper.audio_measurement.program_analysis.locate import (
+    _earliest_strong_peak,
+    _locate_in_window,
+    _stimulus_shape,
+    locate_global_offset,
+    locate_segments,
+)
 
 from tests._log_events import event_fields, event_fields_in, event_records
 

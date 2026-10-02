@@ -13,11 +13,8 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     TRANSIENT_AUTO_RETRY_CODES,
 )
-from jasper.audio_measurement.program_analysis import (
-    CrossoverCandidate,
-    DriftEstimate,
-    ProgramAnalysis,
-)
+from jasper.audio_measurement.program_analysis import ProgramAnalysis
+from jasper.audio_measurement.program_analysis.model import CrossoverCandidate, DriftEstimate
 from tests.crossover_v2_fixtures import (
     _alignment,
 )

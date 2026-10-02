@@ -65,16 +65,19 @@ import pytest
 from jasper.active_speaker.branch_chain import crossover_response_complex
 from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.audio_measurement.comparison_bands import overlap_band_hz
-from jasper.audio_measurement.program_analysis import (
+from jasper.audio_measurement.program_analysis import ALIGNMENT_OK
+from jasper.audio_measurement.program_analysis.model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_FLAT_MINIMUM_EPSILON_DB,
-    ALIGNMENT_OK,
     AlignmentEstimate,
+)
+from jasper.audio_measurement.program_analysis.dispatch import _build_candidate
+from jasper.audio_measurement.program_analysis.response import (
+    _ripple_db,
+    _select_alignment_pair,
     predicted_branch_sum,
     summed_model_residual_delay_us,
 )
-from jasper.audio_measurement.program_analysis.dispatch import _build_candidate
-from jasper.audio_measurement.program_analysis.response import _ripple_db, _select_alignment_pair
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "crossover_v2_alignment_incident_20260816"
 

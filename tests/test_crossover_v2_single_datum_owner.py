@@ -237,7 +237,7 @@ def test_the_trim_search_step_meets_the_setting_precision():
     """**<=0.5 dB is how precisely the trim must LAND** once the level fact is
     known — met by construction, because the trim search steps finer than that.
     """
-    from jasper.audio_measurement.program_analysis import RIPPLE_TRIM_SEARCH_STEP_DB
+    from jasper.audio_measurement.program_analysis.model import RIPPLE_TRIM_SEARCH_STEP_DB
 
     setting_precision_db = 0.5
     assert RIPPLE_TRIM_SEARCH_STEP_DB <= setting_precision_db

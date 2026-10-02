@@ -2601,7 +2601,8 @@ def test_check_evidence_artifact_carries_the_per_role_level_solve():
     to be played at. The solved gains alone are not self-explaining, so the
     artifact carries the derivation beside them — which limit chose each
     driver's level, and the ambient band it was solved against."""
-    from jasper.audio_measurement.program_analysis import GainPlan, RoleGainSolve
+    from jasper.audio_measurement.program_analysis import GainPlan
+    from jasper.audio_measurement.program_analysis.model import RoleGainSolve
 
     store = _RecordingEvidenceStore()
     publish_check, refs = v2evidence.bind_evidence_publishers(

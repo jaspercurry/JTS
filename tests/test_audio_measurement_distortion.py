@@ -43,7 +43,7 @@ from jasper.audio_measurement.program import (
     render_program_pcm,
     segment_sweep_meta,
 )
-from jasper.audio_measurement.program_analysis import DECONV_PRE_GUARD_S
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S
 
 # The bands and gains the owner's 2-way speaker actually measured with, taken
 # from the banked series-2 rounds (`series2-state-r1b-preapply.json`'s

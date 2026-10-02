@@ -222,8 +222,8 @@ def test_classifier_gives_a_wired_spl_ceiling_trip_its_own_code():
 
 
 def test_classifier_preserves_typed_conditioning_slug():
-    from jasper.audio_measurement.program_analysis import (
-        ConfiguredPathConditioningError,
+    from jasper.audio_measurement.program_analysis import ConfiguredPathConditioningError
+    from jasper.audio_measurement.program_analysis.model import (
         ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
     )
 
@@ -245,9 +245,9 @@ def test_the_two_conditioning_branches_name_two_different_levers():
     frequency" cannot clear it; ``abs(C/P) > cap`` is the branch Fc moves.
     Same slug either way, so the journal stays correlatable.
     """
-    from jasper.audio_measurement.program_analysis import (
+    from jasper.audio_measurement.program_analysis import ConfiguredPathConditioningError
+    from jasper.audio_measurement.program_analysis.model import (
         ILL_CONDITIONED_PROTECTION_DEEMBEDDING,
-        ConfiguredPathConditioningError,
     )
 
     ratio = ConfiguredPathConditioningError("C/P above +12 dB for tweeter")

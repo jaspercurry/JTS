@@ -514,9 +514,8 @@ def test_complex_correction_response_phase_sensitivity_two_branch_sum():
     correction to a magnitude scale (``W * 10**(db/20)``), this test fails.
     """
     from jasper.audio_measurement.analysis import notch_excluded_tracking_error_db
-    from jasper.audio_measurement.program_analysis import (
-        VERIFY_NOTCH_EXCLUSION_DB, predicted_branch_sum,
-    )
+    from jasper.audio_measurement.program_analysis.model import VERIFY_NOTCH_EXCLUSION_DB
+    from jasper.audio_measurement.program_analysis.response import predicted_branch_sum
 
     fc = 2000.0
     freqs = np.geomspace(500.0, 8000.0, 4096)

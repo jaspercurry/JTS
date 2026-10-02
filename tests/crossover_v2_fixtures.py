@@ -60,17 +60,19 @@ from jasper.audio_measurement.frame_ledger import reconcile_capture_frames
 from jasper.audio_measurement.recorded_impulse import RecordedImpulse
 from jasper.audio_measurement.program_analysis import (
     ALIGNMENT_OK,
-    MEASURE_PAIR_SINGLE_DRIVER,
+    DriverResponse,
+    GainPlan,
+    ProgramAnalysis,
+    solve_branch_trims,
+)
+from jasper.audio_measurement.program_analysis.dispatch import MEASURE_PAIR_SINGLE_DRIVER
+from jasper.audio_measurement.program_analysis.model import (
     AlignmentEstimate,
     CrossoverCandidate,
     DriftEstimate,
-    DriverResponse,
-    GainPlan,
     PilotObservation,
-    ProgramAnalysis,
     RoleGainSolve,
     SegmentLocation,
-    solve_branch_trims,
 )
 from jasper.audio_measurement.program_analysis.verify_integrity import _verify_capture_integrity
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer

@@ -45,11 +45,10 @@ from jasper.active_speaker.measured_crossover_candidate import (
     prove_candidate_config,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
-from jasper.audio_measurement.program_analysis import (
-    ALIGNMENT_OK,
+from jasper.audio_measurement.program_analysis import ALIGNMENT_OK, MeasurementPriors, half_period_us
+from jasper.audio_measurement.program_analysis.model import (
+    REALIZED_LEVEL_MATCH_TOLERANCE_DB,
     AlignmentEstimate,
-    MeasurementPriors,
-    half_period_us,
 )
 
 from tests.test_active_speaker_profile import _two_way_preset
@@ -566,7 +565,7 @@ def test_a_rejected_ripple_polish_reaches_the_durable_candidate_evidence(monkeyp
     from jasper.audio_measurement import program_analysis as _pa
 
     # A polish beyond the coupled bound, so the guard rejects it.
-    excursion_db = _pa.REALIZED_LEVEL_MATCH_TOLERANCE_DB + 1.0
+    excursion_db = REALIZED_LEVEL_MATCH_TOLERANCE_DB + 1.0
     monkeypatch.setattr(
         _pa.dispatch, "solve_ripple_optimal_trim",
         lambda *a, **kw: (kw["seed_trim_db"] + excursion_db, 0.0, kw["seed_trim_db"]),
