@@ -70,6 +70,7 @@ def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
         driver_caps_dbfs=caps,
         session_volume_db=sv,
         seams=FakeSeams().seams(),
+        index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
         driver_spacing_m=0.15,
     )
     return c, topology, profile, targets, sv
@@ -253,6 +254,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
         driver_caps_dbfs=caps,
         session_volume_db=sv,
         seams=FakeSeams().seams(),
+        index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
         driver_spacing_m=0.15,
     )
     t_hi = c.program_for_phase(PHASE_CHECK).segment("pilot_tweeter_hi")

@@ -397,6 +397,7 @@ def _conductor(
     fc_hz: float | None = FC_HZ,
     driver_caps_dbfs: Mapping[str, float] | None = None,
     driver_spacing_m: float = 0.15,
+    index_phase_map: Mapping[int, str] | None = None,
     **kwargs,
 ) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
@@ -411,6 +412,10 @@ def _conductor(
         session_volume_db=SESSION_VOLUME_DB,
         seams=seams,
         driver_spacing_m=driver_spacing_m,
+        index_phase_map=(
+            {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: journey.PHASE_VERIFY}
+            if index_phase_map is None else index_phase_map
+        ),
         **kwargs,
     )
     if not supplied_prior and journey.PHASE_TIMING not in conductor.snapshot().session_phases:
@@ -426,15 +431,6 @@ def _way1_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
         driver_caps_dbfs={"full_range": 0.0},
         driver_spacing_m=0.0,
         source_preset=kwargs.pop("source_preset", _one_way_preset()),
-        **kwargs,
-    )
-
-
-def _stage2_conductor(fakes: FakeSeams, **kwargs) -> CrossoverV2Session:
-    return _conductor(
-        fakes,
-        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
         **kwargs,
     )
 
@@ -975,8 +971,6 @@ def _stage_1(monkeypatch) -> tuple[Any, dict[str, Any]]:
     return _open_prepared(monkeypatch, prepared)
 
 
-_PILOT_AT = 1_760_000_000.0
-
 def _seed_applied_stage_1_state() -> dict[str, Any]:
     state = {
         "session_id": "cap_stage1_session",
@@ -985,15 +979,6 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
         "applied": True,
         "candidate": {"fingerprint": "fp-stage-1"},
         "gain_plan_db": {"woofer": -3.0, "tweeter": -6.0},
-        "verify_priors": {
-            "predicted_sum": {
-                "freqs_hz": [500.0, 1000.0, 2000.0, 4000.0],
-                "magnitude_db": [-1.0, -0.5, 0.5, 1.0],
-            },
-            "pilot_transfer_reference": {
-                "values": {"woofer": -41.5, "tweeter": -39.25}, "at": _PILOT_AT,
-            },
-        },
     }
     v2state.save_v2_state(state)
     return state
@@ -1041,19 +1026,13 @@ def _regradable_fixture() -> tuple[Any, Any, Any]:
 
 _PERSISTED_TOP_LEVEL_KEYS = {
     "accepted_phases",
-    "accepted_sound_revision",
-    "accepted_sound_declaration_change",
     "applied",
-    "attempts_loop",
     "candidate",
     "evidence",
-    "expected_post_apply_offset_db",
     "failure",
     "gain_plan_db",
     "kind",
     "measure_gain_ceiling_db",
-    "previous_candidate_fingerprint",
-    "previous_candidate_displaced_by",
     "round_ordinal_epoch",
     "round_receipt",
     "schema_version",
@@ -1061,7 +1040,6 @@ _PERSISTED_TOP_LEVEL_KEYS = {
     "session_phases",
     "sound_design_revision",
     "updated_at",
-    "verify_priors",
 }
 
 

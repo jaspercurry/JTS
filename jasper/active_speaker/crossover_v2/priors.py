@@ -104,24 +104,19 @@ def measure_priors(
     ambient_report: Any,
     alignment_delay_bounds_us: tuple[float, float] | None,
     applied_alignment: AppliedAlignment | None,
-    explicit_alignment_delay_us: float | None,
-    explicit_alignment_polarity_sign: int | None,
     summed_alignment: SummedAlignmentReference | None = None,
 ) -> MeasurementPriors:
     """MEASURE's priors — the widest set, and the only §4.2 de-embedding.
 
     Every input is keyword-only and undefaulted, deliberately: giving
     ``applied_alignment`` a default would silently downgrade a held alignment to
-    "commit no delay" (#2617), and defaulting ``explicit_alignment_delay_us``
-    would run the AUTOMATIC alignment on a round its receipt calls prescribed.
+    "commit no delay" (#2617).
 
     ``applied_alignment`` reaches MEASURE alone, because MEASURE is the only
     phase that commits an alignment; handing it to VERIFY or a cloud pose puts
     the speaker's current answer inside a comparison meant to be independent of
     it. ``ambient_report`` is CHECK's measured room floor (#1830), ``None`` only
-    where CHECK produced none, leaving the SNR verdict honestly absent. The
-    explicit alignment pins are REQUEST facts, validated at the boundary the
-    request arrived on.
+    where CHECK produced none, leaving the SNR verdict honestly absent.
 
     The three configured-path fields are gated on ``protection_sections_by_role``
     together: ``_compose_configured_path_ir`` RAISES on a partial prior set.
@@ -133,8 +128,6 @@ def measure_priors(
         crossover_fc_hz=fc_hz,
         alignment_delay_bounds_us=alignment_delay_bounds_us,
         applied_alignment=applied_alignment,
-        explicit_alignment_delay_us=explicit_alignment_delay_us,
-        explicit_alignment_polarity_sign=explicit_alignment_polarity_sign,
         ambient_report=ambient_report, summed_alignment=summed_alignment,
         measurement_protection_response_by_role=role_transfers(
             protection_sections_by_role

@@ -218,15 +218,9 @@ def test_requested_angle_order_is_the_running_order() -> None:
 
 
 def test_arbitrary_angles_are_reachable() -> None:
-    """The point of the seam: an angle outside the shipped six-pose table.
-
-    45 deg is not expressible today -- `LATERAL_POSE_PROMPTS` is a fixed tuple
-    derived from two hard-coded cm offsets behind an import-time length guard.
-    """
+    """The point of the seam: any whole-degree angle a request states."""
     stop, = ac.resolve_request(ac.per_driver_at([45]))
     assert capture_plan.position_angle_deg(stop.prompt) == 45
-    shipped = {capture_plan.position_angle_deg(p) for p in capture_plan.LATERAL_POSE_PROMPTS}
-    assert 45 not in shipped
 
 
 def test_empty_and_unknown_requests_are_refused() -> None:
@@ -272,11 +266,6 @@ def test_the_string_and_protractor_combination_is_reachable() -> None:
     stop, = ac.resolve_request(ac.per_driver_at([22], mover=ac.MOVER_HUMAN))
     assert "22" in stop.prompt.headline                       # degrees...
     assert stop.screen["auto_advance"] == capture_plan.AUTO_ADVANCE_TAP  # ...and a tap
-    # The shipped hand-walked pose at the same place states centimetres instead.
-    shipped_at_40cm = next(
-        p for p in capture_plan.LATERAL_POSE_PROMPTS if p.offset_cm == 40.0
-    )
-    assert "22" not in shipped_at_40cm.headline
 
 
 def test_human_mover_taps_and_declares_no_position() -> None:

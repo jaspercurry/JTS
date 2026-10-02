@@ -150,6 +150,7 @@ def _conductor(caps: dict[str, float]):
         driver_caps_dbfs=caps,
         session_volume_db=SESSION_VOLUME_DB,
         seams=FakeSeams().seams(),
+        index_phase_map={1: "check", 2: "measure", 3: "verify"},
         driver_spacing_m=0.15,
         gain_plan_db=GAIN_PLAN_DB,
     )
@@ -550,6 +551,7 @@ def test_the_conductor_translates_the_refusal_into_its_own_error():
         driver_caps_dbfs=CAPS,
         session_volume_db=SESSION_VOLUME_DB,
         seams=FakeSeams().seams(),
+        index_phase_map={1: "check", 2: "measure", 3: "verify"},
         driver_spacing_m=0.15,
     )
 

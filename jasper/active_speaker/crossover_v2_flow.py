@@ -18,7 +18,6 @@ from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import admission as _admission
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _dispatch
-from jasper.active_speaker.crossover_v2 import capture_plan as _plan
 from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
@@ -26,13 +25,9 @@ from jasper.active_speaker.crossover_v2.admission import (
     SlotAttempts,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
-    CLOUD_POSITION_PROMPTS,
-    LATERAL_POSE_PROMPTS,
     CloudPositionPrompt,
-    _pose,
     position_angle_deg,
     position_elevation_deg,
-    verify_pose_table,
 )
 from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginRefused,
@@ -41,20 +36,14 @@ from jasper.active_speaker.crossover_v2.contracts import (
     CrossoverV2FlowError,
 )
 from jasper.active_speaker.crossover_v2.durable_state import (
-    MAX_ATTEMPT_HISTORY,
-    AttemptRecord,
     V2ConductorSnapshot,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
-    LATERAL_CONSUMER_FC_SELECTOR,
     PHASE_CHECK,
-    PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
-    PHASE_VERIFY,
     CommissionJourney,
     JourneyPlan,
-    validated_lateral_consumer,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     GRAPH_SCOPE_DRIVERS,
@@ -69,7 +58,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     TakeVerdict,
     reason_message,
 )
-from jasper.active_speaker.crossover_v2.spatial import POSITION_ROLE_OFFAX
 from jasper.active_speaker.crossover_v2.summed_alignment import _unreadable
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import (
@@ -143,27 +131,21 @@ class CrossoverV2Session:
         driver_caps_dbfs: Mapping[str, float],
         session_volume_db: float,
         seams: V2FlowSeams,
+        index_phase_map: Mapping[int, str],
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
         target_bands: Mapping[str, Any] | None = None,
         driver_spacing_m: float | None = 0.0,
         accepted_phases: Sequence[str] = (),
-        applied: bool = False,
         gain_plan_db: Mapping[str, float] | None = None,
         measure_gain_ceiling_db: Mapping[str, float] | None = None,
-        index_phase_map: Mapping[int, str] | None = None,
-        post_apply_verifies: bool | None = None,
-        measure_predicted_sum: Any = None,
         timing_prior: str | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
         ]
         | None = None,
-        attempt_history: Sequence[AttemptRecord] = (),
         sound_design_revision: int | None = None,
-        lateral_consumer: str = LATERAL_CONSUMER_FC_SELECTOR,
-        lateral_prompts: Sequence[CloudPositionPrompt] | None = None,
+        lateral_prompts: Sequence[CloudPositionPrompt] = (),
         measure_specs_by_index: Mapping[int, MeasureSpec] | None = None,
-        verify_prompts: Sequence[CloudPositionPrompt] | None = None,
     ) -> None:
         roles = tuple(roles_bands)
         if not 1 <= len(roles) <= 2:
@@ -182,15 +164,12 @@ class CrossoverV2Session:
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
-        self.capture_published_refusal = False
         self._measurement_protection_sections_by_role = None
         if measurement_protection_sections_by_role is not None:
             self._measurement_protection_sections_by_role = {
                 str(role): tuple(sections)
                 for role, sections in measurement_protection_sections_by_role.items()
             }
-        # Attempts belong to the commissioning journey, not to this capture session.
-        self._attempt_history = list(attempt_history)[-MAX_ATTEMPT_HISTORY:]
         # ``None`` is undeclared spacing, never a default: disclose it rather than
         # silently folding it into the same 0.0 ``MeasurementGeometry.parallax_us``
         # already treats as "no correction".
@@ -210,39 +189,17 @@ class CrossoverV2Session:
         # Where this round is, and the walk it is in. ONE aggregate: six correlated
         # fields here could disagree.
         self._journey = CommissionJourney(
-            JourneyPlan.from_index_map(
-                index_phase_map
-                if index_phase_map is not None
-                else _plan.DEFAULT_INDEX_PHASE_MAP,
-                post_apply_verifies=post_apply_verifies,
-            ),
+            JourneyPlan.from_index_map(index_phase_map),
             accepted_phases=accepted_phases,
-            applied=applied,
         )
         self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
         self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
         # CHECK's measured room floor, held for the MEASURE and lateral priors.
         # In-memory only: CHECK/MEASURE evidence does not carry across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
-        try:
-            validated_lateral_consumer(
-                lateral_consumer,
-                states_own_poses=lateral_prompts is not None,
-            )
-        except ValueError as exc:
-            raise CrossoverV2FlowError(str(exc)) from exc
-        self._lateral_prompts: tuple[CloudPositionPrompt, ...] = (
-            tuple(lateral_prompts)
-            if lateral_prompts is not None
-            else LATERAL_POSE_PROMPTS
-        )
+        self._lateral_prompts = tuple(lateral_prompts)
         self._measure_specs_by_index = (
             measure_specs_by_index if measure_specs_by_index is not None else {}
-        )
-        # Resolved through the resolver the plan builder uses, so the session and the
-        # plan cannot read different pose tables.
-        self._verify_prompts: tuple[CloudPositionPrompt, ...] = verify_pose_table(
-            verify_prompts
         )
         # Frozen together so a subset cannot drift.
         self._excitation = _programs.SessionExcitation(
@@ -279,8 +236,6 @@ class CrossoverV2Session:
         # Per-SLOT attempt bookkeeping: the phase for a single-capture phase,
         # ``phase:index`` inside a group. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
-        self._armed_capture: tuple[int, int] | None = None
-        self._measure_predicted_sum: Any = measure_predicted_sum
         self._timing_prior = timing_prior
 
     @property
@@ -333,10 +288,6 @@ class CrossoverV2Session:
     def set_program(self, phase: str, program: ExcitationProgram) -> None:
         if phase == PHASE_CHECK:
             self._check_program = program
-        elif phase == PHASE_VERIFY:
-            self._verify_program = program
-        elif phase == PHASE_CLOUD_VERIFY:
-            self._cloud_program = program
 
     def set_excitation(self, excitation: _programs.SessionExcitation) -> None:
         self._excitation = excitation
@@ -368,8 +319,6 @@ class CrossoverV2Session:
             summed_alignment=self.summed_alignment_reference(),
             alignment_delay_bounds_us=alignment_delay_search_bounds_us(self._preset),
             applied_alignment=self._applied_alignment(),
-            explicit_alignment_delay_us=None,
-            explicit_alignment_polarity_sign=None,
         )
 
     def _applied_alignment(self) -> AppliedAlignment | None:
@@ -386,38 +335,13 @@ class CrossoverV2Session:
         )
 
     @property
-    def post_apply_verifies(self) -> bool:
-        """Will this session's correction be MEASURED after it is applied?"""
-        return self._journey.plan.post_apply_verifies
-
-    @property
     def accepted_phases(self) -> frozenset[str]:
         return self._journey.accepted_phases
-
-    @property
-    def attempt_history(self) -> tuple[AttemptRecord, ...]:
-        """Accepted applied-candidate attempts, oldest first and bounded."""
-        return tuple(self._attempt_history)
-
-    @property
-    def applied(self) -> bool:
-        return self._journey.applied
-
-    @property
-    def measure_predicted_sum(self) -> Any:
-        return self._measure_predicted_sum
 
     @property
     def timing_prior(self) -> str | None:
         """The id of the session's timing take, the prior MEASURE reads (ADR-0319), or ``None``."""
         return self._timing_prior
-
-    @property
-    def armed_capture(self) -> tuple[int, int] | None:
-        """The last authorized ``(index, attempt)``: the host addresses the terminal
-        ``capture_result`` host event at a play-seam failure to it.
-        """
-        return self._armed_capture
 
     def phase_of_index(self, index: int) -> str:
         phase = self._journey.plan.phase_for_index(index)
@@ -430,86 +354,14 @@ class CrossoverV2Session:
         phase = self.phase_of_index(index)
         return f"{phase}:{index}" if phase in GROUP_PHASES else phase
 
-    def _cloud_prompt(self, phase: str, index: int) -> CloudPositionPrompt:
-        """The prompt for one group index — the SAME table the plan emitted."""
-        offsets = self._journey.plan.group_offsets(phase)
-        try:
-            position = offsets.index(index)
-        except ValueError:
-            position = 0
-        table = (
-            self._lateral_prompts
-            if phase == PHASE_LATERAL
-            else self._verify_prompts
-            if phase == PHASE_CLOUD_VERIFY
-            else CLOUD_POSITION_PROMPTS
-        )
-        if position < len(table):
-            return table[position]
-        return _pose(_plan._LATERAL_POSE, 45.0, POSITION_ROLE_OFFAX, side="RIGHT")
-
-    def note_restore_observed(self) -> None:
-        """The restore-observed host event — disarms the VERIFY hold (#2616)."""
-        self._journey.mark_restored()
-        log_event(
-            logger,
-            "correction.crossover_v2_restore_observed",
-            session_id=self.session_id,
-        )
-
     def snapshot(self) -> V2ConductorSnapshot:
         return V2ConductorSnapshot(
             session_id=self.session_id,
             accepted_phases=self._journey.accepted_capture_phases(),
             session_phases=self._journey.plan.phases,
-            applied=self._journey.applied,
             gain_plan_db=dict(self._gain_plan_db) if self._gain_plan_db else None,
             measure_gain_ceiling_db=dict(self._measure_gain_ceiling_db),
-            candidate_fingerprint=None,
-            attempt_history=tuple(self._attempt_history),
         )
-
-    @classmethod
-    def hydrate(
-        cls,
-        snapshot: V2ConductorSnapshot | None,
-        *,
-        session_id: str,
-        **kwargs: Any,
-    ) -> "CrossoverV2Session":
-        """Rebuild a session, applying the §5.6 session-binding rule.
-
-        Same session ⇒ resume with its accepted phases and gain plan; a different
-        or absent one ⇒ fresh start at CHECK, mic position being unverifiable
-        across sessions.
-        """
-        journey: dict[str, Any] = {}
-        if snapshot is not None:
-            journey = {
-                "attempt_history": snapshot.attempt_history,
-            }
-        journey.update(
-            {key: kwargs.pop(key) for key in tuple(journey) if key in kwargs}
-        )
-        if snapshot is not None and snapshot.session_id == session_id:
-            return cls(
-                session_id=session_id,
-                accepted_phases=snapshot.accepted_phases,
-                applied=snapshot.applied,
-                gain_plan_db=snapshot.gain_plan_db,
-                measure_gain_ceiling_db=snapshot.measure_gain_ceiling_db,
-                **journey,
-                **kwargs,
-            )
-        if snapshot is not None:
-            log_event(
-                logger,
-                "correction.crossover_v2_session_rebound",
-                level=logging.INFO,
-                prior_session=snapshot.session_id,
-                session_id=session_id,
-            )
-        return cls(session_id=session_id, **journey, **kwargs)
 
     def authorize_begin(
         self,
@@ -536,7 +388,6 @@ class CrossoverV2Session:
             else "operator",
         )
         if decision.kind == _admission.REFUSE_EXTRAS_SPENT:
-            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 decision.code,
                 reason_message(decision.code, REASON_REGISTRY[decision.code]),
@@ -551,7 +402,6 @@ class CrossoverV2Session:
                 index=index,
                 kind=str(decision.kind),
             )
-            self.capture_published_refusal = True
             raise CaptureBeginRefused(
                 REASON_LOCATE_FAILED,
                 reason_message(
@@ -568,7 +418,6 @@ class CrossoverV2Session:
             ledger.admit()
         except _admission.AttemptOverspendError as exc:
             raise CrossoverV2FlowError(str(exc)) from exc
-        self._armed_capture = (index, attempt)
         log_event(
             logger,
             "correction.crossover_v2_authorized",
@@ -611,8 +460,9 @@ class CrossoverV2Session:
             (spec.positions or (0,))[0] if spec else 0,
             spec.vertical_deg if spec else 0,
         )
-        if phase in GROUP_PHASES:
-            prompt = self._cloud_prompt(phase, index)
+        if phase == PHASE_LATERAL:
+            # The plan's own prompt for this pose: one per lateral index, in order.
+            prompt = self._lateral_prompts[self._journey.plan.group_offsets(phase).index(index)]
             position, vertical = (
                 position_angle_deg(prompt),
                 position_elevation_deg(prompt),

@@ -99,8 +99,7 @@ def test_an_unrecognised_begin_decision_kind_refuses_rather_than_admits(caplog):
     Reached with a kind no released ``assess_begin`` returns — the shape of the
     future defect. On a BEGIN gate the silent direction is the dangerous one:
     falling through starts a capture and charges a try nobody decided to spend.
-    So this asserts the DIRECTION as well as the noise — no arm, no charge, and
-    the capture is not armed.
+    So this asserts the DIRECTION as well as the noise — no arm and no charge.
     """
     c = _conductor(FakeSeams())
     slot = c._slot_of_index(1)
@@ -117,10 +116,9 @@ def test_an_unrecognised_begin_decision_kind_refuses_rather_than_admits(caplog):
     unmapped = event_records(caplog, UNMAPPED_EVENT)
     assert [r.levelname for r in unmapped] == ["ERROR"]
     assert excinfo.value.code == refusal_copy.REASON_LOCATE_FAILED
-    # Not admitted: no extra charged, the meter did not advance, nothing armed.
+    # Not admitted: no extra charged, the meter did not advance.
     assert c._slot_attempts[slot].admitted == 1
     assert c._slot_attempts[slot].extras_used == 0
-    assert c.armed_capture is None
 
 
 def test_the_declared_kinds_are_the_ones_assess_begin_can_return():

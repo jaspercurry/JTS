@@ -109,8 +109,6 @@ def _candidate_timing(
     candidate: MeasuredCrossoverCandidate, at: str, provenance: Mapping[str, Any] | None,
     saved_timing: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    from jasper.audio_measurement.program_analysis.model import TIMING_AUTHORED  # lazy: analysis loads NumPy
-
     evidence = candidate.analysis
     source = (evidence.get("resolution") or {}).get("alignment")
     if source == "saved":
@@ -126,8 +124,7 @@ def _candidate_timing(
         return {"delay_us": pair["delay_us"], "polarity": pair["polarity"], "provenance": PROVENANCE_MEASURED,
                 "measured": {**{key: read[key] for key in ("margin_db", "residual_rms_db", "repeat_spread_db", "repeat_spread_us",
                                                          "repeat_count", "round_id", "take_id", "graph_fingerprint")}, "at": at}}
-    if (source == "document"
-            or evidence.get("timing_verdict") == TIMING_AUTHORED) and candidate.alignment.delay_us is not None:
+    if source == "document" and candidate.alignment.delay_us is not None:
         roles = required_driver_roles(candidate.source_preset.way_count)
         return {"delay_us": candidate.alignment.delay_us * (1 if candidate.alignment.delay_role == roles[1] else -1),
                 "polarity": "inverted" if candidate.alignment.polarity == "invert" else "normal",

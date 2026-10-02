@@ -541,11 +541,6 @@ class AlignmentPairSelection:
     seed_ripple_db: float | None
     objective: str
     left_anchor_lobe: bool = False
-    #: Was the POLARITY axis pinned by the request rather than searched?
-    #: The objective string can't carry this (a pinned round still commits
-    #: ALIGNMENT_COMMITTED_EXPLICIT_PRESCRIPTION); read via
-    #: :attr:`polarity_agrees_with_sum` instead.
-    polarity_pinned: bool = False
     residual_rms_db: float | None = None
     margin_db: float | None = None
     repeat_spread_db: float | None = None
@@ -558,11 +553,9 @@ class AlignmentPairSelection:
         """Did correlation's polarity answer survive the flat-sum objective?
 
         ``None`` on any commitment the flat-sum objective did not make on
-        the polarity axis (low-SNR path, or a pinned round) — recording
-        ``False`` there would report a comparison that never happened.
+        the polarity axis — recording ``False`` there would report a
+        comparison that never happened.
         """
-        if self.polarity_pinned:
-            return None
         if self.objective not in _FLAT_SUM_POLARITY_OBJECTIVES:
             return None
         return self.polarity_sign == self.seed_polarity_sign

@@ -71,11 +71,12 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_BATCH_SIZE_KEY,
     POSITION_BATCH_START_KEY,
     V2_FIRST_BEGIN_TIMEOUT_S,
+    CloudPositionPrompt,
     build_inline_session_spec,
-    LATERAL_MARK_PROMPT,
     v2_first_begin_timeout_s,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
+from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker import crossover_envelope_v2 as v2projection
 from jasper.active_speaker import baseline_profile
 
@@ -618,7 +619,6 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
         index_phase_map=index_phase_map,
     )
 
@@ -752,57 +752,9 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
         ),
         driver_spacing_m=0.15,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-        applied=True,
         index_phase_map=index_phase_map,
         **kwargs,
     )
-
-
-def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
-    """#1927: the history the disclosure reads must survive the opening
-    persist of a re-arm, which runs BEFORE any usable VERIFY attempt has set
-    this session's own reference. A re-arm runs under a brand-new capture
-    session id, so a session-id guard would drop it on the first "Try again"."""
-    reference = {"values": {"summed": -20.0}, "at": 1_700_000_000.0}
-    v2state.save_v2_state({
-        "session_id": "cap_original_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-        "applied": True,
-        "verify_priors": {"pilot_transfer_reference": reference},
-    })
-    conductor = _rearm_conductor_for_persist(
-        "cap_rearm_session", {1: PHASE_VERIFY},
-    )
-    v2state.persist_conductor_state(conductor, failure_code=None)
-
-    state = v2state.load_v2_state()
-    assert state["session_id"] == "cap_rearm_session"
-    assert state["verify_priors"]["pilot_transfer_reference"] == reference
-
-
-def test_a_measuring_session_drops_the_prior_level_reference():
-    """A pilot transfer is captured THROUGH the applied graph, so once a new
-    candidate is measured the previous reference answers a different question.
-    A measuring session drops it rather than letting the next stage-2 verify
-    report a graph change as a level-reference move — the misattribution
-    #1924 and #1927 both exist to stop."""
-    v2state.save_v2_state({
-        "session_id": "cap_original_session",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-        "applied": True,
-        "verify_priors": {
-            "pilot_transfer_reference": {
-                "values": {"summed": -20.0}, "at": 1_700_000_000.0,
-            },
-        },
-    })
-    conductor = _rearm_conductor_for_persist(
-        "cap_measure_session", {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
-    )
-    v2state.persist_conductor_state(conductor, failure_code=None)
-
-    state = v2state.load_v2_state()
-    assert state["verify_priors"]["pilot_transfer_reference"] is None
 
 
 def test_prepare_refuses_when_volume_needs_recovery():
@@ -881,68 +833,6 @@ def test_prepare_refuses_unrepresentable_confirmed_protection_before_bundle(
     assert correction_runtime.refusal_envelope(refused.value)["next_action"]["id"] == "review_safety_limits"
 
 
-def test_decimate_sum_tracks_smoothed_truth_not_the_aliased_stride():
-    """Issue #1858: ``_decimate_sum`` must anti-alias before reducing point
-    count, not stride-pick raw bins.
-
-    The synthetic curve is a slow, genuine trend (what a persisted prior
-    should track) plus a fast ripple whose ~10 Hz period is far shorter than
-    the ~46.9 Hz output grid spacing (``24000 / MAX_PERSISTED_SUM_POINTS``)
-    -- "ripple faster than the output grid" -- planted across the full
-    sweep including the sub-500 Hz region the issue calls out. 500 Hz sits
-    inside the old stride's fewer-than-3-samples-per-1/3-octave-band zone
-    (below ~607 Hz; below ~202 Hz the stride spacing exceeds the band's own
-    width outright, zero guaranteed samples), so a single stride-picked raw
-    bin there was noise, not shape.
-
-    Pinned against the regression it fixes, not just that new code runs: the
-    naive floor-division stride this replaces is reproduced locally (it no
-    longer exists in production after this fix) and demonstrably fails the
-    same tolerance the fixed function meets.
-    """
-    n = 1 << 16
-    fs = 48000.0
-    freqs = np.fft.rfftfreq(n, 1.0 / fs)
-    slow_true_db = 3.0 * np.sin(2.0 * np.pi * freqs / 400.0)
-    fast_ripple_db = 2.0 * np.sin(2.0 * np.pi * freqs / 10.0)
-    mag_db = slow_true_db + fast_ripple_db
-    mag_db[0] = slow_true_db[0]  # avoid the f=0 edge
-
-    decimated = v2durable._decimate_sum((freqs, mag_db))
-    out_freqs = np.asarray(decimated["freqs_hz"])
-    out_mag = np.asarray(decimated["magnitude_db"])
-    assert len(out_freqs) <= v2durable.MAX_PERSISTED_SUM_POINTS
-    assert len(out_freqs) < freqs.size  # genuinely decimated
-
-    below_500 = out_freqs < 500.0
-    assert below_500.sum() >= 5  # the region actually gets exercised
-    truth_below_500 = 3.0 * np.sin(2.0 * np.pi * out_freqs[below_500] / 400.0)
-    new_err = np.abs(out_mag[below_500] - truth_below_500)
-
-    def _old_removed_stride_decimate(freqs, mags, cap):
-        """The exact shape ``_decimate_sum`` used before #1858: a raw
-        floor-division stride. No longer in production; reproduced here so
-        the fix is pinned against the regression it replaces."""
-        n = len(freqs)
-        step = max(1, n // cap)
-        return freqs[::step], mags[::step]
-
-    old_freqs, old_mag = _old_removed_stride_decimate(
-        freqs, mag_db, v2durable.MAX_PERSISTED_SUM_POINTS,
-    )
-    old_below_500 = old_freqs < 500.0
-    old_truth = 3.0 * np.sin(2.0 * np.pi * old_freqs[old_below_500] / 400.0)
-    old_err = np.abs(old_mag[old_below_500] - old_truth)
-
-    # The fix: honest tracking of the slow truth below 500 Hz, well inside
-    # the ripple's own 2.0 dB amplitude.
-    assert np.median(new_err) < 0.5
-    # The regression it fixes: the old stride does not track the truth --
-    # a stride-picked raw bin is dominated by whichever ripple phase it
-    # happened to land on, comparable to the ripple's own amplitude.
-    assert np.median(old_err) > 1.0
-
-
 def test_observe_apply_success_marks_the_state_applied():
     v2state.save_v2_state({
         "session_id": "cap_x",
@@ -978,30 +868,6 @@ def test_save_v2_state_refuses_a_non_finite_number_and_writes_nothing():
                 "verify": {"claims": {"residual_db": bad}},
             })
         assert v2state.load_v2_state() == good
-
-
-def test_start_over_while_applied_keeps_the_attempt_history():
-    loop = {
-        "history": [
-            {
-                "attempt_id": "candidate-a",
-                "metric": "max_db_notch_excluded",
-                "provenance": "realized",
-                "integrity": {"comparable": True, "reasons": []},
-                "repeats_used": 1,
-                "grade_db": 0.9,
-            }
-        ],
-    }
-    v2state.save_v2_state({
-        "session_id": "cap_x",
-        "accepted_phases": [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
-        "applied": True,
-        "attempts_loop": loop,
-    })
-
-    v2state.reset_v2_journey_state()
-    assert v2state.load_v2_state()["attempts_loop"] == loop
 
 
 def _mono_wav_bytes(n: int = 4800) -> bytes:
@@ -1428,7 +1294,8 @@ def test_inline_and_verify_specs_carry_the_default_calibration_hint(
     assert hint is not None
     kwargs = {"default_setup_calibration": hint} if with_calibration else {}
     spec = build_inline_session_spec(
-        [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK), LATERAL_MARK_PROMPT, "base")],
+        [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK),
+          CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0)), "base")],
         roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding=_BINDING,
         retries_per_pose=0, **kwargs,
     )
@@ -2488,36 +2355,14 @@ def test_a_blocked_apply_moves_no_level(monkeypatch, tmp_path):
 class _StubConductor:
     """The minimum ``persist_conductor_state`` reads off a conductor."""
 
-    measure_predicted_sum = None
-
-    def __init__(
-        self, session_id: str = "s1", *, applied: bool = True,
-        session_phases: tuple = (),
-    ) -> None:
+    def __init__(self, session_id: str = "s1") -> None:
         self._session_id = session_id
-        self._applied = applied
-        self._session_phases = session_phases
 
     def snapshot(self):
         return SimpleNamespace(
             session_id=self._session_id, accepted_phases=(),
-            session_phases=self._session_phases,
-            applied=self._applied, gain_plan_db=None,
-            candidate_fingerprint=None,
+            session_phases=(), gain_plan_db=None,
         )
-
-
-def test_only_a_rebind_without_measure_carries_the_measure_scoped_keys():
-    """The carries follow the snapshot's phases; the stub has no ``session_phases`` of its own (#4806)."""
-    v2state.save_v2_state({"session_id": "old", "accepted_sound_revision": 4})
-    v2state.persist_conductor_state(_StubConductor("verify"), failure_code=None)
-    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] == 4
-
-    v2state.persist_conductor_state(
-        _StubConductor("measure", session_phases=(PHASE_CHECK, PHASE_MEASURE)),
-        failure_code=None,
-    )
-    assert (v2state.load_v2_state() or {})["accepted_sound_revision"] is None
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
@@ -2672,7 +2517,7 @@ def test_two_threads_in_one_process_never_hold_the_state_together(tmp_path):
 
 
 @pytest.mark.parametrize("write", [
-    pytest.param(lambda: v2state.persist_terminal_failure(_StubConductor("s1", applied=False), "internal_error"),
+    pytest.param(lambda: v2state.persist_terminal_failure(_StubConductor("s1"), "internal_error"),
                  id="terminal_failure"),
     pytest.param(lambda: v2state.persist_execution_result("s1", volume_restore="exact_restored"), id="execution_result"),
 ])

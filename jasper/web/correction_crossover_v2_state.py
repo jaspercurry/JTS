@@ -194,13 +194,9 @@ def reset_v2_journey_state() -> None:
             log_event(logger, "correction.crossover_v2_journey_reset_advanced_epoch",
                       round_ordinal_epoch=epoch,
                       reset_round_ordinal_from=ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else None)
-        clean: dict[str, Any] = {"session_id": None, "accepted_phases": [], "applied": applied,
-                 "gain_plan_db": None, "candidate": None, "failure": None,
-                 "verify_priors": None, "evidence": None,
-                 ROUND_ORDINAL_EPOCH_STATE_KEY: epoch}
-        if applied:
-            clean["attempts_loop"] = state.get("attempts_loop")
-        save_v2_state(clean)
+        save_v2_state({"session_id": None, "accepted_phases": [], "applied": applied,
+                       "gain_plan_db": None, "candidate": None, "failure": None, "evidence": None,
+                       ROUND_ORDINAL_EPOCH_STATE_KEY: epoch})
         log_event(logger, "correction.crossover_v2_journey_reset_kept_applied" if applied
                   else "correction.crossover_v2_journey_reset_kept_epoch", round_ordinal_epoch=epoch)
 
@@ -291,7 +287,7 @@ def persist_conductor_state(
     # a write between them (an apply's record) would otherwise be lost.
     with v2_state_locked():
         prior = load_v2_state() or {}
-        built = build_conductor_state(
+        state = build_conductor_state(
             conductor, prior,
             failure_code=failure_code,
             evidence=evidence,
@@ -299,17 +295,17 @@ def persist_conductor_state(
             failure_detail=failure_detail,
             failure_roles=failure_roles,
         )
-        if prior.get("session_id") == built.state["session_id"] and prior.get("execution"):
-            built.state["execution"] = prior["execution"]
-        save_v2_state(built.state, durable=built.durable)
-        bundle_id = (built.state.get("evidence") or {}).get("bundle_session_id")
+        if prior.get("session_id") == state["session_id"] and prior.get("execution"):
+            state["execution"] = prior["execution"]
+        save_v2_state(state)
+        bundle_id = (state.get("evidence") or {}).get("bundle_session_id")
         if isinstance(bundle_id, str) and Path(bundle_id).name == bundle_id:
             bundle = sessions_dir() / bundle_id
             if (bundle / "info.json").is_file():
                 atomic_write_text(
                     bundle / CAPTURE_STATE_FILENAME,
-                    json.dumps(built.state, allow_nan=False, sort_keys=True) + "\n",
-                    mode=0o640, durable=built.durable,
+                    json.dumps(state, allow_nan=False, sort_keys=True) + "\n",
+                    mode=0o640,
                 )
 
 
@@ -318,8 +314,8 @@ def persist_terminal_failure(
     failed_roles: Sequence[str] = (),
 ) -> None:
     """Session-terminal persistence (§5.6): pre-apply, capture evidence dies
-    with the session (restart at CHECK); post-apply, the applied candidate +
-    verify priors survive so ``/v2/verify`` can re-arm.
+    with the session (restart at CHECK); post-apply, the applied candidate
+    survives.
 
     ``REASON_APPLY_FAILED`` is exempted
     from the pre-apply evidence reset. The §5.6 rationale for wiping

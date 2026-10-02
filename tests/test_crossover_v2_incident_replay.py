@@ -133,6 +133,7 @@ def _conductor() -> CrossoverV2Session:
         driver_caps_dbfs={role: 0.0 for role in ROLES},
         session_volume_db=-20.0,
         seams=seams,
+        index_phase_map={1: "check", 2: "measure", 3: "verify"},
         driver_spacing_m=0.15,
         # The incident's own CHECK solve, so the MEASURE program the fit reads
         # its sweep bounds from is composed at construction — the same state a
