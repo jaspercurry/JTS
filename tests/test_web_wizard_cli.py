@@ -92,10 +92,10 @@ def wizard_harness_fixture(monkeypatch):
     )
 
     # Pre-start hooks reach real hardware/state: the dispatcher opens a D-Bus
-    # loop thread, the claim boundary talks to CamillaDSP.
+    # loop thread, startup recovery talks to CamillaDSP.
     monkeypatch.setattr(bluetooth_setup, "_AsyncDispatcher", _FakeDispatcher)
     monkeypatch.setattr(
-        correction_setup, "_claim_crossover_state_owners", lambda: None
+        correction_setup, "_recover_crossover_state", lambda: None
     )
     from jasper.audio_control import volume_process
 

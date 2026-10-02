@@ -606,13 +606,8 @@ def test_public_surface_present():
     assert callable(correction_setup._make_handler_class)
 
 
-def test_service_start_claims_all_crossover_state_owners(monkeypatch):
-    from jasper.active_speaker import repeat_admission
-
+def test_service_start_recovers_volume_before_program_graph(monkeypatch):
     claims = []
-    monkeypatch.setattr(
-        repeat_admission, "claim_owner", lambda: claims.append("repeat")
-    )
     monkeypatch.setattr(
         correction_setup, "_recover_crash_left_session_volume",
         lambda: claims.append("volume"),
@@ -624,9 +619,9 @@ def test_service_start_claims_all_crossover_state_owners(monkeypatch):
     monkeypatch.setattr(
         correction_setup, "_restore_protected_neutral_program_graph", recover_program,
     )
-    correction_setup._claim_crossover_state_owners()
+    correction_setup._recover_crossover_state()
 
-    assert claims == ["repeat", "volume", "program"]
+    assert claims == ["volume", "program"]
 
 
 def test_program_graph_startup_recovery_is_exact_and_fail_closed(
@@ -750,18 +745,14 @@ def test_main_configures_root_logging_at_info(wizard_harness):
         assert root.getEffectiveLevel() <= logging.INFO
 
 
-def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
-    from jasper.active_speaker import repeat_admission
-
+def test_failed_volume_recovery_does_not_skip_program_graph(monkeypatch):
     claims = []
 
-    def fail_repeat():
-        raise OSError("repeat state unavailable")
+    def fail_volume():
+        raise OSError("volume state unavailable")
 
-    monkeypatch.setattr(repeat_admission, "claim_owner", fail_repeat)
     monkeypatch.setattr(
-        correction_setup, "_recover_crash_left_session_volume",
-        lambda: claims.append("volume"),
+        correction_setup, "_recover_crash_left_session_volume", fail_volume,
     )
 
     async def recover_program():
@@ -771,9 +762,9 @@ def test_failed_owner_claim_does_not_skip_later_claims(monkeypatch):
         correction_setup, "_restore_protected_neutral_program_graph", recover_program,
     )
 
-    correction_setup._claim_crossover_state_owners()
+    correction_setup._recover_crossover_state()
 
-    assert claims == ["volume", "program"]
+    assert claims == ["program"]
 
 
 @pytest.mark.parametrize(
@@ -800,7 +791,6 @@ def test_service_start_restores_the_fader_a_killed_run_left(
     """
     import asyncio
 
-    from jasper.active_speaker import repeat_admission
     from jasper.active_speaker import session_volume_plan as volume_plan
 
     fader = {"db": -27.0}
@@ -829,7 +819,6 @@ def test_service_start_restores_the_fader_a_killed_run_left(
         correction_runtime, "camilla_controller",
         lambda: SimpleNamespace(get_volume_db=lambda *, best_effort: get_fader()),
     )
-    monkeypatch.setattr(repeat_admission, "claim_owner", lambda: None)
 
     async def graph_untouched():
         return None
@@ -842,7 +831,7 @@ def test_service_start_restores_the_fader_a_killed_run_left(
     v2volume.set_volume_plan_for_tests(None)
     try:
         with caplog.at_level(logging.INFO, logger=correction_setup.logger.name):
-            correction_setup._claim_crossover_state_owners()
+            correction_setup._recover_crossover_state()
         if crashed == "after_start":
             crash_a_run_at_minus_20_db()
         assert writes == restored_to

@@ -251,44 +251,30 @@ def test_heal_refuses_source_intent_fifo_without_blocking(tmp_path):
     assert "unexpected shared-state file type" in proc.stderr
 
 
-def test_heal_widens_active_run_locks_and_regroups_their_records(tmp_path):
-    """The ~3 s crossover_level_run_unavailable storm and its twin (ADR-0196).
-
-    A root-run poll created these advisory locks root:root 0640 -- a lock no
-    service account could then TAKE, because taking one opens the file for
-    write. The heal widens only the LOCKS to 0660 (the `l` kind derives the
-    ".<record>.lock" name, so install does not respell it) while the records
-    stay group-READ, published that way by their own atomic writers.
-
-    Also owns what a retired source-text drift guard used to assert about
-    the Layer-A SSOT: existing root:root
-    active_speaker_baseline_profile.json must become readable by /state. That
-    heal moved off its own hand-rolled path-following chgrp/chmod (redirectable
-    through a symlink or hardlink under a group-writable dir) onto this
-    allowlist, so the guarantee is pinned here, by running it.
-    """
-    repeat_lock = _mk(
-        tmp_path / ".active_speaker_repeat_admission.json.lock", 0o640,
+def test_heal_widens_grouping_lock_and_regroups_baseline(tmp_path):
+    """Current locks need write access; the baseline only needs group reads."""
+    grouping_lock = _mk(
+        tmp_path / ".grouping.env.lock", 0o640,
     )
     # The Layer-A SSOT, folded off its own hand-rolled path-following heal.
     baseline = _mk(tmp_path / "active_speaker_baseline_profile.json", 0o600)
 
     _run_heal(tmp_path)
 
-    assert _mode(repeat_lock) == 0o660
+    assert _mode(grouping_lock) == 0o660
     assert _mode(baseline) == 0o640
 
 
-def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
-    """Blocker 1: the run-record lock heal must not follow a symlink.
+def test_heal_refuses_a_symlinked_grouping_lock_without_mutating_target(tmp_path):
+    """The lock heal must not follow a symlink.
 
     A group member can pre-create the lock NAME as a symlink onto a root file
     under group-writable /var/lib/jasper; a path-following chgrp/chmod would
-    then redirect the mutation. O_NOFOLLOW on the `l`-derived path pins the
+    then redirect the mutation. O_NOFOLLOW on the allowlisted path pins the
     inode, so a symlink aborts the install without touching its target.
     """
     target = _mk(tmp_path / "root-owned-secret", 0o600)
-    (tmp_path / ".active_speaker_repeat_admission.json.lock").symlink_to(target)
+    (tmp_path / ".grouping.env.lock").symlink_to(target)
     script = (
         "set -euo pipefail\n"
         + _STUBS
@@ -303,7 +289,7 @@ def test_heal_refuses_a_symlinked_run_lock_without_mutating_target(tmp_path):
     assert _mode(target) == 0o600
 
 
-def test_heal_refuses_a_hardlinked_run_lock_without_mutating_target(tmp_path):
+def test_heal_refuses_a_hardlinked_grouping_lock_without_mutating_target(tmp_path):
     """The hardlink variant O_NOFOLLOW cannot catch.
 
     A hardlink onto a root file is not a symlink -- O_NOFOLLOW opens it and
@@ -312,7 +298,7 @@ def test_heal_refuses_a_hardlinked_run_lock_without_mutating_target(tmp_path):
     than one link, regardless of the fs.protected_hardlinks sysctl.
     """
     target = _mk(tmp_path / "root-owned-secret", 0o600)
-    os.link(target, tmp_path / ".active_speaker_repeat_admission.json.lock")
+    os.link(target, tmp_path / ".grouping.env.lock")
     script = (
         "set -euo pipefail\n"
         + _STUBS

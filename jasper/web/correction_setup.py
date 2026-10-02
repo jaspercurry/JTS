@@ -48,6 +48,7 @@ from urllib.parse import parse_qs, urlparse
 
 from jasper.active_speaker import session_volume_plan as volume_plan
 from jasper.active_speaker.state_paths import DEFAULT_CAMPAIGN_ROOT
+from jasper.audio_control.camilla import CamillaUnavailable
 from jasper.audio_control.volume_process import install_env_canonical_target_provider
 from jasper.audio_measurement.evidence_reasons import EvidenceUnavailable
 from jasper.control.measurement_hold import read_measurement_hold
@@ -731,32 +732,18 @@ def _recover_crash_left_session_volume() -> None:
     )
 
 
-def _claim_crossover_state_owners() -> None:
-    """Retire prior-process Active work before this service accepts requests."""
+def _recover_crossover_state() -> None:
+    """Recover interrupted volume and graph changes before accepting requests."""
 
-    from jasper.active_speaker import repeat_admission
-
-    claims = (
-        (
-            "correction.crossover_repeat_admission_unavailable",
-            repeat_admission.claim_owner,
-        ),
-        (
+    try:
+        _recover_crash_left_session_volume()
+    except (OSError, RuntimeError, ValueError) as exc:
+        log_event(
+            logger,
             "correction.crossover_v2_volume_startup_recovery_unavailable",
-            _recover_crash_left_session_volume,
-        ),
-    )
-    for event, claim in claims:
-        try:
-            claim()
-        except (OSError, RuntimeError, ValueError) as exc:
-            log_event(
-                logger,
-                event,
-                level=logging.ERROR,
-                reason=type(exc).__name__,
-            )
-    from jasper.audio_control.camilla import CamillaUnavailable
+            level=logging.ERROR,
+            reason=type(exc).__name__,
+        )
 
     try:
         correction_runtime.run_async(_restore_protected_neutral_program_graph(), timeout=15.0)
@@ -771,9 +758,8 @@ def _claim_crossover_state_owners() -> None:
 
 
 def _start(args, tracker) -> dict[str, Any]:
-    # Socket Accept=no + one service ExecStart make this the sole lifecycle
-    # boundary that may retire unfinished work from a previous process.
-    _claim_crossover_state_owners()
+    # Socket Accept=no + one ExecStart make this the sole recovery owner.
+    _recover_crossover_state()
     return {"hostname": args.hostname, "idle_hold": tracker.hold}
 
 

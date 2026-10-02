@@ -88,7 +88,7 @@ class CapturePlan:
     One transport session covers a driver's whole repeat SET instead of one
     capture per session: the capture source requests each capture with an
     authenticated ``begin_capture {index, attempt}`` event, the Pi admits it
-    (budget stays Pi-owned — ``repeat_admission`` — never source-decided), and
+    (budget stays Pi-owned, never source-decided), and
     each admitted attempt indexes its own recording
     (``capture_index = attempt - 1``).
 
