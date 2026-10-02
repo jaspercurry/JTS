@@ -94,9 +94,7 @@ PRESCRIPTION_MAX_BYTES = 64 * 1024
 # its own caps in `blend_correction` — the envelope bounds the algorithm, never
 # the prescriber. What else bounds a cut here is the region
 # (`FILTER_OUTSIDE_REGION`), `BLEND_MAX_FILTERS`' slots, and the evaluable Q
-# range: past `EVALUABLE_Q_MAX` the f64 biquad cascade stops evaluating the
-# filter asked for (measured +6.99 dB realized from a requested Q 8e14 on an
-# admitted -3.0 dB cut).
+# range (`EVALUABLE_Q_MIN`, `EVALUABLE_Q_MAX`).
 
 #: The highest gain one prescribed filter may carry, dB: cuts only
 #: (:data:`BOOST_ROUTE_UNAVAILABLE`).
@@ -421,10 +419,8 @@ def _check_bounds(
             refuse(
                 BOOST_ROUTE_UNAVAILABLE,
                 f"filter {position} boosts {gain:g} dB, and a blend filter may "
-                f"only cut (gain <= {PRESCRIPTION_MAX_GAIN_DB:g} dB): the blend "
-                "stage carries no boost, and a summed packet cannot say which "
-                "driver a region's deficit belongs to. Propose a boost in the "
-                "driver section",
+                f"only cut (gain <= {PRESCRIPTION_MAX_GAIN_DB:g} dB). Propose a "
+                "boost in the driver section",
                 field=f"filters[{position}].gain",
                 gain_db=gain,
                 max_gain_db=PRESCRIPTION_MAX_GAIN_DB,
