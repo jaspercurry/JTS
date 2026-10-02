@@ -12,7 +12,7 @@ from jasper.platform.speaker_layout import cardioid_cabinet_channels, measuremen
 
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
 from ..rear_calibration import RearCalibrationError, compile_rear_stage, read_rear_calibration
-from ..camilla_names import STARTUP_MUTE_GAIN_DB
+from ..camilla_names import STARTUP_MUTE_GAIN_DB, output_rear_pending_mute_name
 from .topology import _output_count
 
 
@@ -105,7 +105,7 @@ def _mute_unfitted_rear_outputs(
     indent = " " * (len(first_line) - len(first_line.lstrip(" ")))
     tail: list[str] = []
     for index in rear:
-        name = f"as_out{index}_rear_pending_mute"
+        name = output_rear_pending_mute_name(index)
         head = head.replace("\nfilters:\n", "\nfilters:\n" + "\n".join(
             emit_gain_filter(name, STARTUP_MUTE_GAIN_DB, mute=True)
         ) + "\n", 1)

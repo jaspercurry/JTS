@@ -41,7 +41,7 @@ from jasper.bass_extension.dynamic import DynamicBassDescriptor, dynamic_bass_ga
 from jasper.audio_routes.output_topology import OutputTopology
 from jasper.platform.speaker_layout import measurement_target_id
 
-from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name
+from .camilla_names import STARTUP_MUTE_GAIN_DB, output_commission_mute_name, output_rear_pending_mute_name
 from .graph_safety import (
     output_terminally_muted,
     protection_requirement_present,
@@ -165,6 +165,9 @@ class ProgramAdmission:
     segments: tuple[SegmentAdmission, ...]
     channels: tuple[ChannelFacts, ...]
     refusals: tuple[ProgramAdmissionRefusal, ...]
+    #: The excited target a refusal found ending in its terminal mute:
+    #: ``{"target_id", "output_index"}``. None on every other admission.
+    muted_output: Mapping[str, Any] | None = None
 
     @property
     def allowed(self) -> bool:
@@ -181,6 +184,7 @@ class ProgramAdmission:
             "channels": [channel.to_dict() for channel in self.channels],
             "refusals": [reason.value for reason in self.refusals],
             "allowed": self.allowed,
+            **({"muted_output": dict(self.muted_output)} if self.muted_output else {}),
         }
 
 
@@ -618,13 +622,25 @@ def _read_program_pcm(program: ExcitationProgram, wav_path: str | Path) -> Any:
 
 def _terminal_mute_names(output_index: int) -> tuple[str, ...]:
     """The mute filter names an emitter can end ``output_index`` with."""
-    return (f"as_out{output_index}_rear_pending_mute",
+    return (output_rear_pending_mute_name(output_index),
             output_commission_mute_name(output_index))
+
+
+def _summed_take_parks(payload: Mapping[str, Any], view: Any, output_index: int) -> bool:
+    """Whether a summed take's graph parks ``output_index``, as a branch take parks a
+    target it does not name: its split feeds that output no source, and the output
+    ends in its terminal mute, so no excitation reaches it (#6113)."""
+    entries = [entry for name, mixer in (payload.get("mixers") or {}).items() if name.startswith("split_active_")
+               for entry in mixer.get("mapping") or () if entry.get("dest") == output_index]
+    return (len(entries) == 1 and not entries[0].get("mute", False) and not entries[0].get("sources")
+            and any(output_terminally_muted(payload, view, output_index, mute_name=name,
+                                            mute_gain_db=STARTUP_MUTE_GAIN_DB)
+                    for name in _terminal_mute_names(output_index)))
 
 
 def _refused_program(
     program: ExcitationProgram, session_volume_db: float,
-    reason: ProgramAdmissionRefusal,
+    reason: ProgramAdmissionRefusal, *, muted_output: Mapping[str, Any] | None = None,
 ) -> ProgramAdmission:
     log_event(
         logger, "active_speaker.program_admission", level=logging.WARNING,
@@ -632,7 +648,7 @@ def _refused_program(
         refusals=reason.value,
     )
     return ProgramAdmission(
-        program.stimulus_id, program.phase, session_volume_db, (), (), (reason,),
+        program.stimulus_id, program.phase, session_volume_db, (), (), (reason,), muted_output,
     )
 
 
@@ -752,6 +768,8 @@ def readmit_summed_program_from_wav(
         branch_channel = channels.get(target_id) if branches else None
         if branches and branch_channel is None:
             continue  # parked for this take: no source reaches this output
+        if not branches and _summed_take_parks(payload, view, physical[fingerprint]["output_index"]):
+            continue
         try:
             band, cap = resolve_driver_excitation_ceilings(
                 safety_profile, fingerprint, program_admission=True,
@@ -769,7 +787,8 @@ def readmit_summed_program_from_wav(
             log_event(logger, "active_speaker.program_graph_refused", level=logging.WARNING,
                       stimulus_id=program.stimulus_id, role=target_id, output_index=output,
                       result="excited_output_muted")
-            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN)
+            return _refused_program(program, session_volume_db, ProgramAdmissionRefusal.GRAPH_NOT_PROVEN,
+                                    muted_output={"target_id": target_id, "output_index": output})
         # The bass boost plays in full at every volume (ADR-0359); reserve its lift.
         boost_db = bass_boost_db if output in bass_channels else 0.0
         input_caps.append(cap - boost_db)

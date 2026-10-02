@@ -105,3 +105,8 @@ def output_commission_mute_name(index: int) -> str:
     index to prove a driver's output is muted: the emitter owns the spelling.
     """
     return f"as_out{index}_commission_mute"
+
+
+def output_rear_pending_mute_name(index: int) -> str:
+    """The terminal mute an unfitted rear output ``index`` ends in (ADR-0316)."""
+    return f"as_out{index}_rear_pending_mute"

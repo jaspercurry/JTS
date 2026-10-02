@@ -6,7 +6,7 @@
 from ._common import MeasurementGraphRefused
 from .crossover_v2.contracts import CrossoverV2FlowError
 from .crossover_v2.program_transaction import (
-    STIMULUS_ADMISSION_REFUSED, STIMULUS_LEVEL_NOT_READY, StimulusCaptureStopped,
+    STIMULUS_LEVEL_NOT_READY, StimulusCaptureStopped, admission_incident,
 )
 from .crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_VOLUME_DRIFT, REASON_MEASUREMENT_GRAPH_UNAVAILABLE,
@@ -53,7 +53,7 @@ def classify_program_failure(exc: BaseException) -> tuple[str, tuple[str, ...]] 
     code = (
         REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
         if ProgramAdmissionRefusal.MEASUREMENT_INPUTS_INVALID.value in refusals
-        else STIMULUS_ADMISSION_REFUSED if isinstance(exc, ProgramPlaybackRefused)
+        else admission_incident(exc) if isinstance(exc, ProgramPlaybackRefused)
         else REASON_PROGRAM_UNPLAYABLE
     )
     return code, refusals
