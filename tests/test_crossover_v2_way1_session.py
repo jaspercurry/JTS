@@ -50,6 +50,7 @@ from tests.crossover_v2_fixtures import (
     WAY1_BAND,
     FakeSeams,
     _one_way_preset,
+    _phase_program,
     _roles_way1,
     _way1_conductor,
     _way1_measure_analysis,
@@ -100,7 +101,7 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
         index_phase_map=_WAY1_INDEX_PHASE_MAP,
         gain_plan_db={"full_range": -11.0},
     )
-    program = conductor.program_for_phase(PHASE_MEASURE)
+    program = _phase_program(conductor, PHASE_MEASURE)
     ir = _band_impulse(200, WAY1_BAND.lower_hz, WAY1_BAND.upper_hz, 1.0)
     capture = _synthesize(program, woofer_ir=ir, tweeter_ir=ir)
 
@@ -184,7 +185,7 @@ def _way1_ready_to_apply_payload(tmp_path):
         source_preset=commission_wiring.resolve_capture_preset(topology),
     )
     candidate = _way1_candidate(conductor,
-        _way1_measure_analysis(conductor.program_for_phase(PHASE_MEASURE))
+        _way1_measure_analysis(_phase_program(conductor, PHASE_MEASURE))
     )
 
     return prepare_candidate(candidate, topology, tmp_path / "active_speaker_baseline.yml")
@@ -270,7 +271,7 @@ def test_a_way1_apply_banks_no_base_trim_and_says_which_fact_stopped_it(
 def _way1_candidate(conductor, analysis):
     """The solo's fit at a fixed 0 dB: a lone branch has no pair to trim."""
     (response,) = analysis.driver_responses
-    sweep = conductor.program_for_phase(PHASE_MEASURE).segment("sweep_w")
+    sweep = _phase_program(conductor, PHASE_MEASURE).segment("sweep_w")
     fit = fit_branches(
         [DriverEvidence("full_range", response, (sweep.f1_hz, sweep.f2_hz))],
         mic_tiers={"full_range": str(analysis.mic_tier)},

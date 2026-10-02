@@ -355,8 +355,7 @@ def bind_production_play(
     protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
     config_dir: str | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
-    program_for_phase: Callable[[str], Any],
-    program_for_spec: Callable[[Any, Any], Any] | None = None,
+    program_for_spec: Callable[[Any, Any], Any],
     roles: Sequence[Any],
 ) -> "ProductionPlay":
     """Bind the shared graph and stimulus owners to this session's state."""
@@ -374,13 +373,6 @@ def bind_production_play(
         ), camilla_factory=camilla_factory, config_dir=resolved_config_dir,
     )
 
-    def _program(spec: Any, stimulus_dbfs: Any) -> Any:
-        if program_for_spec is not None:
-            return program_for_spec(spec, stimulus_dbfs)
-        if stimulus_dbfs is not None:
-            raise ValueError("The round's program owns its stimulus level.")
-        return program_for_phase(spec.program_phase)
-
     async def _before_play(spec: Any, program: Any, artifact: Any, phase: str) -> None:
         await v2volume.session_volume_plan().hold_measurement_volume(
             camilla_fader_reader(camilla_factory), context=f"capture:{phase}",
@@ -393,7 +385,7 @@ def bind_production_play(
         )
 
     compose = bind_program_composer(
-        program_for_spec=_program, store=evidence_store,
+        program_for_spec=program_for_spec, store=evidence_store,
         capture_session_id=capture_session_id, cam_factory=camilla_factory,
         config_dir=resolved_config_dir, topology=topology,
         safety_profile=safety_profile, role_targets=role_targets,

@@ -9,9 +9,7 @@ from __future__ import annotations
 PHASE_CHECK = "check"
 PHASE_MEASURE = "measure"
 PHASE_VERIFY = "verify"
-# R16 lateral evidence (plan §4.4): one prompted pose per capture index. Its
-# per-driver takes play MEASURE's program, so it is not a
-# ``programs.SUMMED_SWEEP_PHASES`` member.
+# R16 lateral evidence (plan §4.4): one prompted pose per capture index.
 PHASE_LATERAL = "lateral"
 # The ADR-0319 timing take: the front drivers summed at the design-axis mark,
 # MEASURE's in-session prior.

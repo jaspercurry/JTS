@@ -476,7 +476,7 @@ def test_the_wizard_emits_through_the_shared_home(tmp_path, monkeypatch, inverte
         playback_device=profile.playback_device,
         safety_profile={}, role_targets={}, roles=(),
         protection_sections_by_role=profile.protection_sections_by_role,
-        program_for_phase=lambda phase: None,
+        program_for_spec=lambda spec, level: None,
     )
 
     actual = playback.graph.graph_yaml(inverted, delays, trims)

@@ -74,7 +74,7 @@ from jasper.platform.json_fields import CodedFieldError
 from jasper.web import correction_run_host
 from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F401
 from tests.crossover_v2_fixtures import (
-    FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _verify_analysis, _roles,
+    FakeSeams as FlowSeams, _conductor, _loc, _measure_analysis, _phase_program, _verify_analysis, _roles,
 )
 from tests.crossover_v2_banked_round import bank_seat_round
 from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFailure, open_session
@@ -2309,7 +2309,7 @@ async def test_every_ladder_position_holds_with_its_count(tmp_path, box, rung_sp
 
 @pytest.mark.parametrize("purpose", ["room", "speaker"])
 async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
-    program = _conductor(FlowSeams()).program_for_phase("verify")
+    program = _phase_program(_conductor(FlowSeams()), "verify")
     analysis = _verify_analysis(program, pilot_snr_ok=False, pilot_hi_dbfs=-65, linearity=None)
     analysis = replace(analysis, pilots=(replace(analysis.pilots[0], snr_valid=False, snr_db=0.0),),
                        ambient_report={"bands": [{"band_hz": [500, 2000], "level_dbfs": -65}]})

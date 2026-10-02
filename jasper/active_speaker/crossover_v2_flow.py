@@ -43,9 +43,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_LATERAL,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
-    GRAPH_SCOPE_DRIVERS,
     MeasureSpec,
-    branch_channels_for,
 )
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_LOCATE_FAILED,
@@ -56,7 +54,6 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     reason_message,
 )
 from jasper.active_speaker.crossover_v2.summed_alignment import _unreadable
-from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.program import (
     ExcitationProgram,
     RoleBand,
@@ -202,31 +199,7 @@ class CrossoverV2Session:
             sweep_duration_limits_s=self._sweep_duration_limits_s,
             target_bands=target_bands or {},
         )
-        # Composed ONCE and held: ``program_for_phase`` answers by object identity.
         self._check_program = self._excitation.check_program()
-        self._measure_program: ExcitationProgram | None = (
-            self._excitation.measure_program(self._gain_plan_db)
-            if self._gain_plan_db is not None
-            else None
-        )
-        self._verify_program = self._excitation.verify_program()
-        # VERIFY's sweep without the courtesy prelude, for ``program_for_phase``
-        # alone. Only ``bind_production_play``'s fallback asks that, and only tests
-        # take it: a run composes each take by spec (``programs.program_for_spec``).
-        self._cloud_program = self._excitation.cloud_program()
-        branch_spec = next(
-            (
-                spec
-                for spec in self._measure_specs_by_index.values()
-                if spec.graph_scope == "candidate_branches"
-            ),
-            None,
-        )
-        self._branch_program = (
-            build_branch_program(self._cloud_program, branch_channels_for(branch_spec))
-            if branch_spec is not None
-            else None
-        )
         # Per-SLOT attempt bookkeeping: the phase, or ``phase:index`` for a
         # lateral pose. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}
@@ -288,18 +261,6 @@ class CrossoverV2Session:
 
     def set_timing_prior(self, take_id: str | None) -> None:
         self._timing_prior = take_id
-
-    def _compose_measure_program(
-        self,
-        gain_plan_db: Mapping[str, float],
-        *,
-        extra_backoff_db: float = 0.0,
-    ) -> ExcitationProgram:
-        """MEASURE's program at the solved gains, the one with a LIFECYCLE."""
-        return self._excitation.measure_program(
-            gain_plan_db,
-            extra_backoff_db=extra_backoff_db,
-        )
 
     def check_priors(self) -> MeasurementPriors:
         return _priors.check_priors(fc_hz=self._fc_hz)
@@ -415,26 +376,6 @@ class CrossoverV2Session:
             extra_by_speaker=ledger.by_speaker,
         )
 
-    def program_for_phase(self, phase: str) -> ExcitationProgram:
-        """The composed program this session plays for ``phase``."""
-        if phase == PHASE_LATERAL and self._branch_program is not None:
-            return self._branch_program
-        if phase == PHASE_LATERAL and any(
-            index in self._lateral_indexes
-            and spec.graph_scope != GRAPH_SCOPE_DRIVERS
-            for index, spec in self._measure_specs_by_index.items()
-        ):
-            return self._cloud_program
-        try:
-            return _programs.program_for_phase(
-                phase,
-                check=self._check_program,
-                measure=self._measure_program,
-                verify=self._verify_program,
-            )
-        except _programs.NoProgramForPhaseError as exc:
-            raise CrossoverV2FlowError(str(exc)) from exc
-
     def capture_geometry(self, phase: str, index: int) -> MeasurementGeometry:
         """The session's geometry at this capture's angles; the host adds the
         window its pose picks (ADR-0400)."""
@@ -477,7 +418,6 @@ class CrossoverV2Session:
         self._check_ambient_report = (
             dict(analysis.ambient_report) if analysis.ambient_report else None
         )
-        self._measure_program = self._compose_measure_program(self._gain_plan_db)
         self._seams.records.check(gain_plan, analysis.ambient_report or {})
         return replace(verdict, payload={"measurement_phase": PHASE_CHECK})
 
@@ -492,7 +432,6 @@ class CrossoverV2Session:
                     if key.startswith("next_gain_db.")
                 }
             )
-            self._measure_program = self._compose_measure_program(self._gain_plan_db)
             if verdict.next == "retake_quieter":
                 self._measure_gain_ceiling_db.update(
                     {

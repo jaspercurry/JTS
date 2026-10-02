@@ -674,7 +674,7 @@ def _drive(
         topology=object(), preset=object(),
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device="hw:Test", safety_profile={}, role_targets={}, roles=(),
-        program_for_phase=_program,
+        program_for_spec=lambda spec, level: _program(spec.program_phase),
     )
 
     async def run():

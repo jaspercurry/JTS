@@ -501,10 +501,10 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     """CHECK, MEASURE and LATERAL play ONE recording that steps through every
     driver in turn, which is neither a single driver nor a simultaneous sum.
     They were banked as ``summed`` only because the taxonomy had no third
-    value; now they are banked as what they are. A lateral pose belongs with
-    the other two because ``programs.program_for_phase`` answers it with
-    MEASURE's program OBJECT verbatim — the same stimulus under a third name.
-    VERIFY really does play one summed sweep and keeps the old label.
+    value; now they are banked as what they are. A lateral pose's drivers take
+    belongs with the other two: it plays MEASURE's composer, the same stimulus
+    under a third name. VERIFY really does play one summed sweep and keeps the
+    old label.
     """
 
     store = _bundle_store(tmp_path)
@@ -1684,7 +1684,7 @@ def test_web_binding_carries_declared_protection_and_the_same_graph(monkeypatch,
     monkeypatch.setattr(composition, "bind_program_composer", bind_compose)
     protection = {"woofer": (), "tweeter": ()}
     play = v2evidence.bind_production_play(
-        program_for_phase=lambda phase: phase, camilla_factory=lambda: None,
+        program_for_spec=lambda spec, level: spec, camilla_factory=lambda: None,
         evidence_store=SimpleNamespace(bundle_dir=tmp_path), capture_session_id="capture",
         topology=None, preset=None, role_channels={"woofer": 0, "tweeter": 1},
         playback_device="null", safety_profile={}, role_targets={},

@@ -41,8 +41,7 @@ def test_an_overspent_meter_still_raises_the_flows_own_error(monkeypatch):
 
     ``SlotAttempts.spend`` raises a module-local ``AttemptOverspendError``
     now that the ledger is pure — it has no business knowing the flow's error
-    type — and the conductor translates at the one call site, exactly as
-    ``program_for_phase`` does for the program selector. The path is defensive
+    type — and the conductor translates at the one call site. The path is defensive
     (the decision checks ``extras_left`` first, so a truthful decision never
     reaches an exhausted meter), which is why it takes a poisoned decision to
     reach it, and why nothing else would notice the translation going missing.

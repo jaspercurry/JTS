@@ -30,7 +30,9 @@ from tests.crossover_v2_fixtures import (
     _conductor,
     _inline_spec,
     _dummy_program,
+    _phase_program,
     _roles,
+    _run_phase,
 )
 
 
@@ -65,27 +67,26 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
 
 
 def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
-    """The conductor's REAL playback composition (not the nominal planning path
-    above) obeys the same ``courtesy_prelude_for_phase`` rule — including the
-    clip-retry rearm, which recomposes MEASURE and must not put the beeps back.
-    """
+    """The REAL playback composition (not the nominal planning path above) obeys
+    the same ``courtesy_prelude_for_phase`` rule."""
     fakes = FakeSeams()
     c = _conductor(fakes)
     check_tone_ids = {
-        s.segment_id for s in c.program_for_phase(PHASE_CHECK).segments if s.kind == KIND_COURTESY_TONE
+        s.segment_id for s in _phase_program(c, PHASE_CHECK).segments if s.kind == KIND_COURTESY_TONE
     }
     assert check_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
 
-    measure_prog = c._compose_measure_program({"woofer": -11.0, "tweeter": -13.0})
+    _run_phase(c, 1, 1)
+    measure_prog = _phase_program(c, PHASE_MEASURE)
     assert not [s for s in measure_prog.segments if s.kind == KIND_COURTESY_TONE]
 
     verify_tone_ids = {
-        s.segment_id for s in c.program_for_phase(PHASE_VERIFY).segments if s.kind == KIND_COURTESY_TONE
+        s.segment_id for s in _phase_program(c, PHASE_VERIFY).segments if s.kind == KIND_COURTESY_TONE
     }
     assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
     assert verify_tone_ids == {
         s.segment_id
-        for s in c.program_for_phase(PHASE_TIMING).segments
+        for s in _phase_program(c, PHASE_TIMING).segments
         if s.kind == KIND_COURTESY_TONE
     }
 

@@ -5,7 +5,7 @@
 """#2291 Phase 5a-ii: what a session plays, how loud, and for which phase.
 
 Level policy and program composition live in
-:mod:`jasper.active_speaker.crossover_v2.programs`.  Three kinds of pin, in the
+:mod:`jasper.active_speaker.crossover_v2.programs`.  Two kinds of pin, in the
 order a reviewer should read them:
 
 1. **Regression pins.** The composed programs' current ``stimulus_id``s and
@@ -14,15 +14,9 @@ order a reviewer should read them:
    ``stimulus_id`` hashes the schedule and every segment's gain but not the
    session fader (#5012); a change that moves one recomputes it by composing
    this fixture and says why.
-2. **The identity invariant** — the COMPARED pair (VERIFY and the entry
-   baseline) gets the *same object*, not an equal one, and each position group
-   gets one object of its own.  #2291's before→after comparison is keyed by
-   ``stimulus_id`` equality; a copy that merely compared equal today would break
-   that key the moment composition picked up any per-call state.
-3. **The courtesy-prelude rule** (#1677, trimmed 2026-08-18) — the prelude
-   announces a SESSION, not a capture, so it rides the phases that open one and
-   the entry baseline that must stay identical to stage 2's anchor.  Pinned
-   against the goldens in both directions: restoring the prelude reproduces the
+2. **The courtesy-prelude rule** (#1677) — the prelude announces a SESSION,
+   not a capture, so it rides only the phases that open one.  Pinned against
+   the goldens in both directions: restoring the prelude reproduces the
    shipped id byte for byte, which is what makes "only the prelude moved" a
    measurement rather than a claim.
 
@@ -44,9 +38,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2 import journey
-from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.angle_capture import request_for_preset
 from jasper.active_speaker.measurement_programs import (
@@ -58,13 +50,10 @@ from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
     COURTESY_PRELUDE_PHASES,
-    SUMMED_SWEEP_PHASES,
-    NoProgramForPhaseError,
     SessionExcitation,
     back_off_gain,
     compose_target_program,
     courtesy_prelude_for_phase,
-    program_for_phase,
     program_for_spec,
 )
 from jasper.active_speaker import graph_safety as gs
@@ -94,9 +83,7 @@ from tests.test_rear_output_foundation import _rear_pair
 from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
-    SESSION,
     SESSION_VOLUME_DB,
-    FakeSeams,
     _preset,
     _roles,
 )
@@ -137,21 +124,6 @@ def _excitation(
         session_volume_db=SESSION_VOLUME_DB,
         fc_hz=FC_HZ,
         sweep_duration_limits_s=sweep_duration_limits_s or {},
-    )
-
-
-def _conductor(caps: dict[str, float]):
-    return flow.CrossoverV2Session(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=caps,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=FakeSeams().seams(),
-        index_phase_map={1: "check", 2: "measure", 3: "verify"},
-        driver_spacing_m=0.15,
-        gain_plan_db=GAIN_PLAN_DB,
     )
 
 
@@ -283,33 +255,11 @@ def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
 
 
 def test_a_position_plays_the_verify_sweep_with_the_prelude_taken_off():
-    """The cloud twin is the summed sweep at the same clamp, unannounced: it
-    differs from VERIFY's program in the prelude and in nothing else — not in
-    the min-cap clamp that is their only level guard.
+    """The unannounced summed sweep is VERIFY's at the same clamp: it differs
+    from VERIFY's program in the prelude and in nothing else — not in the
+    min-cap clamp that is their only level guard.
     """
-    ex = _excitation(CAPS)
-
-    assert ex.cloud_program().stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
-    assert ex.cloud_program().stimulus_id != ex.verify_program().stimulus_id
-    assert ex.verify_program(courtesy_prelude=False).stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
-
-
-def test_the_conductor_composes_through_the_same_owner():
-    """The conductor's held objects ARE the ones this module composes.
-
-    Not a restatement of the pin above: it would still pass if the constructor
-    quietly composed at its own level and only the module's own composer matched
-    the golden.
-    """
-    c = _conductor(CAPS)
-    ex = _excitation(CAPS)
-
-    assert c.program_for_phase(journey.PHASE_CHECK).stimulus_id == ex.check_program().stimulus_id
-    assert c.program_for_phase(journey.PHASE_VERIFY).stimulus_id == GOLDEN_DEEP_CAP["verify"]
-    assert (
-        c.program_for_phase(journey.PHASE_MEASURE).stimulus_id
-        == GOLDEN_UNANNOUNCED["measure"]
-    )
+    assert _excitation(CAPS).verify_program(courtesy_prelude=False).stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
 
 
 def test_the_summed_sweep_is_clamped_to_the_most_restrictive_cap():
@@ -397,127 +347,43 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
     )
 
 
-# 3. the identity invariant
-
-
-def test_the_compared_pair_gets_the_same_object():
-    """``is``, not ``==``. The whole of #2291's comparability rests on it.
-
-    ``stimulus_id`` equality is what a before→after comparison checks before it
-    will compare a before against an after, and the reason that equality holds
-    is that the entry baseline and VERIFY are handed one object. Asserting equal ids instead would keep passing under a
-    composer that returned a fresh-but-equal program today and drifted tomorrow.
-    """
-    c = _conductor(CAPS)
-    verify = c.program_for_phase(journey.PHASE_VERIFY)
-
-    for phase in sorted(SUMMED_SWEEP_PHASES):
-        assert c.program_for_phase(phase) is verify
-
-    assert journey.PHASE_TIMING in SUMMED_SWEEP_PHASES
-
-
-def test_a_lateral_pose_replays_the_measure_object_verbatim():
-    c = _conductor(CAPS)
-
-    assert c.program_for_phase(journey.PHASE_LATERAL) is c.program_for_phase(
-        journey.PHASE_MEASURE
-    )
-
-
 def test_measure_before_the_gain_solve_refuses_rather_than_guessing():
     """No program is composed at a guessed level."""
-    ex = _excitation(CAPS)
-    with pytest.raises(NoProgramForPhaseError):
-        program_for_phase(
-            journey.PHASE_MEASURE,
-            check=ex.check_program(),
-            measure=None,
-            verify=ex.verify_program(),
-        )
+    with pytest.raises(ValueError):
+        program_for_spec(MeasureSpec(kind="baseline", program_phase=journey.PHASE_MEASURE), _excitation(CAPS), None,
+                         safety_profile={}, role_targets={})
 
 
-def test_an_unplanned_phase_refuses():
-    ex = _excitation(CAPS)
-    with pytest.raises(NoProgramForPhaseError):
-        program_for_phase(
-            "not_a_phase",
-            check=ex.check_program(),
-            measure=None,
-            verify=ex.verify_program(),
-        )
-
-
-# 3b. the courtesy-prelude rule (#1677, trimmed 2026-08-18)
+# 3. the courtesy-prelude rule (#1677)
 
 
 def _has_prelude(program) -> bool:
     return any(seg.kind == KIND_COURTESY_TONE for seg in program.segments)
 
 
-def test_the_capture_that_opens_a_session_is_announced():
-    """Stage 1 opens on CHECK and stage 2 on VERIFY; both warn the room first.
+@pytest.mark.parametrize("phase,scope,take,announced", [
+    ("check", "drivers", {}, True),
+    ("verify", "timing", {}, True),
+    ("timing", "timing", {}, True),
+    ("measure", "drivers", {}, False),
+    ("lateral", "drivers", {"branch_target_ids": ("woofer",)}, False),
+    ("lateral", "candidate", {"stimulus": preset("bass/axis").stimulus}, False),
+], ids=["check", "verify", "timing", "measure", "driver_pose", "bass_pose"])
+def test_which_takes_the_production_composer_announces(phase, scope, take, announced):
+    """The production composer gives CHECK, VERIFY and the timing take the
+    courtesy prelude (#1677), and MEASURE, a driver's pose and a bass pose none."""
+    _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000, max_sweep_duration_s=4)
+    roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
+        safety, fingerprint, program_admission=True)[0])
+        for channel, (role, fingerprint) in enumerate(targets.items()))
+    excitation = replace(_excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0}), roles=roles,
+                         target_bands={rb.role: rb.band for rb in roles})
+    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
+                       candidate_id="" if scope == "drivers" else "trial", **take)
 
-    This is #1677 itself — the incident was a headless session whose FIRST sweep
-    started over the household's music. Whatever else the rule trims, these two
-    captures keep the beeps or the incident is reopened.
-    """
-    c = _conductor(CAPS)
+    program = program_for_spec(spec, excitation, GAIN_PLAN_DB, -30.0, safety_profile=safety, role_targets=targets)
 
-    assert _has_prelude(c.program_for_phase(journey.PHASE_CHECK))
-    assert _has_prelude(c.program_for_phase(journey.PHASE_VERIFY))
-    assert courtesy_prelude_for_phase(journey.PHASE_CHECK)
-    assert courtesy_prelude_for_phase(journey.PHASE_VERIFY)
-
-
-def test_a_capture_the_household_began_inside_a_running_session_is_not():
-    """Every capture behind the opener plays no prelude — the trim itself.
-
-    MEASURE and each lateral pose are begun by the household's own tap at a
-    position it has just walked to, inside a session whose measurement window is
-    already held. 3.6 s each, twelve times on a Full journey.
-    """
-    c = _conductor(CAPS)
-
-    for phase in (journey.PHASE_MEASURE, journey.PHASE_LATERAL):
-        assert not _has_prelude(c.program_for_phase(phase)), phase
-        assert not courtesy_prelude_for_phase(phase), phase
-
-
-def test_the_timing_take_is_announced_because_its_twin_is():
-    """Not an opener — held to the rule by ``stimulus_id``, and stated as such.
-
-    Stage 1's last capture carries the prelude for one reason: its program
-    object is stage 2's anchor, and that equality is #2291's before→after
-    comparison. A rule that dropped it here would leave every round's before
-    and after incomparable.
-    """
-    c = _conductor(CAPS)
-
-    assert _has_prelude(c.program_for_phase(journey.PHASE_TIMING))
-    assert c.program_for_phase(journey.PHASE_TIMING) is c.program_for_phase(
-        journey.PHASE_VERIFY
-    )
-    assert journey.PHASE_TIMING in COURTESY_PRELUDE_PHASES
-
-
-def test_the_conductor_translates_the_refusal_into_its_own_error():
-    """Callers above the conductor handle ``CrossoverV2FlowError``; the pure
-    selector has no business knowing that type."""
-    c = flow.CrossoverV2Session(
-        session_id=SESSION,
-        source_preset=_preset(),
-        roles_bands=_roles(),
-        fc_hz=FC_HZ,
-        driver_caps_dbfs=CAPS,
-        session_volume_db=SESSION_VOLUME_DB,
-        seams=FakeSeams().seams(),
-        index_phase_map={1: "check", 2: "measure", 3: "verify"},
-        driver_spacing_m=0.15,
-    )
-
-    with pytest.raises(contracts.CrossoverV2FlowError):
-        c.program_for_phase(journey.PHASE_MEASURE)
+    assert (_has_prelude(program), courtesy_prelude_for_phase(phase)) == (announced, announced)
 
 
 # 4. the bundle is frozen, so a subset cannot drift
@@ -546,7 +412,7 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
     )
     excitation = replace(excitation, summed_sweep_band_hz=band)
     verify = excitation.verify_program(sweep_s=requested_s)
-    for program in (verify, excitation.cloud_program()):
+    for program in (verify, excitation.verify_program(courtesy_prelude=False)):
         sweeps = [segment for segment in program.stimulus_segments() if segment.kind == "summed_sweep"]
         assert len(sweeps) == 1
         assert 0 < sweeps[0].n_samples / program.sample_rate_hz <= limit
