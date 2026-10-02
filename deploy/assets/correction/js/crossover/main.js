@@ -534,25 +534,17 @@ async function runAction(action, button) {
     }
   } finally {
     busy = false;
-    if (envelope && !captureStarted) renderRound(envelope);
-    // If capture registration succeeded but refresh failed, keep the old action
-    // hidden. Showing it beside a live phone link would permit a second run.
-    // renderActionRow re-applies the capture gate against the latest known
-    // envelope. The prior version of this block rendered envelope.next_action
-    // directly, without that gate — the 2026-07-16 two-primary-buttons bug.
-    if (!captureStarted) {
+    // render() ran inside the refresh above while `busy` was still true, so the
+    // controls it built carry a baked-in `disabled` that nothing else clears
+    // before the next poll. Rebuild them from the latest envelope;
+    // renderActionRow applies the capture gate to it.
+    if (envelope) {
+      renderRound(envelope);
       renderActionRow(envelope);
-      // Same reason, same latest-known envelope: the walk's release button was
-      // built while busy was still true (render() ran inside the refresh
-      // above), so it carries a baked-in `disabled` that nothing else would
-      // clear until the next poll — a full second and a half in which the
-      // household's next spot looks refused.
-      if (envelope) {
-        renderWalk(envelope.capture, {
-          yielded: screenOwnsLiveControl(envelope),
-          round: envelope.pending,
-        });
-      }
+      renderWalk(envelope.capture, {
+        yielded: screenOwnsLiveControl(envelope),
+        round: envelope.pending,
+      });
     }
   }
 }

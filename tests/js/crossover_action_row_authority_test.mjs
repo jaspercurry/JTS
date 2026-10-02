@@ -10,10 +10,14 @@ globalThis.clearTimeout = () => {};
 
 let nextEnvelope = null;
 let postResponse = { status: "ok" };
+const posted = [];
 const { elements, render, runAction, stopCapture } = await crossoverMainModule({
   extraStubs: {
     getJSON: async () => nextEnvelope,
-    postJSON: async () => postResponse,
+    postJSON: async (path) => {
+      posted.push(path);
+      return postResponse;
+    },
   },
   exportNames: ["render", "runAction", "stopCapture"],
 });
@@ -209,6 +213,40 @@ check(
   actionRowChildren()[0].disabled === false,
   "(g) click-swallowing: runAction ran to completion and the row re-enabled",
 );
+
+// (h) A start's own refresh can already land the first placement hold, built while the start is busy.
+// The hold's release is a live button when the start returns, whichever panel carries it.
+const release = {
+  id: "position_ready",
+  label: "Microphone is at the seat",
+  endpoint: "/sound/speaker/crossover/v2/position-ready",
+  body: { index: 1, attempt: 1 },
+};
+const hold = {
+  mover: "human",
+  degrees: 0,
+  vertical_deg: 0,
+  prompt: { progress: "", title: "Put the microphone at the seat.", body: "" },
+  actions: [release, { id: "retake", label: "Redo this pose", endpoint: "/retake", body: {} }],
+};
+for (const [carrier, held, controls] of [
+  ["round hold", { capture: null, busy: true, pending: hold }, actionRowChildren],
+  ["capture hold", { capture: { status: "awaiting_capture", position_pending: hold } },
+    () => elements.get("crossover-walk-action").children],
+]) {
+  render(clickEnvelope());
+  postResponse = { capture: { status: "awaiting_capture" } };
+  nextEnvelope = { verdict_text: "", steps: [], nudges: [], next_action: null, alternate_actions: [], ...held };
+  await runAction(clickAction, element("start"));
+  const [button] = controls();
+  check(
+    button.textContent === release.label && button.disabled === false,
+    `(h) ${carrier}: the release is live when the start returns`,
+  );
+  posted.length = 0;
+  await button.click();
+  check(posted[0] === release.endpoint, `(h) ${carrier}: its click posts the placement`);
+}
 
 for (const enabled of [false, true]) {
   render({next_action: {...holdPrimaryAction, enabled}});
