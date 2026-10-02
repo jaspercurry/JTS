@@ -421,6 +421,46 @@ def test_load_design_draft_fails_soft_on_unsupported_schema(tmp_path: Path):
     assert payload["issues"][0]["code"] == "design_draft_unsupported_schema"
 
 
+def test_a_stale_draft_loads_and_a_resave_writes_none_of_its_old_keys(tmp_path: Path) -> None:
+    """A draft saved before ADR-0323 still carries the request artefact, its digests and a
+    per-channel ``protection_status``. It loads, and one save from the loaded draft writes
+    none of them, so a stale declaration fingerprint is cleared by a plain save."""
+    from tests.test_active_speaker_driver_safety import (
+        _manual_settings, _operator_inputs, _research_result,
+    )
+    from jasper.active_speaker.driver_safety import build_driver_research_context
+
+    path = tmp_path / "draft.json"
+    topology = _topology()
+    research = _research_result(build_driver_research_context(topology, _operator_inputs()))
+    draft = save_design_draft(
+        topology, driver_research=research, manual_settings=_manual_settings(),
+        operator_inputs=_operator_inputs(), path=path,
+    )
+    stale = json.loads(path.read_text())
+    stale["driver_research_request"] = {"targets": []}
+    stale["driver_research"].update(request_fingerprint="old", result_fingerprint="old")
+    for group in stale["topology"]["speaker_groups"]:
+        for channel in group["channels"]:
+            channel["protection_status"] = "absent"
+    path.write_text(json.dumps(stale))
+
+    loaded = load_design_draft(path, topology=topology)
+    assert loaded["status"] == draft["status"]
+    saved = save_design_draft(
+        topology, driver_research=loaded["driver_research"],
+        manual_settings=loaded["manual_settings"], operator_inputs=loaded["operator_inputs"], path=path,
+    )
+
+    written = json.loads(path.read_text())
+    assert "driver_research_request" not in written
+    assert not {"request_fingerprint", "result_fingerprint"} & written["driver_research"].keys()
+    assert all("protection_status" not in channel
+               for group in written["topology"]["speaker_groups"] for channel in group["channels"])
+    assert saved["driver_research"] == draft["driver_research"]
+    assert saved["manual_settings"] == draft["manual_settings"]
+
+
 @pytest.mark.parametrize(("where", "update", "code"), [
     ("driver", {"horn_coverage_deg": 1}, "unknown_driver_fields"),
     ("driver", {"crossover_search_band_hz": 1}, "unknown_driver_fields"),
