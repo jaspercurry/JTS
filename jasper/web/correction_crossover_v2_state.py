@@ -210,10 +210,11 @@ def baseline_apply_seams(camilla: Any) -> tuple[Any, Any]:
             lambda: camilla.get_config_file_path(best_effort=False))
 
 
-def observe_apply_success(selected_candidate: Mapping[str, Any]) -> None:
+def observe_apply_success(selected_candidate: Mapping[str, Any] | None) -> None:
     """Record the completed apply and the candidate it installed."""
     state = load_v2_state() or {}
-    state["candidate"] = dict(selected_candidate)
+    if selected_candidate is not None:
+        state["candidate"] = dict(selected_candidate)
     state["applied"] = True
     # ``failure`` stays as found: a run's terminal code (a Stop, a capture
     # timeout) can land while this apply is in flight, and the record needs
