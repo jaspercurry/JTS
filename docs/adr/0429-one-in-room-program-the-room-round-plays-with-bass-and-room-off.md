@@ -20,8 +20,8 @@ trial follows, then apply.
 
 Before this ADR:
 
-- `room/seat` cleared no layer. Its base played the applied bass and room layers, so ADR-0421's
-  preview refused its median (`room_median_played_layer`).
+- `room/seat` cleared no layer. Its base played the applied bass and room layers, so where either
+  was applied, ADR-0421's preview refused its median (`room_median_played_layer`).
 - `room/seat` served room only. Its bank filed no bass view, and its round did not count for the
   bass program.
 - `jasper-round trial` sent every document with a bass section, `"bass": {}` included, to the bass
@@ -48,9 +48,8 @@ ladder's three averaged passes, costs about 4.8 dB of SNR.
    `seat_express`, or at `room_quick` for the arm. Its first plan is `room/seat` at
    `seat_express`. So a bass-only document, a document with bass and room, and a `"bass": {}`
    document each trial on the in-room round. `trial_preset` reads the rows, and it stays the one
-   owner of that routing.
-4. **Both program rows stay.** The bass row keeps the bass section, its contract and its
-   prescription. Only its trial and its first plan move.
+   owner of that routing. The bass row keeps its section and its contract; only its trial and its
+   first plan move.
 
 ### What this supersedes
 
@@ -59,9 +58,9 @@ ladder's three averaged passes, costs about 4.8 dB of SNR.
   preview adds the composed boost.
 - ADR-0260 §3, line 65: "the in-room distortion-versus-level ladder" as a protection basis, and its
   consequence at line 83: "The protection ladder is a code-owned program: stepped-level sweeps at
-  the seat". The in-room round reads H2/H3 at one level from its full-band sweep, and no program
-  default plays the ladder. The `bass/axis` preset stays, and plays only when a run names it,
-  until #6227 A5 deletes it.
+  the seat". The in-room round reads H2/H3 at one level from its full-band sweep. The bass
+  program's first plan and its trials no longer play the ladder; `bass/axis` (and
+  `--program bass`) plays it only when a run names it, until #6227 A5 deletes it.
 - ADR-0370 §1, lines 36–37: a row states "whether its base also clears the purpose's own layer".
   A row now states which layers its base clears. Line 40: "every other row clears nothing, so
   speaker, rear, room and reference runs play as before". The room row's base clears bass and
