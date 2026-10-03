@@ -158,7 +158,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     missing = tuple(sorted({"woofer", "woofer:rear"} - role_targets.keys())) if name in {"rear", "front_rear"} else ()
     invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
     blocked = bool(missing or invalid_pairs)
-    report = preflight(plan, facts)
+    report = preflight(plan, replace(facts, context=None))
     assert report.blocking is blocked
     if blocked:
         issue, = report.issues
@@ -330,7 +330,7 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     monkeypatch.setattr(household_mic, "resolved_household_mic", lambda: None if fault == "no_calibration" else (
         object(), SimpleNamespace(model="dayton_imm6" if fault == "wrong_mic" else "minidsp_umik2", raw_path="unused")))
     monkeypatch.setattr(calibration, "resolve_mic_sensitivity", lambda **kwargs: facts.mic_sensitivity)
-    report = preflight(plan, preflight_live.read_preflight_facts(plan))
+    report = preflight(plan, replace(preflight_live.read_preflight_facts(plan), context=None))
     code = "measure_box_not_ready" if fault == "box" else "measure_spl_calibration_required"
     assert any(issue.code == code and issue.blocking and issue.next_action for issue in report.issues)
 
@@ -533,7 +533,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     facts = preflight_live.read_preflight_facts(plan, context=context)
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_rear_plays is False
-    assert not preflight(plan, facts).blocking
+    assert not preflight(plan, replace(facts, context=None)).blocking
 
 
 @pytest.mark.parametrize("mover,attested,blocking", [

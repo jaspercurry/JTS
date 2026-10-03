@@ -46,7 +46,7 @@ _STEP_LABELS = {
 }
 
 
-_RUN_HEADLINES = {row.purpose: row.run_headline for row in PROGRAM_ROWS}
+_RUN_HEADLINES = {row.purpose: row.run_headline for row in PROGRAM_ROWS if row.run_headline}
 
 
 def _retake_action() -> dict[str, Any]:

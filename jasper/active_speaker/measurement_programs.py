@@ -86,8 +86,8 @@ class TuningProgram:
     description: str
     measure_label: str
     applied_name: str
-    #: What the measurement page's headline says while a walk of this program plays.
-    run_headline: str
+    #: What the measurement page's headline says while a walk of this program plays; none when no preset plays it.
+    run_headline: str | None
     #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
     trial: tuple[tuple[str, str], ...]
     #: The ``(preset, layout)`` the measure page offers first, where the program's first measurement is not
@@ -139,7 +139,7 @@ _PROGRAM_SECTIONS = (
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 3),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
-        run_headline="JTS is measuring the bass at each listening spot. Follow the step below.",
+        run_headline=None,
         trial=_IN_ROOM_TRIALS, start=_IN_ROOM_TRIALS[0], graph_evidence=True,
     ),
     TuningProgram(

@@ -49,7 +49,7 @@ from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, rou
 from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
 )
-from jasper.active_speaker.preflight import PreflightReport, priced_preflight
+from jasper.active_speaker.preflight import PreflightReport, preflight
 from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
@@ -1116,7 +1116,7 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     _, asked = _run_request.read_request(cli.build_parser().parse_args(["run", "--request", json.dumps(body["request"])]))
     by_cli = _run_request.preflight_run(asked)
     admitted: list = []
-    monkeypatch.setattr(v2host, "priced_preflight", lambda *args: admitted.append(priced_preflight(*args)) or admitted[-1])
+    monkeypatch.setattr(v2host, "preflight", lambda *args: admitted.append(preflight(*args)) or admitted[-1])
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
     monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))

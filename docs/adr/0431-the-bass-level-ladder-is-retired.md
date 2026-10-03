@@ -33,8 +33,9 @@ trials every bass document. So the ladder has no remaining job.
 3. **The bare name.** `--program bass` names no preset, so it refuses as an unknown preset and
    names the presets there are. The in-room round measures bass, and the bass row's trials and
    first plan stay `room/seat` (ADR-0429).
-4. **The price stays.** `priced_preflight` prices a run as `run_levels.preflight_levels` did: its
-   captures, microphone moves and estimated seconds. The dry run and the session door read it.
+4. **The price stays.** `preflight`, read with this speaker's context, prices a run as
+   `run_levels.preflight_levels` did: its captures, microphone moves and estimated seconds. The
+   dry run and the session door read it.
 5. **What stays.** The DSP block (`jasper/bass_extension/dynamic*.py`), the bass prescription
    reader, the `bass` view (it reads the in-room seat takes), `bass-alignment` and the
    bass-evidence banking (`measurement_bass.py`).
