@@ -18,7 +18,7 @@ least 2 dB deep at six positions (`FEATURE_MIN_DEEP_POSITIONS`). `baseline_expre
 Two things stood in the way:
 
 - **A take's sweep count was part of its stimulus shape.** `program.stimulus_shape_id` hashed every
-  segment and the program's length, and a run-manifest set keys on that shape (ADR-0433 §4).
+  segment and the program's length, and a run-manifest set keys on that shape (ADR-0433 §5).
   Composed by the production composer and banked through a real `RunManifest`, the six-spot walk
   made two sets per driver: the mark (2 takes) and the spots (5). The directivity view reads one
   set, and it refused both: `too_few_positions` and `no_reference_take`.
@@ -39,9 +39,11 @@ Two things stood in the way:
    - It is inside the listening window, which averages 0°, ±10° vertical and ±10°, ±20° and ±30°
      horizontal. So a feature the fit leaves alone is one that moves where people listen.
    - It adds a horizontal angle. On a symmetric baffle, ±20° mirror each other.
-   - `baseline_full` already measures 30°, and the arm reaches it (±45°).
-   - [Research 07](../research/2026-07-29-attribution/07-reanalysis-position-variance.md) §3 and §6
-     ask for about six deep positions and name no angle.
+   - `baseline_full` already measures 30°. The arm's reach does not decide it: the ±10° vertical
+     spots already make `baseline_express` a hand walk, since the arm cannot tilt.
+   - [Research 07](../research/2026-07-29-attribution/07-reanalysis-position-variance.md) names no
+     angle. §3 asks for a feature at least 2 dB deep at 60% of the positions or more, and §6 for
+     about six deep positions.
 3. **A spot counts once.** The fit's design cloud keeps the newest kept MEASURE take at each
    azimuth and elevation (`round_inputs.latest_measure_takes`). So the mark's two takes are one
    position, and six spots give the classifier six positions. With exactly six, a feature is
@@ -56,13 +58,18 @@ Two things stood in the way:
    - A program with no repeated cycle keeps its shape id. A branch program's fixed repeats are not
      MEASURE cycles, so they stay part of its shape.
    - The occurrence suffix now has one reader, `program.occurrence_index`. `drift.py` imports it.
-5. **The packet fits only what the fit's floor admits.** In `round_packet._fits`, a MEASURE take
-   that plays a driver fewer than `LINEARIZATION_MIN_PAIRED_OCCURRENCES` times gets no fit for that
-   driver. Its row reads `reason_summary: {"unavailable": "too_few_repeats"}`. The fit at the mark
-   does not change. The floor does not change.
-6. **A spot is never replayed for its timing.** One sweep per driver reads less alignment SNR
-   (ADR-0433's context). The spots rely on ADR-0433 §1: a take off the mark that is short only of
-   alignment SNR is kept.
+5. **The fit's floor has one owner, and it refuses by code.** The fit's paired gate
+   (`intervention.compose_sigma_db`) counts each driver's analysed occurrences. When a driver or its
+   crossover sibling has fewer than `LINEARIZATION_MIN_PAIRED_OCCURRENCES`, the fit now refuses
+   `fit_too_few_sweeps`. Before, it gave no σ, and the fit proposed nothing.
+   - `speaker-fit --take` at a spot refuses with that code.
+   - The packet's row for the spot carries the same refusal: `reason_summary:
+     {"unavailable": "fit_too_few_sweeps"}`.
+   - A take whose analysis kept fewer than three occurrences of a driver refuses the same way, at
+     any pose, where before its fit proposed nothing.
+   - A mark take that kept its three occurrences fits as before. The floor does not change.
+6. **A spot is never replayed for its timing.** Off the mark, a take's alignment feeds no decision.
+   So ADR-0433 §1 keeps a spot whose alignment SNR alone is short, and the spot asks no raise.
 
 ### What this amends
 
@@ -71,9 +78,9 @@ Two things stood in the way:
   leaves a feature that moves with angle uncorrected.
 - ADR-0408, consequences (line 52): "it compares the stimulus's shape (`program.stimulus_shape_id`),
   not its level." The shape now also leaves out how many sweeps each driver plays in a MEASURE take,
-  and so does ADR-0433 §4's set key that reads it.
-- ADR-0433 §3 (lines 40–41): "the fourth mark take of `baseline_express`". This is now the second
-  mark take.
+  and so does ADR-0433 §5's set key that reads it.
+- ADR-0433 §3 (line 42): "the fourth mark take of `baseline_express`". This is now the second mark
+  take.
 
 ## Consequences
 
@@ -93,16 +100,26 @@ Two things stood in the way:
   - Its magnitude is within 0.01 dB of a 3-sweep take's (synthetic capture).
   - It has no in-capture drift reading, so its delay estimate is uncorrected for clock drift. Only
     the mark's timing feeds a decision (ADR-0433).
+  - It has no in-capture glitch check. The drift bound and the residual-desync check need two
+    occurrences of a driver, and the timeline-slip fit cannot resolve so few sweeps. So a dropped
+    buffer can pass. On a synthetic capture, a 48-sample drop in the woofer's sweep was kept, with
+    its curve 15.3 dB off at 371 Hz; at three sweeps the glitch check refuses such a take, and it
+    is retaken.
+  - Such a curve feeds the design cloud and directivity. The harm is bounded. In the cloud, it can
+    only add a false exclusion, which leaves a band uncorrected at the mark. Directivity is a report
+    only.
+  - Two sweeps per driver off axis would restore the check, for 10 more sweeps a round. That is the
+    owner's call.
 - **Readers:**
   - Directivity reads the five spots against the mark's two takes, in one set.
   - The mark's repeat spread reads one pair, not six.
-  - The packet's `fits` keeps one unavailable row per spot and driver.
+  - The packet's `fits` keeps one refused row per spot and driver.
 - **What moves:**
   - A MEASURE take that repeats its cycle gets a new shape id, so its set id moves once.
   - A round banked before keeps its stored set bases. Its `speaker-fit` now refuses
     `selected take does not match its manifest`, as ADR-0433 already made older rounds do.
   - Take records and `stimulus_id`s do not move. The drift reference still keys on the exact
-    `stimulus_id` (ADR-0433 §5), so the first spot has no reference.
+    `stimulus_id` (ADR-0433 §6), so the first spot has no reference.
 - **Rejected:**
   - A new six-spot layout beside the old one. The owner prefers one layout.
   - 20° below or above the mark as the sixth spot. It would show more crossover lobing (research 07
