@@ -878,12 +878,6 @@ class AnchorEvidence:
     presence: float | None = None
     confidence: float | None = None
     corroborated: bool | None = None
-    # Nothing sets these four (ADR-0434); they go with their reader,
-    # capture_dispatch.assess.
-    anchor: str | None = None
-    witness: str | None = None
-    shift_ms: float | None = None
-    witness_residual_ms: float | None = None
     runner_up_presence: float | None = None
     runner_up_confidence: float | None = None
     witnesses_tried: int | None = None

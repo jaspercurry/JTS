@@ -65,12 +65,6 @@ _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
 BRANCH_SUM_MARGIN_DB = 6.0
 
 
-def after_grading(effect: Callable[[], None]) -> None:
-    """Run a graded take's host effect (a rearm) now: a capture plays one
-    stimulus, so nothing later in it is composed from the effect (ADR-0434)."""
-    effect()
-
-
 @dataclass
 class RunSignals:
     """Thread-safe host inputs, consumed only by the executor."""
