@@ -803,8 +803,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
     ),
     DECLARED_GEOMETRY_UNREADABLE: ReasonSpec(
         DECLARED_GEOMETRY_UNREADABLE, TEMPLATE_HARD_STOP, 0,
-        "Declare the rig again with jasper-declare-geometry set; jasper-declare-geometry show prints the command.",
-        own_action={"id": "declare_geometry", "label": "Declare the rig again with jasper-declare-geometry set", "href": "/sound/speaker/crossover/"},
+        "Save the speaker and microphone placement again on the speaker page; jasper-declare-geometry show prints the values.",
+        own_action={"id": "declare_geometry", "label": "Save the placement again", "href": "/sound/speaker/"},
     ),
     "not_found": ReasonSpec(
         "not_found", TEMPLATE_HARD_STOP, 0, "Select a candidate from the bank.",
