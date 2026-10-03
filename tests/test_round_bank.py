@@ -60,6 +60,7 @@ from jasper.active_speaker.round_bank import (
 )
 
 from jasper.active_speaker.baseline_record import recomposition_snapshot_for
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round
@@ -740,7 +741,8 @@ def test_each_view_set_banks_the_layers_it_played(tmp_path):
     applied = _candidate()
     seed = replace(_candidate(room_correction=_room_correction()), analysis={"measurement_status": "unmeasured"})
     publish_authored_candidate(seed, root=tmp_path / "bank")
-    declaration = MeasurementGraphProfile(applied.source_preset, mono_output_topology(), {}, "null")
+    declaration = MeasurementGraphProfile(applied.source_preset, mono_output_topology(), {}, "null",
+                                          sections_by_role(applied.source_preset.crossover_regions))
 
     def record(candidate):
         return {"kind": bp.BASELINE_PROFILE_KIND, "artifact_schema_version": bp.SCHEMA_VERSION, "status": "applied",
