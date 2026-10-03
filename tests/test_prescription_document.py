@@ -10,9 +10,11 @@ from jasper.web import correction_crossover_v2_state as v2state
 import json
 from copy import deepcopy
 from dataclasses import replace
+from functools import partial
 from itertools import product
 from math import prod
 
+import numpy as np
 import pytest
 from tests.test_prescription_contract import round_bank as round_bank
 from tests.test_prescription_contract import bass_packet as bass_packet
@@ -46,14 +48,15 @@ from jasper.active_speaker.crossover_v2.prescription_contract import contract_di
 from jasper.active_speaker.crossover_v2.round_inputs import prescription_sources, round_inputs
 from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.crossover_v2.prescription_document import (
-    PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
-    parse_vary_axis, vary_document,
+    ROOM_MEDIAN_PLAYED_LAYER, PrescriptionDocumentRefused, PrescriptionEvidence, judge_prescription_document,
+    parse_vary_axis, preview_prescription_document, vary_document,
 )
 from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.crossover_v2.round_inputs import BASS_PACKET_ROUND_MISMATCH
-from jasper.bass_extension.dynamic import DYNAMIC_BASS_REFUSAL_REASONS
+from jasper.active_speaker.branch_chain import chain_response
+from jasper.bass_extension.dynamic import DYNAMIC_BASS_REFUSAL_REASONS, expected_boost_db
 from jasper.active_speaker.round_packet import write_round_packet
-from tests.run_manifest_fixture import write_manifest
+from tests.run_manifest_fixture import IN_ROOM_CLEARED, write_manifest
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
 from jasper.cli import crossover_prescriber
 from tests.active_speaker_fixtures import mono_output_topology
@@ -66,7 +69,12 @@ from tests.test_crossover_v2_candidate_republish import _publish
 from tests.test_crossover_v2_driver_prescription import (
     _draft, _document as driver_document,
 )
-from tests.test_crossover_v2_room_prescription import _room_median, _document as room_document, MEDIAN_SHA256, NULL_HZ
+from tests.test_crossover_v2_room_prescription import (
+    ACCEPTED_FILTERS, DIP_HZ, MEDIAN_SHA256, NULL_HZ, _document as room_document, _room_median,
+)
+
+#: The fixture room's cuts; its one boost answers a dip a joint document's bass boost fills (ADR-0421).
+ROOM_CUTS = [entry for entry in ACCEPTED_FILTERS if entry["gain"] < 0]
 
 
 @pytest.fixture
@@ -133,6 +141,7 @@ def test_vary_document_checks_all_paths_before_yielding(path, section):
 
 def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(crossover_prescriber, "_document_evidence", lambda *args: evidence)
+    base = publish_authored_candidate(replace(base.candidate, bass_extension={}), root=bank)
     seed = tmp_path / "room.json"
     prescription = document(base.fingerprint, {"room": room_document(filters=[{"freq": 277, "q": 1, "gain": -3}])})
     seed.write_text(json.dumps(prescription))
@@ -141,12 +150,12 @@ def test_room_grid_preserves_the_full_preview(base, bank, evidence, tmp_path, mo
     single = json.loads(capsys.readouterr().out)
     assert single["sections"] == ["room"]
     assert single["parameters"] == {"window_ms": None, "band_hz": single["preview"]["summary"]["band_hz"]}
-    assert single["preview"] == room_prescription.preview_room_prescription(
+    assert single["preview"] == {**room_prescription.preview_room_prescription(
         {"rationale": prescription["rationale"], **prescription["sections"]["room"]},
         room_median=room_prescription.read_room_median(evidence.sources["room_median"]),
         room_median_sha256=evidence.room_median_sha256, round_id=evidence.round_id,
         sides=SIDES_BY_LAYOUT[base.candidate.source_preset.channel_map.layout],
-    )
+    ), "resolution": {"bass": "base", "room": "document"}, "bass_boost_db": None}
     out_dir = tmp_path / "variants"
     assert crossover_prescriber.main([*args, "--vary", "room.sides.mono[0].gain=-3,-6", "--out-dir", str(out_dir)]) == 0
     answer = json.loads(capsys.readouterr().out)
@@ -192,9 +201,11 @@ def test_empty_clears_and_omitted_layers_inherit(base, section, empty):
 
 @pytest.fixture
 def evidence(bass_packet):
+    """A round banked on a speaker with no bass or room layer applied."""
     return PrescriptionEvidence(
-        {"draft": _draft(), "room_median": _room_median(), "bass_evidence": bass_packet,
-         "manifest": {"sets": [{"set_id": "base", "capture_basis": {},
+        {"draft": _draft(), "room_median": {**_room_median(), "set_id": "base"}, "bass_evidence": bass_packet,
+         "manifest": {"incumbent": {"speaker": None, "room": None, "bass": None},
+                      "sets": [{"set_id": "base", "base": True, "capture_basis": {},
                                 "takes": [{"selected": True, "level": {"level_db": -21.09}}]}]}},
         {"packet_fingerprint": "p" * 64}, MEDIAN_SHA256, bass_packet["round_id"],
     )
@@ -392,14 +403,15 @@ def test_one_invalid_section_refuses_whole_document(base, evidence, section, pay
     ({"delta_highpass_hz": 10000}, "bass_delta_highpass_hz_invalid"),
     ({"linkwitz_transform": True}, "bass_linkwitz_transform_invalid"),
 ])
-def test_a_malformed_bass_descriptor_refuses_with_its_field_code(base, evidence, bass_packet, change, code):
+@pytest.mark.parametrize("read", [judge_prescription_document, partial(preview_prescription_document, round_dir=None)])
+def test_a_malformed_bass_descriptor_refuses_with_its_field_code(base, evidence, bass_packet, change, code, read):
     section = {**bass_document(bass_packet), "delta_highpass_hz": 25, "detector_lowpass_hz": 100}
     if isinstance(change, dict):
         section.update(change)
     elif change == "missing_field":
         del section["linkwitz_transform"]
     with pytest.raises(PrescriptionDocumentRefused) as refused:
-        judge_prescription_document(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
+        read(document(base.fingerprint, {"bass": section}), base=base, evidence=evidence)
     answer = refused.value.to_dict()
     assert (answer["section"], answer["code"]) == ("bass", code)
     assert code in DYNAMIC_BASS_REFUSAL_REASONS
@@ -457,6 +469,70 @@ def test_bass_round_echo_is_optional_and_disclosed(base, evidence, bass_packet, 
     assert receipt["answers_round"] is answers
 
 
+@pytest.mark.parametrize("joint", [False, True])
+def test_a_bass_document_previews_the_seat_median_with_its_boost_and_the_composed_room_set(
+    base, evidence, bass_packet, joint,
+):
+    """ADR-0421: a bass-only document keeps the base's room set, a joint one states its own."""
+    sections = {"bass": bass_document(bass_packet), **({"room": room_document(filters=ROOM_CUTS)} if joint else {})}
+    result = preview_prescription_document(document(base.fingerprint, sections), round_dir=None, base=base,
+                                           evidence=evidence)
+    median = room_prescription.read_room_median(evidence.sources["room_median"])
+    boost = np.asarray(expected_boost_db(_bass_descriptor(), median.freqs_hz))
+    room_db = 20 * np.log10(np.abs(chain_response(
+        ROOM_CUTS if joint else base.candidate.room_correction["sides"]["mono"], median.freqs_hz)))
+    preview = result["preview"]
+    assert (result["section"], preview["resolution"]) == ("room", {"bass": "document", "room": "document" if joint else "base"})
+    np.testing.assert_allclose(preview["bass_boost_db"], boost, atol=1e-9)
+    np.testing.assert_allclose(preview["residual"]["sides"]["mono"], median.median_db + boost + room_db, atol=1e-9)
+
+
+def test_a_joint_documents_room_admission_reads_the_seat_median_with_its_bass_boost(base, evidence, bass_packet):
+    """ADR-0421: the dip a room boost was admitted into on the plain median is filled by the document's bass boost."""
+    room_section = room_document(filters=[{"freq": DIP_HZ, "q": 3.0, "gain": 4.0}])
+    plain = judge_prescription_document(document(base.fingerprint, {"room": room_section}), base=base, evidence=evidence)
+    finding, = plain.analysis["evidence"]["prescriptions"]["room"]["admissions"]
+    with pytest.raises(PrescriptionDocumentRefused) as refused:
+        judge_prescription_document(document(base.fingerprint, {"bass": bass_document(bass_packet), "room": room_section}),
+                                    base=base, evidence=evidence)
+    boosted = refused.value.evidence["admission"]
+    assert (refused.value.code, refused.value.section, finding["admitted"], boosted["admitted"]) == (
+        "boost_not_admitted", "room", True, False)
+    boost, = expected_boost_db(_bass_descriptor(), [finding["evaluated_at_hz"]])
+    assert boosted["depth_db"] == pytest.approx(finding["depth_db"] - boost)
+
+
+@pytest.mark.parametrize("judged", [False, True])
+@pytest.mark.parametrize("applied, cleared, base_set, played", [
+    ({"bass": "b" * 64}, [], True, ["bass"]),
+    ({"bass": "b" * 64}, ["bass_extension"], True, []),
+    ({"room": "r" * 64}, [], True, ["room"]),
+    ({}, [], True, []),
+    ({}, [], False, ["bass", "room"]),
+    ({}, list(IN_ROOM_CLEARED), False, []),
+])
+def test_a_seat_median_whose_takes_played_a_layer_added_to_it_refuses(
+    base, evidence, bass_packet, judged, applied, cleared, base_set, played,
+):
+    """ADR-0421: the preview adds bass and room to the median; a joint document's judge adds its bass."""
+    manifest = evidence.sources["manifest"]
+    group, = manifest["sets"]
+    evidence = replace(evidence, sources={**evidence.sources, "manifest": {
+        "incumbent": {**manifest["incumbent"], **applied},
+        "sets": [{**group, "base": base_set, "takes": [{**take, "cleared_layers": cleared} for take in group["takes"]]}]}})
+    raw = document(base.fingerprint, {"bass": bass_document(bass_packet),
+                                      **({"room": room_document(filters=ROOM_CUTS)} if judged else {})})
+    read = judge_prescription_document if judged else partial(preview_prescription_document, round_dir=None)
+    adds = [name for name in played if name == "bass" or not judged]
+    if not adds:
+        read(raw, base=base, evidence=evidence)
+        return
+    with pytest.raises(PrescriptionDocumentRefused) as refused:
+        read(raw, base=base, evidence=evidence)
+    assert (refused.value.code, refused.value.section, refused.value.evidence) == (
+        ROOM_MEDIAN_PLAYED_LAYER, "room", {"sections": adds, "set_id": "base"})
+
+
 @pytest.mark.parametrize("verb", ["judge", "compose"])
 def test_cli_proves_without_writes_until_composition(base, bank, tmp_path, capsys, bass_round, bass_packet, verb):
     raw = document(base.fingerprint, {"bass": bass_document(bass_packet)})
@@ -495,7 +571,7 @@ def test_a_section_authored_without_its_envelope_is_judged_and_carries_the_ratio
         "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
         "alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
         "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
-        "room": room_document(), "bass": bass_document(bass_packet),
+        "room": room_document(filters=ROOM_CUTS), "bass": bass_document(bass_packet),
     }
     raw = document(base.fingerprint, {name: {key: value for key, value in section.items()
                                              if key not in ("kind", "artifact_schema_version", "rationale")}
@@ -669,7 +745,7 @@ def test_all_sections_form_one_proved_candidate(base, evidence, bass_packet, del
         "blend": blend_document([{"biquad_type": "Peaking", "freq": 1500, "q": 1, "gain": -1}], dict(evidence.packet)),
         "alignment": {"delay_us": delay, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
         "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
-        "room": room_document(), "bass": bass_document(bass_packet),
+        "room": room_document(filters=ROOM_CUTS), "bass": bass_document(bass_packet),
     }
     child = judge_prescription_document(document(base.fingerprint, sections), base=base, evidence=evidence)
     assert set(child.analysis["resolution"].values()) == {"document"}
@@ -741,13 +817,16 @@ def test_cli_round_evidence_judges_and_banks_one_combined_document(base, bank, t
     draft = json.loads(draft_path.read_text())
     draft["manual_settings"]["drivers"][0]["radiating_diameter_mm"] = diameter
     draft_path.write_text(json.dumps(draft))
+    view = json.loads((round_dir / "room.json").read_text())
+    view["median"]["set_id"] = write_manifest(round_dir, cleared_layers=IN_ROOM_CLEARED)["sets"][0]["set_id"]
+    (round_dir / "room.json").write_text(json.dumps(view))
     store_banked_evidence(round_dir)
     args = crossover_prescriber.build_parser().parse_args(["status", str(round_dir)])
     packet = crossover_prescriber._load_packet(args)
     raw = document(base.fingerprint, {
         "bass": bass_document(bass_packet),
         "driver": driver_document([{"role": "woofer", "biquad_type": "Peaking", "freq": 900, "q": 1, "gain": -2}], packet),
-        "room": room_document(sha256=room_median_sha256(json.loads((round_dir / "room.json").read_text())["median"])),
+        "room": room_document(filters=ROOM_CUTS, sha256=room_median_sha256(view["median"])),
         "alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]},
         "topology": {"fc_hz": 2000, "order": 4, "basis_artifacts": ["fc.json"]},
     })

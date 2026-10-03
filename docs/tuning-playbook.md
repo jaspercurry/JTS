@@ -231,7 +231,9 @@ the filter. Near the sweep's low edge, where the level is 10–15 dB down, a
 single take can swing ±4 dB.
 
 `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview` answers limits and predicted
-residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews a room section, or a `rear_calibration` section against `--round <pair round>`.
+residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews bass and room sections on a room round's seat median (ADR-0421), or a `rear_calibration` section against `--round <pair round>`.
+The in-room preview adds the composed bass's boost and room set to the median; `resolution` says which
+layer is the document's, cleared, or the base's, and `bass_boost_db` is the boost on the residual's grid.
 A room preview's `summary` gives each side's `residual_rms_db`, the
 `seat_spread_rms_db` and `under_seat_spread` over its `band_hz`.
 Good means median residual under the seat spread, no boost into a dip that

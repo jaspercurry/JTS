@@ -17,23 +17,31 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.platform.json_fields import canonical_json_bytes, sha256_file
 
 
-def write_manifest(round_dir: Path, *, program: str = "speaker", groups=None, probe: bool = False) -> dict:
-    return write_bundle_manifest(round_inputs(round_dir).session_dir, program=program, groups=groups, probe=probe)
+#: The layers an in-room base take plays cleared (ADR-0421).
+IN_ROOM_CLEARED = ("bass_extension", "room_correction")
+
+
+def write_manifest(round_dir: Path, *, program: str = "speaker", groups=None, probe: bool = False,
+                   cleared_layers=()) -> dict:
+    return write_bundle_manifest(round_inputs(round_dir).session_dir, program=program, groups=groups, probe=probe,
+                                 cleared_layers=cleared_layers)
 
 
 def write_bundle_manifest(
     session_dir: Path, *, program: str = "speaker", groups=None, selected=None, refused=(), probe: bool = False,
+    cleared_layers=(),
 ) -> dict:
     """The round's finalized run manifest: ``groups``, else one set of every
-    banked take (:func:`manifest_set`). With ``probe``, the run's probe of the
-    first set's first take banks first, in a set of its own (:func:`probe_set`)."""
+    banked take (:func:`manifest_set`), each played with ``cleared_layers``. With
+    ``probe``, the run's probe of the first set's first take banks first, in a
+    set of its own (:func:`probe_set`)."""
     directory, _ = round_artifact_dir(session_dir)
     if directory is None:
         directory = session_dir / "evidence/v1/artifacts/crossover_v2/wired-test"
         directory.mkdir(parents=True, exist_ok=True)
     if groups is None:
         records = [(row.path, record) for row, record in measurement_documents(session_dir)]
-        groups = [manifest_set(records, selected=selected, refused=refused)]
+        groups = [manifest_set(records, selected=selected, refused=refused, cleared_layers=cleared_layers)]
     if probe and groups:
         groups = [probe_set(groups[0]), *groups]
     manifest = {"kind": "jts_run_manifest", "schema_version": 5, "preset": program,
@@ -122,10 +130,11 @@ def own_record(row: dict, record: dict, **fields) -> dict:
     return {**record, **{key: value for key, value in row.items() if key != "artifacts"}, **fields}
 
 
-def manifest_set(records, *, set_id=None, selected=None, refused=()) -> dict:
+def manifest_set(records, *, set_id=None, selected=None, refused=(), cleared_layers=()) -> dict:
     """One set's takes, each with the facts the executor banks on its record
-    (:func:`_banked` lends them): every take selected unless ``selected`` names
-    the ones that are; a ``refused`` take is never selected, as the executor writes it."""
+    (:func:`_banked` lends them), ``cleared_layers`` among them when given: every
+    take selected unless ``selected`` names the ones that are; a ``refused`` take
+    is never selected, as the executor writes it."""
     basis = capture_basis(records[0][1] if records else {})
     basis.pop("pose_kind", None)
     takes = []
@@ -137,5 +146,6 @@ def manifest_set(records, *, set_id=None, selected=None, refused=()) -> dict:
                       "distance_m": record.get("mark_distance_m"), "seat_offset_m": record.get("seat_offset_m")},
                       "level": {**{key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")}, "alignment": {}},
                       "artifacts": {"record_id": path},
+                      **({"cleared_layers": list(cleared_layers)} if cleared_layers else {}),
                       "selected": take_id not in refused and (selected is None or take_id in selected)})
     return {"set_id": set_id or json_fingerprint(basis), "capture_basis": basis, "takes": takes}

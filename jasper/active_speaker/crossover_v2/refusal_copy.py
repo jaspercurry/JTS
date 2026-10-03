@@ -482,6 +482,8 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "room_incumbent_set_unavailable": "The run has no base set to grade the room against.",
         "room_median_unavailable": "The room median is missing, or this door cannot read it into limits.",
         "room_no_seat_takes": "The round has no readable room take at a seat, so no room median exists.",
+        "room_median_played_layer": "The seat takes played a bass or room layer that this reading adds, so it would "
+                                    "count that layer twice.",
     },
     ("select_candidate", "Select a candidate with one banked identity"): {
         "authored_candidate_conflict": "A different candidate is already banked under this identity.",

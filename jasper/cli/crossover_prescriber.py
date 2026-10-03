@@ -81,9 +81,15 @@ def _answer(args: argparse.Namespace, row: str, read: Mapping[str, Any],
                   parameters=parameters or {}, line="", **fields)
 
 
+def _reads_median(args: argparse.Namespace, document: Mapping[str, Any]) -> bool:
+    """Whether a document reads the round's seat median: a room section, or the in-room preview (ADR-0421)."""
+    return bool(document["sections"].get("room")) or (bool(getattr(args, "preview", False))
+                                                       and preview_kind(document) == "room")
+
+
 def _document_set(args: argparse.Namespace, document: Mapping[str, Any], inputs: RoundInputs | None) -> SetTakes | None:
-    """The set a document reads: the one ``--set`` names, else a room section's only set."""
-    if inputs is None or not (args.set or document["sections"].get("room")):
+    """The set a document reads: the one ``--set`` names, else its seat median's only set."""
+    if inputs is None or not (args.set or _reads_median(args, document)):
         return None
     return resolve_set(inputs, args.set)
 
@@ -97,7 +103,7 @@ def _document_evidence(
     if inputs is not None and (sections.get("driver") or sections.get("blend")):
         packet = _load_packet(args, inputs=inputs)
     try:
-        sha = _room_median(sources.get("room_median", {}))[1] if sections.get("room") else ""
+        sha = _room_median(sources.get("room_median", {}))[1] if _reads_median(args, document) else ""
     except RoomPrescriptionRefused as exc:
         raise PrescriptionDocumentRefused(exc.reason, "room", exc.detail, evidence=exc.evidence) from exc
     return PrescriptionEvidence(sources, packet, sha, Path(args.round).name if args.round else "")
@@ -692,7 +698,7 @@ def build_parser() -> argparse.ArgumentParser:
                              help=f"the round the document reads its evidence from: {_ROUND_DIR_HELP}")
         add_set_argument(command, take=verb == "judge")
         if verb == "judge":
-            command.add_argument("--preview", action="store_true", help="predict driver, blend or topology with --round <branch diagnostic round>, room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
+            command.add_argument("--preview", action="store_true", help="predict driver, blend or topology with --round <branch diagnostic round>, bass and room with --round <room round>, or rear_calibration with --round <pair round>, compiling its stage at the declared cabinet's outputs; banks nothing")
             command.add_argument("--vary", action="append", metavar="AXIS", help="PATH[,PATH...]=VALUE[,VALUE...] axis; repeat for a Cartesian grid")
             command.add_argument("--out-dir", metavar="DIR", help="write grid documents and full previews")
             command.add_argument("--out", metavar="FILE", help="write the full preview here and answer with its summary; "
