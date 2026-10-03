@@ -21,7 +21,7 @@ reduce sound behind the speaker", but the page started `rear/pair` at the mark o
 `start`), `jasper-round run --program rear` started `rear/express` at `rear_express` (the first
 `rear/*` row), and the rear score needs front and behind takes, so it was always unavailable. The
 playbook's Seat loop took the pair twice at the mark and then trialled five graphs at three seats:
-17 takes and 27 sweeps. Every rear take played the applied bass and room layers.
+17 takes and 25 sweep slots. Every rear take played the applied bass and room layers.
 
 The owner's design on #6227: one `rear/pair` take at the mark, a preview of the seed with no sound
 ([ADR-0425](0425-the-rear-seed-is-computed-from-the-declared-geometry.md)), then one seat trial of
@@ -52,27 +52,42 @@ seed that misses.
    bank files the rear view, and the room and bass views of each set, from the same takes. The
    in-room preview admits a set whose takes played bass and room cleared, a candidate's included
    ([ADR-0421](0421-bass-has-a-preview-model-the-in-room-preview-adds-the-composed-boost.md)). So
-   room and the optional bass are designed on the chosen candidate's set (`--set`), and a cardioid
-   build plays no separate in-room round: the in-room program needs only its trial.
-4. **The rear-off reference is the base.** A trial's candidates stay `base,<fp>`. A base with no rear
-   stage plays its rear output muted, so on a first build the base is the rear-off graph. The rear
-   view takes it as the rear-muted reference and reads the late-energy and band figures against it. A
-   candidate whose section states `rear_muted: true` still wins, and a base whose applied profile
-   does not read is never taken as rear off. Nothing builds a muted copy: on a re-tune, where the base
-   plays a rear stage, the agent adds a composed copy with `rear_muted: true` to `--candidates` when it
-   wants the rear-off reference.
-5. **Copy.** The rear row sets the rear woofer to cut the wall bounce at the listening position, not
+   room and the optional bass are designed on the chosen candidate's set (`--set`). A cardioid build
+   then plays no separate in-room round, only the in-room trial, once that set stays current after
+   the seed's apply. That rests on ADR-0437 (#6227 B3b, a round's staleness is judged per set): by
+   ADR-0420's round-wide rule alone, the rear apply stales the round for rear, room and bass, and the
+   pointer asks for a room round.
+4. **The rear-off reference.** A trial's candidates stay `base,<fp>`. A set that plays no rear stage,
+   or states its rear muted, is rear off: no rear stage leaves the rear output muted. So on a first
+   build the base is rear off, and so is a candidate composed with `"rear_calibration": null`. The
+   rear view takes a rear-off candidate as its reference, else the base, and reads the late-energy and
+   band figures against it; a set whose section does not read (an unreadable applied profile, a
+   candidate the bank does not hold) is never rear off. Nothing builds a muted copy: on a re-tune,
+   where the base plays a rear stage, the agent adds a composed copy with `rear_muted: true` to
+   `--candidates` when it wants the rear-off reference.
+5. **When rear off wins, it is applied too.** The agent composes the seed with `rear_muted: true` and
+   applies it, as an apply needs no trial (ADR-0425 §6). The next-program pointer reads the rear layer
+   from the applied snapshot, so with nothing applied it would ask for rear again for good. The
+   in-room round then measures the speaker as applied.
+6. **A document with bass or room trials on the in-room round.** A rear take plays bass and room off,
+   so a rear trial would leave a document's bass and room sections unplayed while apply adopts them.
+   `trial_preset` takes the first program the document states, of rear, bass, room and speaker, whose
+   candidate takes play every layer it states: a document with a bass or a room section trials on
+   `room/seat`, which plays its candidate whole, and only one whose sections above the speaker are
+   rear trials on `rear/seat`.
+7. **Copy.** The rear row sets the rear woofer to cut the wall bounce at the listening position, not
    to "reduce sound behind the speaker".
 
 ### The default and its count
 
 A first-build cardioid run is one `rear/pair` take at the mark and one `rear/seat` trial of two
-graphs at three seats: 1 + 6 = 7 takes and 6 + 6 = 12 sweeps. A pair take plays each woofer alone
-twice, then their sum and its companion; a seat take plays one summed sweep. Each graph's first take
-also plays its probe: both branches alone for the pair, and one per seat graph. Before this, the page
-started 2 pair takes (12 sweeps), and the playbook's trial of five graphs played 15 takes (15 sweeps).
-The in-room program then plays its one trial, base against its document at the same three seats: 6
-takes.
+graphs at three seats: 1 + 6 = 7 takes and 5 + 6 = 11 sweep slots. A pair take plays each woofer
+alone twice, then their sum, whose companion on the second channel shares its slot; a seat take
+plays one summed sweep. Each graph's first take also plays its probe: both branches alone for the
+pair, and one per seat graph. Before this, the page started 2 pair takes (10 sweep slots), and the
+playbook's trial of five graphs played 15 takes (15 sweep slots). When the seed wins, the in-room
+program then plays only its trial, base against its document at the same three seats: 6 takes (with
+ADR-0437, §3).
 
 ### What this supersedes
 
@@ -98,8 +113,9 @@ takes.
   speaker trial plays its whole candidate, until their programs clear those layers (#6227 A2, B3)." A
   rear take plays them cleared. A speaker trial still plays its whole candidate.
 - ADR-0425 §6, lines 36–37: "A trial's muted reference is an explicit copy of the section with
-  `rear_muted: true` (step B3 builds it in)." The rear-off reference is a base with no rear stage
-  (§4). A muted copy is the agent's choice on a re-tune, and nothing builds it.
+  `rear_muted: true` (step B3 builds it in)." The rear-off reference is a set that plays no rear
+  stage or states it muted (§4), on a first build the base. A muted copy is the agent's choice on a
+  re-tune, and nothing builds it.
 - ADR-0413 §3, lines 27–28, its premise: "Only a bass run's takes clear the room layer, and no bass
   preset takes a timing take, so a bass run's probe clears it too." ADR-0429 restated it, and
   ADR-0431 removed the bass run. Every rear take now clears the room layer, and none plays at a run's
@@ -119,7 +135,10 @@ takes.
 - A rear seat round now files a bass view per set too, so it counts for the bass program as well as
   for rear and room (ADR-0429 §2).
 - On a first build, a seat trial's band levels and late energy read against the base. Before, they
-  had no rear-muted reference unless the trial played a muted copy.
+  had no rear-muted reference unless the trial played a muted copy. A candidate composed with
+  `"rear_calibration": null` reads as rear muted, not as a variant.
+- A document that states rear with bass or room trials on `room/seat`, which files no rear view, so
+  the default loop trials the rear stage on its own first.
 - `jasper-round run --program rear` with a layout or candidates that `rear/pair` does not take now
   refuses: name `rear/express`.
 - Rejected:

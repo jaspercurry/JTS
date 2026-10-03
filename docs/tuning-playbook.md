@@ -503,8 +503,9 @@ The match is broadband power over 40 Hz–16 kHz, not bass tone.
 The switch compares only the applied tune with its rear off, not two banked tunes.
 
 Every rear take plays bass and room off, the same for every candidate, so the
-seat trial's chosen set is the in-room base (ADR-0436). After a rear change is
-adopted, the in-room program designs room and bass on that set.
+seat trial's chosen set is the in-room base (ADR-0436). After the seed is
+adopted, the in-room program designs room and bass on that set, which stays
+current after the apply under ADR-0437 (#6227 B3b, staleness per set).
 
 ## Seat
 
@@ -522,20 +523,26 @@ This is the default loop for a cardioid box. Keep the cabinet at its wall.
    the base and the seed at three seats with bass and room off. On a first build the base plays no rear
    stage, so it is the rear-off reference. On a re-tune the base plays the applied rear stage: for a rear-off
    reference, compose a copy with `rear_muted: true` and add `--candidates base,<seed-fp>,<muted-fp>`.
-   Read the figures below and choose. Apply a chosen document with
-   `sudo /opt/jasper/.venv/bin/jasper-round apply <chosen-fp>`; if the base wins, apply nothing.
-4. The chosen set is the in-room base: its takes played bass and room off. Join the chosen candidate to
+   Read the figures below and choose, then apply the choice:
+   `sudo /opt/jasper/.venv/bin/jasper-round apply <chosen-fp>`. If rear off (the base) wins, compose the
+   seed with `rear_muted: true` and apply that, since an apply needs no trial: the rear layer then reads
+   applied and the pointer moves on.
+4. When the seed won, its set is the in-room base: its takes played bass and room off, and ADR-0437
+   (#6227 B3b, staleness per set) keeps it current after the apply. Join the chosen candidate to
    `packet["sets"]` by `candidate_id`, then to `packet["room"]` and `packet["bass"]` by `set_id`. Write the
    in-room document (room, and bass if wanted; its `base` is `saved`), then preview and compose it on that set:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber compose <room-doc> --round <seat-round> --set <chosen-set-id>`.
+   When rear off won, the in-room round first measures the speaker as applied
+   (`sudo /opt/jasper/.venv/bin/jasper-round run --program room --wait`); compose on its base set.
 5. Trial it: `sudo /opt/jasper/.venv/bin/jasper-round trial <document-fp> --wait`.
    If its packet supports adoption, run `sudo /opt/jasper/.venv/bin/jasper-round apply <document-fp>`.
 
-Takes: **1 + 6 + 6** — one pair take at the mark, the base and the seed at three seats, then the base and
-the in-room document at the same seats; placements 1 + 3 + 3 (`measurement_plans.json`'s layouts). Each
-candidate plays at each seat before the mic moves, so a trial plays **candidates × seats** takes; repeats
-add takes, not placements. `rear/seat` names the purposes rear, room and bass, so the banker runs the rear,
-room and bass views on the same takes. The arm uses `rear/express` at `rear_express`.
+Takes: **1 + 6 + 6** when the seed wins — one pair take at the mark, the base and the seed at three seats,
+then the base and the in-room document at the same seats; placements 1 + 3 + 3 (`measurement_plans.json`'s
+layouts); rear off adds the in-room round's 3. Each candidate plays at each seat before the mic moves,
+so a trial plays **candidates × seats** takes; repeats add takes, not placements. `rear/seat` names the
+purposes rear, room and bass, so the banker runs the rear, room and bass views on the same takes. The arm
+uses `rear/express` at `rear_express`.
 
 Read `packet["rear"][].candidates[]`, then each candidate's `positions` seat
 rows, then `across_positions`: per-figure median, worst value and
