@@ -65,8 +65,7 @@ def _source_payload(
             if key != "measured_candidate_fingerprint"
         }
         source["candidate_graph_context_fingerprint"] = _fingerprint(device_context)
-    return {**source, "fingerprint": _fingerprint(source),
-            "design_draft_updated_at": design_draft.get("updated_at")}
+    return {**source, "fingerprint": _fingerprint(source)}
 
 
 def _measured_candidate_metadata(

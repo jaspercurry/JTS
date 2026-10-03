@@ -3159,7 +3159,6 @@ def test_apply_after_draft_edit_loads_the_trial_composers_exact_bytes(monkeypatc
     assert Path(cam.path).read_bytes() == expected
     record = json.loads((tmp_path / "baseline_profile.json").read_text())
     assert record["source"]["measured_candidate_fingerprint"] == candidate.fingerprint
-    assert record["source"]["design_draft_updated_at"] == draft["updated_at"]
     assert record["config"]["sha256"] == hashlib.sha256(expected).hexdigest()
     assert record["apply"]["result"] == "success"
     assert not list(tmp_path.rglob("run_manifest.json"))
