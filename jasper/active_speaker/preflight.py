@@ -169,8 +169,8 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         if not facts.mover_available:
             issues.append(mover_unavailable_issue(plan.program))
     captures = len(plan.stops) * plan.repeats if valid_shape else 0
-    if captures > MAX_CAPTURE_PLAN_ATTEMPTS or (valid_shape and plan.retries_per_pose > MAX_CAPTURE_PLAN_ATTEMPTS):
-        add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}, retries_per_pose={plan.retries_per_pose}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
+    if captures > MAX_CAPTURE_PLAN_ATTEMPTS:
+        add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
 
     # Remove once three-way CHECK graphs and MEASURE are supported (#5396).

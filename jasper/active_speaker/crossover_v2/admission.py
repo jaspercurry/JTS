@@ -65,7 +65,6 @@ class SlotAttempts:
     by_household: int = 0
     by_speaker: int = 0
     charge: TakeCharge = "operator"
-    retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
     #: The last take's fault and reading, when it was refused for a retake at its own level.
     refusal: tuple[str, float] | None = None
     #: A take repeated that refusal, so no retake here can change the answer (ADR-0428).
@@ -75,13 +74,12 @@ class SlotAttempts:
     def extras_used(self) -> int:
         return self.by_household
 
-    def left(self, charge: TakeCharge = "operator") -> int:
-        """Extra takes left for ``charge``: the placement's cap, within the run's share for all but a speaker's."""
-        cap = 0 if self.repeated else MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household - self.by_speaker
-        return max(0, cap if charge == "speaker" else min(cap, self.retries_per_pose - self.by_household))
+    def left(self) -> int:
+        """Extra takes left: the placement's cap less every charged take (ADR-0422)."""
+        return 0 if self.repeated else max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household - self.by_speaker)
 
     def can_retry(self, charge: TakeCharge = "operator") -> bool:
-        return charge == "replay" or self.left(charge) > 0
+        return charge == "replay" or self.left() > 0
 
     def can_admit(self, charge: TakeCharge) -> bool:
         return not self.admitted or self.can_retry(charge)
@@ -116,7 +114,7 @@ class SlotAttempts:
 
     def to_payload(self) -> dict[str, Any]:
         return {
-            "allowed": self.retries_per_pose,
+            "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
             "left": self.left(),
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,

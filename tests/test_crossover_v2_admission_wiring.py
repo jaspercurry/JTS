@@ -145,14 +145,11 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
     assert produced == set(admission.DECISION_KINDS)
 
 
-@pytest.mark.parametrize(("budget", "left", "charges"), [
-    (0, 0, ["speaker"] * 2), (2, 2, ["speaker"] * 2),
-    (2, 2, ["operator", "speaker"]), (3, 2, ["operator"] * 2), (1, 1, ["operator"]),
-])
-def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, left, charges):
+@pytest.mark.parametrize("charges", [["speaker"] * 2, ["operator", "speaker"], ["operator"] * 2])
+def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(charges):
     """A placement's takes after its first stop at two, of any charge (ADR-0422)."""
-    ledger = admission.SlotAttempts(admitted=100, retries_per_pose=budget)
-    assert ledger.to_payload()["left"] == left
+    ledger = admission.SlotAttempts(admitted=100)
+    assert ledger.to_payload()["left"] == 2
     for charge in charges:
         assert ledger.can_retry(charge)
         ledger.spend(charge)
@@ -160,17 +157,16 @@ def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, l
     assert payload["left"] == 0
     assert payload["by_household"] == charges.count("operator")
     assert payload["by_speaker"] == charges.count("speaker")
-    assert not ledger.can_retry("operator")
     for charge in ("operator", "speaker"):
-        if not ledger.can_retry(charge):
-            with pytest.raises(admission.AttemptOverspendError):
-                ledger.spend(charge)
+        assert not ledger.can_retry(charge)
+        with pytest.raises(admission.AttemptOverspendError):
+            ledger.spend(charge)
     assert ledger.to_payload() == payload
 
 
 def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
-    """A pose's first take is admitted even with no retries, whether the ledger is absent or fresh."""
-    fresh = admission.SlotAttempts(retries_per_pose=0)
+    """A pose's first take is admitted even with no retries left, whether the ledger is absent or fresh."""
+    fresh = admission.SlotAttempts(by_household=admission.MAX_EXTRA_ATTEMPTS_PER_POSITION)
 
     from_fresh_ledger = admission.assess_begin(
         ledger=fresh,
