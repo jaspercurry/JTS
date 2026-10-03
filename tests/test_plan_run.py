@@ -308,8 +308,8 @@ _ALIKE, _KEPT, _DRIFT = REASON_ANCHOR_AMBIGUOUS, TakeVerdict(True), capture_disp
 ], ids=["alike", "reading-moved", "other-fault", "level-retakes", "level-reading", "replay-between", "kept-between"])
 def test_a_placement_stops_after_two_takes_refused_alike(monkeypatch, verdicts, unmeasured):
     """A take refused for a retake at its level, with the fault of the placement's last
-    such refusal and a reading within 2 dB of it (its level reading, else its peak),
-    spends the placement as its spent extras do (ADR-0428). A moved reading, another
+    such refusal and a reading within ``SAME_POSE_DRIFT_DB`` of it (its level reading,
+    else its peak), spends the placement as its spent extras do (ADR-0428). A moved reading, another
     fault, a level retake or a kept take resets the pair; a replay is free and does not.
     Each row is the verdict of every take its placement's two configs play."""
     answers = iter(verdicts)

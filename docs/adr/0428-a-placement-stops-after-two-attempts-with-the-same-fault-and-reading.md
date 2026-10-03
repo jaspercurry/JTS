@@ -35,6 +35,8 @@
   - The reading is the signal, not the room's noise. If the household makes the room quieter but
     the signal reads the same, the second refusal still stops the placement. The owner's "take two,
     compare" accepts this.
+  - A transport fault, such as `capture_overrun`, reads the same signal on each attempt. Two in a
+    row also stop the placement, where a third attempt could have passed.
   - The budget payload loses `automatic_left` and `automatic_allowed`. Nothing read them.
   - Rejected:
     - Comparing with the placement's first refusal. ADR-0183 compares consecutive attempts, because
