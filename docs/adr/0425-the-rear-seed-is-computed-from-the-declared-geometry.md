@@ -42,8 +42,8 @@
     ≤ 0 dB and +6 dB per filter (ADR-0326, ADR-0327), the front guard and the topology gate. The seed is
     a starting point that the seat trial judges (#6227 decision 3); `--vary` stays for when it misses.
   - On a jts3-like cabinet (`d` = 0.33 m, `D` = 0.5 m) the band is 114–260 Hz and the net delay at its
-    centre is 0.58 ms: the branch delay is −3.29 ms and the common delay 3.29 ms. The stage's sum stays
-    at unity, so the seed costs no program headroom.
+    centre is 0.58 ms: the branch delay is −3.29 ms and the common delay 3.29 ms. Without a boost the
+    stage's sum stays at unity, so the seed costs no program headroom; the charge prices a boost.
   - The seed's `geometry` banks the declared gap, so the seed draws no wall-gap warning.
   - At a wall, the trim includes both woofers' wall reflections and their path difference to the mark;
     a pair take away from walls reads the gap cleanest.
