@@ -20,11 +20,12 @@
   2. An apply no longer writes or clears a trim record. The applied profile keeps its own trims,
      `level_match` and provenance.
   3. A record file left on a speaker stays. Nothing reads it, and there is no migration.
-- **Hearing:** the apply path writes the same graphs. A scratch proof ran 17 apply-path test files
-  on main and on this change. Their 66 applying tests make 80 applies: the 67 graph files those
-  applies name are byte-identical, and the 80 applied profiles differ only in fields that also
-  differ between two runs of main (a random `op_id` and candidate fingerprints). `volume_limit`, the
-  graph doors, the clamp, the 85 dB stop and the driver caps do not change.
+- **Hearing:** the apply path writes the same graphs and the same applied profiles. A fresh
+  reviewer's proof recorded every apply over 21 apply-path test files on main and on this change:
+  68 shared tests make 83 applies; the 67 graph files they name are byte-identical, and every
+  applied profile and apply-module write differs only in fields that also differ between two runs
+  of main (timestamps, the random `op_id`, and one fingerprint that hashes a wall-clock time).
+  `volume_limit`, the graph doors, the clamp, the 85 dB stop and the driver caps do not change.
 - **Consequences:** ADR-0212's fact stands: a way-1 speaker has no trim pair. Only the refusal and
   the journal line about the record go. ADR-0227 §§7–8 lose their last site; the applied profile
   still names its evidence in `level_match.comparison`. `source.crossover_preview_fingerprint`

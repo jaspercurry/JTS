@@ -502,7 +502,7 @@ def test_timing_record_round_trip_apply_to_priors(tmp_path, source, delay):
     if source == "composed":
         candidate = compose_candidate(publish_authored_candidate(candidate), sections={"room": _room_correction()},
                                       evidence={"packet_fingerprint": "room-round"})
-    prepared =baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
+    prepared = baseline_record.prepare_applied_baseline_profile(bank_candidate(candidate), declaration=declaration,
         design_draft=draft, applied_at=identity["at"], saved_timing=incumbent,
         provenance=None if source == "saved" else {} if source == "composed" else {"timing": incumbent})
     path = tmp_path / "applied.json"
