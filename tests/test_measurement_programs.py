@@ -279,11 +279,12 @@ def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_pres
 def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round_dir, room_round):
     """Where tuning stands, what the agent can ask and what a document may write (#5928 TB6), each
     a call its tool's own parser accepts; the contract evaluates its bounds on the latest round. When the
-    next-program pointer names a room round and set, the room prompt's contract, judge and compose calls
-    name them, it trials the candidate, and it runs no new round (ADR-0437)."""
+    next-program pointer names an in-room round and set, the room and bass prompts' contract, judge and
+    compose calls name them, they trial the candidate, and they run no new round (ADR-0437)."""
     parsers = {module.PROG: module.build_parser() for module in (crossover_prescriber, round_views, round_cli)}
-    prompt = th.build_tuning_handoff_prompt({"latest_round_dir": round_dir, "room_round": room_round}, program)
-    design = room_round if program == mp.PURPOSE_ROOM else None
+    prompt = th.build_tuning_handoff_prompt(
+        {"latest_round_dir": round_dir, "room_round": room_round, "bass_round": room_round}, program)
+    design = room_round if program in (mp.PURPOSE_ROOM, mp.PURPOSE_BASS) else None
     calls = []
     for line in prompt.splitlines():
         label, _, command = line.partition(": ")
@@ -298,8 +299,27 @@ def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round
           if design else ()),
         (crossover_prescriber.PROG, "status", None, None, None), (round_views.PROG, "catalog", program, None, None),
         (crossover_prescriber.PROG, "contract", program, *on)]
-    if program == mp.PURPOSE_ROOM:
+    if program in (mp.PURPOSE_ROOM, mp.PURPOSE_BASS):
         assert [call[1] for call in calls if call[0] == round_cli.PROG] == ["trial" if design else "run"]
+
+
+@pytest.mark.parametrize("next_action,room,bass", [
+    ({"program": mp.PURPOSE_ROOM, "round_dir": _ROUND_DIR, "set_id": "seat-set"}, True, True),
+    ({"program": None, "round_dir": _ROUND_DIR, "set_id": "seat-set"}, False, True),
+    ({"program": None}, False, False),
+    ({"program": mp.PURPOSE_REAR, "round_dir": _ROUND_DIR}, False, False),
+], ids=["room-next", "complete-with-a-set", "complete", "rear-next"])
+def test_the_binding_names_the_in_room_set_room_and_bass_design_on(monkeypatch, next_action, room, bass):
+    """Room designs on the pointer's in-room set when room is next; bass whenever the pointer names one, so a
+    complete tune adds bass with a design and a trial (ADR-0441)."""
+    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [])
+    topology = passive_stereo_output_topology()
+    draft = design_draft_view({"revision": 1, "topology": topology.to_dict(), "manual_settings": None},
+                              topology=topology)
+    view = {**cc.build_commissioning_view(topology, design_draft=draft), "next_action": next_action}
+    binding = th.build_tuning_handoff_binding(draft, view)
+    named = {"round_dir": _ROUND_DIR, "set_id": "seat-set"}
+    assert (binding["room_round"], binding["bass_round"]) == (named if room else None, named if bass else None)
 
 
 def test_run_help_names_every_registry_pose_set(capsys):

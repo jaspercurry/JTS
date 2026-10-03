@@ -211,8 +211,8 @@ and receipt select before attributing a listening difference.
 A gated capture cannot establish response below its validity floor. Disclose the
 unverified band. Nearfield or another supported measurement regime may answer
 that question, with its own scope and limits. Repeating one in-room seat cannot
-turn room modes into a speaker-only response; the room itself is measured on
-the seat cube (§11). The toolbox has no electrical impedance instrument;
+turn room modes into a speaker-only response; the room itself is measured at
+the listening seats (§11). The toolbox has no electrical impedance instrument;
 external data must retain its source.
 
 ## 10. Decide whether to continue
@@ -245,12 +245,12 @@ establishes that room correction and bass extension share this toolbox.
 The room is measured where it is heard. The room program defaults to
 `room/seat`, the three `seat_express` poses; `--layout seat_cloud` uses the 11-pose
 `seat_cloud` grid. `measurement_plans.json` owns these layouts and the default.
-Each pose is one summed sweep through the applied
-tune, analyzed ungated so the reflections stay in. A seat take records its
+Each pose is one summed sweep (the base plays bass and room off,
+ADR-0429), analyzed ungated so the reflections stay in. A seat take records its
 kind, its offset from the head and its window; it is not a bearing at the mark,
 and no gated reader treats it as one.
 `0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md`
-establishes the pose categories and the bass program's lack of a nearfield rung. A
+establishes the pose categories. A
 close take is any pose at a short distance, read inside its own band
 (`0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md`).
 
@@ -269,14 +269,14 @@ Below it speaker, room and bass are read together across the cloud.
   spread (population sigma, the confidence) and each position's deviation,
   20 Hz to the ceiling.
 - `persistence`: the peaks and dips each position shows against its own
-  local level, clustered across the cube with the fraction of positions that
+  local level, clustered across the seats with the fraction of positions that
   carry each at an agreeing depth. A feature most positions share is the
   room's; one position's is that seat's.
 - `limits`, `incumbent`, and `boundary`: correction bounds, the applied room
   set, and the boundary prior when room geometry is declared.
 
 Deliberately not done here: nothing above the ceiling is graded or corrected
-from the cube; the median is a trend, never a per-position target; a dip is not
+from the seats; the median is a trend, never a per-position target; a dip is not
 boosted on this evidence alone, the room candidate kind decides; no room volume
 or Schroeder estimate is derived.
 

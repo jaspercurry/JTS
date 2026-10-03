@@ -4863,6 +4863,7 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         "applied_at",
         "latest_round_dir",
         "room_round",
+        "bass_round",
     }
     document_positions = [prompt.index(entry["path"])
                           for entry in tuning_handoff.reading_order()]

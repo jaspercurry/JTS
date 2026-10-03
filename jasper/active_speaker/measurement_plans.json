@@ -147,7 +147,7 @@
      "use_when": "Use for the rear trial: compare rear candidates with the base at the seats; the chosen set is the in-room base."},
     {"preset": "room/seat", "layout": "seat_express", "layouts": ["seat_express", "seat_cloud", "seat_cube", "room_quick"], "purposes": ["room", "bass"], "regime": "summed",
      "description": "The in-room round: the whole speaker summed at the listening seat poses, its base with bass extension and room correction off, each named candidate as composed.",
-     "use_when": "Use to fit or trial room correction and bass extension together, and again after any upstream change."},
+     "use_when": "Use to fit or trial room correction and bass extension together."},
     {"preset": "nearfield/each", "layout": "nearfield_woofer", "purposes": ["reference"], "regime": "per_driver", "stimulus": "near_field",
      "description": "Each declared woofer output alone, close to its dust cap, as reference evidence.",
      "use_when": "Use for near-field woofer references; no tuning program reads them yet."},

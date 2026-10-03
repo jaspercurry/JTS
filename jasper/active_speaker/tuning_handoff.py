@@ -13,7 +13,7 @@ from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQU
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.excitation_safety_plan import role_sensitivities
 from jasper.active_speaker.measurement_programs import (
-    IN_ROOM_OPTIONS, PROGRAM_ENTRIES, PURPOSE_REAR, PURPOSE_REFERENCE, PURPOSE_ROOM, RUNNABLE_PROGRAMS, available_presets,
+    IN_ROOM_OPTIONS, PROGRAM_ENTRIES, PURPOSE_BASS, PURPOSE_REAR, PURPOSE_REFERENCE, PURPOSE_ROOM, RUNNABLE_PROGRAMS, available_presets,
     first_plan, offered_here, preset,
 )
 from jasper.active_speaker.tuning_docs import reading_order
@@ -54,11 +54,12 @@ def pointer_commands(program_id: str, round_dir: str | None = None, set_id: str 
 
 
 def _design_lines(round_dir: str, set_id: str) -> tuple[str, ...]:
-    """The room prompt's next step when the next-program pointer names a round and a set: design on that set,
-    which measured the tune that plays with bass and room off, then trial the candidate (ADR-0437)."""
+    """The room or bass prompt's next step when the next-program pointer names an in-room round and set: design
+    on that set, which measured the tune that plays with bass and room off, then trial the candidate (ADR-0437,
+    ADR-0441)."""
     on = f"--round {shlex.quote(round_dir)} --set {shlex.quote(set_id)}"
     return (f"Design on round {round_dir}, set {set_id}: it measured the tune that plays, with bass and room off,"
-            " so measure no new room round.",
+            " so measure no new room round unless the speaker, the seats or the microphone moved.",
             f"Preview: {_PRESCRIBER} judge --preview <document.json> {on}",
             f"Bank: {_PRESCRIBER} compose <document.json> {on}",
             f"Trial: sudo {_BIN}/jasper-round trial <fingerprint>")
@@ -110,6 +111,8 @@ def build_tuning_handoff_binding(
     has_applied = applied.get("exists") is True
     rounds = recent_round_sessions(limit=1)
     action = commissioning_view.get("next_action") or {}
+    in_room = ({key: action[key] for key in ("round_dir", "set_id")}
+               if action.get("program") in (PURPOSE_ROOM, None) and action.get("set_id") else None)
     return {
         "speaker_name": identity.name,
         "hostname": identity.hostname,
@@ -123,9 +126,10 @@ def build_tuning_handoff_binding(
         "applied_record": applied.get("record") if has_applied else None,
         "applied_at": applied.get("applied_at") if has_applied else None,
         "latest_round_dir": str(banked_round_of(rounds[0]) or rounds[0]) if rounds else None,
-        # The round and set room designs on, when the next-program pointer names them (ADR-0437).
-        "room_round": ({key: action[key] for key in ("round_dir", "set_id")}
-                       if action.get("program") == PURPOSE_ROOM and action.get("set_id") else None),
+        # The in-room round and set the pointer names: room designs on it when room is next, bass whenever it is
+        # named (ADR-0437, ADR-0441).
+        "room_round": in_room if action.get("program") == PURPOSE_ROOM else None,
+        "bass_round": in_room,
     }
 
 
@@ -152,7 +156,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
     latest_round = binding.get("latest_round_dir")
     components = binding.get("components") or ()
     presets = binding.get("one_driver_presets") or ()
-    design = binding.get("room_round") if program_id == PURPOSE_ROOM else None
+    design = binding.get({PURPOSE_ROOM: "room_round", PURPOSE_BASS: "bass_round"}.get(program_id, ""))
     status, catalog, contract = pointer_commands(
         program_id, *((design["round_dir"], design["set_id"]) if design else (latest_round,)))
     return "\n".join((
@@ -174,7 +178,8 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         "",
         f"Run the tuning programs in order: {' → '.join(name for name in RUNNABLE_PROGRAMS if name not in IN_ROOM_OPTIONS)}"
         " (skip rear if there is no rear driver).",
-        *(() if design else ("Re-run room after any upstream change.",)),
+        *(() if design else ("Redo room after a change under it; status names the round and set to design on"
+                             " when no new round is needed.",)),
         f"Program: {entry['title']}",
         entry["description"],
         *((PROGRAM_NOTES[program_id],) if program_id in PROGRAM_NOTES else ()),
