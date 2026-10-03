@@ -2160,6 +2160,38 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
 
 
+@pytest.mark.parametrize("stated", ["preset", "pose"])
+def test_a_take_plays_previews_and_prices_the_sweeps_its_preset_or_pose_states(stated):
+    """A preset row, or a pose of its layout, states how many sweeps each driver
+    plays in one take. The composer, the page's preview and the dry run's price
+    read that one count (ADR-0434)."""
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
+    compose = predictive_program_for_spec(context)
+
+    def planned(row):
+        plan = ac.request_for_preset(row)
+        captures = plan_run.prepare_plan_captures(plan, roles_bands=context.roles_bands)
+        played = [[s.role for s in compose(c.spec).stimulus_segments() if s.kind == "sweep"]
+                  for c in captures if c.spec.program_phase == "measure"]
+        facts = plan_run.preview_schedule(plan, captures, context)
+        previewed = [(r["role"], r["repeats"]) for r in facts["pose_sweeps"][0]
+                     if r["phase"] == "measure" and r["kind"] == "sweep"]
+        price = preflight(plan, ready_facts(plan, context=context, roles_bands=context.roles_bands)).price
+        assert price == {"captures": len(captures), "mic_moves": 1, "seconds": round(facts["estimated_seconds"])}
+        return played, previewed, price
+
+    # CHECK, the timing take, then MEASURE twice at the mark.
+    default = run_preset("speaker/mark")
+    one = replace(default, sweeps_per_take=1) if stated == "preset" else run_preset(
+        "speaker/mark", poses=[{"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2, "sweeps_per_take": 1}])
+    (played, previewed, price), (played_3, previewed_3, price_3) = planned(one), planned(default)
+
+    assert (played, previewed) == ([["woofer", "tweeter"]] * 2, [("woofer", 2), ("tweeter", 2)] * 2)
+    assert (played_3, previewed_3) == ([["woofer", "tweeter"] * 3] * 2, [("woofer", 6), ("tweeter", 6)] * 6)
+    assert price["captures"] == price_3["captures"] and price["seconds"] < price_3["seconds"]
+
+
 @pytest.mark.parametrize("muted", [False, True], ids=["over_limits", "output_muted"])
 @pytest.mark.parametrize("site", ["transaction", "executor"])
 async def test_run_host_banks_admission_failure_code_and_segments(monkeypatch, tmp_path, box, site, muted):

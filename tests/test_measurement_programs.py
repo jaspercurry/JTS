@@ -738,7 +738,8 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
                                     "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
                                     "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
                                     "purposes_not_text", "driver_purposes", "driver_purposes_reversed",
-                                    "preset_description", "layout_use_when", "layout_list", "timing_take"])
+                                    "preset_description", "layout_use_when", "layout_list", "timing_take",
+                                    "sweeps_per_take", "pose_sweeps_per_take"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
     if broken == "purposes_missing":
@@ -778,6 +779,10 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         config["layouts"]["room_quick"]["mover"] = []  # type: ignore[index]
     elif broken == "timing_take":
         config["presets"][0][broken] = "yes"
+    elif broken == "sweeps_per_take":
+        config["presets"][0][broken] = 0
+    elif broken == "pose_sweeps_per_take":
+        config["layouts"]["room_quick"]["poses"][0]["sweeps_per_take"] = True  # type: ignore[index]
     elif broken == "regime":
         config["presets"][0]["regime"] = "other"  # type: ignore[index]
     else:
