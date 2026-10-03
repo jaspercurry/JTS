@@ -258,7 +258,7 @@ function placementForm() {
     h('fieldset', {}, issue && h('p.form-hint', {}, issue.message),
       h('p.form-hint', {}, 'Heights are from the floor to the speaker centre and to the microphone. Toe-in is 0 when the speaker faces straight out from the wall.'),
       Object.entries(fields).map(([key, label]) => field(label, geometry[key], value => edit(geometry, key, value), { type: 'number' })),
-      button('Save placement', () => run(() => postJSON('./setup/geometry', geometry), 'Placement saved.'), true)));
+      button('Save placement', () => run(() => postJSON('./setup/geometry', geometry), 'Placement saved.'))));
 }
 
 function tuningCard() {
