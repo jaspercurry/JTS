@@ -5,7 +5,7 @@
 """Dip measurement on a response curve, and the two readings built on it.
 
 A dip's depth is read against its own two flanking maxima (:func:`_measure_candidates`).
-:func:`feature_position_variance` tracks one prescribed filter's extremum across seat curves;
+:func:`feature_position_variance` tracks one prescribed filter's extremum across position curves;
 :func:`branch_gap_null_depth_ceiling_db` bounds how deep an inverted pair can cancel.
 
 Pure computation: no I/O, no logging, no globals, no randomness, no product policy.
@@ -161,6 +161,7 @@ FEATURE_MIN_DEPTH_DB = 2.0
 FEATURE_MIN_DEEP_POSITIONS = 6
 FEATURE_SOURCE_FIXED_CV_PERCENT = 3.0
 FEATURE_POSITION_VARIANT_CV_PERCENT = 8.0
+POSITION_VARIANT = "position_variant"
 
 
 def feature_position_variance(
@@ -188,7 +189,7 @@ def feature_position_variance(
     elif cv is not None and cv < FEATURE_SOURCE_FIXED_CV_PERCENT:
         classification = "source_fixed"
     elif cv is not None and cv > FEATURE_POSITION_VARIANT_CV_PERCENT:
-        classification = "position_variant"
+        classification = POSITION_VARIANT
     else:
         classification = "unsure"
     return {"cv_percent": cv, "positions_deep": count, "positions_total": positions_total,

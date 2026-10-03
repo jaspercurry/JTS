@@ -32,6 +32,7 @@ from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, REGIME
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, EvidenceUnavailable, unavailable
+from jasper.audio_measurement.interference_nulls import POSITION_VARIANT, feature_position_variance
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
 from jasper.audio_measurement.program import ExcitationProgram, take_stimulus_id
 from jasper.audio_measurement.series_stats import power_mean_db
@@ -124,6 +125,16 @@ def fit_feature_curves(cloud: CloudFitTerms) -> list[tuple[np.ndarray, np.ndarra
     return curves
 
 
+def _moving_feature_bands_hz(fit: LinearizationFit, cloud: CloudFitTerms) -> tuple[tuple[float, float], ...]:
+    """Where each position-variant feature of the fit's bells moves across the cloud (ADR-0430)."""
+    curves = fit_feature_curves(cloud)
+    features = [feature_position_variance(curves, freq_hz=one.freq, q=one.q, gain_db=one.gain,
+                                          positions_total=cloud.n_positions)
+                for one in fit.filters if one.biquad_type == "Peaking"]
+    return tuple(sorted({(min(feature["frequencies_hz"]), max(feature["frequencies_hz"]))
+                         for feature in features if feature["classification"] == POSITION_VARIANT}))
+
+
 def _fit_vocabularies(
     base: MeasuredCrossoverCandidate, budgets: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, FitVocabulary]:
@@ -185,15 +196,20 @@ def speaker_fit(
     clouds = {group["capture_basis"].get("role") or "": clouds_by_set[group["set_id"]]
               for group in manifest["sets"] if group["set_id"] in clouds_by_set
               and any(t["selected"] and t["take_id"] == take_id for t in group["takes"])}
+    clouds = {role: clouds[role] for role in bands if role in clouds}
     regions = list(base.source_preset.crossover_regions)
     sections = sections_by_role(regions)
     drivers = [DriverEvidence(role, response_from_banked_curve(take_curve(record, role, WINDOW_GATED, required=True))[0], band,
                               classes.get(role, "unknown")) for role, band in bands.items()]
-    branches = fit_branches(
-        drivers, sections=sections, mic_tiers={driver.role: tier for driver in drivers},
-        vocabulary=vocabularies,
-        cloud={role: clouds[role] for role in bands if role in clouds},
-    )
+    tiers = {driver.role: tier for driver in drivers}
+    branches = fit_branches(drivers, sections=sections, mic_tiers=tiers, vocabulary=vocabularies, cloud=clouds)
+    # Features that move with angle stay uncorrected (ADR-0430).
+    moving = {role: _moving_feature_bands_hz(branches.fits[role], cloud) for role, cloud in clouds.items()}
+    if any(moving.values()):
+        clouds = {role: replace(cloud, excluded_bands_hz=moving[role]) for role, cloud in clouds.items()}
+        vocabularies = {role: replace(vocabulary, boost_excluded_bands_hz=moving.get(role, ()))
+                        for role, vocabulary in vocabularies.items()}
+        branches = fit_branches(drivers, sections=sections, mic_tiers=tiers, vocabulary=vocabularies, cloud=clouds)
     trim_decision: dict[str, Any] | None = None
     if len(drivers) == 2:
         try:
@@ -212,9 +228,8 @@ def speaker_fit(
         correction_db = 20 * np.log10(np.maximum(np.abs(complex_correction_response(fit.filters, grid)), 1e-12))
         handover_shifts[role] = power_mean_db(correction_db) if grid.size and finite[role] else None
     linearization = {driver.role: {
-        "boost_evidence": {"design_poses": clouds[driver.role].n_positions,
-                  "band_spread": [asdict(band) for band in clouds[driver.role].band_spread]}
-        if driver.role in clouds else {"design_poses": 0, "band_spread": []},
+        "boost_evidence": {"design_poses": cloud.n_positions, "band_spread": [asdict(band) for band in cloud.band_spread],
+                           "excluded_bands_hz": [list(band) for band in cloud.excluded_bands_hz]},
         "per_filter_boost_cap_db": vocabularies[driver.role].per_filter_boost_cap_db,
         "composed_boost_cap_db": vocabularies[driver.role].composed_boost_cap_db,
         "excited_band_hz": list(driver.excited_band_hz),
@@ -222,7 +237,7 @@ def speaker_fit(
         "handover_level_shift_db": handover_shifts[driver.role],
         "fit": (branches.fits[driver.role].to_dict() if finite[driver.role]
                 else unavailable_fit(driver.role, REASON_FIT_NOT_FINITE)),
-    } for driver in drivers}
+    } for driver in drivers for cloud in [clouds.get(driver.role, CloudFitTerms())]}
     selected_fit = linearization.get(selected.role, linearization[drivers[0].role])
     return dict(
         set_id=selected.set_id, take_id=take_id,
