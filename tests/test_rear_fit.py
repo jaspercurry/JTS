@@ -30,7 +30,6 @@ from jasper.active_speaker.rear_calibration import (
     MAX_ALLPASS_Q,
     MAX_COMBO_ORDER,
     MIN_CHAIN_GAIN_DB,
-    diagnostic_seed,
     read_rear_calibration,
 )
 from jasper.active_speaker.round_view_artifacts import CATALOG
@@ -43,6 +42,7 @@ from jasper.audio_measurement.evidence_reasons import (
 from jasper.cli import crossover_prescriber, round_views
 from jasper.cli._refusal import EXIT_OK, EXIT_REFUSED, EXIT_UNREADABLE
 from tests import test_round_views_rear
+from tests.active_speaker_fixtures import rear_seed_document
 from tests.test_rear_preview import cardioid_box
 from tests.test_round_views_rear import _PAIR_GAP_MS, _PAIR_LEVEL_GAP_DB, _PAIR_SET_ID, _PARENT, pair_round
 
@@ -219,7 +219,7 @@ def test_a_rear_null_does_not_reach_the_target():
 
 def _target(freqs, ratio):
     """An ``acoustic_targets`` document (ADR-0318) asking the rear for ``ratio`` of the front."""
-    document = diagnostic_seed(SAMPLE_RATE_HZ)
+    document = rear_seed_document()
     for key in ("front", "rear", "boundary", "common_delay_ms", "rear_muted"):
         del document[key]
     document["reference"].update(quantity="acoustic_motion", units="unitless")
@@ -331,7 +331,7 @@ def _moving_rear_over_a_still_front():
 
 @pytest.mark.parametrize("target", [
     pytest.param("not json", id="not_json"),
-    pytest.param(json.dumps(diagnostic_seed(SAMPLE_RATE_HZ)), id="an_electrical_document"),
+    pytest.param(json.dumps(rear_seed_document()), id="an_electrical_document"),
     pytest.param(json.dumps(_moving_rear_over_a_still_front()), id="a_moving_rear_over_a_still_front"),
 ])
 def test_a_target_that_states_no_rear_front_ratio_is_unreadable(target, tmp_path, capsys):

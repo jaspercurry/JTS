@@ -28,7 +28,7 @@ from typing import Any
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
 from jasper.audio_measurement.evidence_reasons import EVIDENCE_NOT_BANKED, unavailable
-from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE, load_declared_geometry
+from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE, read_declared_geometry
 from jasper.platform.json_fields import as_mapping
 
 from ...installation import installation_evidence
@@ -165,13 +165,10 @@ def _declared_geometry_block(path: Path | None) -> dict[str, Any]:
     read.
     """
 
-    if path is None:
-        return absence("source_absent", False, "declared_geometry")
-    try:
-        geometry = load_declared_geometry(path)
-    except (OSError, ValueError) as exc:
-        refused = getattr(exc, "field", None)
-        return {**absence(DECLARED_GEOMETRY_UNREADABLE, False, "declared_geometry", f"unreadable: {type(exc).__name__}"),
+    geometry, error = read_declared_geometry(path)
+    if error is not None:
+        refused = getattr(error, "field", None)
+        return {**absence(DECLARED_GEOMETRY_UNREADABLE, False, "declared_geometry", f"unreadable: {type(error).__name__}"),
                 **({"refused_field": refused} if refused else {})}
     if geometry is None:
         return absence("source_absent", False, "declared_geometry")

@@ -18,6 +18,8 @@ from jasper.active_speaker.candidate_bank import bank_candidate
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.driver_safety import driver_research_targets
 from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE
+from jasper.active_speaker.rear_seed import rear_seed
+from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
 from jasper.dsp_control.camilla_config_contract import DRIVER_DOMAIN_PAIR_TRIM_FILTER
@@ -28,6 +30,26 @@ from jasper.audio_routes.output_topology import (
     OUTPUT_TOPOLOGY_KIND,
     OutputTopology,
 )
+
+
+#: A jts3-like cardioid cabinet: woofers 330 mm apart, the front panel 0.5 m from the wall.
+REAR_SEED_DRAFT = {"manual_settings": {"rear_woofer_spacing_mm": 330.0}}
+REAR_SEED_GEOMETRY = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0,
+                                      cabinet_back_wall_m=0.2, cabinet_depth_m=0.3, toe_in_degrees=0.0)
+
+
+def rear_seed_document(**overrides) -> dict:
+    """That cabinet's rear seed before any pair take, the document rear tests start from."""
+    return {**rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, views=()), **overrides}
+
+
+def full_band_rear_document(bass: dict, cancellation: dict) -> dict:
+    """A rear stage whose branches carry no filter, so their sum can peak over unity: each branch at
+    0 dB, in phase and undelayed, with ``bass`` and ``cancellation`` set on top."""
+    document = rear_seed_document(common_delay_ms=0.0)
+    for name, fields in (("bass", bass), ("cancellation", cancellation)):
+        document["rear"][name].update({"filters": [], "delay_ms": 0.0, "inverted": False, **fields})
+    return document
 
 
 def _topology(groups: list[dict], routing: dict | None = None, *,

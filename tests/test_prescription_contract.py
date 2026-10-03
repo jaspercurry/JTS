@@ -24,7 +24,9 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
-from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, EVIDENCE_KEY, build_crossover_evidence_packet
+from jasper.active_speaker.crossover_v2.evidence_packet import (
+    DERIVED_VIEWS, EVIDENCE_KEY, build_crossover_evidence_packet, contract_currency,
+)
 from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
@@ -33,7 +35,8 @@ from jasper.active_speaker.crossover_v2.prescription_contract import (
     BASE_NOT_BANKED, CONTRACT_COMMAND, contract_digests, contract_json, contract_programs, prescription_contracts,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    ROUND_PACKET_SCHEMA, contract_sources, default_out, prescription_sources, read_run_manifest, round_inputs,
+    DESIGN_DRAFT_FILENAME, ROUND_PACKET_SCHEMA, contract_sources, default_out, prescription_sources, read_run_manifest,
+    round_inputs,
 )
 from jasper.active_speaker import candidate_bank, candidate_parts, program_headroom
 from jasper.active_speaker.camilla_yaml import ProgramHeadroomExhausted
@@ -43,6 +46,7 @@ from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.design_draft import design_draft_view
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.measurement_programs import programs_for_topology
+from jasper.active_speaker.rear_seed import REAR_SEED_GEOMETRY_UNDECLARED
 from jasper.active_speaker.round_packet import banked_evidence, store_banked_evidence
 from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
@@ -57,8 +61,9 @@ from tests.test_crossover_v2_driver_prescription import _draft, applied_profile
 from tests.test_crossover_v2_room_prescription import _room_median
 from tests.test_crossover_v2_harmonic_evidence import _artifact, _bundle as harmonic_bundle
 from tests.run_manifest_fixture import write_manifest
-from tests.active_speaker_fixtures import bind_role_rows, mono_output_topology
+from tests.active_speaker_fixtures import REAR_SEED_DRAFT, bind_role_rows, mono_output_topology, rear_seed_document
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
+from tests.test_round_views_rear import _CABINET, _PAIR_LEVEL_GAP_DB, packet_of, pair_round
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.crossover_v2_fixtures import _one_way_preset
 from tests.active_speaker_fixtures import _active_topology
@@ -68,9 +73,9 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 @pytest.mark.parametrize("layout,rear,digest", [
     ("mono", False, "968035c8afcd68fd956966879ca5463a60e709d3e80b9b482b90fe9ef0ba9e13"),
-    ("mono", True, "6975497db13c3c3ef5fed4978bd9869d724d68e162609fb97ce61acf445937a0"),
+    ("mono", True, "61ddea69715e63f3e9877f124c2dc62dfce912729e84479aff7efa1afe4d63e6"),
     ("stereo", False, "b18335b2d0f4f685a35b28cff90df50ce5028ffaf6b8bd97b8ad200394c7e594"),
-    ("stereo", True, "55ee219e40f111f7ae9a399d3c14c3f4f4977ae0cab48cee8c331b9a3f7a61b2"),
+    ("stereo", True, "eda83642a257bccc4679036058132dc1554b1e186d793afa245f419c29a33d3e"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -697,7 +702,7 @@ def _boundary_conflict(document):
     document["included_stages"]["front"] = ["boundary_correction"]
 
 
-# Nyquist at diagnostic_seed(48000)'s sample rate; freq must stay strictly below it.
+# Nyquist at the seed's 48 kHz; freq must stay strictly below it.
 _NYQUIST_HZ = 24000.0
 
 
@@ -768,7 +773,7 @@ _NYQUIST_HZ = 24000.0
     pytest.param(lambda d: d.update(valid_band_hz=[0.0, 100.0]), False, id="valid_band_hz_lower_bound_outside"),
 ])
 def test_rear_document_agrees_with_the_validator_at_each_bound_edge(mutate, expect_pass):
-    document = rear_cal.diagnostic_seed(48000)
+    document = rear_seed_document()
     mutate(document)
     if expect_pass:
         assert rear_cal.read_rear_calibration(document, sample_rate=48000)["case"] == "electrical_dsp"
@@ -784,6 +789,28 @@ def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
     assert cli.main(["contract", "--section", "room"]) == 0
     room_contract = json.loads(capsys.readouterr().out)["sections"]["room"]
     assert {"schema", "bounds"} <= set(rear) & set(room_contract)
-    # The starting document the rear door admits as written: untuned and muted.
-    seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)
-    assert (seed["rear_muted"], seed["valid_band_hz"]) == (True, None)
+    # A contract that names no round reads no declaration, so its seed names each one.
+    assert rear["seed"] == unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": [
+        "rear_woofer_spacing_mm", "cabinet_back_wall_m", "cabinet_depth_m", "toe_in_degrees"]})
+
+
+@pytest.mark.parametrize("manual_settings", [REAR_SEED_DRAFT["manual_settings"], {}], ids=["declared", "undeclared"])
+def test_a_pair_rounds_packet_and_contract_carry_one_rear_seed(tmp_path, capsys, manual_settings):
+    """The seed reads the round's banked declarations and levels the rear woofer by its pair view; the bank's
+    per-set limits and stored contract digest carry the seed ``contract --round`` shows (ADR-0425)."""
+    root = pair_round(tmp_path)
+    (root / DESIGN_DRAFT_FILENAME).write_text(json.dumps(
+        {"topology": _rear_pair("mono")[1].to_dict(), "manual_settings": manual_settings}))
+    packet, _views = packet_of(root)
+    assert cli.main(["contract", "--round", str(root), "--section", "rear"]) == 0
+    rear = json.loads(capsys.readouterr().out)["sections"]["rear"]
+    if manual_settings:
+        seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)
+        assert seed["conditions"] == {"trim_db": -_PAIR_LEVEL_GAP_DB, "level_gap_db": _PAIR_LEVEL_GAP_DB}
+        assert seed["geometry"]["cabinet_back_wall_m"] == _CABINET["cabinet_back_wall_m"]
+    else:
+        assert rear["seed"] == unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": ["rear_woofer_spacing_mm"]})
+    assert packet["limits"] and all(
+        json.loads(json.dumps(limits["seed"])) == rear["seed"] for limits in packet["limits"].values())
+    assert packet[EVIDENCE_KEY]["contracts"]["rear"] == contract_digests({"rear": rear})["rear"]
+    assert contract_currency(round_inputs(root))["contract_current"] is True

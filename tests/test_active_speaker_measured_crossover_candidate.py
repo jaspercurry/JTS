@@ -40,7 +40,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.null_walk import MAX_DSP_DELAY_US
 from jasper.platform.biquad import PeqFilter
 
-from jasper.active_speaker.rear_calibration import coefficient_sha256, diagnostic_seed
+from jasper.active_speaker.rear_calibration import coefficient_sha256
 
 from tests.test_active_speaker_profile import _three_way_preset, _two_way_preset
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
@@ -740,7 +740,7 @@ def test_rear_calibration_rides_the_candidate_and_reaches_the_emitted_stage():
 
 
 @pytest.mark.parametrize("document,code", [
-    (lambda: _rear_document(front={**diagnostic_seed(48000)["front"], "gain_db": 6.0}),
+    (lambda: _rear_document(front={**_rear_document()["front"], "gain_db": 6.0}),
      "rear_calibration_invalid"),
     (lambda: _rear_document(rear=_fir_rear()), "rear_calibration_mode_unsupported"),
     (_acoustic_rear_document, "rear_calibration_case_unsupported"),

@@ -14,6 +14,7 @@ from typing import Any, Callable
 import yaml
 
 from jasper.audio_routes.camilla_emit import emit_delay_filter, emit_gain_filter, emit_mixer
+from jasper.platform.biquad import SHELF_Q
 from jasper.platform.json_fields import CodedFieldError, JsonFields, finite_float
 
 KIND = "jts_rear_calibration"
@@ -38,6 +39,7 @@ MAX_RESONANT_Q = 1.0
 # Cabinet-scale boundary correction needs nothing near it.
 MAX_ALLPASS_Q = 10.0
 MAX_COMBO_ORDER = 8
+FLAT_SHELF_HZ = 16000.0
 
 
 class RearCalibrationError(CodedFieldError):
@@ -277,19 +279,14 @@ def rear_operating_facts(document: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def diagnostic_seed(sample_rate: int) -> dict[str, Any]:
-    chain = {"gain_db": 0.0, "inverted": False, "delay_ms": 0.0, "muted": False, "filters": []}
-    return {"kind": KIND, "schema": 1, "case": "electrical_dsp", "sample_rate_hz": sample_rate,
-            "phase_convention": PHASE_CONVENTION,
-            "geometry": {"cabinet_back_wall_m": 0.2032, "sources": {"front": None, "rear": None}, "details": None},
-            "reference": {"quantity": "electrical_filter_transfer", "units": "linear output/input", "level": None},
-            "conditions": {}, "valid_band_hz": None,
-            "assumptions": ["Untuned diagnostic seed: the acoustic 200 Hz ratio is not an electrical calibration.",
-                            "Band-limiting filters remain to be fitted from the full saved dataset, including their phase."],
-            "included_stages": {"front": [], "rear": []}, "common_delay_ms": 0.0, "rear_muted": True,
-            "front": deepcopy(chain), "boundary": {"front": [], "rear": []},
-            "rear": {"mode": "branches", "bass": deepcopy(chain),
-                     "cancellation": {**deepcopy(chain), "gain_db": -0.84, "inverted": True, "delay_ms": 1.14}}}
+def flat_shelf(gain_db: float) -> dict[str, Any]:
+    """A flat level change a rear branch carries as a filter, as a weight above 1 is written (ADR-0327).
+
+    Below 1.2 kHz a Lowshelf this high is flat to 0.002 dB down to −40 dB; its phase there stays within
+    1.3 degrees for |gain| ≤ 6 dB and reaches 10.6 degrees at −40 dB.
+    """
+    return {"type": "Biquad", "parameters": {
+        "type": "Lowshelf", "freq": FLAT_SHELF_HZ, "q": round(SHELF_Q, 4), "gain": round(gain_db, 4)}}
 
 
 def rear_stage_gain_name(rear_channel: int, chain: str) -> str:

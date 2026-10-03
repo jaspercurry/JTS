@@ -57,7 +57,7 @@ from jasper.active_speaker.rear_calibration import (
 )
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement import impulse_reading
-from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
+from jasper.audio_measurement.measurement_geometry import boundary_prior, read_declared_geometry
 from jasper.audio_measurement.band_ladders import (
     ARRIVAL_GAP_BAND_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ, REAR_SCORE_BANDS_HZ,
 )
@@ -81,7 +81,7 @@ from .position_cycle import parse_curve_complex, take_curve
 from .record_index import take_pose_kind
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
-from .round_captures import doc_pose_key
+from .round_captures import ON_AXIS_KEY_PREFIX, doc_pose_key
 from .round_inputs import ROUND_INPUT_ERRORS, RoundInputs, SetTakes, banked_round_of, comparands, round_inputs
 from .take_impulses import IMPULSES_KEY, TakeImpulsesUnreadable, impulse_for, take_impulses
 
@@ -180,8 +180,9 @@ def _level_facts(observed: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def _declared_geometry(inputs: RoundInputs) -> tuple[Any, Mapping[str, float], str]:
     """The round's declared geometry, its boundary walls and why it has none."""
-    geometry = (load_declared_geometry(inputs.declared_geometry_path)
-                if inputs.declared_geometry_path else None)
+    geometry, error = read_declared_geometry(inputs.declared_geometry_path)
+    if error is not None:
+        raise error
     walls, reason = geometry.boundary_walls() if geometry else ({}, "geometry_undeclared")
     return geometry, walls, reason
 
@@ -585,7 +586,7 @@ class PairTake:
 
 
 def front_on_axis(pose_key: str, pose_kind: str) -> bool:
-    return pose_kind == POSE_KIND_BEARING and pose_key.startswith("az+0.00_el+0.00_")
+    return pose_kind == POSE_KIND_BEARING and pose_key.startswith(ON_AXIS_KEY_PREFIX)
 
 
 def pair_diagnostic(record: Mapping[str, Any]) -> tuple[float, dict[str, Any]] | None:

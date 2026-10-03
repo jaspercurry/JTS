@@ -200,7 +200,7 @@ def _rows_for(model: np.ndarray, target: np.ndarray, weights: tuple[np.ndarray, 
     ])
 
 
-def _chain(gain_db: float, delay_ms: float, filters: list[dict], inverted: bool = False) -> dict[str, Any]:
+def chain(gain_db: float, delay_ms: float, filters: list[dict], inverted: bool = False) -> dict[str, Any]:
     """One chain, in the shape the document and the response evaluator share."""
     return {
         "gain_db": float(gain_db), "inverted": inverted, "delay_ms": float(delay_ms),
@@ -223,8 +223,8 @@ def _branches(params: np.ndarray, allpass: bool) -> tuple[dict[str, Any], dict[s
             {"type": "Biquad", "parameters": {"type": "Allpass", "freq": float(params[7]), "q": float(params[8])}}
         )
     return (
-        _chain(params[5], params[1], [combo("ButterworthLowpass", params[0], BASS_ORDER)]),
-        _chain(params[6], params[4], cancellation, inverted=True),
+        chain(params[5], params[1], [combo("ButterworthLowpass", params[0], BASS_ORDER)]),
+        chain(params[6], params[4], cancellation, inverted=True),
     )
 
 
@@ -393,7 +393,7 @@ def build_document(
         "included_stages": {"front": [], "rear": []},
         "common_delay_ms": round(max(0.0, -float(params[1]), -float(params[4])), 4),
         "rear_muted": True,
-        "front": emitted(_chain(0.0, 0.0, [])),
+        "front": emitted(chain(0.0, 0.0, [])),
         "boundary": {"front": [], "rear": []},
         "rear": {"mode": "branches", "bass": emitted(bass), "cancellation": emitted(cancellation)},
     }

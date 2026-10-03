@@ -19,7 +19,7 @@ from .measurement_programs import (
 )
 from .frequency_view import FREQUENCY_VIEW_FILENAME, SCHEMA as FREQUENCY_VIEW_SCHEMA
 from .crossover_v2.evidence_packet.offline_reads import CLASSIFICATION_ARTIFACT, HARMONICS_ARTIFACT
-from .crossover_v2.round_inputs import ROOM_ARTIFACT, RoundInputs, banked_round_of, recent_round_sessions
+from .crossover_v2.round_inputs import REAR_ARTIFACT, ROOM_ARTIFACT, RoundInputs, banked_round_of, recent_round_sessions
 
 PROG = "jasper-round-views"
 TAKES_THIS_ROUND = "<this-round>"
@@ -232,7 +232,7 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
         avoid="a ready tune: it writes a muted seed, and its answer names the judge --preview call that unmutes it",
         answer_fields=("document", "preview", "suppression")),
     # The banker writes this view; agents read it in packet["rear"].
-    "rear": CatalogRow("rear_view.json", producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
+    "rear": CatalogRow(REAR_ARTIFACT, producer="jasper-round wait", programs=(PURPOSE_REAR,), bookkeeping=(PURPOSE_REAR,),
                        builder="round_view_builders.rear", packet="rear", schema="jts_rear_view/6"),
 }
 

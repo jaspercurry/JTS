@@ -44,7 +44,7 @@ from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as DRIVERS_DEFAULT_PATH,
 )
 from jasper.audio_measurement.measurement_geometry import (
-    DEFAULT_PATH as _DECLARED_GEOMETRY_DEFAULT_PATH,
+    DEFAULT_PATH as _DECLARED_GEOMETRY_DEFAULT_PATH, read_declared_geometry,
 )
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
@@ -79,6 +79,7 @@ ROUND_PACKET_SCHEMA = "jts_round_packet/7"
 PICTURE_FILENAME = "frequency.png"
 INDEX_FILENAME = "index.md"
 ROOM_ARTIFACT = "room.json"
+REAR_ARTIFACT = "rear_view.json"
 
 DECLARED_GEOMETRY_DEFAULT_PATH = Path(_DECLARED_GEOMETRY_DEFAULT_PATH)
 
@@ -433,8 +434,9 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
         raise CrossoverEvidencePacketError(reason)
     manifest = _read_json_mapping(artifact_dir / RUN_MANIFEST_FILENAME)
     sets = view_sets(manifest or {})
+    packet = banked_packet(inputs)
     # A re-run room view is a view: a banked round's contract reads its bank's copy (ADR-0371).
-    banked_rooms = banked_packet(inputs).get("room")
+    banked_rooms = packet.get("room")
     room = (_banked_room(banked_rooms, sets, set_id) if isinstance(banked_rooms, list)
             else _read_json_mapping(set_view_path(inputs, ROOM_ARTIFACT, set_id, sets)) or {})
     if not room and (inputs.banked or isinstance(banked_rooms, list)):
@@ -445,10 +447,16 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
     # A banked file that is not one JSON object is still the round's candidate: no judge reopens it,
     # so each refuses it by this code. Only a round that banked none has no base.
     candidate = (_read_json_mapping(path) or {"code": "candidate_malformed"}) if path.is_file() else {}
+    # The rear seed reads the round's rear views: its bank's copy, or the file a bank reads while it banks (ADR-0425).
+    rear = packet.get("rear")
+    if not isinstance(rear, list):
+        rear = [view] if (view := _read_json_mapping(view_path(inputs, REAR_ARTIFACT))) else []
     return {"candidate": candidate,
             "manifest": with_records(inputs.session_dir, manifest) if manifest else {},
             **{f"room_{section}": room.get(section, {})
-               for section in ("median", "persistence", "ceiling")}}
+               for section in ("median", "persistence", "ceiling")},
+            # An unreadable file reads as undeclared here; the evidence packet's block names it (ADR-0388).
+            "rear_views": rear, "declared_geometry": read_declared_geometry(inputs.declared_geometry_path)[0]}
 
 
 #: The round directory's packet names another round (or none), so its bass evidence is not this round's.

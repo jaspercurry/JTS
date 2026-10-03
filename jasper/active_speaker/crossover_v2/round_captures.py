@@ -138,6 +138,10 @@ def _pose_field(value: float | None) -> str:
     return "na" if value is None else f"{value:+.2f}"
 
 
+#: How a bearing straight ahead keys, up to its distance: a pose of any other kind prefixes its key.
+ON_AXIS_KEY_PREFIX = f"az{_pose_field(0.0)}_el{_pose_field(0.0)}_"
+
+
 def _declared_program_sha(doc: Mapping[str, Any]) -> str | None:
     """The program hash the take's provenance recorded, or ``None``."""
     provenance = doc.get("provenance")

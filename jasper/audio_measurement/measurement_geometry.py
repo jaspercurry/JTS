@@ -171,7 +171,8 @@ class DeclaredGeometry:
         return f_entanglement_floor_hz(self.first_bounce_s(distance_m))
 
     def boundary_walls(self) -> tuple[dict[str, float], str]:
-        """Baffle-reference distances for the advisory prior and :meth:`first_bounce_s`, never DSP delay.
+        """Baffle-reference distances for the advisory prior, :meth:`first_bounce_s` and the rear
+        seed's corners (ADR-0425); never a measured calibration.
 
         The derived front distance is to the front-panel centre, not an assumed
         acoustic centre for every driver. A directivity fit needs source geometry.
@@ -283,3 +284,17 @@ def load_declared_geometry(path: str | Path = DEFAULT_PATH) -> DeclaredGeometry 
         return DeclaredGeometry.load(path)
     except FileNotFoundError:
         return None
+
+
+def read_declared_geometry(path: str | Path | None) -> tuple[DeclaredGeometry | None, Exception | None]:
+    """A round's declared rig at ``path``, and the error when that file exists and does not parse.
+
+    ``(None, None)`` is the ordinary undeclared state: no path, or no file. Each reader decides what an
+    unreadable file means to it.
+    """
+    if path is None:
+        return None, None
+    try:
+        return load_declared_geometry(path), None
+    except (OSError, ValueError) as exc:
+        return None, exc

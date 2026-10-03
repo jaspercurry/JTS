@@ -19,7 +19,7 @@ from jasper.active_speaker.crossover_v2.prescription_document import read_prescr
 from jasper.active_speaker.crossover_v2.rear_views import pair_takes
 from jasper.active_speaker.crossover_v2.room_selection import purpose_take_records
 from jasper.active_speaker.crossover_v2.round_inputs import read_run_manifest, round_inputs
-from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, diagnostic_seed, rear_operating_facts
+from jasper.active_speaker.rear_calibration import MAX_CHAIN_BOOST_DB, rear_operating_facts
 from jasper.active_speaker.rear_compare import rear_compare_level
 from jasper.audio_measurement import seat_figures as figures
 from jasper.audio_measurement.analysis import band_levels_from_magnitude, smooth_fractional_octave
@@ -29,7 +29,7 @@ from jasper.audio_measurement.rear_evidence import confident_arrival_gap_s, grad
 from jasper.cli import crossover_prescriber
 from jasper.cli._refusal import EXIT_UNREADABLE
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
-from tests.active_speaker_fixtures import _active_topology
+from tests.active_speaker_fixtures import _active_topology, full_band_rear_document, rear_seed_document
 from tests.test_prescription_document import document
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_round_views_rear import (
@@ -67,8 +67,7 @@ def _preview(tmp_path, capsys, sections, root=None, extra=()):
 
 def test_grid_writes_complete_documents_and_full_previews(tmp_path, capsys):
     root = pair_round(tmp_path)
-    section = diagnostic_seed(48000)
-    section["rear_muted"] = False
+    section = rear_seed_document()
     paths = [f"rear_calibration.rear.{branch}.gain_db" for branch in ("bass", "cancellation")]
     delay = "rear_calibration.rear.cancellation.delay_ms"
     directory = tmp_path / "proposals"
@@ -105,7 +104,7 @@ def test_grid_writes_complete_documents_and_full_previews(tmp_path, capsys):
 
 
 def test_grid_continues_after_a_refused_variant_without_writing_it(tmp_path, capsys):
-    section = diagnostic_seed(48000)
+    section = rear_seed_document()
     section["rear"]["bass"]["filters"] = [{"type": "Biquad", "parameters": {
         "type": "Peaking", "freq": 120, "q": 1, "gain": 3}}]
     directory = tmp_path / "proposals"
@@ -123,7 +122,7 @@ def test_grid_continues_after_a_refused_variant_without_writing_it(tmp_path, cap
 
 def test_bad_grid_path_refuses_the_call_without_writing(tmp_path, capsys):
     directory = tmp_path / "proposals"
-    answer = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, extra=(
+    answer = _preview(tmp_path, capsys, {"rear_calibration": rear_seed_document()}, extra=(
         "--vary", "rear_calibration.rear_muted=true,false", "--vary", "rear_calibration.missing=1,2",
         "--out-dir", str(directory)))
     assert (answer["status"], answer["code"], answer["detail"]["section"]) == ("refused", "prescription_malformed", "rear_calibration")
@@ -141,7 +140,8 @@ def test_grid_requires_preview_and_out_dir(extra):
 def test_muted_document_is_exactly_zero(tmp_path, capsys, banked_candidates, front_gain, filter_gain):
     root = pair_round(tmp_path, behind_gap_ms=-0.5)
     pair = packet_of(root)[0]["rear"][0]["pair"]
-    section = diagnostic_seed(48000)
+    section = rear_seed_document(rear_muted=True)
+    section["rear"]["cancellation"]["filters"] = []
     section["front"]["gain_db"] = front_gain
     section["front"]["filters"] = [{"type": "Biquad", "parameters": {
         "type": "Peaking", "freq": 190.14, "q": 0.996, "gain": filter_gain}}]
@@ -175,8 +175,7 @@ def test_muted_document_is_exactly_zero(tmp_path, capsys, banked_candidates, fro
 @pytest.mark.parametrize("boost_db", [0.0, 4.0])
 def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path, capsys, boost_db):
     root = pair_round(tmp_path)
-    section = diagnostic_seed(48000)
-    section["rear_muted"] = False
+    section = rear_seed_document(common_delay_ms=0.0)
     section["front"]["gain_db"] = _PAIR_LEVEL_GAP_DB
     section["rear"]["bass"]["muted"] = True
     section["rear"]["cancellation"].update(gain_db=0.0, delay_ms=0.0)
@@ -243,7 +242,7 @@ def test_prediction_uses_the_pair_spectra_for_bands_and_own_peak_energy(tmp_path
     ("no_rear_output", "rear_calibration_topology_unsupported"),
 ])
 def test_preview_refusals(tmp_path, capsys, monkeypatch, case, code):
-    section = diagnostic_seed(48000)
+    section = rear_seed_document()
     sections = {"rear_calibration": section}
     if case == "both":
         sections["room"] = {}
@@ -260,9 +259,9 @@ def test_preview_refusals(tmp_path, capsys, monkeypatch, case, code):
 
 def test_the_preview_compiles_the_stage_at_the_declared_cabinet(tmp_path, capsys):
     """The stage lands on the declared rear output, with the front chain on the
-    declared front woofer; the seed's muted rear output stays muted."""
-    stage = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, pair_round(tmp_path))["compiled_stage"]
-    assert stage["filters"]["rear_out2_output_gain"]["parameters"]["mute"] is True
+    declared front woofer; the seed's rear output plays."""
+    stage = _preview(tmp_path, capsys, {"rear_calibration": rear_seed_document()}, pair_round(tmp_path))["compiled_stage"]
+    assert stage["filters"]["rear_out2_output_gain"]["parameters"]["mute"] is False
     assert [step["channels"] for step in stage["pipeline"] if step.get("type") == "Filter"][0] == [0]
 
 
@@ -270,7 +269,8 @@ def test_the_preview_compiles_the_stage_at_the_declared_cabinet(tmp_path, capsys
 def test_the_preview_answers_the_program_charge_judge_answers(tmp_path, capsys, rear_muted):
     """The one charge (ADR-0385): the document composed on its base, as ``judge`` composes it."""
     root = pair_round(tmp_path)
-    preview = _preview(tmp_path, capsys, {"rear_calibration": _rear_document(rear_muted=rear_muted)}, root)
+    document = full_band_rear_document({}, {"gain_db": -0.84, "inverted": True, "delay_ms": 1.14})
+    preview = _preview(tmp_path, capsys, {"rear_calibration": {**document, "rear_muted": rear_muted}}, root)
     assert crossover_prescriber.main(["judge", str(tmp_path / "document.json"), "--round", str(root)]) == 0
     assert preview["program_charge_db"] == json.loads(capsys.readouterr().out)["program_charge_db"]
     assert (preview["program_charge_db"] > 0) == (not rear_muted)
@@ -296,7 +296,7 @@ def test_pair_takes_share_a_window_and_remove_each_clock_shift():
 
 def test_short_coverage_discloses_missing_acoustics(tmp_path, capsys):
     root = pair_round(tmp_path, swept_hz=(20.0, 20.1))
-    preview = _preview(tmp_path, capsys, {"rear_calibration": diagnostic_seed(48000)}, root)["preview"]
+    preview = _preview(tmp_path, capsys, {"rear_calibration": rear_seed_document()}, root)["preview"]
     for row in preview["positions"].values():
         assert row["figures"]["predicted"]["reason"] == REASON_COVERAGE_SHORT
         assert row["late_energy"]["reason"] == REASON_COVERAGE_SHORT
@@ -308,12 +308,11 @@ def test_short_coverage_discloses_missing_acoustics(tmp_path, capsys):
                                                ([400.0, 500.0], None)])
 def test_figures_band_and_gradient_reason_are_independent(tmp_path, capsys, monkeypatch, declared, expected):
     root = pair_round(tmp_path)
-    section = diagnostic_seed(48000)
-    if declared:
-        section["rear"]["cancellation"]["filters"] = [
-            {"type": "BiquadCombo", "parameters": {"type": kind, "freq": hz, "order": 2}}
-            for kind, hz in zip(("ButterworthHighpass", "ButterworthLowpass"), declared)
-        ]
+    section = rear_seed_document()
+    section["rear"]["cancellation"]["filters"] = [
+        {"type": "BiquadCombo", "parameters": {"type": kind, "freq": hz, "order": 2}}
+        for kind, hz in zip(("ButterworthHighpass", "ButterworthLowpass"), declared or ())
+    ]
     monkeypatch.setattr(rear_preview.rear_evidence, "confident_arrival_gap_s", lambda gap: None)
     preview = _preview(tmp_path, capsys, {"rear_calibration": section}, root)["preview"]
     for row in preview["positions"].values():
@@ -329,8 +328,7 @@ def test_repeats_use_mean_magnitudes_and_median_per_take_energy(tmp_path, capsys
     original = pair_takes(record for _, record in purpose_take_records(round_inputs(root).session_dir, purpose="rear"))[0]
     takes = [replace(original, front=sign * original.front, rear=sign * gain * original.rear)
              for sign, gain in ((1, 0.2), (-1, 1), (1, 4))]
-    section = diagnostic_seed(48000)
-    section["rear_muted"] = False
+    section = rear_seed_document()
     section["rear"]["bass"]["muted"] = True
     singles = []
     for take in takes:
@@ -390,10 +388,7 @@ def compare_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv(state_paths.AUDITION_STATE_ENV, str(runtime / "audition.json"))
     at = "2026-09-20T12:00:00Z"
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": at}))
-    section = diagnostic_seed(48000)
-    section["rear_muted"] = False
-    section["rear"]["bass"]["inverted"] = True
-    section["rear"]["cancellation"]["muted"] = True
+    section = full_band_rear_document({"inverted": True}, {"muted": True})
     applied = {"candidate_fingerprint": "later-tune", "applied_at": "2026-09-21T12:00:00Z",
                "recomposition_snapshot": {"rear_calibration": section}}
     load = baseline_profile.load_applied_baseline_profile_state
@@ -452,7 +447,8 @@ def test_compare_trim_is_the_previewed_change_alone(compare_evidence, seed, delt
     trim follows the previewed change alone, also for a stage that peaks over unity."""
     root, applied = compare_evidence
     if seed:
-        applied["recomposition_snapshot"]["rear_calibration"] = _rear_document()
+        applied["recomposition_snapshot"]["rear_calibration"] = full_band_rear_document(
+            {}, {"gain_db": -0.84, "inverted": True, "delay_ms": 1.14})
     inputs = round_inputs(root)
     preview = rear_preview.preview_rear_section(
         applied["recomposition_snapshot"]["rear_calibration"], inputs=inputs, manifest=read_run_manifest(inputs))

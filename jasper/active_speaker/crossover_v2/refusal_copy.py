@@ -689,6 +689,10 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
     ("add_api_key", "Add the provider's API key on the voice page", "/assistant/voice/"): {
         "key_unset": "The voice provider has no API key set.",
     },
+    ("speaker_setup", "Declare the rear woofer spacing and the placement", "/sound/speaker/"): {
+        "rear_seed_geometry_undeclared": "The rear seed needs the rear woofer spacing and the cabinet's wall gap, "
+                                         "depth and toe-in; the detail names the missing ones.",
+    },
 }
 
 #: The evidence store's failure codes. ``plan_run.failure_reason`` keeps the registered code of an exception that

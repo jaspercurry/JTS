@@ -228,7 +228,7 @@ def _bound_names(path: Path) -> set[str] | None:
                     return None
                 names.add(alias.asname or alias.name.split(".")[0])
         elif isinstance(node, ast.Assign):
-            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+            names.update(n.id for t in node.targets for n in ast.walk(t) if isinstance(n, ast.Name))
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
     return names
