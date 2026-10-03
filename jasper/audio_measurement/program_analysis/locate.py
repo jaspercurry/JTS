@@ -31,7 +31,6 @@ from .model import (
     SEGMENT_SEARCH_S,
     SegmentLocation,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
-    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
     WITNESS_BAND_FLOOR_HZ,
 )
 from .signals import _above_modal_tails_hz, _has_clipped_run, _locate, _peak_dbfs
@@ -44,7 +43,6 @@ def _earliest_strong_peak(
     frac: float = 0.6,
     band_hz: tuple[float | None, float | None] | None = None,
     sample_rate: int | None = None,
-    repeat_offsets_samples: tuple[int, ...] = (),
 ) -> int:
     """Index of the EARLIEST normalized-correlation peak within ``frac`` of max.
 
@@ -53,9 +51,6 @@ def _earliest_strong_peak(
     a shape-sharing different-level segment (CHECK's lo/hi pilot pair)
     scores the same as a louder later one; taking the earliest lag within
     ``frac`` of the max picks the true first occurrence.
-
-    For repeats, a first occurrence must also rank on the product of the
-    correlations at its scheduled repeat offsets.
 
     ``band_hz`` restricts similarity to the stimulus's OWN declared band —
     without it, room noise the stimulus never occupied suppresses a quiet
@@ -93,13 +88,6 @@ def _earliest_strong_peak(
     # ratio up; a floor at a small fraction of the loudest window is enough.
     floor = 1e-6 * float(local_norm.max()) + 1e-12
     ncc = np.abs(num) / (local_norm * stim_norm + floor)
-    if repeat_offsets_samples:
-        first = ncc[:-repeat_offsets_samples[-1]]
-        paired = first.copy()
-        for offset in repeat_offsets_samples:
-            paired *= ncc[offset:offset + first.size]
-        paired[first < frac * float(ncc.max())] = 0.0
-        ncc = paired
     peak = float(ncc.max()) if ncc.size else 0.0
     if peak <= 0.0:
         return 0
@@ -358,20 +346,11 @@ def locate_global_offset(
     The whole-capture matched filter runs at :data:`LOCATOR_RATE_HZ`; the
     coarse arrival is then refined at the full rate inside a tiny window, so
     the returned offset is full-rate-exact. That locate answers WHERE, not
-    WHICH occurrence. Repeated summed sweeps use their scheduled spacing;
-    other programs use :func:`_resolve_anchor`. The fourth return value
-    carries the measured evidence.
+    WHICH occurrence: :func:`_resolve_anchor` answers which. The fourth
+    return value carries the measured evidence.
     """
     stimuli: dict[str, np.ndarray] = {}
-    sweeps = [seg for seg in program.segments if seg.kind == KIND_SUMMED_SWEEP]
-    repeated = len(sweeps) > 1 and all(
-        _stimulus_shape(seg) == _stimulus_shape(sweeps[0])
-        and seg.start_sample >= previous.start_sample + previous.n_samples
-        for previous, seg in zip(sweeps, sweeps[1:])
-    )
-    first = sweeps[0] if repeated else next(
-        (seg for seg in program.segments if seg.kind in STIMULUS_KINDS), None,
-    )
+    first = next((seg for seg in program.segments if seg.kind in STIMULUS_KINDS), None)
     if first is None:
         raise ValueError("program has no stimulus segment to locate against")
     stim = segment_stimulus(first)
@@ -387,8 +366,6 @@ def locate_global_offset(
         stim_lo = np.asarray(stim, dtype=np.float64)
     coarse = _earliest_strong_peak(
         capture_lo, stim_lo, band_hz=band_hz, sample_rate=sample_rate // down,
-        repeat_offsets_samples=tuple(round((seg.start_sample - first.start_sample) / down)
-                                     for seg in sweeps[1:]) if repeated else (),
     ) * down
 
     # Full-rate refinement in a +/-4*down window: bounded cost, full-rate precision.
@@ -402,10 +379,6 @@ def locate_global_offset(
         )
     else:
         arrival = coarse
-    if repeated:
-        offset = arrival - first.start_sample
-        sweep_evidence = _resolve_sweep_anchor(program, capture, sample_rate, offset, first, sweeps[1], stim)
-        return offset, first, stimuli, sweep_evidence
     anchor, global_offset, evidence = _resolve_anchor(
         program, capture, sample_rate, arrival, first, stimuli
     )
@@ -438,44 +411,6 @@ def _staircase_offset(
     return offset, stimuli
 
 
-def _resolve_sweep_anchor(
-    program: ExcitationProgram, capture: np.ndarray, sample_rate: int,
-    offset: int, first: ProgramSegment, witness: ProgramSegment, stimulus: np.ndarray,
-) -> AnchorEvidence:
-    """Distinguish a displaced sweep witness from an unlocated one.
-
-    Search through the inter-pass quiet span so an off-schedule copy can
-    establish ambiguity beyond the normal segment search window.
-    """
-    # A clean template can locate a sweep when two noisy captures cannot be
-    # aligned reliably. align_summed_capture's shared-power rule controls
-    # sample shifts, not audibility; both use SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-    # for the timing tolerance.
-    scheduled = offset + witness.start_sample
-    search_samples = max(round(SEGMENT_SEARCH_S * sample_rate),
-                         witness.start_sample - first.start_sample - first.n_samples)
-    located, confidence, presence = _locate_sweep(
-        capture, stimulus, scheduled, witness, sample_rate=sample_rate, search_samples=search_samples,
-    )
-    residual_ms = (located - scheduled) / sample_rate * 1000.0
-    found = confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR
-    displaced = abs(residual_ms) > SWEEP_SCHEDULE_RESIDUAL_CEILING_MS
-    corroborated = found and not displaced
-    evidence = AnchorEvidence(
-        anchor=first.segment_id, witness=witness.segment_id, shift_ms=offset / sample_rate * 1000.0,
-        witness_residual_ms=residual_ms, ambiguous=found and displaced,
-        presence=presence, confidence=confidence, corroborated=corroborated,
-    )
-    log_event(
-        logger, "program_analysis.anchor", level=logging.INFO if corroborated else logging.WARNING,
-        phase=program.phase, stimulus_id=program.stimulus_id, anchor=evidence.anchor,
-        witness=evidence.witness, shift_ms=evidence.shift_ms,
-        witness_residual_ms=residual_ms, presence=presence, confidence=confidence,
-        corroborated=corroborated, ambiguous=evidence.ambiguous,
-    )
-    return evidence
-
-
 def _locate_in_window(
     capture: np.ndarray,
     stim: np.ndarray,
@@ -484,9 +419,8 @@ def _locate_in_window(
     *,
     sample_rate: int,
     band_hz: tuple[float, float] | None = None,
-    search_samples: int | None = None,
 ) -> tuple[int, float, float]:
-    """Matched-filter ``stim`` at ``scheduled`` +/- :data:`SEGMENT_SEARCH_S` by default.
+    """Matched-filter ``stim`` at ``scheduled`` +/- :data:`SEGMENT_SEARCH_S`.
 
     Returns BOTH scores, since they answer different questions: ``confidence``
     is the peakedness margin (is the winning lag sharp against its own
@@ -496,7 +430,7 @@ def _locate_in_window(
     correlation similarity, which does say. A window too short to hold
     ``stim`` yields ``(scheduled, 0.0, 0.0)``, never a located claim.
     """
-    search = int(round(SEGMENT_SEARCH_S * sample_rate)) if search_samples is None else search_samples
+    search = int(round(SEGMENT_SEARCH_S * sample_rate))
     lo = max(0, scheduled - search)
     hi = min(capture.size, scheduled + n_samples + search)
     window = capture[lo:hi]
@@ -516,17 +450,15 @@ def _locate_in_window(
 
 def _locate_sweep(
     capture: np.ndarray, stim: np.ndarray, scheduled: int, sweep: ProgramSegment, *,
-    sample_rate: int, search_samples: int | None = None,
+    sample_rate: int,
 ) -> tuple[int, float, float]:
     """:func:`_locate_in_window` for a sweep: full band, or above the room's modal
     tails (:data:`WITNESS_BAND_FLOOR_HZ`) when only that view clears the locate floor."""
-    located = _locate_in_window(capture, stim, scheduled, sweep.n_samples,
-                                sample_rate=sample_rate, search_samples=search_samples)
+    located = _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate)
     band = _above_modal_tails_hz(sweep)
     if located[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR or band is None:
         return located
-    banded = _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate,
-                               band_hz=band, search_samples=search_samples)
+    banded = _locate_in_window(capture, stim, scheduled, sweep.n_samples, sample_rate=sample_rate, band_hz=band)
     return banded if banded[1] >= SWEEP_LOCATE_CONFIDENCE_FLOOR else located
 
 

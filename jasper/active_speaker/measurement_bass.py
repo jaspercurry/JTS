@@ -23,7 +23,6 @@ from jasper.audio_measurement.evidence_reasons import (
 from jasper.audio_measurement.program import ExcitationProgram, KIND_SUMMED_SWEEP, preceding_silence_s, segment_sweep_meta
 from jasper.audio_measurement.program import AMBIENT_SEGMENT_ID, KIND_SILENCE
 from jasper.audio_measurement.sweep_levels import snr_trusted, sweep_band_levels
-from jasper.audio_measurement.repeated_sweep import average_summed_capture, sweep_ambient_id
 from jasper.platform.log_event import log_event
 
 from .crossover_v2.pose_curve import WINDOW_UNGATED
@@ -33,7 +32,7 @@ from .measurement_analysis import BankedMeasurement, analyzed_measurements
 
 logger = logging.getLogger(__name__)
 
-BASS_VIEW_SCHEMA = "jts_bass_view/4"
+BASS_VIEW_SCHEMA = "jts_bass_view/5"
 BASS_BAND_HZ = (BASS_BANDS_HZ[0][0], BASS_BANDS_HZ[-1][1])
 
 
@@ -43,11 +42,6 @@ def _finite(values: np.ndarray) -> list[float | None]:
 
 def _quiet(program: ExcitationProgram, locations: dict[str, int], size: int) -> list[int] | None:
     segments = program.segments
-    pass_ambient = next((s for s in segments if s.segment_id == sweep_ambient_id("sweep_verify")), None)
-    if pass_ambient is not None:
-        start = locations[pass_ambient.segment_id]
-        stop = start + pass_ambient.n_samples
-        return [start, stop]
     ambient = next((s for s in segments if s.segment_id == AMBIENT_SEGMENT_ID), None)
     if ambient is None:
         return None
@@ -75,24 +69,20 @@ def band_snr(capture: np.ndarray, program: ExcitationProgram, segment_id: str, a
 
 def bass_evidence(program: ExcitationProgram, analysis: Any, samples: np.ndarray,
                   calibration: CalibrationCurve | None) -> dict[str, Any] | None:
-    """What the bass view reads of a summed sweep, from the averaged passes of
-    the ``samples`` ``analysis`` read: band SNR on the bass ladder and the
-    harmonic rows over the bass band, or their coded gap, so the take banks its
-    curves whatever this can read. Any other program has none, as CHECK banks
-    ``curves: []`` (ADR-0383 §1)."""
+    """What the bass view reads of a summed sweep, from the ``samples``
+    ``analysis`` read: band SNR on the bass ladder and the harmonic rows over the
+    bass band, or their coded gap, so the take banks its curves whatever this can
+    read. Any other program has none, as CHECK banks ``curves: []`` (ADR-0383 §1)."""
     if not any(s.segment_id == "sweep_verify" and s.kind == KIND_SUMMED_SWEEP for s in program.segments):
         return None
     locations = {loc.segment_id: loc.scheduled_start for loc in analysis.locations}
-    alignment = analysis.capture_integrity.pass_alignment if analysis.capture_integrity else None
-    capture = average_summed_capture(
-        program, samples, analysis.locations[0].scheduled_start - program.segments[0].start_sample, alignment)
     anchor = locations["sweep_verify"]
-    reading = band_snr(capture, program, "sweep_verify", anchor, _quiet(program, locations, capture.size), BASS_BANDS_HZ)
+    reading = band_snr(samples, program, "sweep_verify", anchor, _quiet(program, locations, samples.size), BASS_BANDS_HZ)
     if not sweep_covers_band(segment_sweep_meta(program.segment("sweep_verify")), BASS_BAND_HZ):
         return {**reading, "harmonics": unavailable(REASON_COVERAGE_SHORT)}
     try:
         harmonics = read_segment_distortion(
-            program, capture, "sweep_verify", anchor, band_hz=BASS_BAND_HZ, calibration=calibration,
+            program, samples, "sweep_verify", anchor, band_hz=BASS_BAND_HZ, calibration=calibration,
             epsilon=analysis.drift.epsilon_ppm / 1e6 if analysis.drift else 0.0,
         )
     except ValueError as exc:
@@ -134,7 +124,6 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
     program = ExcitationProgram.from_dict(document["program"])
     segment = program.segment(reading["segment_id"])
     diagnostics = document["diagnostic"]
-    alignment = diagnostics.get("pass_alignment")
     bands = qualified_bands(document)
     orders = {}
     harmonics = reading["harmonics"]
@@ -160,21 +149,12 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
     frequencies = np.asarray(curve["freqs_hz"], dtype=float)
     bass = (frequencies >= BASS_BAND_HZ[0]) & (frequencies <= BASS_BAND_HZ[1])
     frequencies = frequencies[bass]
-    segment_ids = {s.segment_id for s in program.segments}
     return {
         "record_path": take.record_path,
         "record": {key: value for key, value in take.record.items() if key not in {"analysis", "curves", "program"}},
         "stimulus_id": program.stimulus_id,
         "sweep_band_hz": [segment.f1_hz, segment.f2_hz],
         "sweep_duration_s": segment.n_samples / program.sample_rate_hz,
-        "passes": [{"segment_id": s.segment_id, "start_sample": s.start_sample, "n_samples": s.n_samples,
-                    "ambient_segment_id": sweep_ambient_id(s.segment_id),
-                    **({"pass_alignment": alignment,
-                        "offset_samples": diagnostics["pass_offsets_samples"][s.segment_id],
-                        "correlation_peak": diagnostics["pass_correlation_peaks"][s.segment_id],
-                        "correlation_peak_at_edge": s.segment_id in diagnostics["pass_correlation_edge_peaks"],
-                        "residual_spread_samples": diagnostics["pass_alignment_residual_spread_samples"]} if alignment else {})}
-                   for s in program.segments if sweep_ambient_id(s.segment_id) in segment_ids],
         "calibration": document["calibration"],
         "frequency_curve": curve,
         "diagnostics": diagnostics, "quiet_samples": reading["quiet_samples"], "ladder": "bass", "bands": bands,
