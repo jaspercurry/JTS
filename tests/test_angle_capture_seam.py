@@ -486,7 +486,7 @@ def test_a_behind_prompt_reads_differently_from_the_bearing_at_the_same_azimuth(
 def test_a_program_becomes_its_own_walk_in_table_order(
     program: mp.Preset,
 ) -> None:
-    """The table IS the walk: order, repeats, regime and provenance.
+    """The table IS the walk: order, repeats, sweeps, regime and provenance.
 
     Asserted against the program's own derived counts rather than against
     transcribed numbers, so the table stays the single owner of the geometry
@@ -504,9 +504,10 @@ def test_a_program_becomes_its_own_walk_in_table_order(
     assert [stop.regime for stop in request.stops] == [program.regime for pose in program.poses for _ in range(pose.repeats)]
     # Table order, with each pose's repeats ADJACENT: the microphone moves once
     # per distinct pose, so a repeat that drifted apart would be a second trip.
-    # Each stop is one take of its pose.
-    assert [s.pose for s in request.stops] == [
-        replace(pose, repeats=1) for pose in program.poses for _ in range(pose.repeats)
+    # Each stop is one take of its pose, and states the pose's sweeps, else the preset's.
+    assert [(s.pose, s.sweeps_per_take) for s in request.stops] == [
+        (replace(pose, repeats=1, sweeps_per_take=None), pose.sweeps_per_take or program.sweeps_per_take)
+        for pose in program.poses for _ in range(pose.repeats)
     ]
     assert (request.program, request.layout) == (program.preset, program.layout)
 
@@ -757,9 +758,9 @@ def test_a_close_stop_is_a_bearing_at_its_own_distance() -> None:
     assert capture_plan.position_angle_deg(stop.prompt) == 0
 
 
-#: The four sentences ``baseline/express`` prompts, transcribed from a walk
-#: resolved BEFORE poses had a kind. Copy is the half of a walk a person acts
-#: on, so it is stated here literally rather than re-derived.
+#: The sentences ``baseline_express`` prompts, the first four transcribed from a
+#: walk resolved BEFORE poses had a kind. Copy is the half of a walk a person
+#: acts on, so it is stated here literally rather than re-derived.
 _ON_AXIS = (
     "Leave the microphone on the design axis (0°). "
     "On the mark, 1 m out, pointed at the speaker."
@@ -768,8 +769,8 @@ _LEFT_20 = (
     "Turn the microphone to -20° (20° LEFT of the design axis). "
     "Keep it 1 m from the speaker and pointed at it."
 )
-_RIGHT_20 = (
-    "Turn the microphone to +20° (20° RIGHT of the design axis). "
+_RIGHT = (
+    "Turn the microphone to +{deg}° ({deg}° RIGHT of the design axis). "
     "Keep it 1 m from the speaker and pointed at it."
 )
 _RAISED = (
@@ -778,16 +779,14 @@ _RAISED = (
     "On the mark, 1 m out, pointed at the speaker."
 )
 
-#: ``baseline/express``, as it resolved before ADR-0260's poses existed:
-#: ``(angle_deg, elevation_deg, prompt text, degrees, vertical_deg)`` per stop,
-#: in walk order and with the anchor's four repeats spelled out.
+#: ``baseline_express``: ``(angle_deg, elevation_deg, prompt text, degrees,
+#: vertical_deg)`` per stop, in walk order and with the mark's two takes spelled out.
 _GOLDEN_BASELINE_EXPRESS = (
     (0, 0, _ON_AXIS, 0, 0),
     (0, 0, _ON_AXIS, 0, 0),
-    (0, 0, _ON_AXIS, 0, 0),
-    (0, 0, _ON_AXIS, 0, 0),
     (-20, 0, _LEFT_20, -20, 0),
-    (20, 0, _RIGHT_20, 20, 0),
+    (20, 0, _RIGHT.format(deg=20), 20, 0),
+    (30, 0, _RIGHT.format(deg=30), 30, 0),
     (0, -10, _RAISED.format(word="BELOW"), 0, -10),
     (0, 10, _RAISED.format(word="ABOVE"), 0, 10),
 )
@@ -796,8 +795,8 @@ _GOLDEN_BASELINE_EXPRESS = (
 @pytest.mark.parametrize(
     ("candidates", "regime", "price"),
     [
-        ((), ac.REGIME_PER_DRIVER, (5, 10)),
-        (("base", "fpA"), ac.REGIME_SUMMED, (5, 17)),
+        ((), ac.REGIME_PER_DRIVER, (6, 9)),
+        (("base", "fpA"), ac.REGIME_SUMMED, (6, 15)),
     ],
     ids=["no-cycle", "two-candidates"],
 )
@@ -1004,8 +1003,9 @@ def test_a_stop_is_one_take_of_its_pose():
     """A layout's take count repeats the stop, so a stop's pose states none,
     and a stop whose pose states one refuses: the request's ``repeats`` is the
     one per-stop repeat (#5737 F1)."""
-    doc = ac.request_for_preset(mp.run_preset("speaker", "baseline_express")).to_dict()
-    assert [stop["pose"] for stop in doc["stops"]].count({"azimuth_deg": 0, "elevation_deg": 0}) == 4
+    row = mp.run_preset("speaker", "baseline_express")
+    doc = ac.request_for_preset(row).to_dict()
+    assert [stop["pose"] for stop in doc["stops"]].count({"azimuth_deg": 0, "elevation_deg": 0}) == row.poses[0].repeats > 1
     assert not any("repeats" in stop["pose"] for stop in doc["stops"])
     with pytest.raises(contracts.CrossoverV2FlowError):
         ac.AngleStop(mp.Pose(0, 0, repeats=3), ac.REGIME_PER_DRIVER, purpose="speaker")

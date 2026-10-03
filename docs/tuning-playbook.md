@@ -73,6 +73,9 @@ program headroom and the owner's `fit_budget.max_gain_db`; the mic tier limits
 where it has evidence.
 
 A fit is already proposed. Each `fits` entry identifies its role and pose.
+A take of fewer than three sweeps per driver, such as each `baseline_express`
+spot off the mark, gets no fit: the fit refuses it as `fit_too_few_sweeps`,
+and its `reason_summary` says so.
 Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`
 and `boost_evidence`. `envelope_fitted` means the bin was fitted.
 `position_spread_db` reports standard error across positions in dB at the
@@ -94,8 +97,10 @@ this discloses missing evidence and does not refuse the fit.
 is null with `crossover_band_spread_reason`. Each proposed filter's
 `position_variance` gives
 `cv_percent`, `frequencies_hz`, `positions_deep`, `positions_total` and
-`classification`. On a three-pose round, `too_few_positions` prints the
-CV but cannot separate the 3% and 8% cues; six deep poses can. Each `verdicts`
+`classification`. Below six deep positions, `too_few_positions` prints the
+CV but cannot separate the 3% and 8% cues. `baseline_express` has six
+positions. The fit leaves a `position_variant` bell's span uncorrected and
+names it in `boost_evidence.excluded_bands_hz` (ADR-0430). Each `verdicts`
 pose gives `branch_gap_db`, `louder_role`, `null_ceiling_db`, `band_hz` and
 `capture_graph`. Its ceiling is the deepest reverse null the branch gap permits
 under that graph, so a shallower measured null is not a timing error.
@@ -136,7 +141,8 @@ earliest declared bounce, the wall behind the speaker included
 ### Document
 
 `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --layout baseline_express` collects driver
-fits and timing in one round; `baseline_full` adds poses. Room evidence comes
+fits and timing at the mark, and five spots off axis at one sweep per driver,
+in one round (ADR-0435); `baseline_full` adds poses. Room evidence comes
 from a room round (`room/seat`) or a rear seat round (`rear/seat`).
 Write one document with every section the evidence supports.
 `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --help` shows the document's envelope, and

@@ -7,12 +7,11 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP
+from jasper.audio_measurement.program import ExcitationProgram, KIND_SWEEP, KIND_SUMMED_SWEEP, occurrence_index
 from jasper.audio_measurement.timeline_slip import (
     fit_timeline_step,
     GLITCH_INPUT_TIMELINE_SLIP,
@@ -33,25 +32,6 @@ from .model import (
 from .signals import _subsample_separation
 
 
-# A MEASURE sweep segment ID's occurrence suffix (build_measure_program's
-# _occurrence_suffix): bare = first/primary, "_rep" = second, "_repN" = the
-# (N+1)-th. Anchored at the END of the id so a driver token embedded earlier
-# (today "w"/"t") never matters here.
-_SWEEP_OCCURRENCE_SUFFIX_RE = re.compile(r"_rep(\d*)$")
-
-
-def _sweep_occurrence_index(segment_id: str) -> int:
-    """0-based occurrence index encoded in a MEASURE sweep segment ID's
-    suffix (mirrors ``program.build_measure_program``'s ``_occurrence_suffix``):
-    bare id ⇒ 0 (first/primary), ``_rep`` ⇒ 1, ``_rep{n}`` ⇒ n (n ≥ 2).
-    """
-    m = _SWEEP_OCCURRENCE_SUFFIX_RE.search(segment_id)
-    if m is None:
-        return 0
-    digits = m.group(1)
-    return 1 if digits == "" else int(digits)
-
-
 def _sweep_occurrences_by_role(
     locations: Sequence[SegmentLocation],
 ) -> dict[str, list[SegmentLocation]]:
@@ -61,7 +41,7 @@ def _sweep_occurrences_by_role(
         if loc.kind == KIND_SUMMED_SWEEP:
             by_role.setdefault("summed", []).append((loc.scheduled_start, loc))
         elif loc.kind == KIND_SWEEP and loc.role:
-            by_role.setdefault(loc.role, []).append((_sweep_occurrence_index(loc.segment_id), loc))
+            by_role.setdefault(loc.role, []).append((occurrence_index(loc.segment_id), loc))
     return {
         role: [loc for _idx, loc in sorted(pairs, key=lambda pair: pair[0])]
         for role, pairs in by_role.items()

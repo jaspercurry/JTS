@@ -11,8 +11,10 @@ import numpy as np
 import yaml
 import pytest
 
+from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.alignment_evidence import round_alignment
+from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_envelope_v2 import _envelope
 from jasper.active_speaker.timing_status import timing_status_lines
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
@@ -24,8 +26,9 @@ from jasper.active_speaker.crossover_v2.intervention import CloudFitTerms, compo
 from jasper.active_speaker.crossover_v2.driver_prescription import _check_composed
 from jasper.active_speaker.crossover_v2.planning import analysis_json
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
+from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, exception_detail
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, TakeVerdict, exception_detail
 from jasper.active_speaker.crossover_v2.round_inputs import (
     RoundViewsError, prescription_sources, read_run_manifest, round_artifact_dir, round_inputs, with_records,
 )
@@ -35,9 +38,11 @@ from jasper.active_speaker.linearization_envelope import compose_envelope
 from jasper.active_speaker.linearization_fit import (
     FitVocabulary, LinearizationFilter, complex_correction_response, core_level_band_hz, fit_driver_linearization, measurement_hole_bands_hz,
 )
+from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion, required_driver_roles
+from jasper.active_speaker.run_manifest import RunManifest
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
-from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_TOO_FEW_SWEEPS, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB, timing_verification
@@ -49,6 +54,7 @@ from jasper.audio_measurement.program_analysis.model import (
 )
 from jasper.cli import crossover_prescriber, round_views
 from tests.crossover_v2_banked_round import bank_executor_take, bank_measure_round
+from tests.engine_twin import FakeRecords
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.crossover_v2.evidence_packet import EVIDENCE_KEY
 from jasper.active_speaker.round_packet import _fits, write_round_packet
@@ -377,6 +383,64 @@ def test_a_feature_that_moves_with_angle_stays_uncorrected(speaker_round):
     assert not any(lo <= one["freq"] <= hi for one in fits[6]["filters"] if one["biquad_type"] == "Peaking")
     assert correction_db(fits[6], lo, hi).max() < 0.5
     assert any(abs(np.log2(one["freq"] / 9000)) < 0.1 and one["gain"] < -1 for one in fits[6]["filters"])
+
+
+async def test_a_six_spot_round_keeps_each_driver_in_one_set_that_every_angle_reader_reads(speaker_round, capsys):
+    """ADR-0435: ``baseline_express``, composed and banked as a run plays it, keeps each
+    driver's mark takes and one-sweep spots in one set. Its design cloud holds six
+    positions, so the fit at the mark excludes a null that walks with angle; directivity
+    reads the five spots against the mark; the fit refuses a one-sweep spot by code, and
+    the packet carries that refusal."""
+    root, record, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    woofer, tweeter = (replace(response_from_banked_curve(curve)[0], repeat_responses=(), gating={"window_ms": 50.0})
+                       for curve in record["curves"])
+    roles = (RoleBand("woofer", 0, FrequencyBand(150, 4000)), RoleBand("tweeter", 1, FrequencyBand(1600, 20000)))
+    compose = predictive_program_for_spec(SimpleNamespace(roles_bands=roles, driver_caps_dbfs={}, fc_hz=2400,
+                                                          driver_sweep_duration_limits_s={}, driver_bands={}))
+    nulls_hz = {(0, 0): 6000, (-20, 0): 5300, (20, 0): 6800, (30, 0): 7000, (0, -10): 5500, (0, 10): 6500}
+    manifest = RunManifest("six-spot", FakeRecords())
+    request = ac.request_for_preset(run_preset("speaker", "baseline_express"))
+    measures = [capture for capture in prepare_plan_captures(request, roles_bands=roles)
+                if capture.spec.program_phase == "measure"]
+    for index, capture in enumerate(measures, 1):
+        pose, program = capture.stop.pose, compose(capture.spec)
+        db = sum(gain * np.exp(-0.5 * (np.log2(tweeter.freqs_hz / hz) / 0.1) ** 2)
+                 for gain, hz in ((-8, nulls_hz[pose.azimuth_deg, pose.elevation_deg]), (6, 9000)))
+        moved = replace(tweeter, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j)
+        analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(), driver_responses=tuple(
+            replace(one, repeat_responses=(one,) * (capture.spec.sweeps_per_take - 1)) for one in (woofer, moved)))
+        manifest.begin({"index": index, "candidate_id": "", "purpose": "speaker", "purposes": ["speaker"],
+                        "pose": {"kind": pose.kind, "azimuth_deg": pose.azimuth_deg, "elevation_deg": pose.elevation_deg}},
+                       attempt=1, pose_index=index)
+        take = manifest.capture_record({
+            **{key: record[key] for key in ("graph_fingerprint", "capture_setup", "capture_calibration")},
+            "take_id": f"six-{index}", "phase": "measure", "captured_at": f"2026-10-03T12:00:{index:02d}Z",
+            "program": program.to_dict(), "stimulus_id": program.stimulus_id, "curves": analysis_curve_records(analysis, program)})
+        path = directory / "positions" / f"six-{index}.json"
+        path.write_text(json.dumps(take))
+        await manifest.append(take, str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), TakeVerdict(True),
+                              complete=True, level_observation={})
+    sets = {group["capture_basis"]["role"]: group for group in manifest.to_dict()["sets"]}
+    write_manifest(root, groups=list(sets.values()))
+    joined, tweeter_set = _joined(inputs), sets["tweeter"]["set_id"]
+
+    assert {role: len(group["takes"]) for role, group in sets.items()} == {"woofer": 7, "tweeter": 7}
+    assert {cloud.n_positions for cloud in design_clouds(joined).values()} == {6}
+    fit = speaker_fit(inputs, joined, tweeter_set, "six-2")["linearization"]["tweeter"]
+    (lo, hi), = fit["boost_evidence"]["excluded_bands_hz"]
+    assert (lo, hi) == pytest.approx((5300, 7000), rel=0.02)
+    assert round_views.main(["directivity", str(root), "--set", tweeter_set]) == round_views.EXIT_OK
+    answer = json.loads(capsys.readouterr().out)
+    assert (len(answer["reference_take_ids"]), len(answer["poses"])) == (2, 5)
+    with pytest.raises(EvidenceUnavailable) as refused:
+        speaker_fit(inputs, joined, tweeter_set, "six-3")
+    assert refused.value.reason == REASON_FIT_TOO_FEW_SWEEPS
+    rows = _fits(inputs, joined, prescription_sources(inputs), design_clouds(joined))
+    assert {(row["take_id"], row["role"]): row["reason_summary"].get("unavailable") for row in rows} == {
+        (f"six-{index}", role): None if index <= 2 else REASON_FIT_TOO_FEW_SWEEPS
+        for index in range(1, len(measures) + 1) for role in ("woofer", "tweeter")}
 
 
 @pytest.mark.parametrize("marks,pairs,spread", [(2, 1, 1), (4, 6, 3)])

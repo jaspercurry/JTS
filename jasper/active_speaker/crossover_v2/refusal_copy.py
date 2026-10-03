@@ -681,6 +681,10 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
     ("name_take", "Name another take with --take, or measure a branches/express round"): {
         "round_role_not_recorded": "A take banked no impulse for the driver this view reads.",
     },
+    ("name_take", "Name a take at the mark with --take"): {
+        evidence_reasons.REASON_FIT_TOO_FEW_SWEEPS: "This take played too few sweeps of a driver for the fit to read "
+                                                    "how well they repeat.",
+    },
     ("add_api_key", "Add the provider's API key on the voice page", "/assistant/voice/"): {
         "key_unset": "The voice provider has no API key set.",
     },

@@ -1846,7 +1846,7 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
-    ("speaker", "baseline_express", True, 5), ("room", "seat_express", False, 3),
+    ("speaker", "baseline_express", True, 6), ("room", "seat_express", False, 3),
     ("rear", "rear_express", False, 3),
 ])
 def test_program_timing_take_and_placement_count(purpose, layout, entry, poses):

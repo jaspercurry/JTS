@@ -35,6 +35,7 @@ from ..linearization_fit import (
     measurement_hole_bands_hz,
 )
 from ..profile import CrossoverRegion
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_TOO_FEW_SWEEPS, EvidenceUnavailable
 from jasper.audio_measurement.program_analysis import solve_branch_trims
 
 from .contracts import CrossoverV2ContractError
@@ -92,11 +93,12 @@ def compose_sigma_db(
 
     ``own``/``sibling`` are the two
     :class:`~jasper.audio_measurement.program_analysis.DriverResponse` of a
-    crossover pair. Returns ``None`` — no evidence, no permission — when EITHER
+    crossover pair. Refuses :data:`REASON_FIT_TOO_FEW_SWEEPS` when EITHER
     driver has fewer than :data:`LINEARIZATION_MIN_PAIRED_OCCURRENCES`
-    occurrences (primary + repeats); an under-repeated sibling voids the pair's
-    trust even if ``own`` alone has plenty. Raises :class:`PlannerInputError`
-    for a tier outside the closed set.
+    occurrences (primary + repeats): an under-repeated sibling voids the pair's
+    trust even if ``own`` alone has plenty, and the fit has no repeatability to
+    correct from (ADR-0435). Raises :class:`PlannerInputError` for a tier
+    outside the closed set.
 
     Otherwise computes ``own``'s live σ(f) and floors it at the tier's own
     tolerable value: ``sigma_eff = max(sigma_tolerable(tier), live)``.
@@ -108,13 +110,10 @@ def compose_sigma_db(
     seam for a policy that sets the floor HIGHER than ``sigma_tolerable``; do
     not assume it currently does more than the paired-N gate above.
     """
-    own_n = 1 + len(own.repeat_responses)
-    sibling_n = 1 + len(sibling.repeat_responses)
-    if (
-        own_n < LINEARIZATION_MIN_PAIRED_OCCURRENCES
-        or sibling_n < LINEARIZATION_MIN_PAIRED_OCCURRENCES
-    ):
-        return None
+    occurrences = {response.role: 1 + len(response.repeat_responses) for response in (own, sibling)}
+    if min(occurrences.values()) < LINEARIZATION_MIN_PAIRED_OCCURRENCES:
+        raise EvidenceUnavailable(REASON_FIT_TOO_FEW_SWEEPS, {
+            "occurrences": occurrences, "min_occurrences": LINEARIZATION_MIN_PAIRED_OCCURRENCES})
     live = compute_sigma_curve(own, valid_band_hz=valid_band_hz, grid_hz=grid_hz)
     if live is None:
         return None
