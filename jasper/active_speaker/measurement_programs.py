@@ -14,7 +14,7 @@ from itertools import groupby
 from importlib import resources
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Collection, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S, NEAR_FIELD_SILENCE_S
 from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M, at_driver_near_field
@@ -396,6 +396,12 @@ class Pose:
         return (*place, self.driver) if self.driver else place
 
     @property
+    def position(self) -> tuple[object, ...]:
+        """Where the microphone is: its :attr:`place` less the driver, which a close
+        pose keeps, since it is stated from that driver's cone."""
+        return self.place if self.kind == POSE_KIND_CLOSE or not self.driver else self.place[:-1]
+
+    @property
     def near_field(self) -> bool:
         """Whether this pose sits at its driver within the near-field distance,
         where the room reads about 40 dB down; a seat pose is the room's own
@@ -432,6 +438,12 @@ def pose_level(pose: Pose) -> PoseLevel | None:
     other pose plays at its run's fader and answers to its repeats (``None``)."""
     close = pose.kind != POSE_KIND_SEAT and pose.distance_m is not None and pose.distance_m < MARK_DISTANCE_M
     return SPOT_LEVEL if pose.driver or close else None
+
+
+def mic_moves(poses: Iterable[Pose]) -> int:
+    """How often the microphone moves over ``poses`` in run order: once per change
+    of :attr:`Pose.position`, the first placement included."""
+    return sum(1 for _ in groupby(pose.position for pose in poses))
 
 
 @dataclass(frozen=True)
@@ -471,9 +483,7 @@ class Preset:
 
     @property
     def mic_move_count(self) -> int:
-        """Distinct places — repeats stay at one place and move nothing."""
-
-        return len({p.place for p in self.poses})
+        return mic_moves(self.poses)
 
     @property
     def capture_count(self) -> int:

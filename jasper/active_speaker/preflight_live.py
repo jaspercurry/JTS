@@ -101,4 +101,5 @@ def read_preflight_facts(
                             if context is not None and any(stop.pose.driver for stop in plan.stops) else None),
         roles_bands=context.roles_bands if context is not None else (),
         driver_caps=published_driver_caps(context.safety_profile, context.role_targets) if context is not None else {},
+        context=context,
     )

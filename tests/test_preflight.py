@@ -23,7 +23,6 @@ from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
 from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, bass_lift_db, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
-from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker import arm_walk, candidate_parts, preflight_live
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
@@ -159,7 +158,7 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
     missing = tuple(sorted({"woofer", "woofer:rear"} - role_targets.keys())) if name in {"rear", "front_rear"} else ()
     invalid_pairs = (tuple(role.role for role in roles),) if name == "branches" and len(roles) != 2 else ()
     blocked = bool(missing or invalid_pairs)
-    report = preflight_levels(plan, facts)
+    report = preflight(plan, facts)
     assert report.blocking is blocked
     if blocked:
         issue, = report.issues
@@ -190,14 +189,12 @@ def test_preflight_refuses_a_near_field_driver_this_speaker_does_not_offer(offer
 
 def test_a_stop_naming_its_driver_is_no_branch_take_on_the_branches_regime():
     """A stop naming its driver plays that driver alone on the drivers graph
-    whatever its regime, so preflight checks no branch pair for it and prices
-    its one take (ADR-0366)."""
+    whatever its regime, so preflight checks no branch pair for it (ADR-0366)."""
     plan = AngleCaptureRequest((AngleStop(Pose(0, 0, driver="woofer"), "branches", purpose="reference", branch_pair="front_rear"),))
     report = preflight(plan, ready_facts(plan, declared_target_ids=("tweeter", "woofer"),
                                          near_field_drivers=("tweeter", "woofer")))
     assert [issue.code for issue in report.issues] == []
     assert [row.graph_scope for row in report.schedule] == ["drivers"]
-    assert report.price["captures"] == 1
 
 
 @pytest.mark.parametrize("program_id,banks", [("nearfield/each", True), ("nearfield", True), ("nearfield/mark", False)])
@@ -251,7 +248,7 @@ def test_preflight_per_driver_layout(layout):
         issue, = report.issues
         assert issue.code == REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS
         assert issue.evidence == {"driver_roles": DRIVER_ROLES_BY_WAY[3]}
-        assert report.schedule == () and report.price == {}
+        assert report.schedule == ()
         assert REASON_REGISTRY[issue.code].template == TEMPLATE_HARD_STOP
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
@@ -308,9 +305,6 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
         (stop.pose.place, stop.candidate_id or "base", repeat)
         for stop in plan.stops for repeat in (1, 2)
     ]
-    assert report.mic_moves == report.price["mic_moves"] == 3
-    assert report.price["captures"] == 14
-    assert report.price["ceiling_min"] > 0
     assert report.spl_ceiling_db_spl == 85
     assert {row.graph_scope for row in report.schedule} == {"candidate"}
 
@@ -339,8 +333,6 @@ def test_live_facts_surface_owner_refusals(monkeypatch, fault, branch):
     report = preflight(plan, preflight_live.read_preflight_facts(plan))
     code = "measure_box_not_ready" if fault == "box" else "measure_spl_calibration_required"
     assert any(issue.code == code and issue.blocking and issue.next_action for issue in report.issues)
-    if branch:
-        assert report.price == {}
 
 
 def test_supplied_facts_do_not_read_files(monkeypatch):

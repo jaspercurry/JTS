@@ -4,7 +4,6 @@
 """The capture schedule shared by execution, previews, and prices."""
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 from itertools import groupby
 from typing import Sequence
@@ -13,7 +12,6 @@ from jasper.audio_measurement.program import RoleBand
 from .angle_capture import (
     AngleCaptureRequest, AngleStop, ResolvedStop, level_sets, resolve_request, stop_specs,
 )
-from .crossover_v2.capture_plan import wall_clock_ceiling_s
 from .crossover_v2.contracts import MEASURE_KIND_CANDIDATE
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
 from .crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec
@@ -105,17 +103,3 @@ def unprobed_take_at_fader(takes: Sequence[tuple[str, bool, int]]) -> bool:
     shares a level (``angle_capture.level_sets``), and its placement's index."""
     probe = run_probe_index([(scope, levelled) for scope, levelled, _ in takes])
     return any(not levelled and (probe is None or placement < takes[probe][2]) for _, levelled, placement in takes)
-
-
-def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int]:
-    """Price the same capture schedule shown by the page, including preparation."""
-    captures = len(prepare_plan_captures(request, roles_bands=roles_bands))
-    return {
-        "mic_moves": sum(1 for _place, _stops in groupby(s.pose.place for s in request.stops)),
-        "captures": captures,
-        "ceiling_min": math.ceil(
-            wall_clock_ceiling_s(captures) / 60
-        ),
-    }
-
-

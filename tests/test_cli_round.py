@@ -46,6 +46,7 @@ from jasper.web import correction_crossover_v2_evidence as v2evidence, correctio
 from jasper.web import correction_crossover_backend, correction_handlers, correction_runtime
 from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context
+from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
@@ -53,10 +54,13 @@ from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
 )
 from jasper.active_speaker.preflight import PreflightReport
-from jasper.active_speaker.run_levels import LEVEL_OFFSETS_DB, LevelLadder, preflight_levels, prepare_level_captures
+from jasper.active_speaker.run_levels import (
+    LEVEL_OFFSETS_DB, LevelLadder, ladder_captures, preflight_levels, prepare_level_captures,
+)
 from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
+from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S
 from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
@@ -738,7 +742,6 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
     assert Counter((tuple(row["pose"]), row["candidate_id"]) for row in body["schedule"]) == {
         (pose.place, name): repeats or 1 for pose in poses for name in names}
     assert {row["regime"] for row in body["schedule"]} == {"summed"}
-    assert body["mic_moves"] == 2
     assert len(body["schedule"]) == 8 * (repeats or 1)
 
 
@@ -1141,7 +1144,7 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
 def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, choice_id, takes):
     """A level ladder plays each placement's captures at every rung (``run_levels``). The page's plan and
     the session's own first facts (what the awaiting-join screen prints) preview those takes from one
-    schedule: their count, and their sweeps' seconds, with the moves and the probe once."""
+    schedule: their count, and their programs' seconds, with the moves, the probe and the prelude once."""
     topology, context = mono_output_topology(), _inline_context()
     context = with_rear_target(replace(context, topology=topology,
                                        driver_bands={role.role: role.band for role in context.roles_bands}))
@@ -1167,10 +1170,12 @@ def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, c
               for stops in [tuple(group)] for planned in rungs
               for capture in prepare_level_captures(replace(planned.plan, stops=stops), roles_bands=context.roles_bands)]
     assert [(capture.stop, capture.repeat) for capture in priced] == played
-    one = preview(request, plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands), context)
+    one_rung = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
+    one = preview(request, one_rung, context)
     assert page["measurements_per_pose"] == [len(rungs) * count for count in one["measurements_per_pose"]]
-    sweeps_s = sum(row["seconds"] for pose in one["pose_sweeps"] for row in pose)
-    assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"] + (len(rungs) - 1) * sweeps_s)
+    takes_s = sum(program.total_samples / program.sample_rate_hz + WIRED_POST_ROLL_S
+                  for program in map(predictive_program_for_spec(context), (capture.spec for capture in one_rung)))
+    assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"] + (len(rungs) - 1) * takes_s)
     assert len(rungs) == (len(LEVEL_OFFSETS_DB) if choice_id.startswith("bass") else 1)
 
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
@@ -1358,7 +1363,7 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, door, monkeypatch,
                       opener, monkeypatch, capsys)
     staged = body if dry_run else opener.staged[0]["staged"]
     report = staged if dry_run else staged["schedule"]
-    assert code == 0 and report["mic_moves"] == 1
+    assert code == 0
     capture, = report["schedule"]
     assert capture["regime"] == "summed"
     assert report["level"]["level_db"] == -25
@@ -1369,10 +1374,15 @@ def test_bass_axis_uses_the_registered_mover(preflight_ready, door, monkeypatch,
 @pytest.mark.parametrize("admitted", [True, False])
 def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
     """A bass dry run lists its ladder's steps under the level its first rung's
-    probe finds (ADR-0403 §4). A refused one names the run it refused, as the
-    answer would have (ADR-0389)."""
+    probe finds (ADR-0403 §4), and prices the whole run once: every rung's takes,
+    one move per seat, and the page's estimate of them. A refused one names the
+    run it refused, as the answer would have (ADR-0389)."""
+    context = _inline_context()
+    context = replace(context, topology=mono_output_topology(),
+                      driver_bands={role.role: role.band for role in context.roles_bands})
+
     def facts(plan, **kw):
-        ready = ready_facts(plan, **kw)
+        ready = ready_facts(plan, **kw, context=context, roles_bands=context.roles_bands)
         return ready if admitted else replace(ready, mic_present=False)
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
@@ -1393,6 +1403,12 @@ def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
     assert (body["subject"], body["parameters"]["program"], body["parameters"]["level_db"],
             body["parameters"]["levels"]) == ({}, "bass/axis", None, steps)
     assert [(row["step_db"], row["admissible"]) for row in body["levels"]] == [(step, admitted) for step in steps]
+    plan, levels = resolve_plan(RunRequest(program="bass"), targets=lambda: ())
+    run = ladder_captures(plan, levels, plan_run.prepare_plan_captures(plan, roles_bands=context.roles_bands))
+    seats = len(run_preset("bass").poses)
+    assert body["price"] == {"captures": len(steps) * seats, "mic_moves": seats,
+                             "seconds": round(plan_run.preview_schedule(plan, run, context)["estimated_seconds"])}
+    assert not any("price" in row for row in body["levels"])
     assert not opener.requests
 
 
