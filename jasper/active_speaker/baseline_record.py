@@ -70,8 +70,7 @@ def _source_payload(
 
 
 def _measured_candidate_metadata(
-    candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset,
-    topology: OutputTopology, created_at: str,
+    candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset, topology: OutputTopology,
 ) -> dict[str, Any]:
     roles = required_driver_roles(preset.way_count)
     groups = sorted(group.id for group in topology.speaker_groups if group.mode in {"active_2_way", "active_3_way"})
@@ -80,15 +79,10 @@ def _measured_candidate_metadata(
     return {
         "sources": {role: "measured" if measured else "operator_pinned" for role in roles},
         "gain_provenance": {role: "measured" if measured else "operator_pinned" for role in roles},
-        "provisional": False,
         "corrections_provenance": {role: {"gain_db": origin} for role in roles},
         "level_match": {"groups_total": len(groups), "groups_measured": len(groups) if measured else 0,
                         "comparison": "strict_measured_candidate" if measured else "", "incomparable_groups": [],
-                        "applied": measured, "newest_capture_at": created_at if measured else None},
-        "automatic_candidate": {"ready": measured, "reason": None, "detail": "",
-                                "required_group_ids": groups, "measured_group_ids": groups if measured else [],
-                                "summed_group_ids": groups if measured else [],
-                                "measurement_comparable": measured, "excitation_comparable": measured},
+                        "applied": measured},
     }
 
 
@@ -198,7 +192,7 @@ def prepare_applied_baseline_profile(
         fields = alignment_to_candidate_fields({**timing, "alignment_status": "ok"},
                                               roles=required_driver_roles(candidate.source_preset.way_count))
         projected = replace(candidate, alignment=MeasuredCrossoverAlignment(*fields))
-    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology, at)
+    meta = _measured_candidate_metadata(candidate, declaration.preset, declaration.topology)
     snapshot = recomposition_snapshot_for(candidate, declaration=declaration, design_draft=design_draft,
         projected=projected, topology_fingerprint=source["topology_fingerprint"], provenance=provenance)
     corrections, linearization = snapshot["corrections"], snapshot["linearization"]
@@ -213,7 +207,7 @@ def prepare_applied_baseline_profile(
         "corrections": corrections, "linearization": linearization,
         "corrections_source": (provenance or {}).get("corrections_source", meta["sources"]),
         **{key: (provenance or {}).get(key, meta[key]) for key in
-           ("gain_provenance", "corrections_provenance", "level_match", "automatic_candidate")},
+           ("gain_provenance", "corrections_provenance", "level_match")},
         "linearization_outcome": (provenance or {}).get("linearization_outcome", candidate.linearization_outcome),
         "trim_decision": (provenance or {}).get("trim_decision", dict(candidate.trim_decision)),
         "tuning_owner": (provenance or {}).get("tuning_owner", "automatic"),

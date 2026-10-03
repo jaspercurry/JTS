@@ -113,8 +113,6 @@ def _candidate(
     status: str,
     config_path: Path,
     issues: list[dict] | None = None,
-    measured: bool = False,
-    incomparable: bool = False,
 ):
     return {
         "artifact_schema_version": 1,
@@ -127,15 +125,6 @@ def _candidate(
             "exists": config_path.exists(),
         },
         "provisional": False,
-        "level_match": {
-            "groups_measured": 1 if measured else 0,
-            "incomparable_groups": (
-                [{"speaker_group_id": "mono", "reason": "effective_excitation_mismatch"}]
-                if incomparable
-                else []
-            ),
-            "applied": measured,
-        },
         "issues": list(issues or []),
     }
 
@@ -492,5 +481,4 @@ def test_setup_reports_composer_review_and_applied_record(monkeypatch, tmp_path,
     assert status["baseline_profile"]["status"] == review["status"]
     assert status["baseline_profile"]["candidate_fingerprint"] == "review-fp"
     assert [issue["code"] for issue in status["baseline_profile"]["issues"]] == ([] if review_ready else ["compose_refused"])
-    assert "automatic_candidate" not in status
     assert "linearization_outcome" not in status["protected_profile"]
