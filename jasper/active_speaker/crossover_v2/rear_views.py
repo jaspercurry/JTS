@@ -65,7 +65,7 @@ from jasper.audio_measurement.band_ladders import (
 )
 from jasper.audio_measurement.gating import PHASE_GATE_LEAD_MS, f_trusted_floor_hz
 from jasper.audio_measurement.rear_evidence import (
-    arrival_gap_ms, confident_arrival_gap_s, gradient_residual_db,
+    ARRIVAL_GAP_MIN_BAND_HZ, arrival_gap_ms, confident_arrival_gap_s, gradient_residual_db,
     pair_band_levels, rear_polarity, superposition_residual_db,
 )
 from jasper.audio_measurement.seat_figures import (
@@ -747,14 +747,17 @@ def _pair_document(
     ceiling = room_ceiling(profile)
     section = ((profile or {}).get("recomposition_snapshot") or {}).get("rear_calibration") or {}
     stage = rear_operating_facts(section)
+    # The arrival gap reads no band narrower than its minimum, as the computed seed's can be. See ADR-0438.
+    gap_band = stage["band_hz"] if stage["band_hz"] and (
+        stage["band_hz"][1] - stage["band_hz"][0] >= ARRIVAL_GAP_MIN_BAND_HZ) else None
     positions: dict[str, Any] = {}
     unscored: dict[str, str] = {}
     grids: list[np.ndarray] = []
     for key, rows in sorted(records.items()):
         found = _pair_position(sorted(rows, key=lambda record: str(record.get("take_id") or "")),
                                ceiling_hz=ceiling.ceiling_hz,
-                               arrival_gap_band_hz=stage["band_hz"] or ARRIVAL_GAP_BAND_HZ,
-                               arrival_gap_band_source="rear_document" if stage["band_hz"] else "default")
+                               arrival_gap_band_hz=gap_band or ARRIVAL_GAP_BAND_HZ,
+                               arrival_gap_band_source="rear_document" if gap_band else "default")
         if found is None:
             unscored[key] = REASON_SEGMENT_MISSING
             continue

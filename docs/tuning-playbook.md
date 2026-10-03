@@ -359,8 +359,9 @@ the model; `arrival_gap` gives the rear-minus-front gap, confidence and
 `search_ms`; `rear_polarity` gives the measured sign, read only in the lowest
 bands where each woofer alone is far enough above the room's noise, which its
 `bands_hz` lists (`polarity_snr_short` when none is). The gap uses the applied
-rear document's band or `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage;
-`band_hz` and `arrival_gap_band_source` disclose `rear_document` or `default`.
+rear document's band when it is at least `ARRIVAL_GAP_MIN_BAND_HZ` (200 Hz)
+wide, else `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage; `band_hz` and
+`arrival_gap_band_source` disclose `rear_document` or `default`.
 
 Preview predicts F·H_front + R·(H_bass + H_cancel) at each measured position.
 Read `positions[*]`: `trough_fill_db` is the rise at the muted curve's deepest

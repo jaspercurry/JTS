@@ -1135,26 +1135,28 @@ def test_a_pair_round_that_analyzed_no_branches_says_that_and_not_a_missing_incu
     assert packet["rear"] == []
 
 
-@pytest.mark.parametrize("applied,swept_hz,expected_band,reason", [
-    (False, SEAT_BAND_HZ, list(ARRIVAL_GAP_BAND_HZ), ""),
-    (False, (20.0, 100.0), None, REASON_COVERAGE_SHORT),
-    (True, SEAT_BAND_HZ, _CANCELLATION_BAND_HZ, ""),
-    (True, (60.0, 280.0), [60.0, 280.0], ""),
-    (True, (150.0, 500.0), None, REASON_COVERAGE_SHORT),
-    (True, (20.0, 21.0), None, REASON_COVERAGE_SHORT),
-    (True, (20.0, 100.0), None, REASON_COVERAGE_SHORT),
+@pytest.mark.parametrize("applied,swept_hz,expected_band,source,reason", [
+    ({}, SEAT_BAND_HZ, list(ARRIVAL_GAP_BAND_HZ), "default", ""),
+    ({}, (20.0, 100.0), None, "default", REASON_COVERAGE_SHORT),
+    (_rear_document(), SEAT_BAND_HZ, _CANCELLATION_BAND_HZ, "rear_document", ""),
+    (_rear_document(), (60.0, 280.0), [60.0, 280.0], "rear_document", ""),
+    (_rear_document(), (150.0, 500.0), None, "rear_document", REASON_COVERAGE_SHORT),
+    (_rear_document(), (20.0, 21.0), None, "rear_document", REASON_COVERAGE_SHORT),
+    (_rear_document(), (20.0, 100.0), None, "rear_document", REASON_COVERAGE_SHORT),
+    # The computed seed's band, 114-260 Hz, is narrower than the gap reader's 200 Hz minimum.
+    (rear_seed_document(), SEAT_BAND_HZ, list(ARRIVAL_GAP_BAND_HZ), "default", ""),
 ])
 def test_pair_arrival_gap_uses_the_applied_band_or_default_and_refuses_short_coverage(
-    tmp_path, banked_candidates, applied, swept_hz, expected_band, reason,
+    tmp_path, banked_candidates, applied, swept_hz, expected_band, source, reason,
 ):
     root = pair_round(tmp_path, swept_hz=swept_hz)
-    _round_environment(root, applied=_rear_document() if applied else {})
+    _round_environment(root, applied=applied)
 
     entry, = packet_of(root)[0]["rear"]
     row = entry["pair"]["positions"][min(entry["comparison"]["positions"])]
     gap = row["arrival_gap"]
 
-    assert gap["arrival_gap_band_source"] == ("rear_document" if applied else "default")
+    assert gap["arrival_gap_band_source"] == source
     assert (gap["band_hz"], gap["reason"]) == (expected_band, reason)
     if reason:
         assert (gap["ms"], gap["search_ms"]) == (None, None)
