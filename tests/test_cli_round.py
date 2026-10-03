@@ -1280,6 +1280,7 @@ def test_wait_does_not_bank_before_capture_cleanup(state, monkeypatch, capsys):
     (["--request", '{"layout": "seat_cloud", "poses": [0]}'], "program_plan_shape_invalid"),
     (["--request", '{"program": "room"}', "--layout", "seat_cloud"], "program_plan_shape_invalid"),
     (["--request", '{"program": "room"'], "program_plan_shape_invalid"),
+    (["--candidates", "base,"], "program_plan_shape_invalid"),
 ])
 def test_run_shape_refusal_is_json(preflight_ready, door, argv, reason, monkeypatch, capsys):
     code, body = _run(["run", "--wait", *argv], door(_opener()), monkeypatch, capsys)
