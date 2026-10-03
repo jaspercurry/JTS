@@ -230,6 +230,7 @@ def _assess_recording(
     spl_stop_db_spl: float | None = None,
     spl: Mapping[str, Any] | None = None,
     raise_rides_next: bool = False,
+    reads_timing: bool = True,
 ) -> TakeVerdict:
     if phase not in {"check", "measure", "verify"}:
         raise ValueError(f"unsupported assessment phase: {phase}")
@@ -403,6 +404,9 @@ def _assess_recording(
         return shortfall > (adjusted[role] - gains[role] if role in adjusted else 0.0)
 
     if adjusted:
+        if alignment_only and not reads_timing:
+            # No decision reads the timing of a take off the mark, so its alignment asks no raise (ADR-0433).
+            return verdict
         raised = {**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}}
         if alignment_only and (raise_rides_next or any(short_at_raise(r.role) for r in analysis.driver_responses)):
             # The raise rides the run's later takes, or a replay at it could not reach the floor (ADR-0433).

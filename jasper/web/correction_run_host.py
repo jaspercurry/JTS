@@ -166,7 +166,8 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                           session_volume_db=conductor.excitation.session_volume_db,
                           spl_stop_db_spl=conductor.spl_stop_db_spl,
                           spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"),
-                          raise_rides_next=conductor.raise_rides_next(index))
+                          raise_rides_next=conductor.raise_rides_next(index),
+                          reads_timing=conductor.reads_timing(index))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and any(key.startswith("next_gain_db.") for key in assessed.evidence):
             after_grading(partial(conductor.rearm_measure_after_transient, assessed))

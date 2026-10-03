@@ -53,7 +53,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureStopped,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
-from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.audio_measurement import snr_policy
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.calibration import MicSensitivity
@@ -912,30 +911,30 @@ async def _run_short_tweeter(tmp_path, box, request):
     return plays, measured
 
 
-@pytest.mark.parametrize(("preset", "where", "kept"), [
-    ("speaker", {"layout": "speaker_mark"}, [True, True]),
-    ("tournament", {"layout": "tournament_express"}, [False, True]),
-    ("speaker", {"poses": "0,20"}, [False, True, True]),
-    ("speaker", {"poses": "20,-20"}, [True, True]),
-    ("speaker", {"poses": "20"}, [True]),
-], ids=["two-at-the-mark", "one-at-the-mark", "mark-then-off", "off-the-mark", "last-off-the-mark"])
+@pytest.mark.parametrize(("preset", "where", "measured", "kept"), [
+    ("speaker", {"layout": "speaker_mark"}, [(0, False), (0, True)], [True, True]),
+    ("tournament", {"layout": "tournament_express"}, [(0, False), (0, True)], [False, True]),
+    ("speaker", {"poses": "0,20"}, [(0, False), (0, True), (20, True)], [False, True, True]),
+    ("speaker", {"poses": "20,-20"}, [(20, False), (-20, False)], [True, True]),
+    ("speaker", {"poses": "20"}, [(20, False)], [True]),
+    ("speaker", {"poses": "20,0"}, [(20, False), (0, False), (0, True)], [True, False, True]),
+], ids=["two-at-the-mark", "one-at-the-mark", "mark-then-off", "off-the-mark", "last-off-the-mark", "off-then-mark"])
 async def test_a_short_measure_take_is_kept_unless_it_is_the_last_at_the_mark(
-        monkeypatch, tmp_path, box, preset, where, kept):
-    """The first MEASURE take passes short of the tweeter's alignment SNR and asks a
-    3.3 dB raise. Before ADR-0433 it was replayed at the raise, where it played. Now it is
-    kept, and the run plays what it played before less that replay, unless it is the last
-    MEASURE take at the mark (ADR-0345): off the mark its raise rides whatever takes
-    follow, and with none it is moot. A kept take shares each driver's set with the takes
-    after it."""
+        tmp_path, box, preset, where, measured, kept):
+    """Each MEASURE take reads the tweeter's alignment SNR short at the plan's gains, so
+    each plays there or 3.3 dB louder on the tweeter (each case's bearing and whether it
+    played the raise). At the mark a short take asks the raise: it is kept when a later
+    take there plays it, and the last take at the mark replays at it (ADR-0345). Off the
+    mark a short take is kept and asks no raise, so the next take plays the plan, at the
+    mark too. A kept take shares each driver's set with the takes after it (ADR-0433)."""
     request = request_for_preset(run_preset(preset, **where), level=LevelPolicy(level_db=-20))
-    plays, measured = await _run_short_tweeter(tmp_path / "now", box, request)
-    monkeypatch.setattr(CrossoverV2Session, "raise_rides_next", lambda self, index: False)
-    before, _ = await _run_short_tweeter(tmp_path / "before", box, request)
+    plays, sets = await _run_short_tweeter(tmp_path, box, request)
 
-    (pose, phase, first), replay = before[2:4]
-    assert replay == (pose, phase, {**first, "tweeter": pytest.approx(first["tweeter"] + 3.3)})
-    assert plays == ([*before[:3], *before[4:]] if kept[0] else before)
-    assert measured == [kept] * 2
+    takes = [(bearing, gains) for bearing, phase, gains in plays if phase == "measure"]
+    plan = takes[0][1]
+    raised = {**plan, "tweeter": pytest.approx(plan["tweeter"] + 3.3)}
+    assert takes == [(bearing, raised if at_raise else plan) for bearing, at_raise in measured]
+    assert sets == [kept] * 2
 
 
 async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, tmp_path, box):

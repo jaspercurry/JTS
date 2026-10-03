@@ -298,13 +298,16 @@ class CrossoverV2Session:
         return phase
 
     def raise_rides_next(self, index: int) -> bool:
-        """Whether a raise this MEASURE take asks may ride the plan's later takes, so the take is
-        kept: off the mark no decision reads its timing; at the mark a later MEASURE take there
-        must play the raise (ADR-0433)."""
+        """A later MEASURE take of the plan plays at this take's pose, so a raise this take asks
+        rides it (ADR-0433)."""
         pose = self.capture_geometry(PHASE_MEASURE, index)
-        return not on_design_axis(pose.position_deg, pose.vertical_deg) or any(
-            later > index and phase == PHASE_MEASURE and self.capture_geometry(phase, later) == pose
-            for later, phase in self._index_phase_map.items())
+        return any(later > index and phase == PHASE_MEASURE and self.capture_geometry(phase, later) == pose
+                   for later, phase in self._index_phase_map.items())
+
+    def reads_timing(self, index: int) -> bool:
+        """A decision reads this MEASURE take's timing: it plays at the mark (ADR-0345, ADR-0433)."""
+        pose = self.capture_geometry(PHASE_MEASURE, index)
+        return on_design_axis(pose.position_deg, pose.vertical_deg)
 
     def _slot_of_index(self, index: int) -> str:
         """The retry-budget key for one capture index."""
