@@ -7,7 +7,8 @@
 On JTS's rig class the first bounce arrives only ~2.5-3 ms after the direct
 sound, so :mod:`.gating`'s reflection finder never fires and the entanglement
 floor is DERIVED from declared geometry instead (#3502).
-``jasper-declare-geometry`` is the single writer of :data:`DEFAULT_PATH`;
+:meth:`DeclaredGeometry.save` is the single writer of :data:`DEFAULT_PATH`
+(``jasper-declare-geometry set`` and the speaker page's placement form call it);
 consumers read it at the point of use and never cache it.
 """
 from __future__ import annotations

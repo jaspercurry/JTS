@@ -33,6 +33,7 @@ from jasper.platform.json_fields import CodedFieldError
 from jasper.active_speaker.driver_pad import DriverPadError
 from jasper.audio_routes.output_topology import OutputTopology
 from jasper.active_speaker.installation import installation_evidence, normalise_installation
+from jasper.active_speaker.layout import build_speaker_layout
 from tests.active_speaker_fixtures import current_research, mono_output_topology, research_design_draft
 
 
@@ -755,12 +756,7 @@ def test_existing_draft_fixtures_stay_byte_identical_without_polarity_delay():
     assert "delay_target_role" not in candidate
 
 
-# --- #1864: declared woofer<->tweeter acoustic-center spacing -------------
-
-
-def test_declared_driver_spacing_m_reads_the_declaration():
-    draft = {"manual_settings": {"driver_spacing_mm": 150}}
-    assert declared_driver_spacing_m(draft) == pytest.approx(0.15)
+# --- declared acoustic-center spacings (#1864, #6227) ----------------------
 
 
 def test_declared_driver_spacing_m_fails_soft_on_absent_or_malformed():
@@ -775,25 +771,15 @@ def test_declared_driver_spacing_m_fails_soft_on_absent_or_malformed():
         ) is None
 
 
-def test_declared_driver_spacing_mm_must_be_positive():
-    payload = build_design_draft(
-        _topology(), manual_settings={"driver_spacing_mm": 150},
-    )
-    assert declared_driver_spacing_m(payload) == pytest.approx(0.15)
+@pytest.mark.parametrize("field", ["driver_spacing_mm", "rear_woofer_spacing_mm"])
+def test_declared_driver_spacing_mm_must_be_positive(field):
+    cardioid = build_speaker_layout(_topology(), {"layout": "mono", "crossover": "active", "channels": 3, "cardioid": True})
+    payload = build_design_draft(cardioid, manual_settings={field: 150})
+    assert declared_driver_spacing_m(payload, field) == pytest.approx(0.15)
 
     with pytest.raises(ActiveSpeakerDesignDraftError) as caught:
-        build_design_draft(_topology(), manual_settings={"driver_spacing_mm": 0})
+        build_design_draft(cardioid, manual_settings={field: 0})
     assert caught.value.code == "field_not_positive"
-
-
-def test_declared_driver_spacing_m_survives_the_normalised_persisted_draft():
-    # End-to-end through the REAL normaliser + draft builder: what
-    # resolve_conductor_context reads is the persisted draft's
-    # manual_settings, so pin the value's survival through that path.
-    payload = build_design_draft(
-        _topology(), manual_settings={"driver_spacing_mm": 150},
-    )
-    assert declared_driver_spacing_m(payload) == pytest.approx(0.15)
 
 
 def test_build_design_draft_does_not_raise_with_driver_class_set():

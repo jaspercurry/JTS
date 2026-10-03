@@ -19,14 +19,15 @@ can have another cause. Driver class is context, not a diagnosis by itself.
 | Excitation band, level, duration | `excitation_safety_plan.py` | Physical protection |
 | Mic calibration and capture gain | Take calibration record | SPL and magnitude interpretation |
 | Gate window | Per-take gate disclosure | Frequency range the capture can resolve |
-| Rig geometry | `jasper-declare-geometry set|show` | Reflection-path estimate and its source |
+| Rig geometry | `jasper-declare-geometry set|show`, or Speaker placement on `/sound/speaker/` | Reflection-path estimate and its source |
 | Repeat spread | The round's own mark takes (ADR-0341) | Random measurement uncertainty |
 
 Geometry is useful when available: speaker acoustic-centre height, mic height,
 distance, and optional ceiling height. `jasper-declare-geometry --help` lists
 units. Derived floors must use each capture's own distance. An absent declaration
-is unknown, not zero. Centre spacing and waveguide coverage may exist only in
-operator notes; label that source instead of pretending the schema measured it.
+is unknown, not zero. Driver centre spacings are declared with the speaker;
+waveguide coverage may exist only in operator notes; label that source instead
+of pretending the schema measured it.
 
 For speaker linearization, measure the base plus the deliberate candidate layer.
 Exclude previous correction from the initial baseline and exclude room/preference

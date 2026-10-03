@@ -34,6 +34,7 @@ class SpeakerSetupView(TypedDict):
     applied: dict[str, Any]
     next_action: dict[str, Any]
     programs: list[dict[str, Any]]
+    geometry: dict[str, Any]
     issues: list[dict[str, Any]]
 
 
@@ -50,6 +51,17 @@ DRIVER_STYLES = (
     ("amt_tweeter", "AMT tweeter"), ("ribbon_tweeter", "Ribbon tweeter"),
     ("planar_tweeter", "Planar tweeter"), ("supertweeter", "Supertweeter"),
 )
+#: Every field of the declared rig, in its stored units: a save writes the whole declaration.
+GEOMETRY_FIELDS = {
+    "speaker_height_m": "Speaker height (m)",
+    "mic_height_m": "Microphone height (m)",
+    "distance_m": "Speaker to microphone (m)",
+    "cabinet_back_wall_m": "Cabinet back to wall (m)",
+    "cabinet_depth_m": "Cabinet depth (m)",
+    "toe_in_degrees": "Toe-in (degrees)",
+    "ceiling_height_m": "Ceiling height (m)",
+    "side_wall_m": "Nearest side wall (m)",
+}
 
 
 def _label(value: str) -> str:
@@ -76,6 +88,20 @@ def _research_refuses(research: Any) -> bool:
     except CodedFieldError:
         return True
     return False
+
+
+def _geometry_view() -> dict[str, Any]:
+    """The declared rig; an unreadable one opens with the values it still names (ADR-0388)."""
+    from jasper.audio_measurement import measurement_geometry as rig  # lazy: numpy; sound_setup imports numpy-free
+
+    try:
+        declared = rig.load_declared_geometry(rig.DEFAULT_PATH)
+    except (OSError, ValueError) as exc:
+        field = getattr(exc, "field", None) or type(exc).__name__
+        return {"fields": GEOMETRY_FIELDS, "values": getattr(exc, "declared", {}),
+                "issue": issue("blocker", rig.DECLARED_GEOMETRY_UNREADABLE,
+                               f"The saved placement cannot be read ({field}). Enter it again, then save.")}
+    return {"fields": GEOMETRY_FIELDS, "values": declared.to_dict() if declared else {}}
 
 
 def load_setup_view() -> SpeakerSetupView:
@@ -146,6 +172,7 @@ def load_setup_view() -> SpeakerSetupView:
                          "rear_muted": "rear" in coordinator["programs"]},
         "applied": {**applied, "layers": layers}, "next_action": {"id": action[0], "label": action[1]},
         "programs": [{**entry, "applied": layers[entry["id"]]} for entry in program_entries(topology)],
+        "geometry": _geometry_view(),
         "issues": refused or (list(coordinator["review"]["issues"]) if stage == "apply" else []),
     }
 
@@ -210,6 +237,10 @@ def update_setup(path: str, raw: Mapping[str, Any], *, camilla_factory) -> dict[
         result = save_details(raw)
     elif path == "/setup/research":
         import_research(raw)
+    elif path == "/setup/geometry":
+        from jasper.audio_measurement import measurement_geometry as rig  # lazy: numpy; sound_setup imports numpy-free
+
+        rig.DeclaredGeometry.from_dict(raw).save(rig.DEFAULT_PATH)
     elif path == "/setup/apply":
         from jasper.active_speaker.candidate_parts import candidate_from_design_draft  # lazy: graph compilation
 

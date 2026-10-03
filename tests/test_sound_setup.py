@@ -23,7 +23,7 @@ import wave
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, contextmanager
-from dataclasses import replace
+from dataclasses import fields as dataclass_fields, replace
 from pathlib import Path
 from unittest.mock import Mock, call
 from tests.test_rear_preview import compare_evidence as compare_evidence
@@ -41,7 +41,9 @@ from jasper.active_speaker.safe_playback import load_safe_playback_state
 from jasper.active_speaker.commissioning_coordinator import build_commissioning_view
 from jasper.active_speaker.baseline_apply import persist_applied_baseline_profile
 from jasper.active_speaker.design_draft import declared_driver_spacing_m, load_design_draft
+from jasper.active_speaker.design_inputs import resolve_design_inputs
 from jasper.active_speaker.tuning_handoff import build_tuning_handoff
+from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.program_analysis.model import MeasurementGeometry
 from jasper.active_speaker.runtime_convergence import PARK_SKIPPED, park_and_commit_topology
 from jasper.sound.flat_verifier import FLAT_PROGRAM_GRAPH_UNCONFIGURED
@@ -103,6 +105,7 @@ from jasper.web import (
     sound_design_draft,
     sound_profile_apply,
     sound_setup,
+    sound_speaker_setup,
     volume_floor_tone,
 )
 
@@ -1954,24 +1957,30 @@ def test_output_topology_payload_serializes_with_populated_hardware_state():
     assert "hardware_mismatch" in envelope
 
 
-@pytest.mark.parametrize("spacing", [{}, {"driver_spacing_mm": None}, {"driver_spacing_mm": 200}])
-def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp_path, spacing):
+@pytest.mark.parametrize("cardioid", [False, True])
+@pytest.mark.parametrize("spacing", [{}, {"driver_spacing_mm": None}, {"driver_spacing_mm": 200, "rear_woofer_spacing_mm": 330}])
+def test_driver_spacing_draft_save_reaches_geometry_and_handoff(monkeypatch, tmp_path, spacing, cardioid):
     paths = _set_active_speaker_state_paths(monkeypatch, tmp_path)
     topology = mono_output_topology(card_id=None)
+    if cardioid:
+        group, = topology.speaker_groups
+        rear = replace(group.channels[0], output_variant="rear", physical_output_index=2)
+        topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, rear)),))
     monkeypatch.setattr(sound_active_speaker, "load_output_topology", lambda: topology)
     monkeypatch.setattr(sound_design_draft, "load_output_topology", lambda: topology)
     saved = sound_design_draft._active_speaker_design_draft_save_payload({
         "manual_settings": {"drivers": [{"role": "woofer", "target_id": "mono:woofer", "model": "Test woofer"}], **spacing},
     })
     loaded = load_design_draft(topology=topology, path=paths["JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE"])
-    expected = spacing.get("driver_spacing_mm")
-    assert saved["manual_settings"]["driver_spacing_mm"] == expected
-    assert loaded["manual_settings"]["driver_spacing_mm"] == expected
+    # A rear woofer spacing is kept only where the layout has a rear woofer (#6227).
+    expected = (spacing.get("driver_spacing_mm"), spacing.get("rear_woofer_spacing_mm") if cardioid else None)
     geometry = MeasurementGeometry(driver_spacing_m=declared_driver_spacing_m(loaded) or 0.0, mic_distance_m=1.0)
-    assert geometry.parallax_us() == pytest.approx(57.7 if expected else 0.0, abs=0.05)
+    assert geometry.parallax_us() == pytest.approx(57.7 if expected[0] else 0.0, abs=0.05)
     view = build_commissioning_view(topology, design_draft=loaded)
-    assert view["driver_spacing_mm"] == expected
-    assert build_tuning_handoff(commissioning_view=view, design_draft=loaded)["driver_spacing_mm"] == expected
+    for reader in (saved["manual_settings"], loaded["manual_settings"], view,
+                   resolve_design_inputs(topology, loaded["manual_settings"], None),
+                   build_tuning_handoff(commissioning_view=view, design_draft=loaded)):
+        assert (reader["driver_spacing_mm"], reader["rear_woofer_spacing_mm"]) == expected
 
 
 @pytest.mark.parametrize("field", ["confirm_safety_profile", "typo"])
@@ -5522,3 +5531,21 @@ def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypat
         response = json.loads(json_post_with_csrf(base, path, {}).read())
     assert response['result']['status'] == 'saved'
     assert response['setup']['stage'] == 'details'
+
+
+def test_setup_placement_declares_the_rig_through_its_one_writer(tmp_path, monkeypatch):
+    path = tmp_path / 'measurement_geometry.json'
+    path.write_text(json.dumps({'speaker_height_m': 0.95, 'mic_height_m': 1.2, 'distance_m': 1.0, 'front_wall_m': 0.5}))
+    monkeypatch.setattr(measurement_geometry, 'DEFAULT_PATH', str(path))
+    monkeypatch.setattr(sound_speaker_setup, 'load_setup_view', lambda: {'geometry': sound_speaker_setup._geometry_view()})
+    retired = sound_speaker_setup._geometry_view()
+    assert retired['issue']['code'] == measurement_geometry.DECLARED_GEOMETRY_UNREADABLE
+    assert retired['values'] == {'speaker_height_m': 0.95, 'mic_height_m': 1.2, 'distance_m': 1.0}
+    assert set(retired['fields']) == {field.name for field in dataclass_fields(measurement_geometry.DeclaredGeometry)}
+    rig = {**retired['values'], 'ceiling_height_m': 2.4, 'side_wall_m': 0.8,
+           'cabinet_back_wall_m': 0.2, 'cabinet_depth_m': 0.33, 'toe_in_degrees': 10.0}
+    with sound_server(tmp_path) as base:
+        saved = json.loads(json_post_with_csrf(base, '/setup/geometry', rig).read())
+        json_post_with_csrf(base, '/setup/geometry', {**rig, 'cabinet_depth_m': 0}, expect_status=400)
+    assert saved['setup']['geometry'] == {'fields': sound_speaker_setup.GEOMETRY_FIELDS, 'values': rig}
+    assert measurement_geometry.load_declared_geometry(path).to_dict() == rig

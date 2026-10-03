@@ -10,15 +10,19 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const text = node => nodes(node).map(n => n.textContent || '').join('');
 const visible = node => (node.tag === 'details' && !node.open
   ? (node.children || []).filter(n => n.tag === 'summary') : node.children || []).map(visible).join('') + (node.textContent || '');
-const make = tag => Object.assign(element(tag), {
-  value: '', open: false, selected: false,
-  appendChild(node) { this.children.push(node); node.parent = this; },
-  remove() { this.parent.children = this.parent.children.filter(node => node !== this); },
-  focus() {},
-  select() { this.selected = true; },
-  replaceChildren(...children) { this.children = children.map(child => typeof child === 'object' ? child : {textContent: String(child)}); },
-  removeAttribute(key) { delete this[key]; },
-});
+const make = tag => {
+  const node = element(tag), listen = node.addEventListener;
+  return Object.assign(node, {
+    value: '', open: false, selected: false, on: {},
+    addEventListener(event, fn) { this.on[event] = fn; listen(event, fn); },
+    appendChild(node) { this.children.push(node); node.parent = this; },
+    remove() { this.parent.children = this.parent.children.filter(node => node !== this); },
+    focus() {},
+    select() { this.selected = true; },
+    replaceChildren(...children) { this.children = children.map(child => typeof child === 'object' ? child : {textContent: String(child)}); },
+    removeAttribute(key) { delete this[key]; },
+  });
+};
 globalThis.Node = class { static [Symbol.hasInstance](value) { return !!value?.appendChild; } };
 const navigations = [];
 globalThis.location = {hash: '', assign: url => navigations.push(url)};
@@ -38,6 +42,7 @@ const state = stage => ({
   base_preview: {crossovers: [{between_roles: ['woofer', 'tweeter'], proposed_frequency_hz: 2500}], trims: [{role: 'tweeter', gain_db: -23, source: 'Estimated'}]},
   applied: {config_path: '/var/lib/camilladsp/private-config.yml', candidate_fingerprint: 'opaque-identity'},
   programs: [{id: 'speaker', title: 'Driver linearization', description: 'Fit the drivers.'}, {id: 'room', title: 'Room', description: 'Fit the room.'}],
+  geometry: {fields: {speaker_height_m: 'Speaker height (m)', cabinet_back_wall_m: 'Cabinet back to wall (m)'}, values: {speaker_height_m: 1}},
 });
 function setup(initial = state('research'), handler = async () => ({setup: state('apply')}), clipboard = {ok: true}, confirm = async () => true) {
   const root = make('view-body'), status = make('status'), requests = [], copies = [];
@@ -98,6 +103,22 @@ for (const [source, values, drivers, shown] of [
   await flush();
   const row = nodes(ui.root).find(n => n.tag === 'dl');
   assert.deepEqual(row.children.map(text), ['Usable range', shown]);
+});
+
+test('a cardioid speaker saves its woofer spacing with the details and its placement on its own', async () => {
+  const initial = state('tune');
+  initial.layout.choices = {...initial.layout.choices, channels: 3, cardioid: true};
+  const ui = setup(initial, async () => ({setup: initial}));
+  await flush();
+  const type = (label, value) => nodes(ui.root).find(n => n.tag === 'label' && text(n) === label)
+    .children.find(n => n.tag === 'input').on.input({target: {value}});
+  type('Front-to-rear woofer spacing (mm)', '330');
+  await ui.button('Save details').click();
+  type('Cabinet back to wall (m)', '0.2');
+  await ui.button('Save placement').click();
+  assert.deepEqual(ui.requests.map(request => request.path), ['./setup/details', './setup/geometry']);
+  assert.equal(ui.requests[0].body.manual_settings.rear_woofer_spacing_mm, 330);
+  assert.deepEqual(ui.requests[1].body, {speaker_height_m: 1, cabinet_back_wall_m: 0.2});
 });
 
 test('a refused draft shows its refusal once, in the open driver details card', async () => {

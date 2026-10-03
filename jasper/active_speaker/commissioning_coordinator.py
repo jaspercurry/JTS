@@ -141,6 +141,7 @@ def build_commissioning_view(
         "driver_values": {"complete": values_ready, "design_ready": design_ready,
                           "preview_ready": preview_ready, "driver_floors_declared": safety_ready},
         "driver_spacing_mm": (draft.get("manual_settings") or {}).get("driver_spacing_mm"),
+        "rear_woofer_spacing_mm": (draft.get("manual_settings") or {}).get("rear_woofer_spacing_mm"),
         "test_level": dict((calibration_level or {}).get("test_signal") or {}),
         "runtime": {"startup_load": dict(startup_load or {})},
     }

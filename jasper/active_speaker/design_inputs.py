@@ -69,7 +69,8 @@ def resolve_design_inputs(
             if pair not in ranks or rank > ranks[pair]:
                 candidates[pair], ranks[pair] = dict(candidate), rank
     return {"drivers": drivers, "crossover_candidates": list(candidates.values()),
-            "driver_spacing_mm": manual.get("driver_spacing_mm")}
+            "driver_spacing_mm": manual.get("driver_spacing_mm"),
+            "rear_woofer_spacing_mm": manual.get("rear_woofer_spacing_mm")}
 
 
 def resolved_draft_inputs(draft: Mapping[str, Any]) -> dict[str, Any]:

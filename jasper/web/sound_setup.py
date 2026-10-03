@@ -722,7 +722,8 @@ def _make_handler(
     get_routes = dict.fromkeys(_GET_ROUTES, Handler._dispatch_get_route)
 
     _POST_ROUTES = {
-        **dict.fromkeys(("/setup/layout", "/setup/save-layout", "/setup/details", "/setup/research", "/setup/apply", "/setup/reset"), Handler._dispatch_post_route),
+        **dict.fromkeys(("/setup/layout", "/setup/save-layout", "/setup/details", "/setup/research", "/setup/geometry",
+                         "/setup/apply", "/setup/reset"), Handler._dispatch_post_route),
         "/cardioid-compare": Handler._dispatch_post_route,
         "/apply": Handler._dispatch_post_route,
         "/audition": Handler._dispatch_post_route,
