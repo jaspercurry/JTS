@@ -23,8 +23,8 @@ from jasper.audio_measurement.evidence_reasons import (
 )
 from jasper.active_speaker.applied_identity import BASE_LAYER
 from jasper.active_speaker.measurement_programs import (
-    CANDIDATE_LAYERS, POSE_KIND_BEARING, PROGRAM_ROWS, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER,
-    RUNNABLE_PROGRAMS, run_purpose, run_purposes,
+    CANDIDATE_LAYERS, POSE_KIND_BEARING, PROGRAM_ROWS, PURPOSE_BASS, PURPOSE_REFERENCE, PURPOSE_ROOM,
+    PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose, run_purposes,
 )
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
@@ -281,10 +281,10 @@ def banked_rounds(
 
 
 def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
-    """The programs a banked packet counts for: its own, and room when it carries room views.
-    A round that kept no take counts for none. A round whose every take plays one driver
-    alone counts for none but reference: it holds no take its program's next step reads,
-    until #5696 (ADR-0360 §2)."""
+    """The programs a banked packet counts for: its own, and room and bass when it carries their
+    views, as the in-room round carries both (ADR-0429). A round that kept no take counts for
+    none. A round whose every take plays one driver alone counts for none but reference: it
+    holds no take its program's next step reads, until #5696 (ADR-0360 §2)."""
     try:
         purpose = run_purpose(packet.get("preset"))
     except ValueError:
@@ -293,7 +293,8 @@ def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
     if not any(take.get("selected") for take in takes) or (
             purpose != PURPOSE_REFERENCE and all((take.get("pose") or {}).get("driver") for take in takes)):
         return ()
-    return tuple(name for name in dict.fromkeys((purpose, PURPOSE_ROOM if packet.get("room") else "")) if name)
+    carried = (name for name in (PURPOSE_ROOM, PURPOSE_BASS) if packet.get(name))
+    return tuple(name for name in dict.fromkeys((purpose, *carried)) if name)
 
 
 #: Each applied layer and the program that owns it, in stack order: the base and the speaker's own

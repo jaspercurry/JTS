@@ -129,9 +129,10 @@ def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures
 
 @pytest.mark.parametrize("preset_id", mp.available_presets())
 def test_a_preset_names_its_purposes_program_first_at_every_layout(preset_id):
-    """The seat trial serves rear and room from one set of takes (ADR-0336, ADR-0383)."""
+    """The seat trial serves rear and room, and the in-room round room and bass, from one set
+    of takes (ADR-0336, ADR-0383, ADR-0429)."""
     row = mp.preset(preset_id)
-    expected = ("rear", "room") if preset_id == "rear/seat" else (row.purpose,)
+    expected = {"rear/seat": ("rear", "room"), "room/seat": ("room", "bass")}.get(preset_id, (row.purpose,))
     assert (mp.run_purposes(preset_id), mp.run_purpose(preset_id)) == (expected, expected[0])
     assert {mp.run_preset(preset_id, layout).purposes for layout in row.layouts} == {expected}
 
@@ -148,7 +149,8 @@ def test_summed_bookkeeping_includes_one_frequency_image(purpose):
 
 @pytest.mark.parametrize(("purposes", "expected"), [
     (("speaker",), (("frequency", False, False),)),
-    (("room",), (("room", True, False), ("room-grade", True, True), ("frequency", False, False))),
+    (("room", "bass"), (("room", True, False), ("room-grade", True, True), ("bass", True, False),
+                        ("frequency", False, False))),
     (("bass",), (("bass", True, False), ("frequency", False, False))),
     (("reference",), ()),
     (("rear",), (("rear", False, False), ("frequency", False, False))),
@@ -494,11 +496,12 @@ def test_a_program_name_resolves_to_its_first_preset() -> None:
 
 
 @pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
-def test_a_programs_first_plan_is_its_own_at_a_layout_its_preset_offers(program) -> None:
+def test_a_programs_first_plan_serves_it_at_a_layout_its_preset_offers(program) -> None:
+    """Bass starts on the in-room round, which serves room and bass (ADR-0429)."""
     first = mp.first_plan(program)
 
-    assert first.purpose == program and first.layout in mp.preset(first.preset).layouts
-    if program != mp.PURPOSE_REAR:
+    assert program in first.purposes and first.layout in mp.preset(first.preset).layouts
+    if program not in (mp.PURPOSE_REAR, mp.PURPOSE_BASS):
         assert first == mp.preset(program)
 
 
@@ -661,13 +664,15 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, ("rear_calibration",)),
     (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, ("rear_calibration",)),
     (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
-    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_REFERENCE, True, mp.REGIME_SUMMED, ()),
+    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, ("room_correction", "bass_extension")),
+    (mp.PURPOSE_ROOM, False, mp.REGIME_SUMMED, ()), (mp.PURPOSE_REFERENCE, True, mp.REGIME_SUMMED, ()),
     (None, True, mp.REGIME_SUMMED, ()),
 ])
 def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, regime, cleared) -> None:
     """A bass take plays the applied speaker layer with room off, and its base
-    plays bass off too; a rear pair take plays its parent with the rear stage
-    off; every other take plays its layers as composed (ADR-0370, ADR-0386)."""
+    plays bass off too; the in-room base plays bass and room off; a rear pair
+    take plays its parent with the rear stage off; every other take plays its
+    layers as composed (ADR-0370, ADR-0386, ADR-0429)."""
     assert mp.cleared_layers(purpose, base=base, regime=regime) == cleared
 
 

@@ -558,12 +558,13 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     ({"rear_calibration": "document"}, ("--mover", "arm"), "rear/express", "rear_express", "arm"),
     ({"rear_calibration": "document"}, ("--layout", "rear_express"), "rear/express", "rear_express", "human"),
     ({"alignment": "cleared"}, (), "speaker/mark", "speaker_mark", "human"),
-    ({"bass": "document"}, ("--mover", "human"), "bass/axis", "seat_express", "human"),
+    ({"bass": "document"}, ("--mover", "human"), "room/seat", "seat_express", "human"),
     ({"room": "document"}, ("--mover", "arm"), "room/seat", "room_quick", "arm"),
     ({"room": "document"}, ("--layout", "seat_cloud"), "room/seat", "seat_cloud", "human"),
     ({"driver": "document", "room": "document"}, (), "room/seat", "seat_express", "human"),
-    ({"driver": "document", "room": "document", "bass": "document"}, (), "bass/axis", "seat_express", "human"),
-    ({"bass": "document"}, ("--mover", "arm"), "bass/axis", "bass_axis", "arm"),
+    ({"room": "document", "bass": "document"}, (), "room/seat", "seat_express", "human"),
+    ({"bass": "cleared"}, (), "room/seat", "seat_express", "human"),
+    ({"bass": "document"}, ("--mover", "arm"), "room/seat", "room_quick", "arm"),
     ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "rear/seat", "seat_express", "human"),
     ({"driver": "base", "alignment": "saved"}, (), None, None, None),
 ])
@@ -1433,13 +1434,13 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
     assert seen == ["arm", "human"]
 
 
-@pytest.mark.parametrize("verb,flags,probe_db,levels", [
-    ("run", ["--level-db", "-18"], -18.0, [-18.0]),
-    ("trial", [], 0.0, [0.0, -5.0, -10.0, -15.0]),
+@pytest.mark.parametrize("trial,flags,probe_db,levels", [
+    (False, ["--level-db", "-18"], -18.0, [-18.0]),
+    (True, [], 0.0, [0.0, -5.0, -10.0, -15.0]),
 ])
 def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
-    verb, flags, probe_db, levels,
+    trial, flags, probe_db, levels,
 ):
     """A bass run probes its first spot and holds the level it finds, never above
     a stated one; a ladder's rungs, loudest first, step down from it (ADR-0403 §4)."""
@@ -1550,12 +1551,12 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     bank = round_bank.bank_round
     monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: bank(path, campaign_root=tmp_path / "campaigns", **kw))
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
-    argv = (["trial", candidate.fingerprint, "--layout", "bass_axis"] if verb == "trial"
-            else ["run", "--program", "bass", "--layout", "bass_axis"])
+    argv = ["run", "--program", "bass", "--layout", "bass_axis",
+            *(["--candidates", f"base,{candidate.fingerprint}"] if trial else [])]
     code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
     assert code == 0, body
     expected = [(probe_db, "lateral")] + [
-        (level, "lateral") for level in levels for _ in range(2 if verb == "trial" else 1)]
+        (level, "lateral") for level in levels for _ in range(2 if trial else 1)]
     assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
     assert len(gate.grants) == fakes.graph.restores == 1
     assert box.volume_db == entry_volume
@@ -1563,7 +1564,7 @@ def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
     assert packet["result"] == "complete" and len(packet.get("runs", [packet])) == len(levels)
     assert Path(body["packet"]) == Path(body["round_dir"]) / "packet.json"
     assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
-    assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if verb == "trial" else 1)
+    assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if trial else 1)
     assert len(packet["bass"]) == len(packet["artifacts"]["bass_views"])
     unread = {group["set_id"] for group in json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]
               if group["capture_basis"].get("graph_scope") == "timing" or group["capture_basis"].get("level_probe")}

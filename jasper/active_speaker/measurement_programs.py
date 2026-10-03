@@ -96,13 +96,16 @@ class TuningProgram:
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
-    #: Applied layers every take of this purpose plays cleared, and whether its
-    #: base, or its branches take, also clears the purpose's own layer
-    #: (doctrine §1a; ADR-0370, ADR-0386).
+    #: Applied layers every take of this purpose plays cleared, the further layers
+    #: its base plays cleared, and whether its branches take also clears the
+    #: purpose's own layer (doctrine §1a; ADR-0370, ADR-0386, ADR-0429).
     clears: tuple[str, ...] = ()
-    base_clears_own: bool = False
+    base_clears: tuple[str, ...] = ()
     branches_clear_own: bool = False
 
+
+#: A bass or a room document trials on the in-room round's seat set (ADR-0429).
+_IN_ROOM_TRIALS = (("room/seat", "seat_express"), ("room/seat", "room_quick"))
 
 # Row order is the tuning order; stored documents retain their existing orders.
 _PROGRAM_SECTIONS = (
@@ -139,15 +142,15 @@ _PROGRAM_SECTIONS = (
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
         run_headline=("JTS is playing a bass sweep at each spot, in steps from loud to quiet, to see how far the bass "
                       "can extend within the driver's limits. Follow the step below."),
-        trial=(("bass/axis", "seat_express"), ("bass/axis", "bass_axis")), graph_evidence=True,
-        clears=("room_correction",), base_clears_own=True,
+        trial=_IN_ROOM_TRIALS, start=_IN_ROOM_TRIALS[0], graph_evidence=True,
+        clears=("room_correction",), base_clears=("bass_extension",),
     ),
     TuningProgram(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 4, envelope=(*_VERSIONED, "rationale")),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
         "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
         run_headline="JTS is measuring the sound at each listening spot, to see what the room does to it. Follow the step below.",
-        trial=(("room/seat", "seat_express"), ("room/seat", "room_quick")), preview=(1, "room", ("bass", "room")),
+        trial=_IN_ROOM_TRIALS, preview=(1, "room", ("bass", "room")), base_clears=("room_correction", "bass_extension"),
     ),
 )
 PROGRAM_ROWS = _PROGRAM_SECTIONS
@@ -191,12 +194,12 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
 
 def cleared_layers(purpose: str | None, *, base: bool, regime: str) -> tuple[str, ...]:
     """The applied candidate layers a take of ``purpose`` in ``regime`` plays
-    cleared, on the run's base or on a candidate it names (ADR-0370)."""
+    cleared, on the run's base or on a candidate it names (ADR-0370, ADR-0429)."""
     row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
     if row is None:
         return ()
-    own = base and row.base_clears_own or regime == REGIME_BRANCHES and row.branches_clear_own
-    return row.clears + ((row.candidate_fields[0].name,) if own else ())
+    own = (row.candidate_fields[0].name,) if regime == REGIME_BRANCHES and row.branches_clear_own else ()
+    return row.clears + (row.base_clears if base else ()) + own
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:

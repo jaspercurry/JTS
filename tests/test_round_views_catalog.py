@@ -120,7 +120,7 @@ def test_a_rounds_index_and_its_catalog_list_what_to_run_next_from_one_function(
     again = next(call for tool in _catalog(capsys, str(root))["tools"] for call in tool["calls"]
                  if call["argv"] == grade["argv"])
     assert (again["present"], again["bytes"]) == (True, Path(grade["out"]).stat().st_size)
-    assert _catalog(capsys, str(root), "--program", "bass")["tools"] == []
+    assert _catalog(capsys, str(root), "--program", "speaker")["tools"] == []
     assert round_views.main(["catalog", str(root), "--set", "unknown"]) == round_views.EXIT_REFUSED
 
 

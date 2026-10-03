@@ -163,15 +163,16 @@ def test_every_program_on_every_layout(speaker, row):
 @pytest.mark.parametrize('speaker', ['cardioid'], indirect=True)
 @pytest.mark.parametrize('mover,trials', [
     (None, {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/seat', 'seat_express'),
-            'bass': ('bass/axis', 'seat_express'), 'room': ('room/seat', 'seat_express')}),
+            'bass': ('room/seat', 'seat_express'), 'room': ('room/seat', 'seat_express')}),
     ('arm', {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/express', 'rear_express'),
-             'bass': ('bass/axis', 'bass_axis'), 'room': ('room/seat', 'room_quick')}),
+             'bass': ('room/seat', 'room_quick'), 'room': ('room/seat', 'room_quick')}),
     ('human', {'speaker': ('speaker/mark', 'speaker_mark'), 'rear': ('rear/seat', 'seat_express'),
-               'bass': ('bass/axis', 'seat_express'), 'room': ('room/seat', 'seat_express')}),
+               'bass': ('room/seat', 'seat_express'), 'room': ('room/seat', 'seat_express')}),
 ], ids=('default', 'arm', 'human'))
 @pytest.mark.parametrize('program', RUNNABLE_PROGRAMS)
 def test_a_document_trials_its_own_program_through_the_composer(speaker, program, mover, trials):
-    """A document of each program trials base against it at that program's layout for the mover (#5632)."""
+    """A document of each program trials base against it at that program's layout for the mover (#5632);
+    a bass document trials on the in-room round (ADR-0429)."""
     selected = trial_preset(prescription_sections(program), mover)
     assert selected is not None and (selected.preset, selected.layout) == trials[program]
     assert _outcome(speaker, selected, ('base', speaker.candidate.fingerprint), mover) == {('pass',)}

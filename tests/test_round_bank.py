@@ -41,14 +41,15 @@ from jasper.audio_measurement.evidence_reasons import (
     CAPTURE_UNREADABLE_SIDECAR, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable,
 )
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    CAPTURE_STATE_FILENAME, RoundSetRefused, RoundViewsError, resolve_set, round_artifact_dir, round_inputs,
+    CAPTURE_STATE_FILENAME, RoundSetRefused, RoundViewsError, packet_purposes, resolve_set, round_artifact_dir,
+    round_inputs,
 )
 from jasper.active_speaker.crossover_v2.round_views import load_banked_round
 from jasper.active_speaker.crossover_v2.round_inputs import INDEX_FILENAME
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
 from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401
-from jasper.active_speaker import measurement_programs, round_view_artifacts
+from jasper.active_speaker import angle_capture, measurement_programs, round_view_artifacts
 from jasper.active_speaker.round_view_artifacts import bookkeeping_views
 
 from jasper.active_speaker.round_bank import (
@@ -341,7 +342,7 @@ def test_bank_keeps_an_aggregate_view_beside_timing_evidence(tmp_path, real_set)
 
 @pytest.mark.parametrize("purpose,expected", [
     ("speaker", ("frequency",)),
-    ("room", ("room", "room-grade", "frequency")),
+    ("room", ("room", "room-grade", "bass", "frequency")),
     ("bass", ("bass", "frequency")),
 ])
 def test_bank_runs_the_programs_registered_views(tmp_path, capsys, purpose, expected):
@@ -407,6 +408,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, capsys, purpose, b
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
             ("room-grade", row["set_id"], None) for row in trials if base] + [
+            ("bass", row["set_id"], None) for row in groups if purpose == "room"] + [
             (view, None, None) for view in (("rear", "frequency") if purpose == "rear/seat" else ("frequency",))]
         assert [{key: row[key] for key in ("view", "set_id", "status", "incumbent_set_id", "reason") if key in row}
                 for row in banked.provenance["views"] if row["view"] == "room-grade"] == [
@@ -422,6 +424,34 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, capsys, purpose, b
             assert entry["median"]["n_positions"] == 3
             assert set(entry["median"]["evidence"]["take_ids"]) == {f"{entry['set_id']}-{index}" for index in range(3)}
         assert _present(banked.path, capsys) >= {"room", "room-grade"}
+
+
+def test_the_in_room_round_files_the_room_and_the_bass_view_from_one_seat_set(tmp_path, request):
+    """The in-room round's base plays with bass and room cleared, and its bank files the room view
+    and the bass view from that one seat set, so the round counts for both programs (ADR-0429)."""
+    plan = angle_capture.request_for_preset(measurement_programs.run_preset("room/seat"))
+    cleared, = {angle_capture.played_layers(stop) for stop in plan.stops}
+    assert set(cleared) == {"bass_extension", "room_correction"}
+    session, _, _, bank = request.getfixturevalue("summed_capture_bundle")
+    records = []
+    for index, stop in enumerate(plan.stops):
+        record_id = asyncio.run(bank(
+            f"seat-{index}", phase="lateral", measurement_purpose="room", gating_applied=False,
+            pose_kind=stop.pose.kind, seat_offset_m=stop.pose.seat_offset_m, vertical_deg=0, mark_distance_m=1.0,
+        ))
+        records.append((record_id, json.loads(take_artifact_path(session, record_id).read_text())))
+    write_manifest(session, program="room/seat",
+                   groups=[{**manifest_set(records, set_id="base", cleared_layers=cleared), "base": True}])
+    mark_state(session, "applied")
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", view_runner=run_bookkeeping)
+
+    packet = json.loads((banked.path / "packet.json").read_text())
+    (room,), (bass,) = packet["room"], packet["bass"]
+    assert (room["set_id"], bass["set_id"]) == ("base", "base")
+    assert set(room["median"]["evidence"]["take_ids"]) == {take["record"]["take_id"] for take in bass["takes"]} == {
+        f"seat-{index}" for index in range(len(plan.stops))}
+    assert packet_purposes(packet) == ("room", "bass")
 
 
 @pytest.mark.parametrize("purpose,view", [
