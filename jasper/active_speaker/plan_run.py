@@ -34,7 +34,7 @@ from .angle_capture import (
     level_sets, resolve_request, take_level,
 )
 from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index
-from .crossover_v2.admission import SlotAttempts
+from .crossover_v2.admission import LEVEL_RETAKES as _LEVEL_RETAKES, SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
 from .crossover_v2.capture_plan import announce_run, pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
@@ -61,8 +61,6 @@ _OWN_CODE = (CaptureBeginRefused, StimulusCaptureStopped)
 Analyze = Callable[[Mapping[str, Any]], ProgramAnalysis]
 #: What a take's assessment may raise and still answer with a stop; any other ends the run.
 _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
-#: The verdicts that retake at the level they name.
-_LEVEL_RETAKES = frozenset({"retake_louder", "retake_quieter"})
 #: dB a branch take's sum plays under the lower of its branches' levels: two
 #: branches in phase read at most 6 dB over the louder one alone (ADR-0403 §3).
 BRANCH_SUM_MARGIN_DB = 6.0
@@ -720,6 +718,7 @@ async def _run(
                     if verdict is None or (verdict.next != "stop" and assessed.next != "accept"):
                         verdict = assessed
                 assert verdict is not None
+                ledger.note(verdict)
                 if gate:
                     gate.publish({**progress, "fault": verdict.fault, "next_action": verdict.next})
                 if verdict.next == "stop":

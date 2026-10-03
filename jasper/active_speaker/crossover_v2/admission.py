@@ -15,10 +15,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .refusal_copy import TakeCharge
+from jasper.platform.json_fields import finite_float
+
+from .refusal_copy import TakeCharge, TakeVerdict
 
 __all__ = [
     "DECISION_KINDS",
+    "LEVEL_RETAKES",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
     "AttemptOverspendError",
     "BeginDecision",
@@ -29,6 +32,8 @@ __all__ = [
 
 #: A placement's takes after its free first, of every charge but a replay (ADR-0422).
 MAX_EXTRA_ATTEMPTS_PER_POSITION = 2
+#: The verdicts that retake at the level they name.
+LEVEL_RETAKES = frozenset({"retake_louder", "retake_quieter"})
 
 
 class AttemptOverspendError(RuntimeError):
@@ -61,21 +66,22 @@ class SlotAttempts:
     by_speaker: int = 0
     charge: TakeCharge = "operator"
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
+    #: The last take's fault and reading, when it was refused for a retake at its own level.
+    refusal: tuple[str, float] | None = None
+    #: A take repeated that refusal, so no retake here can change the answer (ADR-0428).
+    repeated: bool = False
 
     @property
     def extras_used(self) -> int:
         return self.by_household
 
-    @property
-    def extras_left(self) -> int:
-        return max(0, min(self.retries_per_pose - self.by_household, self.automatic_left))
-
-    @property
-    def automatic_left(self) -> int:
-        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household - self.by_speaker)
+    def left(self, charge: TakeCharge = "operator") -> int:
+        """Extra takes left for ``charge``: the placement's cap, within the run's share for all but a speaker's."""
+        cap = 0 if self.repeated else MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household - self.by_speaker
+        return max(0, cap if charge == "speaker" else min(cap, self.retries_per_pose - self.by_household))
 
     def can_retry(self, charge: TakeCharge = "operator") -> bool:
-        return charge == "replay" or (self.automatic_left if charge == "speaker" else self.extras_left) > 0
+        return charge == "replay" or self.left(charge) > 0
 
     def can_admit(self, charge: TakeCharge) -> bool:
         return not self.admitted or self.can_retry(charge)
@@ -94,14 +100,26 @@ class SlotAttempts:
         elif charge != "replay":
             self.by_household += 1
 
+    def note(self, verdict: TakeVerdict) -> None:
+        """Keep a take's refusal for a retake at its own level: its fault, and its level
+        reading or else its peak. One that repeats the last, its reading within
+        ``SAME_POSE_DRIFT_DB``, spends the placement. A replay leaves the last as it is (ADR-0428)."""
+        from .capture_dispatch import SAME_POSE_DRIFT_DB  # lazy: it loads scipy, and the arm-walk CLI imports this module
+        if verdict.charge == "replay":
+            return
+        reading = finite_float(verdict.evidence.get("level_db_spl", verdict.evidence.get("peak_dbfs")))
+        last, self.refusal = self.refusal, (
+            (verdict.fault, reading) if verdict.fault and reading is not None and verdict.next not in LEVEL_RETAKES
+            else None)
+        if last and self.refusal and last[0] == self.refusal[0] and abs(last[1] - self.refusal[1]) <= SAME_POSE_DRIFT_DB:
+            self.repeated = True
+
     def to_payload(self) -> dict[str, Any]:
         return {
             "allowed": self.retries_per_pose,
-            "left": self.extras_left,
+            "left": self.left(),
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,
-            "automatic_left": self.automatic_left,
-            "automatic_allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
         }
 
 
