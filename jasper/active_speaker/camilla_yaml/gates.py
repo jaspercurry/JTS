@@ -209,9 +209,8 @@ def _assert_parked_outputs_muted(yaml_text: str, output_count: int) -> None:
 # mid-program). This graph
 # maps each program capture channel to its driver's PHYSICAL output path.
 
-# The slope the program graph's tweeter protection high-pass must reach. A code
-# figure no datasheet contains, so it never refuses a crossover order a
-# household pinned (ADR-0227 §10).
+# The slope the program graph's tweeter protection high-pass must reach: a
+# declared protection below it refuses (ADR-0426).
 PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
 
 
