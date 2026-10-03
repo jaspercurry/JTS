@@ -16,7 +16,6 @@ from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import pose_curve
-from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
@@ -25,13 +24,11 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.audio_measurement import evidence_grid
 from jasper.audio_measurement.evidence_grid import lateral_evidence_grid_hz
 from jasper.active_speaker.plan_run import prepare_plan_captures
-from jasper.audio_measurement.program import build_verify_program
 from jasper.audio_measurement.program_analysis import (
     DriverResponse,
 )
 
 from tests.crossover_v2_fixtures import (
-    FC_HZ,
     FakeSeams,
     _conductor,
     _measure_analysis,
@@ -65,24 +62,16 @@ def _walk(conductor, *, through: int = LAST_LATERAL_INDEX) -> list[dict]:
     return out
 
 
-@pytest.mark.parametrize("purpose", ["speaker", "room"])
-def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
+def test_an_inline_summed_lateral_entry_states_its_phase_and_bearing():
     request = ac.AngleCaptureRequest((
-        ac.AngleStop(Pose(22, 0), ac.REGIME_SUMMED, candidate_id="trial", purpose=purpose),
+        ac.AngleStop(Pose(22, 0), ac.REGIME_SUMMED, candidate_id="trial", purpose="speaker"),
     ), candidates=("trial",))
     captures = prepare_plan_captures(request, roles_bands=_roles())
-    plan = capture_plan.build_inline_session_spec(
+    (entry,) = capture_plan.build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding="b" * 24,
-    ).capture_plan
-    (entry,) = plan.entries
+        acknowledgement_binding="b" * 24,
+    ).capture_plan.entries
     assert entry.kind_label == PHASE_LATERAL
-    # No purpose names a summed sweep's band (ADR-0400).
-    assert captures[0].spec.sweep_band_hz == ()
-    # The plan's only take opens its run, so its entry budgets the prelude (ADR-0417).
-    program = build_verify_program(FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()),
-                                   courtesy_prelude=True)
-    assert entry.duration_ms == capture_plan._program_duration_ms(program) + capture_plan.CAPTURE_ENTRY_MARGIN_MS
     assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
 
 

@@ -257,9 +257,8 @@ def solo_target(spec: MeasureSpec) -> str:
 def branch_channels_for(spec: MeasureSpec) -> dict[str, int]:
     """Which program channel carries each target this take names.
 
-    THE single owner: the composers, the capture-window sizer and the graph
-    emitter all read this, so no two of them can disagree about what a take
-    excites. Empty when the take names no target: one mono program then
+    THE single owner: the composers and the graph emitter both read this, so
+    they cannot disagree about what a take excites. Empty when the take names no target: one mono program then
     reaches every driver, or a drivers take plays the session's own roles.
     """
     return {target_id: channel for channel, target_id in enumerate(spec.branch_target_ids)}

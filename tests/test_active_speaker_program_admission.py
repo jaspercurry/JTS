@@ -56,7 +56,7 @@ from jasper.active_speaker.measurement_emit import (
 )
 from jasper.active_speaker.measurement_level import scope_gains_db
 from jasper.active_speaker.measurement_programs import (
-    Pose, available_presets, offered_here, preset, programs_for_topology, run_preset,
+    available_presets, offered_here, preset, programs_for_topology, run_preset,
 )
 from jasper.active_speaker.graph_safety import view_from_emitted_text
 from jasper.active_speaker.program_headroom import charge_db, graph_headroom_db
@@ -1227,14 +1227,10 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     0 of a program as wide as its graph's capture, inside the band and
     duration limit the conductor resolved for THAT target, and is admitted
     against that target's own declared caps, as is the pose's level probe.
-    Every silence after its first sound is short. The capture window covers
-    the take and the probe."""
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        CAPTURE_ENTRY_MARGIN_MS, CloudPositionPrompt, _program_duration_ms, build_inline_session_spec,
-    )
+    Every silence after its first sound is short."""
     from jasper.audio_measurement.excitation import NEAR_FIELD_SILENCE_S
 
-    topology, safety, context, spec, excitation, program = _cardioid_solo_take(monkeypatch, target)
+    topology, safety, context, spec, _excitation, program = _cardioid_solo_take(monkeypatch, target)
     lo, hi = spec.stimulus["band_hz"]
 
     assert set(context.driver_bands) == set(context.driver_sweep_duration_limits_s) == set(context.role_targets)
@@ -1264,13 +1260,6 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     assert readmit_program_from_wav(
         probe, wav, topology=topology, safety_profile=safety, role_targets=context.role_targets,
         session_volume_db=probe_fader_db(context.driver_caps_dbfs)).allowed
-
-    plan = build_inline_session_spec(
-        [(spec, CloudPositionPrompt("close", pose=Pose(0, 0)), "")], roles_bands=context.roles_bands,
-        fc_hz=context.fc_hz,
-        excitation=excitation, acknowledgement_binding="a" * 32,
-    ).capture_plan
-    assert plan.entries[0].duration_ms >= max(map(_program_duration_ms, (program, probe))) + CAPTURE_ENTRY_MARGIN_MS
 
 
 @pytest.mark.parametrize("target", ["woofer", "woofer:rear"])

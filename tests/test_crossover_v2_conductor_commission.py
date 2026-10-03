@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: the courtesy-tone prelude, the play transaction and the inline spec."""
+"""Conductor W5a: the play transaction and the inline spec."""
 
 from __future__ import annotations
 
@@ -10,53 +10,11 @@ import asyncio
 import pytest
 import yaml
 from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
-from jasper.active_speaker.crossover_v2.journey import (
-    PHASE_CHECK,
-    PHASE_MEASURE,
-)
-from jasper.active_speaker.crossover_v2.capture_plan import (
-    CAPTURE_ENTRY_MARGIN_MS,
-    _program_duration_ms,
-)
-from jasper.audio_measurement.program import (
-    BASE_STIMULUS_PEAK_DBFS,
-    build_check_program, build_measure_program,
-)
 from tests.crossover_v2_fixtures import (
     SESSION_VOLUME_DB,
     _inline_spec,
     _dummy_program,
-    _roles,
 )
-
-
-def _courtesy_prelude_ms() -> float:
-    """What one prelude costs, DERIVED from the composer's own constants."""
-    from jasper.audio_measurement.program import (
-        COURTESY_TONE_BEEP_COUNT,
-        COURTESY_TONE_BEEP_DURATION_S,
-        COURTESY_TONE_BEEP_GAP_S,
-        COURTESY_TONE_TRAILING_SILENCE_S,
-    )
-
-    return 1000.0 * (
-        COURTESY_TONE_BEEP_COUNT * COURTESY_TONE_BEEP_DURATION_S
-        + (COURTESY_TONE_BEEP_COUNT - 1) * COURTESY_TONE_BEEP_GAP_S
-        + COURTESY_TONE_TRAILING_SILENCE_S
-    )
-
-
-def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
-    plan = _inline_spec().capture_plan
-    entries = {entry.kind_label: entry for entry in plan.entries}
-    roles = _roles()
-    check = build_check_program(roles, courtesy_prelude=True)
-    measure = build_measure_program({rb.role: BASE_STIMULUS_PEAK_DBFS for rb in roles}, roles)
-    for phase, program in ((PHASE_CHECK, check), (PHASE_MEASURE, measure)):
-        assert entries[phase].duration_ms == _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS
-    assert entries[PHASE_CHECK].duration_ms - (
-        _program_duration_ms(build_check_program(roles)) + CAPTURE_ENTRY_MARGIN_MS
-    ) == pytest.approx(_courtesy_prelude_ms(), abs=1)
 
 
 def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strictly(
