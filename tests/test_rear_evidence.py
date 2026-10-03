@@ -223,7 +223,9 @@ def test_the_gap_pools_its_repeats_and_a_missing_segment_says_so():
     # and the two ways a gap goes unusable keep their own reasons, because a
     # gap the correlator read but does not trust is not a missing segment.
     shy = {**pooled, "confidence": DEFAULT_CONFIDENCE_THRESHOLD / 2.0}
+    narrow = {**missing, "reason": rear_evidence.REASON_COVERAGE_SHORT}
     for gap, reason in ((missing, rear_evidence.REASON_NO_IMPULSE),
+                        (narrow, rear_evidence.REASON_COVERAGE_SHORT),
                         (shy, rear_evidence.REASON_GAP_NOT_CONFIDENT)):
         unclear = rear_evidence.rear_polarity(
             FREQS_HZ, front_tf=near["front_tf"], rear_tf=near["rear_tf"],

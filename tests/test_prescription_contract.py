@@ -794,7 +794,8 @@ def test_a_pair_rounds_packet_and_contract_carry_one_rear_seed(tmp_path, capsys,
     rear = json.loads(capsys.readouterr().out)["sections"]["rear"]
     if manual_settings:
         seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)
-        assert seed["conditions"] == {"trim_db": -_PAIR_LEVEL_GAP_DB, "level_gap_db": _PAIR_LEVEL_GAP_DB}
+        assert seed["conditions"] == {"trim_db": -_PAIR_LEVEL_GAP_DB, "level_gap_db": _PAIR_LEVEL_GAP_DB,
+                                      "level_gap_reason": ""}
         assert seed["geometry"]["cabinet_back_wall_m"] == _CABINET["cabinet_back_wall_m"]
     else:
         assert rear["seed"] == unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": ["rear_woofer_spacing_mm"]})

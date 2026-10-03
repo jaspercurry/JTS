@@ -359,8 +359,9 @@ the model; `arrival_gap` gives the rear-minus-front gap, confidence and
 `search_ms`; `rear_polarity` gives the measured sign, read only in the lowest
 bands where each woofer alone is far enough above the room's noise, which its
 `bands_hz` lists (`polarity_snr_short` when none is). The gap uses the applied
-rear document's band or `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage;
-`band_hz` and `arrival_gap_band_source` disclose `rear_document` or `default`.
+rear document's band when it is at least `ARRIVAL_GAP_MIN_BAND_HZ` (200 Hz)
+wide, else `ARRIVAL_GAP_BAND_HZ`, clipped to sweep coverage; `band_hz` and
+`arrival_gap_band_source` disclose `rear_document` or `default`.
 
 Preview predicts F·H_front + R·(H_bass + H_cancel) at each measured position.
 Read `positions[*]`: `trough_fill_db` is the rise at the muted curve's deepest
@@ -444,7 +445,10 @@ still earned their place. Refit room after the rear stage changes.
 The contract's `seed` (`contract --round <pair round> --section rear`) is a
 first tune computed from the declared rear woofer spacing and wall gap, with
 its trim from that round's level gap at the mark (ADR-0425). Preview it, vary
-from it only when the preview misses, and trial it at the seat.
+from it only when the preview misses, and trial it at the seat. When the round reads no level gap, the trim is 0 dB
+and `conditions.level_gap_reason` says why. The `seed` can instead be a gap that
+names why there is no seed: `rear_seed_geometry_undeclared` or
+`rear_seed_band_empty` (ADR-0438). A gap is not a document to copy.
 
 First tune, from the pair take: give the bass branch a Linkwitz-Riley
 low-pass and the cancellation branch a Linkwitz-Riley high-pass at ONE
@@ -514,7 +518,7 @@ This is the default loop for a cardioid box. Keep the cabinet at its wall.
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
    Fit, trial and apply the speaker there, then take the pair model, one `rear/pair` take at the mark:
    `sudo /opt/jasper/.venv/bin/jasper-round run --program rear --wait`.
-2. Read the seed: `contract --round <pair-round> --section rear` carries it as `seed`. Preview it, with no sound:
+2. Read the seed: `contract --round <pair-round> --section rear` carries it as `seed`, or a gap that names why there is none and is not a document to copy. Preview it, with no sound:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round>`.
    Only if it misses, add `--vary '<path>=<value>,<value>' --out-dir <variants-dir>` and take the best variant.
    Compose it (its `base` is `saved`):

@@ -174,9 +174,10 @@ def rear_polarity(
     unavailable — never a guess, and never a claim about the polar pattern.
 
     ``arrival_gap`` is the whole :func:`arrival_gap_ms` row, not its seconds,
-    so the two ways a gap can be unusable keep their own reasons: one never
-    read (:data:`REASON_NO_IMPULSE`) and one read but under the correlator's
-    confidence gate (:data:`REASON_GAP_NOT_CONFIDENT`).
+    so the ways a gap can be unusable keep their own reasons: one never read
+    keeps the gap's own (:data:`REASON_NO_IMPULSE`, or :data:`REASON_COVERAGE_SHORT`
+    for a band too narrow to search) and one read but under the correlator's
+    confidence gate is :data:`REASON_GAP_NOT_CONFIDENT`.
     """
     freqs = np.asarray(freqs_hz, dtype=np.float64)
     bands = [] if band_hz is None else _third_octaves(freqs, band_hz)
@@ -184,7 +185,7 @@ def rear_polarity(
     arrival_gap_s = confident_arrival_gap_s(arrival_gap)
     if arrival_gap_s is None:
         return {**row, "reason": REASON_GAP_NOT_CONFIDENT
-                       if arrival_gap.get("ms") is not None else REASON_NO_IMPULSE}
+                       if arrival_gap.get("ms") is not None else arrival_gap.get("reason") or REASON_NO_IMPULSE}
     if not bands:
         return {**row, "reason": REASON_COVERAGE_SHORT}
     if sum_snr is None:

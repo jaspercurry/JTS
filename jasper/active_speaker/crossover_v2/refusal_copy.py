@@ -691,6 +691,12 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
     ("speaker_setup", "Declare the rear woofer spacing and the placement", "/sound/speaker/"): {
         "rear_seed_geometry_undeclared": "The rear seed needs the rear woofer spacing and the cabinet's wall gap, "
                                          "depth and toe-in; the detail names the missing ones.",
+        "rear_seed_band_empty": "The front of the cabinet is too near the wall for the declared rear woofer "
+                                "spacing, so the woofer pair cannot cancel the wall bounce. Check the spacing, "
+                                "or move the speaker out until its front is more than two thirds of the spacing "
+                                "from the wall and declare the new placement. Then measure the woofer pair "
+                                "again: a round keeps the spacing and placement it was measured with. Or tune "
+                                "without the cardioid.",
     },
 }
 

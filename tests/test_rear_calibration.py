@@ -12,7 +12,9 @@ from jasper.active_speaker.rear_calibration import (
     MAX_ALLPASS_Q, MAX_CHAIN_BOOST_DB, RearCalibrationError, coefficient_sha256, compile_rear_stage,
     read_rear_calibration, rear_operating_facts,
 )
-from jasper.active_speaker.rear_seed import REAR_SEED_GEOMETRY_UNDECLARED, rear_seed
+from jasper.active_speaker.rear_seed import (
+    LEVEL_GAP_NO_PAIR_ROW_IN_BAND, LEVEL_GAP_NO_PAIR_TAKE, REAR_SEED_BAND_EMPTY, REAR_SEED_GEOMETRY_UNDECLARED, rear_seed,
+)
 from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from tests.active_speaker_fixtures import REAR_SEED_DRAFT, REAR_SEED_GEOMETRY, rear_seed_document
@@ -169,25 +171,43 @@ def test_the_seed_takes_its_corners_and_its_delay_from_the_declared_geometry(spa
     assert -(phase[2] - phase[0]) / (2 * np.pi * (grid[2] - grid[0])) * 1e3 == pytest.approx(net_delay_ms, abs=0.001)
     assert seed["common_delay_ms"] == max(0.0, -cancellation["delay_ms"])
     assert seed["geometry"]["cabinet_back_wall_m"] == back_m
-    assert seed["conditions"] == {"trim_db": 0.0, "level_gap_db": None}
 
 
 def _band(centre_hz: float, gap_db: float) -> dict:
     return {"band_hz": [centre_hz / 2 ** (1 / 6), centre_hz * 2 ** (1 / 6)], "front_db": -30.0, "rear_db": -30.0 + gap_db}
 
 
+def _pair_views(gap_db: float) -> list[dict]:
+    """A pair view whose mark reads ``gap_db`` at 125, 160 and 200 Hz and 9 dB at 63 Hz, and whose
+    pose behind the cabinet reads -12 dB at 160 Hz."""
+    return [{"pair": {"positions": {
+        "az+0.00_el+0.00_d+1.00": {"bands": [_band(hz, gap_db) for hz in (125.0, 160.0, 200.0)] + [_band(63.0, 9.0)]},
+        "behind_az+0.00_el+0.00_d+0.10": {"bands": [_band(160.0, -12.0)]},
+    }}}]
+
+
 @pytest.mark.parametrize("gap_db, trim_db", [(2.5, -2.5), (-3.0, 3.0), (-9.0, MAX_CHAIN_BOOST_DB)])
 def test_the_seed_levels_the_rear_woofer_by_the_pair_takes_gap_at_the_mark(gap_db, trim_db):
     """One flat trim on both rear branches, read from the mark's third octaves inside the band;
     a band below it and the pose behind the cabinet are not read."""
-    views = [{"pair": {"positions": {
-        "az+0.00_el+0.00_d+1.00": {"bands": [_band(hz, gap_db) for hz in (125.0, 160.0, 200.0)] + [_band(63.0, 9.0)]},
-        "behind_az+0.00_el+0.00_d+0.10": {"bands": [_band(160.0, -12.0)]},
-    }}}]
-    seed = rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, views=views)
+    seed = rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, views=_pair_views(gap_db))
     assert [item["parameters"]["gain"] for branch in ("bass", "cancellation")
             for item in seed["rear"][branch]["filters"] if item["parameters"]["type"] == "Lowshelf"] == [trim_db] * 2
-    assert seed["conditions"] == {"trim_db": trim_db, "level_gap_db": gap_db}
+    assert seed["conditions"] == {"trim_db": trim_db, "level_gap_db": gap_db, "level_gap_reason": ""}
+    assert read_rear_calibration(seed, sample_rate=48000)
+
+
+@pytest.mark.parametrize("geometry, views, reason", [
+    # A summed rear view carries no pair section.
+    pytest.param(REAR_SEED_GEOMETRY, [{"candidates": []}], LEVEL_GAP_NO_PAIR_TAKE, id="no_pair_take"),
+    # The front panel 0.25 m from the wall: the band, 228.7-259.8 Hz, holds no third-octave centre.
+    pytest.param(_geometry(back_m=0.05, depth_m=0.2), _pair_views(2.5), LEVEL_GAP_NO_PAIR_ROW_IN_BAND,
+                 id="no_pair_row_in_band"),
+])
+def test_a_seed_that_reads_no_level_gap_says_why(geometry, views, reason):
+    """The seed still ships, at a 0 dB trim, with the reason its level gap is null."""
+    seed = rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=geometry, views=views)
+    assert seed["conditions"] == {"trim_db": 0.0, "level_gap_db": None, "level_gap_reason": reason}
     assert read_rear_calibration(seed, sample_rate=48000)
 
 
@@ -199,3 +219,23 @@ def test_the_seed_levels_the_rear_woofer_by_the_pair_takes_gap_at_the_mark(gap_d
 def test_the_seed_names_each_missing_declaration_instead_of_a_default(draft, geometry, missing):
     assert rear_seed(48000, draft=draft, geometry=geometry, views=()) == unavailable(
         REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})
+
+
+@pytest.mark.parametrize("spacing_mm, back_m, corners_hz", [
+    # Woofers 0.33 m apart, the front panel 0.2 m from the wall: nearer than 2d/3 = 0.22 m.
+    pytest.param(330.0, 0.05, (285.8333, 259.8485), id="nearer"),
+    # Woofers 0.3 m apart, the front panel at 2d/3 = 0.2 m: both corners are 285.8333 Hz.
+    pytest.param(300.0, 0.05, (285.8333, 285.8333), id="at_the_edge"),
+    pytest.param(300.0, 0.0501, None, id="just_farther"),
+])
+def test_a_panel_at_or_nearer_the_wall_than_two_thirds_of_the_spacing_has_no_seed(spacing_mm, back_m, corners_hz):
+    """The hand-over high-pass at or above the low-pass leaves the pair no band to cancel; a front
+    panel 0.1 mm farther out than the edge gets a seed."""
+    draft = {"manual_settings": {"rear_woofer_spacing_mm": spacing_mm}}
+    seed = rear_seed(48000, draft=draft, geometry=_geometry(back_m=back_m, depth_m=0.15), views=())
+    if corners_hz is None:
+        assert rear_operating_facts(read_rear_calibration(seed, sample_rate=48000))["band_hz"] == [285.6905, 285.8333]
+        return
+    assert seed == unavailable(REAR_SEED_BAND_EMPTY, {
+        "handover_hz": corners_hz[0], "lowpass_hz": corners_hz[1], "front_panel_to_wall_m": 0.2,
+        "rear_woofer_spacing_m": spacing_mm / 1000})
