@@ -25,7 +25,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 from jasper.audio_measurement.program import ExcitationProgram, KIND_PILOT, KIND_SUMMED_SWEEP, KIND_SWEEP, is_level_probe
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
-from jasper.audio_measurement.wired_capture import WiredSplMonitor
+from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S, WiredSplMonitor
 from jasper.runtime.measurement_window import MeasurementWindowError
 
 from .angle_capture import (
@@ -217,7 +217,7 @@ HUMAN_MOVE_ALLOWANCE_S = 30
 def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], program_for_spec: Callable[..., ExcitationProgram],
                    *, mover: str, program: str = "") -> dict[str, Any]:
     poses, pose_sweeps, work_sweeps, measurements_per_pose = [], [], [], []
-    probe_seconds = 0.0
+    played_s = 0.0
     for _, batch in groupby(captures, key=lambda capture: capture[0]["place"]):
         details: list[dict[str, Any]] = []
         keys = []
@@ -229,16 +229,14 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             # ADR-0403 §4), and a branch set's first take one probe of each branch alone (§3).
             probe = first if is_level_probe(first) else None
             excitation = first if probe is None else program_for_spec(spec, stimulus_dbfs=0.0)
+            for play in (*([] if probe is None else [probe]), *map(program_for_spec, branch_probes(spec)), excitation):
+                played_s += play.total_samples / play.sample_rate_hz + WIRED_POST_ROLL_S
             segments = excitation.stimulus_segments()
             work_sweeps.append(len(segments))
-            if probe is not None:
-                probe_seconds += probe.total_samples / probe.sample_rate_hz
-            for branch_probe in map(program_for_spec, branch_probes(spec)):
-                probe_seconds += branch_probe.total_samples / branch_probe.sample_rate_hz
             for segment in segments:
                 keys.append((spec.graph_scope, spec.candidate_id, spec.program_phase, segment.role, segment.kind))
                 details.append({"role": segment.role or "summed", "kind": segment.kind, "phase": spec.program_phase,
-                                "scope": spec.graph_scope, "seconds": segment.n_samples / excitation.sample_rate_hz})
+                                "scope": spec.graph_scope})
         totals = Counter(keys)
         seen: Counter[tuple[str, str | None, str | None, str | None, str]] = Counter()
         for key, row in zip(keys, details):
@@ -253,13 +251,12 @@ def schedule_facts(captures: Sequence[tuple[Mapping[str, Any], MeasureSpec]], pr
             "sweeps_per_pose": counts, "sweeps": len(rows), "work_sweeps": work_sweeps,
             "timing_sweeps": sum(row["scope"] == "timing" and row["kind"] == KIND_SUMMED_SWEEP for row in rows),
             "preparation_sweeps": sum(row["kind"] == KIND_PILOT for row in rows),
-            "estimated_seconds": sum(row["seconds"] for row in rows) + probe_seconds +
-                                 (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
+            "estimated_seconds": played_s + (len(poses) * HUMAN_MOVE_ALLOWANCE_S if mover == "human" else 0),
             "pose_sweeps": pose_sweeps}
 
 
 def preview_schedule(request: AngleCaptureRequest, captures: Sequence[PlanCapture], context: Any) -> dict[str, Any]:
-    specs = [capture.spec for capture in captures]
+    specs = list(announce_run([capture.spec for capture in captures]))
     shared = level_sets([capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])
     probed = run_probe_index([(capture.spec.graph_scope, start is not None) for capture, start in zip(captures, shared)])
     if probed is not None:

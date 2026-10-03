@@ -28,7 +28,6 @@ import numpy as np
 import pytest
 from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F401
 
-from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import measurement_programs as mp
 from jasper.active_speaker.plan_run import prepare_plan_captures
@@ -662,10 +661,6 @@ def test_a_categorized_program_walks_summed_whatever_the_candidates_say(layout: 
 
     assert {stop.regime for stop in request.stops} == {ac.REGIME_SUMMED}
     assert [s.pose for s in request.stops] == list(program.poses)
-    price = walk_price(request)
-    assert (price["mic_moves"], price["captures"]) == (
-        program.mic_move_count, program.capture_count,
-    )
 
 
 @pytest.mark.parametrize(
@@ -801,13 +796,13 @@ _GOLDEN_BASELINE_EXPRESS = (
 @pytest.mark.parametrize(
     ("candidates", "regime", "price"),
     [
-        ((), ac.REGIME_PER_DRIVER, {"mic_moves": 5, "captures": 10, "ceiling_min": 44}),
-        (("base", "fpA"), ac.REGIME_SUMMED, {"mic_moves": 5, "captures": 17, "ceiling_min": 58}),
+        ((), ac.REGIME_PER_DRIVER, (5, 10)),
+        (("base", "fpA"), ac.REGIME_SUMMED, (5, 17)),
     ],
     ids=["no-cycle", "two-candidates"],
 )
 def test_shipped_program_geometry_and_full_capture_price(
-    candidates: tuple[str, ...], regime: str, price: dict,
+    candidates: tuple[str, ...], regime: str, price: tuple[int, int],
 ) -> None:
     request = ac.request_for_preset(
         mp.run_preset("speaker", "baseline_express"), candidates=candidates,
@@ -830,7 +825,8 @@ def test_shipped_program_geometry_and_full_capture_price(
     ]
     assert [pose_kind_fields(geometry) for geometry in geometries] == [
         {"mark_distance_m": 1.0, "pose_kind": mp.POSE_KIND_BEARING}] * len(stops)
-    assert walk_price(request) == price
+    captures = prepare_plan_captures(request)
+    assert (mp.mic_moves(capture.stop.pose for capture in captures), len(captures)) == price
 
 
 def test_the_seat_cube_banks_as_seven_distinct_ungated_seat_takes(
@@ -918,8 +914,8 @@ def test_request_document_and_capture_schedule(repeats, candidates):
     assert [spec.positions for spec in specs] == [
         (angle,) for angle in (0, -20, 20) for _ in range(max(1, len(candidates)) * repeats)
     ]
-    assert walk_price(request)["captures"] == len(specs)
-    assert walk_price(request)["mic_moves"] == 3
+    captures = prepare_plan_captures(request)
+    assert (len(captures), mp.mic_moves(capture.stop.pose for capture in captures)) == (len(specs), 3)
 
 
 @pytest.mark.parametrize("row, pair", [("branches", ("woofer", "tweeter")),

@@ -116,6 +116,7 @@ def test_program_table_projections(site):
     ("rear/pair", "speaker_mark", 1, 1, 2),
     ("bass/axis", "seat_express", 3, 3, 3),
     ("bass/axis", "bass_axis", 1, 1, 1),
+    ("drivers/each", "drivers_each", 2, 1, 2),
 ])
 def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures: int) -> None:
     row = mp.run_preset(preset, layout)
@@ -426,6 +427,11 @@ def _seat(right_m: float, forward_m: float, up_m: float, repeats: int = 1):
         ),
         # Two seat poses share the (0, 0) bearing and are two different places.
         ((_seat(0.0, 0.0, 0.0), _seat(0.30, 0.0, 0.0, 2)), 2, 3),
+        # A close pose is stated from its driver's cone, so each driver is its own place.
+        ((mp.Pose(0, 0, kind=mp.POSE_KIND_CLOSE, distance_m=0.3, driver="woofer"),
+          mp.Pose(0, 0, kind=mp.POSE_KIND_CLOSE, distance_m=0.3, driver="woofer:rear")), 2, 2),
+        # Going back to a spot moves the microphone again.
+        ((mp.Pose(0, 0), mp.Pose(10, 0), mp.Pose(0, 0)), 3, 3),
     ],
 )
 def test_counts_split_moves_from_captures(

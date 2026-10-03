@@ -17,7 +17,6 @@ from jasper.platform.json_fields import finite_float
 
 from .capture_schedule import (
     UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures, run_probe_index, run_takes, unprobed_take_at_fader,
-    walk_price,
 )
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
@@ -44,6 +43,7 @@ from .profile import DRIVER_ROLES_BY_WAY
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
+    from .crossover_v2.conductor_context import V2ConductorContext
 
 # Rechecked at participation; a dry run reserves none of these resources.
 LIVE_ADMISSION = (
@@ -105,6 +105,8 @@ class PreflightFacts:
     output_volume: Mapping[str, float | bool] = field(default_factory=dict)
     #: Each driver's program-path ``cap_dbfs`` and ``cap_source`` (ADR-0382).
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: The context these facts were read from, which composes the run's programs to price it.
+    context: V2ConductorContext | None = None
 
 
 @dataclass(frozen=True)
@@ -122,10 +124,11 @@ class PreflightReport:
     plan: AngleCaptureRequest
     issues: tuple[PreflightIssue, ...]
     schedule: tuple[ScheduledCapture, ...]
-    price: Mapping[str, int | float | None]
     spl_ceiling_db_spl: float | None
     rung_admission: Mapping[str, Any] = field(default_factory=dict)
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: The whole run's ``captures``, ``mic_moves`` and ``seconds`` (``run_levels.preflight_levels``).
+    price: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def blocking(self) -> bool:
@@ -135,15 +138,11 @@ class PreflightReport:
     def blocking_issue(self) -> PreflightIssue:
         return next(issue for issue in self.issues if issue.blocking)
 
-    @property
-    def mic_moves(self) -> int:
-        return int(self.price.get("mic_moves") or 0)
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "issues": [asdict(issue) for issue in self.issues],
             "schedule": [asdict(capture) for capture in self.schedule],
-            "mic_moves": self.mic_moves, "price": dict(self.price),
+            "price": dict(self.price),
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
             "level": self.plan.level.to_dict(),
             "live_admission": list(LIVE_ADMISSION),
@@ -199,7 +198,7 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
 
 
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: bool = True) -> PreflightReport:
-    """Whether ``plan`` may run here, its schedule and price, and its run's margins.
+    """Whether ``plan`` may run here, its schedule, and its run's margins.
     A run that ``finds_fader`` with a probe (its door states driver caps) is
     refused when a take at its fader would play before that probe (ADR-0403 §4)."""
     issues = list(facts.issues)
@@ -239,7 +238,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
         code = REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message),
                               evidence={"driver_roles": DRIVER_ROLES_BY_WAY[3]}))
-        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
+        return PreflightReport(plan, tuple(issues), (), facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     # Remove when plans can only name declared capture targets.
     if valid_shape and facts.declared_target_ids is not None:
@@ -255,7 +254,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
                 "missing_target_ids": missing, "declared_target_ids": facts.declared_target_ids,
                 "invalid_branch_target_ids": invalid_pairs,
             }))
-            return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
+            return PreflightReport(plan, tuple(issues), (), facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     # A stereo pair plays no driver alone until #5697 (ADR-0360).
     unoffered = tuple(sorted({stop.pose.driver for stop in plan.stops if stop.pose.driver}
@@ -264,7 +263,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
         code = REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
             "unoffered_drivers": unoffered, "near_field_drivers": facts.near_field_drivers}))
-        return PreflightReport(plan, tuple(issues), (), {}, facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
+        return PreflightReport(plan, tuple(issues), (), facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     scopes: dict[str, str] = {}
     bass_extensions: dict[str, Mapping[str, Any]] = {}
@@ -314,17 +313,16 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
                           "candidate" if stop.plays_summed else "drivers"), stop.regime)
         for index, (stop, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
     ) if valid_shape else ()
-    priceable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
-                                    for stop in plan.stops)
-    price = walk_price(plan, roles_bands=facts.roles_bands) if priceable else {}
-    prepared = prepare_plan_captures(plan, roles_bands=facts.roles_bands) if priceable else ()
+    preparable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
+                                     for stop in plan.stops)
+    prepared = prepare_plan_captures(plan, roles_bands=facts.roles_bands) if preparable else ()
     if finds_fader and unprobed_take_at_fader(run_takes(prepared)):
         admission.update(status="blocked")
         add(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
-    elif priceable and bass_extensions:
+    elif preparable and bass_extensions:
         try:
             admission.update(run_margins(prepared, facts, bass_extensions))
         except (TypeError, ValueError) as exc:
             admission.update(status="blocked")
             add(WALK_LEVEL_POLICY_INVALID, str(exc))
-    return PreflightReport(plan, tuple(issues), schedule, price, ceiling, admission, facts.driver_caps)
+    return PreflightReport(plan, tuple(issues), schedule, ceiling, admission, facts.driver_caps)

@@ -18,7 +18,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.active_speaker.capture_schedule import walk_price
 from jasper.active_speaker import angle_capture as ac, plan_run
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.run_levels import (
@@ -29,7 +28,7 @@ from jasper.active_speaker.measurement_programs import (
 )
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import capture_dispatch
-from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
+from jasper.active_speaker.crossover_v2.programs import SessionExcitation, predictive_program_for_spec, program_for_spec
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, round_inputs, with_records
 from jasper.active_speaker.crossover_v2.round_views.directivity import _pose as directivity_pose
@@ -68,6 +67,7 @@ from jasper.audio_measurement.program import (
     is_level_probe,
 )
 from jasper.audio_measurement.program_analysis import ProgramAnalysis
+from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S
 from jasper.audio_resources.volume_owner import ClaimKind, volume_owner
 from jasper.platform.json_fields import CodedFieldError
 from jasper.web import correction_run_host
@@ -1291,7 +1291,8 @@ def test_a_branch_set_is_one_placement_and_the_preview_prices_its_probes():
 
     assert {name: [capture.spec.level_probe for capture in rows] for name, rows in captures.items()} == {
         "one": [True, False], "two": [True, True]}
-    assert facts["two"]["estimated_seconds"] - facts["one"]["estimated_seconds"] == pytest.approx(probe_s)
+    assert facts["two"]["estimated_seconds"] - facts["one"]["estimated_seconds"] == pytest.approx(
+        probe_s + 2 * WIRED_POST_ROLL_S)
 
 
 _BEHIND = [{"azimuth_deg": 0, "elevation_deg": 0},
@@ -2443,7 +2444,8 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
                _walk([0, -20, 20], ("fp-a", "fp-b", "fp-c")) if trial == 9 else _walk([0, -20, 20]))
     counts = [8] if trial == 8 else [3, 3, 3] if trial == 9 else [1, 1, 1]
     captures = plan_run.prepare_plan_captures(request)
-    program = SimpleNamespace(phase="measure", sample_rate_hz=1, segments=(), stimulus_segments=lambda: segments)
+    program = SimpleNamespace(phase="measure", sample_rate_hz=1, segments=(), stimulus_segments=lambda: segments,
+                              total_samples=4 * len(roles))
     if trial:
         context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                                   driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
@@ -2473,7 +2475,8 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
     assert live[0]["measurements_per_pose"] == counts
     assert live[0]["measurements"] == sum(counts)
     assert live[0]["sweeps_per_pose"] == [n * len(roles) for n in counts]
-    assert live[0]["estimated_seconds"] == sum(counts) * len(roles) * 4 + len(counts) * plan_run.HUMAN_MOVE_ALLOWANCE_S
+    assert live[0]["estimated_seconds"] == (sum(counts) * (len(roles) * 4 + WIRED_POST_ROLL_S)
+                                            + len(counts) * plan_run.HUMAN_MOVE_ALLOWANCE_S)
     assert {p["pose"] for p in live} == set(range(1, len(counts) + 1))
     assert live[-1]["measurement"] == sum(counts)
     assert {p["measurement"] for p in live} == set(range(1, sum(counts) + 1))
@@ -2491,7 +2494,8 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
 def test_a_pose_that_levels_itself_is_timed_as_its_probes_and_its_takes():
     """A driver's pose plays its whole level probe once before its takes, and a
     branch set's first take one probe of each branch; a far-field pose plays no
-    probe (ADR-0365, ADR-0403 §3)."""
+    probe (ADR-0365, ADR-0403 §3). Each play counts its whole program and the
+    recorder's post-roll."""
     band = RoleBand("woofer", 0, FrequencyBand(20, 2000))
     take = build_measure_program({"woofer": -20.0}, (band,), repeat_count=1, sweep_durations={"woofer": 0.2})
     probe = build_level_probe_program(band, (-40.0, -34.0), sweep_band_hz=(20.0, 2000.0), gap_s=0.5,
@@ -2509,8 +2513,28 @@ def test_a_pose_that_levels_itself_is_timed_as_its_probes_and_its_takes():
             probe if spec.level_probe and spec.graph_scope == "drivers" and stimulus_dbfs is None else take),
         mover="arm")
 
-    take_s = sum(segment.n_samples for segment in take.stimulus_segments()) / take.sample_rate_hz
-    assert facts["estimated_seconds"] == pytest.approx(5 * take_s + 3 * probe.total_samples / probe.sample_rate_hz)
+    take_s, probe_s = (program.total_samples / program.sample_rate_hz + WIRED_POST_ROLL_S for program in (take, probe))
+    assert facts["estimated_seconds"] == pytest.approx(5 * take_s + 3 * probe_s)
+
+
+def test_the_preview_times_every_play_whole_and_announces_the_run_once():
+    """The page's estimate is every play's whole composed program, silences
+    included, and the recorder's post-roll after it: the run's probe and each
+    take, the first take carrying the courtesy prelude that announces the run
+    once (ADR-0417), and a person's move to each spot."""
+    context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
+    request = ac.request_for_preset(run_preset("room", "seat_express"))
+    captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
+    compose = predictive_program_for_spec(context)
+    first, *rest = (capture.spec for capture in captures)
+    plays = [compose(replace(first, level_probe=True)), compose(replace(first, courtesy_prelude=True)), *map(compose, rest)]
+
+    facts = plan_run.preview_schedule(request, captures, context)
+
+    assert facts["estimated_seconds"] == pytest.approx(
+        sum(play.total_samples / play.sample_rate_hz + WIRED_POST_ROLL_S for play in plays)
+        + len(captures) * plan_run.HUMAN_MOVE_ALLOWANCE_S)
 
 
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
@@ -2520,7 +2544,7 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     request = ac.request_for_preset(run_preset("tournament", "tournament_full"), repeats=repeats)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
-    assert facts["measurements"] == len(captures) == walk_price(request, roles_bands=context.roles_bands)["captures"]
+    assert facts["measurements"] == len(captures)
     assert sum(facts["measurements_per_pose"]) == len(captures)
     assert facts["sweeps_per_pose"] == counts
     assert facts["timing_sweeps"] == timing

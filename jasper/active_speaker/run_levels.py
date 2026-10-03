@@ -22,7 +22,10 @@ from .crossover_v2.door import IsolationHold
 from .crossover_v2.measurement_context import capture_basis
 from .crossover_v2.position_gate import PositionGate
 from .crossover_v2.refusal_copy import REASON_LEVEL_UNSOLVED
-from .plan_run import Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, run_plan
+from .measurement_programs import mic_moves
+from .plan_run import (
+    Analyze, PlanCapture, RunDoor, RunSignals, _Control, _grant, prepare_plan_captures, preview_schedule, run_plan,
+)
 from .preflight import PreflightFacts, PreflightIssue, PreflightReport, preflight
 from .run_manifest import RunManifest
 
@@ -38,6 +41,8 @@ class LevelLadder:
     levels: tuple[PreflightReport, ...]
     facts: PreflightFacts
     admissions: list[dict[str, Any]] = field(default_factory=list)
+    #: The whole run's price, every rung's takes in it (:func:`preflight_levels`).
+    price: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def plan(self) -> AngleCaptureRequest:
@@ -76,7 +81,9 @@ class LevelLadder:
                                              for stop in self.plan.stops]},
             "admissions": deepcopy(self.admissions),
             "issues": [asdict(issue) for issue in self.issues],
-            "levels": [{"step_db": report.plan.level.level_db, "admissible": not report.blocking, **report.to_dict()}
+            "price": dict(self.price),
+            "levels": [{"step_db": report.plan.level.level_db, "admissible": not report.blocking,
+                        **{key: value for key, value in report.to_dict().items() if key != "price"}}
                        for report in self.levels],
         }
 
@@ -91,11 +98,23 @@ def level_ladder(plan: AngleCaptureRequest, facts: PreflightFacts) -> LevelLadde
 
 def preflight_levels(plan: AngleCaptureRequest, facts: PreflightFacts,
                      levels: str | None = None) -> PreflightReport | LevelLadder:
+    """``plan``'s preflight, a ladder's at each rung, and the price of the run it
+    plays: every take at every rung, its microphone moves and its estimated
+    seconds. A plan with no schedule, or read without this speaker's context, has none."""
+    report: PreflightReport | LevelLadder
     if levels == "auto":
         if plan.level.level_db is not None:
             raise ValueError("levels require a plan without level-db")
-        return level_ladder(plan, facts)
-    return preflight(plan, facts)
+        report = level_ladder(plan, facts)
+    else:
+        report = preflight(plan, facts)
+    if facts.context is None or not (report.levels[0] if isinstance(report, LevelLadder) else report).schedule:
+        return report
+    run = report.plan
+    captures = ladder_captures(run, None, prepare_plan_captures(run, roles_bands=facts.roles_bands))
+    seconds = preview_schedule(run, captures, facts.context)["estimated_seconds"]
+    return replace(report, price={"captures": len(captures), "seconds": round(seconds),
+                                  "mic_moves": mic_moves(capture.stop.pose for capture in captures)})
 
 
 def prepare_level_captures(plan: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> tuple[PlanCapture, ...]:
