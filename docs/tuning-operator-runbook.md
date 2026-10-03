@@ -2,7 +2,7 @@
 
 ## Entry contract
 
-Register the wired microphone with `jasper-mic-calibration` and confirm its serial and calibration. Each run finds its own level at its first spot and holds it. Each take banks its `level_db` and `stimulus_dbfs`, so a DSP change's loudness effect stays visible across rounds. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
+Register the wired microphone with `jasper-mic-calibration` and confirm its serial and calibration. Each run finds its own level at its first spot and holds it; in a trial, each candidate graph finds its own there ([ADR-0423](adr/0423-each-candidate-graphs-summed-set-levels-itself-at-every-spot.md)). Each take banks its `level_db` and `stimulus_dbfs`, so a DSP change's loudness effect stays visible across rounds. The 85 dB SPL commissioning stop watches every take. Code owns capture, limits, graph composition, and evidence. The human or arm owns microphone movement. The LLM chooses the experiment, candidate, and interpretation. Never claim an unmeasured graph or moved microphone.
 
 ## The loop
 
@@ -32,7 +32,7 @@ Otherwise `next` uses applied layers; `never_measured` means no profile is appli
 
 Run the tuning programs in order: speaker → rear → room (skip rear if there is no rear driver); room designs the optional bass boost with the room correction.
 Graph layer order is not program order: a composed graph stacks speaker → room → bass ([ADR-0303](adr/0303-a-trial-plays-the-candidate-as-composed.md)), and the row order in [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py) owns program order.
-Re-run room after any upstream change, even when round history is unavailable.
+Redo room after any upstream change, even when round history is unavailable; when room's round names a set (above), the redo is a design on that set and a trial, not a new round.
 The rear program's default is the [Seat loop](tuning-playbook.md#seat): one pair take at the mark,
 the seed previewed without sound, then one seat trial of the base against the seed. When the seed wins,
 its set is the in-room base, so room then needs only its trial; that rests on ADR-0437 (#6227 B3b),
@@ -63,7 +63,7 @@ the rear-off reference. The [Rear section](tuning-playbook.md#rear) explains the
 
 ## Bass
 
-Bass has no run of its own: the in-room round measures it (see Room), and `--program bass` refuses as an unknown preset ([ADR-0431](adr/0431-the-bass-level-ladder-is-retired.md)). A bass candidate's `sudo /opt/jasper/.venv/bin/jasper-round trial <fp>` runs the in-room round, and the measure page offers that round first for bass.
+Bass has no run of its own: the in-room round measures it (see Room), and `--program bass` refuses as an unknown preset ([ADR-0431](adr/0431-the-bass-level-ladder-is-retired.md)). A bass candidate's `sudo /opt/jasper/.venv/bin/jasper-round trial <fp>` runs the in-room round, and the measure page offers that round first for bass. To add bass after room, design it on the set that `last_banked.bass.set_id` names and trial it; no new round is needed while the speaker and rear layers stay the same.
 
 ## Room
 
@@ -75,7 +75,7 @@ Room defaults to `room/seat`, the in-room round: the three `seat_express` poses 
 
 `drivers/each` (woofer, a cardioid's rear woofer, then tweeter; `--driver` narrows it to one) plays each driver alone at the mark, on the speaker round's 150 Hz sweep band, with no CHECK or timing take. The microphone stays put; confirm it once per driver, since each driver finds its own level. The takes are gated reference evidence, read with the same view.
 
-A pose of any program but bass may name its driver the same way, for example `--program speaker --poses '[{"azimuth_deg": 20, "elevation_deg": 0, "driver": "woofer"}]'`: it plays that driver alone, as `drivers/each` does, and banks under that program. A round whose every pose names a driver is not that program's latest round: it holds no take the program's next step reads ([#5696](https://github.com/jaspercurry/JTS/issues/5696)). A pose within 0.1 m of its driver is reference evidence only, so only `nearfield/each` or `drivers/each` takes one there ([ADR-0366](adr/0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) §1).
+A pose of any preset but `room/seat` and `rear/seat`, whose takes the bass view reads, may name its driver the same way, for example `--program speaker --poses '[{"azimuth_deg": 20, "elevation_deg": 0, "driver": "woofer"}]'`: it plays that driver alone, as `drivers/each` does, and banks under that program. A round whose every pose names a driver is not that program's latest round: it holds no take the program's next step reads ([#5696](https://github.com/jaspercurry/JTS/issues/5696)). A pose within 0.1 m of its driver is reference evidence only, so only `nearfield/each` or `drivers/each` takes one there ([ADR-0366](adr/0366-one-pose-model-a-level-found-at-the-pose-and-a-band-stated-from-it.md) §1).
 
 ## Cabinet model (optional, laptop-side)
 
@@ -83,7 +83,7 @@ Given Boundary Lab and a solved case of the cabinet from the CAD repo, [`scripts
 
 ## Evidence and recovery
 
-Keep completed valid takes. Do not pool changed poses, levels, graphs, or calibration. Fix the named fault's action, then continue with the same loop. After an apply timeout, inspect saved state before another write. A losing candidate stays banked.
+Keep completed valid takes. To confirm a reading, take two, compare them, and take a third only when they disagree; the speaker's two mark takes are such a pair (`repeat`). A placement gets its first take and at most two more, and two attempts with the same fault and a reading within 2 dB end it ([ADR-0422](adr/0422-a-placement-gets-two-extra-takes-and-a-probe-at-its-ceiling-stops.md), [ADR-0428](adr/0428-a-placement-stops-after-two-attempts-with-the-same-fault-and-reading.md)); a level probe that plays to its ceiling and reads nothing it trusts stops the run (`level_unreachable`). A MEASURE take whose alignment SNR alone is short is kept: off the mark it asks no raise, and at the mark its raise rides the next take there; only the last take at the mark plays again, when its raise can reach the floor ([ADR-0433](adr/0433-a-passing-measure-take-is-kept-and-its-raise-rides-the-next-take.md)). Do not pool changed poses, levels, graphs, or calibration. Fix the named fault's action, then continue with the same loop. After an apply timeout, inspect saved state before another write. A losing candidate stays banked.
 
 Each take banks how the playback route's counters moved across its capture in `capture_integrity.playback_path` (fan-in lane xruns and catch-ups, ring waits and drops, outputd empty periods, DAC xruns), and the journal logs one `event=active_speaker.take_playback_path` line per take, at warning level when a fault counter moved.
 

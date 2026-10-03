@@ -150,9 +150,9 @@ Write one document with every section the evidence supports.
 each section's schema. Normally omit `alignment`: saved timing carries forward. See Timing
 below for when to include it. A refusal names the crossed bound; correct that field.
 
-Trial the whole document with two or three candidates: the fitted totals and
-one or two variants. Use `sudo /opt/jasper/.venv/bin/jasper-round trial <FP> --candidates <FP>,<variant-FP>`;
-`base` is also allowed. A document that states only speaker sections trials at
+Trial the whole document against base: `sudo /opt/jasper/.venv/bin/jasper-round trial <FP>`.
+Add a variant only when its answer could change your choice:
+`--candidates base,<FP>,<variant-FP>`. A document that states only speaker sections trials at
 the mark (`speaker/mark`); with a room, bass or rear section it trials that
 program instead ([runbook](tuning-operator-runbook.md#the-loop), step 1).
 Read `sudo /opt/jasper/.venv/bin/jasper-round-views candidates <round-dir>` and
@@ -239,7 +239,7 @@ the filter. Near the sweep's low edge, where the level is 10–15 dB down, a
 single take can swing ±4 dB.
 
 `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview` answers limits and predicted
-residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews bass and room sections on a room round's seat median (ADR-0421), or a `rear_calibration` section against `--round <pair round>`.
+residual without banking a candidate; `--vary PATH[,PATH]=v1,v2 --out-dir DIR` expands a seed over a grid and previews every variant. It previews bass and room sections on the seat median of a set that played bass and room off (ADR-0421), or a `rear_calibration` section against `--round <pair round>`.
 The in-room preview adds the composed bass's boost and room set to the median; `resolution` says which
 layer is the document's, cleared, or the base's, and `bass_boost_db` is the boost on the residual's grid.
 A room preview's `summary` gives each side's `residual_rms_db`, the
@@ -269,9 +269,9 @@ The boost is the `linkwitz_transform` from the woofers' measured alignment
 full at every volume
 (`0359-the-bass-boost-plays-at-every-volume-and-gives-way-only-near-clip.md`).
 `sudo /opt/jasper/.venv/bin/jasper-round-views bass-alignment` fits the measured alignment: each woofer's
-box alone from a near-field round, or with `--take` a bass round's base take
+box alone from a near-field round, or with `--take` an in-room round's base take
 as played, the room included. The in-box alignment comes from the near-field
-fit. A seat or bass take carries the room's modes, and a peak pulls the fit. The
+fit. A seat take carries the room's modes, and a peak pulls the fit. The
 fit reads only bins over the 20 dB SNR floor
 (`0419-the-bass-alignment-fit-reads-only-trusted-bins.md`), yet one seat spot on
 jts3 fitted 96 Hz at Q 1.03 in one run, 102 Hz at Q 1.88 in another and no
@@ -298,7 +298,7 @@ only where the chain already cuts above it (tune B's 114 Hz cut lets it keep
 100 Hz).
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail. A bass section written
-before any bass round is admitted, and its `unqualified_boost_bands_hz` lists
+before any in-room round is admitted, and its `unqualified_boost_bands_hz` lists
 every bass band that overlaps `delta_highpass_hz` to `detector_lowpass_hz`
 (the 20–30 Hz band when none does).
 A bass section with `low_boost_db` or `reference_level_db` refuses, and a box
@@ -450,7 +450,7 @@ and `conditions.level_gap_reason` says why. The `seed` can instead be a gap that
 names why there is no seed: `rear_seed_geometry_undeclared` or
 `rear_seed_band_empty` (ADR-0438). A gap is not a document to copy.
 
-First tune, from the pair take: give the bass branch a Linkwitz-Riley
+When the `seed` is a gap, write the first tune from the pair take: give the bass branch a Linkwitz-Riley
 low-pass and the cancellation branch a Linkwitz-Riley high-pass at ONE
 shared corner near 80–100 Hz; complementary slopes leave no hole at the
 hand-over. Put the cancellation low-pass below c / (4·D), where D is the
@@ -496,8 +496,8 @@ the +6 dB chain cap) that put its previewed curve on tune A's from 30 to
 350 Hz at the 0° position (`judge --preview`, `figures.predicted`; `--vary`
 the filter gains), `compose` it, and trial both in ONE round:
 `sudo /opt/jasper/.venv/bin/jasper-round trial <A fp> --candidates base,<A fp>,<off fp> --wait`. Keep
-the pair when `low_bass` and `band_level_db` agree within about 1 dB at the
-repeated bearing.
+the pair when `low_bass` and `band_level_db` agree within about 1 dB at each
+seat.
 
 The EQ page's Cardioid On|Off switch mutes the applied tune's rear output
 in place, at runtime only; Done or expiry restores normal playback (ADR-0329).
@@ -513,7 +513,8 @@ current after the apply under ADR-0437 (#6227 B3b, staleness per set).
 
 ## Seat
 
-This is the default loop for a cardioid box. Keep the cabinet at its wall.
+This is the default loop for a cardioid box; change its spots, takes or trials when a question needs it.
+Keep the cabinet at its wall.
 
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
    Fit, trial and apply the speaker there, then take the pair model, one `rear/pair` take at the mark:
