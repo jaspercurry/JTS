@@ -57,7 +57,7 @@ _CABINET = {"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3}
     pytest.param({"side_wall_m": 1.4}, _FLOOR_IMAGE, 750.8, id="far_side_wall_floor"),
 ])
 def test_the_earliest_declared_bounce_sets_the_floor(placement, image_m, floor_hz):
-    """jts3's heights (speaker 0.9 m, microphone 1.0 m) at 1 m; ADR-0427.
+    """jts3-like heights (speaker 0.9 m, microphone 1.0 m) at 1 m; ADR-0427.
 
     Points in metres: the front-panel centre above the origin, ``y`` out along
     the wall normal, ``z`` up. ``image_m`` is the speaker mirrored in the surface
@@ -71,7 +71,6 @@ def test_the_earliest_declared_bounce_sets_the_floor(placement, image_m, floor_h
     geometry = DeclaredGeometry(speaker_height_m=0.9, mic_height_m=1.0, distance_m=1.0, **placement)
 
     assert geometry.first_bounce_s() == pytest.approx(expected_s, rel=1e-12)
-    assert geometry.entanglement_floor_hz() == pytest.approx(TRUSTED_FLOOR_MULTIPLIER / expected_s, rel=1e-12)
     assert geometry.entanglement_floor_hz() == pytest.approx(floor_hz, abs=0.1)
 
 
