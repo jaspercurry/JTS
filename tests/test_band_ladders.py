@@ -7,11 +7,8 @@ import json
 import numpy as np
 import pytest
 
-from jasper.active_speaker.bass_fit import fit_bass_shape
-from jasper.active_speaker.bass_comparison import compare_bass_takes
 from jasper.active_speaker.bench.bass_replay import bass_replay_levels
 from jasper.active_speaker.bench.replay import replay_levels
-from jasper.active_speaker.bass_level_evidence import bass_level_evidence
 from jasper.active_speaker.crossover_v2 import rear_preview, rear_views
 from jasper.active_speaker.crossover_v2.room_grade import grade_room_median, read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import SeatTake
@@ -28,11 +25,7 @@ from jasper.cli.round_views import main
 from tests.active_speaker_fixtures import rear_seed_document
 from tests.room_median_fixture import room_median_document
 from tests.test_active_speaker_crossover_v2_round_views import gate_sweep_round as gate_sweep_round
-from tests.test_bass_level_evidence import pair as pair
-from tests.test_crossover_v2_round_frequency_view import (
-    bass_fit_pairs as bass_fit_pairs,
-    summed_capture_bundle as summed_capture_bundle,
-)
+from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle as summed_capture_bundle
 from tests.test_crossover_v2_gate_sweep import direct_only_report as direct_only_report
 from tests.test_flat_spec_views import _position
 from tests.test_round_views_rear import _branch_diagnostic, _pair_curves
@@ -89,10 +82,8 @@ def test_ladder_edges_are_frozen_at_the_measured_values():
     ("rear_level", "rear_level", "bands", ("band_hz",)),
     ("rear_pair", "third_octave_bass", "bands", ("band_hz",)),
     ("bass_take", "bass", "bands", ("band_hz",)),
-    ("bass_level", "bass", "realized_boost_db", ("band_hz",)),
     ("room_grade", "room", "bands", ("lo_hz", "hi_hz")),
     ("rear_preview", "rear_level", "bands", ("band_hz",)),
-    ("bass_comparison", "bass", "bands", ("band_hz",)),
     ("flat_spec", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("log_pooled", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
     ("directivity", "speaker_spec", "bands", ("f_lo_hz", "f_hi_hz")),
@@ -133,11 +124,6 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         payload, = bass_view(bundle, take_ids=("baseline",))["takes"]
         # This 1.5 s sweep has no FFT bin in the 50–63 or 63–80 Hz dwells.
         expected = tuple(expected[index] for index in (0, 1, 2, 5, 6, 7, 8))
-    elif builder == "bass_level":
-        aligned = fit_bass_shape([request.getfixturevalue("pair")], candidate_id="boost")
-        payload = bass_level_evidence(aligned, descriptor=None)
-    elif builder == "bass_comparison":
-        payload = compare_bass_takes(*request.getfixturevalue("pair"), change="candidate")
     elif builder == "speaker_envelope":
         payload = _envelope_answer(EnvelopeCurve(
             "woofer", DEFAULT_ENVELOPE_GRID_HZ, np.ones_like(DEFAULT_ENVELOPE_GRID_HZ),

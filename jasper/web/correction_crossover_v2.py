@@ -26,7 +26,7 @@ from typing import Any, Callable, Mapping
 from jasper.active_speaker.angle_capture import LateralWalkRefused
 from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.measurement_programs import near_field_drivers
-from jasper.active_speaker.preflight import PreflightIssue, preflight
+from jasper.active_speaker.preflight import PreflightIssue, priced_preflight
 from jasper.active_speaker.run_request import RunRequest, resolve_plan, run_envelope
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -191,7 +191,7 @@ def prepare_v2_session(
     facts = preflight_live.read_preflight_facts(request, context=context,
                                                 mover_available=mover_present(request.mover),
                                                 rig_clear_attested=raw.get("attest_rig_clear") is True)
-    report = preflight(request, facts)
+    report = priced_preflight(request, facts)
     issue = next((issue for issue in report.issues if issue.blocking), None)
     if issue is not None:
         raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)

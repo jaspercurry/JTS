@@ -39,7 +39,7 @@ from tests.test_crossover_v2_tuning_scope import (
     BASS_EXTENSION, _room_candidate, _trial_candidate, tuning_profile as tuning_profile,
 )
 
-BASS, NEAR_FIELD = preset("bass/axis").stimulus, preset("nearfield/each").stimulus
+NEAR_FIELD = preset("nearfield/each").stimulus
 
 
 def _boost(boost_db, **changes):
@@ -129,7 +129,7 @@ def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
         ("rear", "rear/pair", "rear_behind"), ("front_rear", "front_rear/express", "tournament_express"),
         ("branches", "branches/express", "tournament_express"))
 ] + [("active_2_way", name, preset, poses) for name, preset, poses in (
-    ("speaker", "speaker/mark", "speaker_mark"), ("room", "room/seat", "room_quick"), ("bass", "bass/axis", "bass_axis"))])
+    ("speaker", "speaker/mark", "speaker_mark"), ("room", "room/seat", "room_quick"))])
 def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, preset, poses):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
     targets = active_driver_targets(topology)
@@ -379,16 +379,12 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
     assert issue.blocking and issue.next_action
 
 
-@pytest.mark.parametrize("program,layout,applied_db,trial_db,lift", [
-    ("speaker", "speaker_mark", 18, None, "none"), ("bass", "seat_express", 18, None, "none"),
-    ("bass", "seat_express", 6, 18, "trial over its base")])
+@pytest.mark.parametrize("program,layout,applied_db,trial_db,lift", [("speaker", "speaker_mark", 18, None, "none")])
 def test_the_margins_are_measured_against_the_graph_the_probe_plays(tuning_profile, program, layout, applied_db,
                                                                     trial_db, lift):
     """A run's margin is how much more its takes' dynamic bass may lift than the
     graph its probe plays: none over a speaker run's timing take, since each
-    candidate graph there probes itself (ADR-0408); none over a take on the same
-    graph; and, over a bass ladder's base, which plays its bass cleared, a trial's
-    whole reserve (ADR-0403 §4, ADR-0370, ADR-0423)."""
+    candidate graph there probes itself (ADR-0408, ADR-0423)."""
     applied = _boost(applied_db)
     trial = replace(_room_candidate(tuning_profile), bass_extension=_boost(trial_db)) if trial_db else None
     plan = request_for_preset(run_preset(program, layout), candidates=("base", trial.fingerprint) if trial else ("base",))
@@ -438,21 +434,11 @@ def _cardioid_trial(profile=None):
 
 
 @pytest.mark.parametrize(("program", "layout", "rear", "trial", "rear_sum_db"), [
-    ("speaker", "speaker_mark", False, "cardioid", 0.0),
-    ("bass", "seat_express", True, "plain", 0.0),
-    ("bass", "seat_express", False, "cardioid", _REAR_SUM_DB),
-    ("bass", "seat_express", True, "cardioid", 0.0),
-    ("bass", "seat_express", None, "plain first", _REAR_SUM_DB),
-    ("bass", "seat_express", None, "cardioid", _REAR_SUM_DB)],
-    ids=["over a timing take each graph probes itself", "probe on the candidate's own graph",
-         "a seat probe that mutes the rear", "a seat probe that plays it too",
-         "an unread base after a probe that mutes it", "an unread probe under a trial that plays it"])
+    ("speaker", "speaker_mark", False, "cardioid", 0.0)], ids=["over a timing take each graph probes itself"])
 def test_a_rear_the_probe_mutes_adds_the_woofers_coherent_sum(tuning_profile, program, layout, rear, trial,
                                                               rear_sum_db):
-    """A rear woofer the probe's graph mutes and a later take at the run's fader,
-    a bass ladder's, plays adds the coherent sum of two woofers, 6.02 dB, to the
-    woofer's band. Over a timing take each candidate graph probes itself, so none
-    plays at the run's fader (ADR-0403 §4, ADR-0408, ADR-0423)."""
+    """Over a timing take each candidate graph probes itself, so no take on
+    another graph plays at the run's fader (ADR-0403 §4, ADR-0408, ADR-0423)."""
     candidates = ("trial", "base") if trial == "plain first" else ("base", "trial")
     plan = request_for_preset(run_preset(program, layout), candidates=candidates)
     report = preflight(plan, ready_facts(
@@ -474,16 +460,13 @@ def _unprobed_plans():
 
 
 @pytest.mark.parametrize("shape", ["no summed take", "check before the probe"])
-@pytest.mark.parametrize("finds_fader", [True, False], ids=["finds its fader", "plays a stated level"])
-def test_a_plan_whose_take_at_the_run_fader_plays_before_its_probe_is_refused(shape, finds_fader):
+def test_a_plan_whose_take_at_the_run_fader_plays_before_its_probe_is_refused(shape):
     """A run that finds its fader with a probe plays a take that does not level
     itself only after that probe, so preflight refuses a plan where such a take
-    would come first, or that has no probe. A ladder's later rung plays at the
-    level stated to it and probes nothing (ADR-0403 §4)."""
+    would come first, or that has no probe (ADR-0403 §4)."""
     plan = _unprobed_plans()[shape]
-    report = preflight(plan, ready_facts(plan), finds_fader=finds_fader)
-    assert [issue.code for issue in report.issues if issue.blocking] == (
-        ["walk_level_policy_invalid"] if finds_fader else [])
+    report = preflight(plan, ready_facts(plan))
+    assert [issue.code for issue in report.issues if issue.blocking] == ["walk_level_policy_invalid"]
 
 
 def test_every_shipped_preset_plans_its_probe_before_the_takes_at_its_fader(tuning_profile):
@@ -534,8 +517,7 @@ def test_unreadable_bass_descriptor_blocks_the_margin():
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
 def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tuning_profile, descriptor):
     candidate = replace(_room_candidate(tuning_profile), bass_extension=_boost(18))
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint,
-                                          stimulus=BASS),),
+    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
     sensitivity = ready_facts(plan).mic_sensitivity
     applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {})
@@ -551,9 +533,7 @@ def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tu
     facts = preflight_live.read_preflight_facts(plan, context=context)
     assert facts.applied_bass_extension == applied.bass_extension
     assert facts.applied_rear_plays is False
-    report = preflight(plan, facts)
-    assert not report.blocking
-    assert report.rung_admission["run_margin_db"] == 0.0
+    assert not preflight(plan, facts).blocking
 
 
 @pytest.mark.parametrize("mover,attested,blocking", [

@@ -754,7 +754,7 @@ async def test_level_reference_is_read_only_and_resolved_before_graph_install(tm
              scope_gains_db(graph.graph_yaml(), reference, roles, topology=profile.topology))
     compose = bind_program_composer(
         program_for_spec=lambda spec, stimulus: program_for_spec(
-            spec, excitation, None, stimulus, safety_profile={}, role_targets={}),
+            spec, excitation, None, stimulus),
         store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda _: None),
         capture_session_id="check", cam_factory=cam, config_dir=str(tmp_path),
         topology=profile.topology, safety_profile={}, role_targets={}, roles=roles,

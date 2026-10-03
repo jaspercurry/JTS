@@ -48,7 +48,6 @@ from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.active_speaker.measurement_programs import programs_for_topology
 from jasper.active_speaker.rear_seed import REAR_SEED_GEOMETRY_UNDECLARED
 from jasper.active_speaker.round_packet import banked_evidence, store_banked_evidence
-from jasper.active_speaker.bass_table_report import BASS_READOUT_FIELDS, bass_table_rows
 from jasper.audio_measurement import room_limits as limits
 from jasper.bass_extension import dynamic
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
@@ -72,10 +71,10 @@ PLAIN_PROGRAMS = programs_for_topology(mono_output_topology())
 
 
 @pytest.mark.parametrize("layout,rear,digest", [
-    ("mono", False, "968035c8afcd68fd956966879ca5463a60e709d3e80b9b482b90fe9ef0ba9e13"),
-    ("mono", True, "61ddea69715e63f3e9877f124c2dc62dfce912729e84479aff7efa1afe4d63e6"),
-    ("stereo", False, "b18335b2d0f4f685a35b28cff90df50ce5028ffaf6b8bd97b8ad200394c7e594"),
-    ("stereo", True, "eda83642a257bccc4679036058132dc1554b1e186d793afa245f419c29a33d3e"),
+    ("mono", False, "5bac4c18df6d352f522b3e8dae7428c34c91c14ee0753f38fdeccb67d7ae0eb1"),
+    ("mono", True, "026947b0b9f46278a2f103b41904747600a6abcddd9f3a3807ed73dcc0faf05c"),
+    ("stereo", False, "af9329fc0039b936cb9df1443d1d0b8a390070342bad301aa95a6baff82e1afc"),
+    ("stereo", True, "c4149f00fe19e93cd5c7c49e3a47d0f985dabc258e5bceda3240a1adcc4a7613"),
 ])
 def test_contracts_publish_only_the_boxes_programs(round_bank, monkeypatch, capsys, layout, rear, digest):
     preset = _rear_pair(layout)[0].to_dict() if rear else _two_way_preset(layout)
@@ -116,10 +115,7 @@ def bass_packet():
     return {"schema": ROUND_PACKET_SCHEMA, "round_id": "round-1", "packet_fingerprint": "p" * 64,
             "bass": [{"set_id": "set-1", "takes": [{"bands": [
                 {"band_hz": list(band), "estimated_snr_db": 30, "fundamental_qualified": True}
-                for band in BASS_BANDS_HZ]}]}],
-            "bass_table": {"tables": [{"candidate_id": "candidate-1", "levels": [
-                {"level_key": {"level_db": level}, "candidate_response": {"qualified_from_hz": floor}}
-                for level, floor in zip((-30, -25, -20, -15), (None, 20, 40, 63))]}]}}
+                for band in BASS_BANDS_HZ]}]}]}
 
 
 @pytest.fixture
@@ -357,22 +353,14 @@ def test_the_layers_the_bass_contract_calls_uncharged_leave_the_charge_unmoved()
     assert candidate_parts.program_charge_db(boosted) == candidate_parts.program_charge_db(candidate) > 0.0
 
 
-def test_bass_contract_reads_saved_packet_and_discloses_every_level(round_bank, bass_packet, capsys):
+def test_bass_contract_reads_the_saved_packet(round_bank, bass_packet, capsys):
     bank, _ = round_bank
     bass_packet["round_id"] = bank.name
-    for level in bass_packet["bass_table"]["tables"][0]["levels"]:
-        level.update(sources=[{"before": "/tmp/base.json", "after": r"C:\captures\after.json"}],
-                     records=["/tmp/record.json"], compression_includes=["compressor", "driver"], harmonics_delta_db=[])
     (bank / "packet.json").write_text(json.dumps(bass_packet))
     assert cli.main(["contract", "--round", str(bank), "--section", "bass"]) == 0
     contract = json.loads(capsys.readouterr().out)["sections"]["bass"]
     assert contract["status"] == "available"
     assert set(contract["refusal_codes"]) == dynamic.DYNAMIC_BASS_REFUSAL_REASONS
-    levels = contract["detail"]["levels"]
-    assert levels == bass_table_rows(bass_packet["bass_table"])
-    for level in levels:
-        assert set(level) == set(BASS_READOUT_FIELDS)
-        assert not any(separator in json.dumps(level) for separator in ("/", "\\"))
 
 
 def test_evidence_declarations_are_served_as_templates_and_cannot_be_mutated():

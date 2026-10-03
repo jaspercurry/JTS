@@ -95,17 +95,6 @@ HOUSEHOLD_DB = -14.0
 CAPS = {"woofer": 0.0, "tweeter": -65.0}
 
 
-def plan_context() -> SimpleNamespace:
-    targets = {role: f"fp-{role}" for role in CAPS}
-    return SimpleNamespace(
-        safety_profile={"targets": [
-            {"target_fingerprint": fingerprint, "role": role}
-            for role, fingerprint in targets.items()
-        ]},
-        role_targets=targets,
-    )
-
-
 def _roles() -> list[RoleBand]:
     return [
         RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
@@ -463,8 +452,7 @@ def _phase_program(conductor, phase, spec=None):
         summed = phase not in (PHASE_CHECK, PHASE_MEASURE, journey.PHASE_LATERAL)
         spec = MeasureSpec(kind="baseline", scope_gains_db={},
                            **({"graph_scope": "timing", "candidate_id": "base"} if summed else {}))
-    return compose_plan_program(conductor, replace(spec, program_phase=phase), None,
-                                context=SimpleNamespace(safety_profile={}, role_targets={}))
+    return compose_plan_program(conductor, replace(spec, program_phase=phase), None)
 
 
 def _run_phase(conductor, index, attempt, result=None):

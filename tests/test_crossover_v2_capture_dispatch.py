@@ -40,7 +40,6 @@ from tests.crossover_v2_fixtures import (
     _loc,
     _measure_analysis,
     _snr_pilot,
-    plan_context,
 )
 from tests.test_plan_run import AnsweredGate, _run_gated, _walk
 from tests._log_events import event_field_maps
@@ -102,7 +101,7 @@ def test_check_run_host_reads_mute_once(monkeypatch, muted):
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check")
-    program = compose_plan_program(conductor, spec, None, context=plan_context())
+    program = compose_plan_program(conductor, spec, None)
     record = {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "check", "program": program.to_dict()}
     records.enrich(WiredCaptureAnswer(wav=b"", program=program.to_dict()), record)
     verdict = assessor(analyze(record), phase="check", program=program)
@@ -280,7 +279,7 @@ def test_a_round_banks_the_branch_diagnostic_its_analysis_carried(diagnostic):
                     "pose": {"kind": "bearing", "azimuth_deg": -20, "elevation_deg": 0}},
                    attempt=1, pose_index=0)
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
-    program = compose_plan_program(conductor, spec, None, context=plan_context())
+    program = compose_plan_program(conductor, spec, None)
     banked = records.enrich(
         WiredCaptureAnswer(wav=b"", program=program.to_dict()),
         {"take_id": "take-1", "index": 1, "attempt": 1, "phase": "measure",
@@ -455,7 +454,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     for attempt in (1, 2):
         manifest.begin({"index": 1, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 20, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
-        program = compose_plan_program(conductor, spec, rung, context=plan_context())
+        program = compose_plan_program(conductor, spec, rung)
         gain = program.segment("sweep_w").gain_db
         assert gain == pytest.approx(-30 + (raise_db if attempt == 2 else 0))
         assert all(seg.effective_peak_dbfs <= conductor._excitation.caps_dbfs[seg.role]

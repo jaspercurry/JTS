@@ -58,7 +58,7 @@ from tests.test_take_impulses import bank_kept_impulse_take
 from tests.room_median_fixture import write_room_median
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.test_crossover_v2_feature_classifier import _bundle as feature_bundle, _flat_ir as flat_ir, _resonant_ir as resonant_ir
-from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs, bass_run, summed_capture_bundle  # noqa: F401
+from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle  # noqa: F401
 from tests.test_crossover_v2_harmonic_evidence import bank_driver_take
 from tests.test_crossover_v2_nearfield_view import _take as nearfield_take
 from tests.test_crossover_v2_room_prescription import _document as room_document
@@ -328,7 +328,7 @@ def test_an_argument_error_comes_before_the_state_refusal(
 ])
 def test_document_failures_use_the_shared_contract(module_name, verb, tmp_path, monkeypatch, capsys):
     error = prescription_document.PrescriptionDocumentRefused(
-        "bass_fit_inputs_missing", "bass", "missing takes", evidence={"round_id": "round-1"})
+        "bass_evidence_unavailable", "bass", "missing takes", evidence={"round_id": "round-1"})
     def refuse(*args, **kwargs):
         raise error
     monkeypatch.setattr(prescription_document, "saved_base", refuse)
@@ -454,15 +454,6 @@ def _bass_argv(request: pytest.FixtureRequest, root: Path, scope: str = "candida
     return ["bass", str(bundle), "--set", "bass"]
 
 
-def _bass_run_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
-    run = request.getfixturevalue("bass_run")
-    run.write()
-    if request.param == "bass-fit-table":
-        return run.argv
-    return ["bass-compare", str(run.roots[0]), str(run.roots[0]),
-            "--before-set", "set-0", "--after-set", "set-1", "--change", "candidate"]
-
-
 def _distortion_argv(request: pytest.FixtureRequest, root: Path) -> list[str]:
     return ["distortion", str(bank_driver_take(root, request.getfixturevalue("monkeypatch"))[0])]
 
@@ -539,12 +530,6 @@ _VIEW_RUN: dict[str, str | _ViewRun] = {
     "bass": _ViewRun(
         _bass_argv, frozenset({"calibration_id"}), frozenset({"set_id", "candidate_id"}),
         lambda p, a: p["calibration_id"] == a["takes"][0]["calibration"]["calibration_id"]),
-    "bass-compare": _ViewRun(
-        _bass_run_argv, frozenset({"change"}), _ROUND_SET_TAKES | {"candidate_id"},
-        lambda p, a: p["change"] == a["change"]),
-    "bass-fit-table": _ViewRun(
-        _bass_run_argv, frozenset({"reference_band_hz"}),
-        recorded=lambda p, a: all(table["reference_band_hz"] == p["reference_band_hz"] for table in a["tables"])),
     "bass-alignment": _ViewRun(
         lambda request, root: ["bass-alignment", str(nearfield_round(root))], frozenset({"band_hz"}),
         frozenset({"take_ids"}), lambda p, a: p["band_hz"] == a["parameters"]["band_hz"]),

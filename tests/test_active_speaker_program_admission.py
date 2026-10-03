@@ -217,8 +217,7 @@ def test_way1_summed_full_band_is_admitted(tmp_path, scope, probe):
         -20, None, {"full_range": 4}, (20, 20000),
     )
     program = (compose_summed_probe(excitation, MeasureSpec(kind="baseline", graph_scope="candidate",
-                                                            candidate_id="way1", level_probe=True),
-                                    safety_profile=safety, role_targets=targets)
+                                                            candidate_id="way1", level_probe=True))
                if probe else excitation.verify_program(courtesy_prelude=True))
     wav = tmp_path / "way1.wav"
     write_program_wav(wav, program)
@@ -1217,7 +1216,7 @@ def _cardioid_solo_take(monkeypatch, target, *, rear_peak=None, stimulus_dbfs=0.
     excitation = replace(excitation_from_context(context), session_volume_db=probe_fader_db(context.driver_caps_dbfs))
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
-        spec, stimulus_dbfs, context=context)
+        spec, stimulus_dbfs)
     return topology, safety, context, spec, excitation, program
 
 
@@ -1287,7 +1286,7 @@ def test_a_branch_probe_sweeps_its_drivers_whole_band_and_is_admitted(tmp_path, 
                        program_phase=PHASE_LATERAL, branch_target_ids=("woofer", "woofer:rear"), level_probe=True)
     probe_spec, = (spec for spec in branch_probes(take) if spec.branch_target_ids == (target,))
     probe = compose_plan_program(SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
-                                 probe_spec, None, context=context)
+                                 probe_spec, None)
     band = context.driver_bands[target]
 
     assert is_level_probe(probe)
@@ -1587,18 +1586,14 @@ _REAR = "woofer:rear"
 _BASS_BASE_CLEARS = ("room_correction", "bass_extension")
 #: Each program's takes on a fresh cardioid base, and the targets each excites:
 #: speaker (check, measure, timing), every summed take (speaker candidates,
-#: rear/express, rear/seat, room) and its probe, bass and its probe, the branch
-#: takes, rear/pair and its probes, near-field and one-driver takes.
+#: rear/express, rear/seat, room) and its probe, the branch takes, rear/pair and
+#: its probes, near-field and one-driver takes.
 FRESH_CARDIOID_TAKES = {
     "speaker_check": (dict(graph_scope="drivers", program_phase="check"), _FRONT),
     "speaker_measure": (dict(graph_scope="drivers", program_phase="measure"), _FRONT),
     "speaker_timing": (dict(graph_scope="timing", program_phase="timing"), _FRONT),
     "summed": (dict(graph_scope="candidate", program_phase="lateral"), _FRONT),
     "summed_probe": (dict(graph_scope="candidate", program_phase="lateral", level_probe=True), _FRONT),
-    "bass": (dict(graph_scope="candidate", program_phase="lateral", stimulus=preset("bass/axis").stimulus,
-                  cleared_layers=_BASS_BASE_CLEARS), _FRONT),
-    "bass_probe": (dict(graph_scope="candidate", program_phase="lateral", stimulus=preset("bass/axis").stimulus,
-                        cleared_layers=_BASS_BASE_CLEARS, level_probe=True), _FRONT),
     "branches": (dict(graph_scope="candidate_branches", program_phase="lateral",
                       branch_target_ids=("woofer", "tweeter")), _FRONT),
     "rear_pair": (dict(graph_scope="candidate_branches", program_phase="lateral",
@@ -1637,7 +1632,7 @@ def _production_composer(tmp_path, fader, fresh, graph, reference):
                            gain_plan_db={"woofer": -40.0, "tweeter": -40.0}, set_program=lambda *args: None)
     paths: list = []
     compose = bind_program_composer(
-        program_for_spec=lambda spec, level: compose_plan_program(host, spec, level, context=context),
+        program_for_spec=lambda spec, level: compose_plan_program(host, spec, level),
         store=SimpleNamespace(bundle_dir=tmp_path, identify_artifact=paths.append),
         capture_session_id="fresh", cam_factory=lambda: None, config_dir=str(tmp_path), topology=topology,
         safety_profile=safety, role_targets=context.role_targets, graph_yaml=lambda: graph,
@@ -1835,8 +1830,7 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
     excitation = SessionExcitation(tuple(_roles()), {"woofer": 0, "tweeter": 0}, fader, 1600,
                                    {"woofer": 4, "tweeter": 4})
     gains = {"woofer": -12, "tweeter": -12}
-    programs = partial(program_for_spec, excitation=excitation, gain_plan_db=gains,
-                       safety_profile=safety, role_targets=targets)
+    programs = partial(program_for_spec, excitation=excitation, gain_plan_db=gains)
     paths = []
     store = SimpleNamespace(bundle_dir=tmp_path, identify_artifact=lambda path: paths.append(path))
     caplog.set_level(logging.INFO, logger="jasper.active_speaker.crossover_v2.composition")

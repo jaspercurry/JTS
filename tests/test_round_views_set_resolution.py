@@ -9,9 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from jasper.active_speaker.bass_comparison import compare_bass_takes, selected_take
 from jasper.active_speaker.crossover_v2 import room_views
-from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA
 from jasper.active_speaker.crossover_v2.room_prescription import read_room_median
 from jasper.active_speaker.crossover_v2.room_selection import select_seat_takes
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
@@ -19,10 +17,7 @@ from jasper.active_speaker.crossover_v2.record_index import measurement_document
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.crossover_v2.round_inputs import (
-    COMPARAND_EARLIER_ROUND, COMPARAND_SAME_ROUND, SetTakes, default_out, round_artifact_dir, round_inputs, with_records,
-)
-from jasper.active_speaker.crossover_v2.take_reading import (
-    REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, REFUSE_COMPARE_NO_COMPARAND,
+    SetTakes, round_artifact_dir, round_inputs, with_records,
 )
 from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.crossover_v2.window_view import window_view
@@ -37,7 +32,6 @@ from tests.crossover_v2_banked_round import bank_seat_round, SEAT_GRID_HZ
 from tests.crossover_v2_fixtures import bank_capture_round
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
-from tests.test_take_reading import _banked
 
 
 @pytest.fixture
@@ -132,7 +126,7 @@ def test_finalized_one_set_needs_no_selector(tmp_path, capsys, status):
     assert Path(answer["out"]).name == "room.json"
 
 
-_BASS = {"bass", "bass-compare", "bass-fit-table"}
+_BASS = {"bass"}
 _SPEAKER = {"directivity", "delay-landscape", "distortion", "classify-features"}
 
 
@@ -194,86 +188,6 @@ def test_take_sweep_uses_the_same_record_and_artifact_bytes(tmp_path, capsys, ta
     else:
         answer, _ = artifact_answer(capsys)
         assert Path(answer["out"]).read_bytes() == (render_report(expected) + "\n").encode()
-
-
-@pytest.mark.parametrize("named_sets,named_takes", [(True, False), (True, True), (False, True)],
-                         ids=["sets", "sets and takes", "takes alone"])
-def test_bass_compare_resolves_two_sets_to_the_same_take_comparison(tmp_path, capsys, named_sets, named_takes):
-    """However its sides are named, the comparison files under the set its after side resolved
-    to, as the bank files that set's views; so two comparisons never share a file."""
-    root = bank_seat_round(tmp_path)
-    inputs = round_inputs(root)
-    rows = list(measurement_documents(inputs.session_dir))[:4]
-    for index, (_, record) in enumerate(rows):
-        record.update(pose_kind="bearing", position_deg=15.0 if index % 2 else 0.0, vertical_deg=0.0)
-    groups = [manifest_set([(row.path, record) for row, record in rows[start:start + 2]],
-                           set_id=f"bass-{number}") for number, start in enumerate((0, 2))]
-    write_manifest(root, program="bass", groups=groups)
-    views, paths = [], []
-    for number, group in enumerate(groups):
-        takes = [{"record": record, "record_path": row.path, "sweep_band_hz": [20, 200], "sweep_duration_s": 1.0,
-                  "calibration": {}, "freqs_hz": [30, 50, 70, 100, 150], "fundamental_db": [-30 + number + i] * 5,
-                  "fundamental_qualified": [True] * 5, "harmonics": {}}
-                 for i, (row, record) in enumerate(rows[number * 2:number * 2 + 2])]
-        view = {"schema": BASS_VIEW_SCHEMA, "takes": takes}
-        path = default_out(inputs, root, "bass_view.json", group["set_id"])
-        path.write_text(json.dumps(view))
-        views.append(view)
-        paths.append(path)
-    ids = [group["takes"][int(named_takes)]["take_id"] for group in groups]
-    expected = compare_bass_takes(*(selected_take(view, take_id) for view, take_id in zip(views, ids)), change="diagnostic")
-    flags = [*(["--before-set", "bass-0", "--after-set", "bass-1"] if named_sets else []),
-             *(["--before-take", ids[0], "--after-take", ids[1]] if named_takes else [])]
-    assert main(["bass-compare", str(root), str(root), *flags, "--change", "diagnostic"]) == 0
-    answer, actual = artifact_answer(capsys)
-    assert actual == {**expected, "comparand": None, "source_views": list(map(str, paths))}
-    assert Path(answer["out"]).name == "bass_comparison-bass-1.json"
-    assert not (root / "bass_comparison.json").exists()
-
-
-@pytest.mark.parametrize("rounds,flags,expected", [
-    ({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}}, ["--after-set", "cand"], (0, COMPARAND_SAME_ROUND, "r", "r0")),
-    ({"e": {"base": [("e0", 0)]}, "r": {"cand": [("c0", 0)]}}, [], (0, COMPARAND_EARLIER_ROUND, "e", "e0")),
-    ({"r": {"base": [("r0", 0)], "cand": [("c0", 0)]}}, ["--before-set", "base", "--after-set", "cand"],
-     (0, None, "r", "r0")),
-    ({"e": {"base": [("e30", 30)]}, "r": {"cand": [("c0", 0)]}}, [], (EXIT_REFUSED, REFUSE_COMPARE_NO_COMPARAND, None, "c0")),
-    ({"room": {"base": [("s0", 0)]}, "r": {"cand": [("c0", 0)]}}, [],
-     (EXIT_REFUSED, REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, "room", "s0")),
-], ids=["same-round-base", "earlier-round", "before-side-named", "none", "comparand-files-no-bass-view"])
-@pytest.mark.parametrize("probe", [False, True], ids=["", "probed"])
-def test_bass_compare_with_no_before_side_reads_the_after_takes_comparand(tmp_path, capsys, rounds, flags, expected,
-                                                                          probe):
-    """ADR-0391: one round named with no --before-* flag is the after take's, and
-    the before take is its comparand, read from the bass view its round filed;
-    the answer says how it was found. With none, or with a comparand whose round
-    filed no bass view, bass-compare refuses by name. A round's run probe files
-    no view, so its one measured set's view keeps no set name (ADR-0403 §4)."""
-    store = tmp_path / "campaigns"
-    paths = {}
-    for day, (name, sets) in enumerate(rounds.items()):
-        root = paths[name] = _banked(store, name, f"2026-09-{20 + day}T12:00:00Z", sets, probe=probe)
-        if name == "room":
-            continue  # A room round files no bass view.
-        inputs = round_inputs(root)
-        records = {record["take_id"]: (row.path, record) for row, record in measurement_documents(inputs.session_dir)}
-        for set_id, takes in sets.items():
-            view = {"schema": BASS_VIEW_SCHEMA, "takes": [
-                {"record": {**records[take_id][1], "pose_kind": "bearing", "vertical_deg": 0},
-                 "record_path": records[take_id][0], "sweep_band_hz": [20, 200], "sweep_duration_s": 1.0,
-                 "calibration": {}, "freqs_hz": [30, 50, 70, 100, 150], "fundamental_db": [-30.0] * 5,
-                 "fundamental_qualified": [True] * 5, "harmonics": {}} for take_id, *_ in takes]}
-            # The bank files a set's view under the set's name only in a round of more than one set.
-            default_out(inputs, root, "bass_view.json", set_id if len(sets) > 1 else None).write_text(json.dumps(view))
-
-    code = main(["bass-compare", str(paths["r"]), *flags, "--change", "diagnostic"])
-    answer = json.loads(capsys.readouterr().out)
-
-    if code:
-        detail = answer["detail"]
-        assert (code, answer["reason"], detail.get("round_id"), detail["take_id"]) == expected
-    else:
-        before, _after = answer["subject"]["rounds"]
-        assert (code, answer["comparand"], before["round_id"], *before["take_ids"]) == expected
 
 
 @pytest.mark.parametrize("changed", [
@@ -363,7 +277,7 @@ def _run(capsys, argv):
 def test_single_take_views_refuse_an_ambiguous_set(two_sets, capsys):
     root, manifest = two_sets
     first, second = (group["set_id"] for group in manifest["sets"])
-    argv = ["bass-compare", str(root), str(root), "--before-set", first, "--after-set", second, "--change", "candidate"]
+    argv = ["compare", str(root), str(root), "--a-set", second, "--b-set", first]
     assert main(argv) == 1
     answer = json.loads(capsys.readouterr().out)
     assert answer["reason"] == "round_take_selection_required"

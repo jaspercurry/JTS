@@ -63,10 +63,6 @@ DRIVER_CAPS_DBFS = {
 #: hearing clamp the engine never relaxes.
 SESSION_VOLUME_DB = -20.0
 
-#: A stimulus level, dBFS, for a ladder rung that is not the declared one.
-#: Two of them, because one rung is not a ladder.
-LADDER_DBFS = (-20.0, -12.0)
-
 #: The horizontal walk a fixture session takes, in signed whole degrees.
 #: Negative is LEFT of the design axis as seen from the microphone looking at
 #: the speaker — ``spatial.PositionGeometry``'s frame, quoted not re-decided.

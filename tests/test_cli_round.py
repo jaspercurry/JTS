@@ -9,7 +9,6 @@ import io
 import json
 import asyncio
 from collections import Counter
-from copy import deepcopy
 from types import SimpleNamespace
 import subprocess
 import sys
@@ -18,7 +17,6 @@ import signal
 import urllib.error
 from dataclasses import replace
 from functools import partial
-from itertools import groupby
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -39,28 +37,22 @@ from jasper.active_speaker import baseline_profile
 from jasper.active_speaker.crossover_v2.prescription_document import judge_prescription_document
 from jasper.active_speaker.crossover_v2 import prescription_document as prescription_document_mod
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, compile_candidate_config
-from jasper.active_speaker.measurement_bass import BASS_VIEW_SCHEMA
 from jasper.active_speaker.design_draft import load_design_draft
 from jasper.web import correction_capture, correction_crossover_v2 as v2host, correction_crossover_v2_apply as v2apply
 from jasper.web import correction_crossover_v2_evidence as v2evidence, correction_crossover_v2_volume as v2volume
 from jasper.web import correction_crossover_backend, correction_handlers, correction_runtime
 from jasper.web.correction_runtime import refusal_envelope
 from jasper.active_speaker.crossover_v2.conductor_context import resolve_conductor_context
-from jasper.active_speaker.crossover_v2.programs import predictive_program_for_spec
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY, CrossoverV2Refused
 from jasper.active_speaker.crossover_v2.round_inputs import CrossoverEvidencePacketError
 from jasper.active_speaker.crossover_v2.round_inputs import RoundSetRefused, round_inputs, resolve_set
 from jasper.active_speaker.measurement_programs import (
     RUNNABLE_PROGRAMS, available_presets, near_field_drivers, preset, programs_for_topology, run_preset,
 )
-from jasper.active_speaker.preflight import PreflightReport
-from jasper.active_speaker.run_levels import (
-    LEVEL_OFFSETS_DB, LevelLadder, ladder_captures, preflight_levels, prepare_level_captures,
-)
+from jasper.active_speaker.preflight import PreflightReport, priced_preflight
 from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.movers import MOVERS
-from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S
 from jasper.active_speaker.round_copy import round_lines
 from jasper.cli import _run_request, round as cli
 from jasper.cli._refusal import STATUS_BY_CODE
@@ -81,7 +73,6 @@ from tests.test_arm_walk import (
 from tests.test_correction_crossover_v2_endpoints import _FakeApplyCam, _inline_context, _seed_baseline_apply_environment
 from tests.test_prescription_document import document, timing_evidence
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
-from tests.test_crossover_v2_round_frequency_view import bass_fit_pairs as bass_fit_pairs  # noqa: F401
 
 _FINGERPRINT = "a" * 64
 _OTHER = "b" * 64
@@ -529,7 +520,7 @@ def door(monkeypatch):
 def _posted_plan(opener):
     """The plan the request the CLI posted resolves to, on a two-way speaker."""
     request = json.loads(opener.posted_to(wc.SESSION_PATH)[0].data)["request"]
-    return resolve_plan(RunRequest.from_mapping(request), targets=lambda: ("tweeter", "woofer"))[0]
+    return resolve_plan(RunRequest.from_mapping(request), targets=lambda: ("tweeter", "woofer"))
 
 
 @pytest.fixture
@@ -660,7 +651,7 @@ def test_run_posts_its_request_and_returns_without_a_status_read(preflight_ready
     assert body["link"].endswith(wc.CSRF_PAGE_PATH)
     assert body["subject"] == ({"candidate_ids": [candidates]} if candidates else {})
     assert body["parameters"] == {"program": "room/seat", "layout": "seat_express", "mover": "human", "level_db": -25,
-                                  "levels": None, "repeats": 1, "driver": None}
+                                  "repeats": 1, "driver": None}
     assert not any(r.full_url.endswith(wc.STATUS_PATH) for r in opener.requests)
 
 
@@ -1106,12 +1097,12 @@ def test_a_rear_pair_at_custom_bearings_plans_branch_takes_on_the_applied_base(
     assert candidate_bank.banked_candidates() == []
 
 
-@pytest.mark.parametrize("choice_id", ["room/seat", "bass/axis", "rear/pair", "nearfield/each"])
+@pytest.mark.parametrize("choice_id", ["room/seat", "rear/pair", "nearfield/each"])
 def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     monkeypatch, preflight_ready, choice_id,
 ):
     """`--request`, the page's start action and the session door resolve one
-    request to one plan and one level ladder (#5737 A3)."""
+    request to one plan (#5737 A3)."""
     topology, context = mono_output_topology(), _inline_context()
     context = with_rear_target(replace(context, topology=topology,
                                        driver_bands={role.role: role.band for role in context.roles_bands}))
@@ -1125,7 +1116,7 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     _, asked = _run_request.read_request(cli.build_parser().parse_args(["run", "--request", json.dumps(body["request"])]))
     by_cli = _run_request.preflight_run(asked)
     admitted: list = []
-    monkeypatch.setattr(v2host, "preflight_levels", lambda *args: admitted.append(preflight_levels(*args)) or admitted[-1])
+    monkeypatch.setattr(v2host, "priced_preflight", lambda *args: admitted.append(priced_preflight(*args)) or admitted[-1])
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
     monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
@@ -1137,15 +1128,14 @@ def test_one_request_is_one_plan_from_the_cli_the_page_and_the_door(
     by_door, = admitted
     published = next(payload for path, payload in store.published if path.endswith("/plan.json"))
     assert published == by_door.plan.to_dict() and by_door.plan == by_cli.plan
-    assert type(by_door) is type(by_cli) is (LevelLadder if choice_id.startswith("bass") else PreflightReport)
-    assert [rung.plan for rung in getattr(by_door, "levels", ())] == [rung.plan for rung in getattr(by_cli, "levels", ())]
+    assert type(by_door) is type(by_cli) is PreflightReport
 
 
-@pytest.mark.parametrize("choice_id, takes", [("bass/axis", 12), ("room/seat", 3)])
+@pytest.mark.parametrize("choice_id, takes", [("room/seat", 3)])
 def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, choice_id, takes):
-    """A level ladder plays each placement's captures at every rung (``run_levels``). The page's plan and
-    the session's own first facts (what the awaiting-join screen prints) preview those takes from one
-    schedule: their count, and their programs' seconds, with the moves, the probe and the prelude once."""
+    """The page's plan and the session's own first facts (what the awaiting-join screen prints) preview
+    the takes the run plays from one schedule: their count, and their programs' seconds, with the moves,
+    the probe and the prelude once."""
     topology, context = mono_output_topology(), _inline_context()
     context = with_rear_target(replace(context, topology=topology,
                                        driver_bands={role.role: role.band for role in context.roles_bands}))
@@ -1164,20 +1154,12 @@ def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, c
     monkeypatch.setattr(plan_run, "preview_schedule", spy)
     body = next(c for c in measurement_view.round_choices({}, choice_id) if c["id"] == choice_id)["action"]["body"]
     (_, priced, _), page = previewed[0][0], previewed[0][1]
-    request, levels = resolve_plan(RunRequest.from_mapping(body["request"]), targets=lambda: near_field_drivers(topology))
-    report = preflight_levels(request, ready_facts(request), levels)
-    rungs = report.admissible if isinstance(report, LevelLadder) else (report,)
-    played = [(capture.stop, capture.repeat) for _, group in groupby(report.plan.stops, key=lambda stop: stop.pose.place)
-              for stops in [tuple(group)] for planned in rungs
-              for capture in prepare_level_captures(replace(planned.plan, stops=stops), roles_bands=context.roles_bands)]
-    assert [(capture.stop, capture.repeat) for capture in priced] == played
-    one_rung = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
-    one = preview(request, one_rung, context)
-    assert page["measurements_per_pose"] == [len(rungs) * count for count in one["measurements_per_pose"]]
-    takes_s = sum(program.total_samples / program.sample_rate_hz + WIRED_POST_ROLL_S
-                  for program in map(predictive_program_for_spec(context), (capture.spec for capture in one_rung)))
-    assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"] + (len(rungs) - 1) * takes_s)
-    assert len(rungs) == (len(LEVEL_OFFSETS_DB) if choice_id.startswith("bass") else 1)
+    request = resolve_plan(RunRequest.from_mapping(body["request"]), targets=lambda: near_field_drivers(topology))
+    captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
+    assert [(capture.stop, capture.repeat) for capture in priced] == [(capture.stop, capture.repeat) for capture in captures]
+    one = preview(request, captures, context)
+    assert page["measurements_per_pose"] == one["measurements_per_pose"]
+    assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"])
 
     monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
     monkeypatch.setattr(preflight_live, "read_preflight_facts", lambda plan, **_kw: ready_facts(plan))
@@ -1194,7 +1176,7 @@ def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, c
 
 
 _PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair",
-                "cleared_layers", "stimulus", "level_ladder_db", "layout", "layouts"}
+                "cleared_layers", "stimulus", "layout", "layouts"}
 _LAYOUT_KEYS = {"layout", "description", "use_when", "mover", "poses", "targets", "captures", "seconds", "refused"}
 
 
@@ -1225,7 +1207,7 @@ def _speaker_context(topology):
     pytest.param(_active_topology("stereo", "active_2_way"), _REAR | _ALONE, {}, id="stereo_pair"),
 ])
 def test_presets_lists_every_preset_and_prices_what_the_page_offers(monkeypatch, capsys, topology, hidden, targets):
-    """`presets --json` lists every preset and layout. It prices one level of each layout the
+    """`presets --json` lists every preset and layout. It prices each layout the
     measure page offers this speaker, and marks the rest not offered (#5737 A3b)."""
     context, programs = _speaker_context(topology), programs_for_topology(topology)
     monkeypatch.setattr("jasper.active_speaker.crossover_v2.conductor_context.resolve_conductor_context",
@@ -1247,8 +1229,6 @@ def test_presets_lists_every_preset_and_prices_what_the_page_offers(monkeypatch,
                for row, layout in rows)
     assert [(row["preset"], layout["layout"], len(layout["poses"])) for row, layout in rows] == [
         (name, layout, len(run_preset(name, layout).poses)) for name in available_presets() for layout in preset(name).layouts]
-    assert {row["preset"]: row["level_ladder_db"] for row in body["presets"] if row["level_ladder_db"]} == {
-        "bass/axis": list(LEVEL_OFFSETS_DB)}
     assert {row["preset"] if layout["layout"] == row["layout"] else f"{row['preset']}@{layout['layout']}"
             for row, layout in rows if layout["refused"] != _NOT_OFFERED} == offered
     assert {row["preset"] for row, layout in rows if layout["refused"] == _NOT_OFFERED} == hidden
@@ -1357,27 +1337,25 @@ def test_remote_dry_run_refuses_before_reading_local_facts(monkeypatch, capsys, 
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_bass_axis_uses_the_registered_mover(preflight_ready, door, monkeypatch, capsys, dry_run, arm_plan_answer):
+def test_an_arm_layout_uses_the_registered_mover(preflight_ready, door, monkeypatch, capsys, dry_run, arm_plan_answer):
     opener = door(_opener())
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--level-db", "-25",
+    code, body = _run(["run", "--program", "room", "--layout", "room_quick", "--level-db", "-25",
                        *(["--dry-run"] if dry_run else ["--wait", "--attest-rig-clear"])],
                       opener, monkeypatch, capsys)
     staged = body if dry_run else opener.staged[0]["staged"]
     report = staged if dry_run else staged["schedule"]
     assert code == 0
-    capture, = report["schedule"]
-    assert capture["regime"] == "summed"
+    assert {capture["regime"] for capture in report["schedule"]} == {"summed"}
     assert report["level"]["level_db"] == -25
-    assert (staged["parameters"]["mover"], staged["parameters"]["levels"]) == ("arm", None)
+    assert staged["parameters"]["mover"] == "arm"
     assert len(opener.staged) == int(not dry_run)
 
 
 @pytest.mark.parametrize("admitted", [True, False])
-def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
-    """A bass dry run lists its ladder's steps under the level its first rung's
-    probe finds (ADR-0403 §4), and prices the whole run once: every rung's takes,
-    one move per seat, and the page's estimate of them. A refused one names the
-    run it refused, as the answer would have (ADR-0389)."""
+def test_dry_run_prices_the_run_it_resolves(monkeypatch, capsys, admitted):
+    """A dry run prices the run it resolves once: every take, one move per seat,
+    and the page's estimate of them. A refused one names the run it refused, as
+    the answer would have (ADR-0389)."""
     context = _inline_context()
     context = replace(context, topology=mono_output_topology(),
                       driver_bands={role.role: role.band for role in context.roles_bands})
@@ -1388,7 +1366,7 @@ def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
     opener = _opener()
-    code = cli.main(["run", "--program", "bass", "--dry-run"], opener=opener)
+    code = cli.main(["run", "--program", "room", "--dry-run"], opener=opener)
     output = capsys.readouterr()
     answered = json.loads(output.out)
     if admitted:
@@ -1400,16 +1378,12 @@ def test_dry_run_lists_the_ladders_steps(monkeypatch, capsys, admitted):
         # The human line is the blocking issue's sentence; the report stays on stdout.
         issue = next(issue for issue in body["issues"] if issue["blocking"])
         assert output.err == f"refused ({answered['reason']}): {issue['detail']}\n"
-    steps = [0.0, -5.0, -10.0, -15.0]
-    assert (body["subject"], body["parameters"]["program"], body["parameters"]["level_db"],
-            body["parameters"]["levels"]) == ({}, "bass/axis", None, steps)
-    assert [(row["step_db"], row["admissible"]) for row in body["levels"]] == [(step, admitted) for step in steps]
-    plan, levels = resolve_plan(RunRequest(program="bass"), targets=lambda: ())
-    run = ladder_captures(plan, levels, plan_run.prepare_plan_captures(plan, roles_bands=context.roles_bands))
-    seats = len(run_preset("bass").poses)
-    assert body["price"] == {"captures": len(steps) * seats, "mic_moves": seats,
+    assert (body["subject"], body["parameters"]["program"], body["parameters"]["level_db"]) == ({}, "room/seat", None)
+    plan = resolve_plan(RunRequest(program="room"), targets=lambda: ())
+    run = plan_run.prepare_plan_captures(plan, roles_bands=context.roles_bands)
+    seats = len(run_preset("room").poses)
+    assert body["price"] == {"captures": seats, "mic_moves": seats,
                              "seconds": round(plan_run.preview_schedule(plan, run, context)["estimated_seconds"])}
-    assert not any("price" in row for row in body["levels"])
     assert not opener.requests
 
 
@@ -1421,8 +1395,8 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
         return ready_facts(plan, **kw)
 
     monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
-    for pinned in (["--layout", "bass_axis", "--mover", "human"], ["--mover", "arm"]):
-        code, body = _run(["run", "--program", "bass", *pinned, "--dry-run"], _opener(), monkeypatch, capsys)
+    for pinned in (["--layout", "room_quick", "--mover", "human"], ["--mover", "arm"]):
+        code, body = _run(["run", "--program", "room", *pinned, "--dry-run"], _opener(), monkeypatch, capsys)
         assert code == 1 and body["reason"] == "walk_mover_mismatch"
 
     for mover in ("arm", "human"):
@@ -1432,155 +1406,6 @@ def test_run_mover_flag_is_checked_against_registered_constraints(monkeypatch, c
         )
         assert code == 0
     assert seen == ["arm", "human"]
-
-
-@pytest.mark.parametrize("trial,flags,probe_db,levels", [
-    (False, ["--level-db", "-18"], -18.0, [-18.0]),
-    (True, [], 0.0, [0.0, -5.0, -10.0, -15.0]),
-])
-def test_bass_run_wait_banks_every_level_and_joins_only_multiple_levels(
-    monkeypatch, capsys, tmp_path, box, bass_fit_pairs, tuning_profile, isolated_candidate_bank,
-    trial, flags, probe_db, levels,
-):
-    """A bass run probes its first spot and holds the level it finds, never above
-    a stated one; a ladder's rungs, loudest first, step down from it (ADR-0403 §4)."""
-    from jasper.active_speaker import bundles, round_bank, plan_run
-    from jasper.active_speaker.commissioning_evidence_store import CommissioningEvidenceStore, EVIDENCE_ROOT
-    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
-    from jasper.active_speaker.crossover_v2.round_inputs import round_inputs, default_out
-    from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
-    from jasper.active_speaker.run_manifest import RunManifest
-    from jasper.audio_measurement.calibration import MicSensitivity
-    from jasper.audio_measurement.program import build_summed_level_probe_program, is_level_probe
-    from jasper.active_speaker import round_bookkeeping, bass_table_inputs
-    from jasper.web import correction_run_host as host, correction_crossover_v2_wired as wired
-    from tests.active_speaker_fixtures import mono_output_topology
-    from tests.engine_twin import FakeSeams
-    from tests.crossover_v2_fixtures import _conductor, FakeSeams as FlowSeams
-    from tests.test_plan_run import AnsweredGate, _analysis
-    from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION
-
-    candidate = replace(_room_candidate(tuning_profile), bass_extension=BASS_EXTENSION,
-                        analysis={"resolution": {"bass": "document"}, "measurement_status": "unmeasured"})
-    join = Mock(wraps=bass_table_inputs.join_bass_rounds)
-    monkeypatch.setattr(bass_table_inputs, "join_bass_rounds", join)
-    publish_authored_candidate(candidate)
-    def facts(plan, **kw):
-        return ready_facts(plan, **kw, candidates={candidate.fingerprint: candidate})
-    monkeypatch.setattr(_run_request, "read_preflight_facts", facts)
-    monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", lambda: "baseline-fp")
-    info = bundles.open_bundle(mono_output_topology(), calibration_id="", sessions_dir=tmp_path / "sessions")
-    bundle = Path(info["bundle_dir"])
-    store = CommissioningEvidenceStore.open(bundle, expected_session_id=info["session_id"])
-    manifest = RunManifest("run-1", BankedRecordStore(store, "run-1"))
-    fakes, gate = FakeSeams(), AnsweredGate()
-    entry_volume = box.volume_db
-    fakes.graph.entry_scope_fingerprint = "entry"
-    monkeypatch.setattr(host, "resolved_household_sensitivity", lambda _: MicSensitivity(-12, 18, "1234"))
-
-    def assess(*_a, program=None, **_kw):
-        return (TakeVerdict(False, next="retake_louder", next_gain_db=0.0) if program and is_level_probe(program)
-                else TakeVerdict(True))
-    monkeypatch.setattr(host, "bind_plan_analysis", lambda *a, **kw: (_analysis, assess))
-    hold = host.isolation_hold
-    monkeypatch.setattr(host, "isolation_hold", lambda **kw: hold(**{**kw, "plan": None, "volume_state_path": tmp_path / "volume.json"}))
-    for name in ("persist_conductor_state", "persist_execution_result", "persist_terminal_failure"):
-        monkeypatch.setattr(wired.v2state, name, lambda *a, **kw: None)
-
-    def engine(**kw):
-        async def capture_record(record):
-            probe = fakes.play.calls[-1]["spec"].level_probe
-            record = {**record, **({"program": build_summed_level_probe_program(
-                (-65.01,), sweep_band_hz=(20.0, 20000.0), gap_s=0.5, downstream_gain_db=record["level_db"]).to_dict()}
-                if probe else {})}
-            return await kw["records"].inner.bank({**record, "curves": [], "stimulus_id": "sweep", "stimulus_dbfs": -20,
-                "capture_integrity": {"spl": {"loudest_half_second_db_spl": 93 + record["level_db"],
-                    "max_window_db_spl": 93 + record["level_db"], "ceiling_db_spl": 85}}})
-        return replace(fakes, graph=kw["session_graph"], volume=kw["volume_claim"],
-                       records=SimpleNamespace(bank=capture_record)).seams()
-
-    opener = _run_opener({"status": "complete", "run": {"status": "complete"}})
-    open_request = opener.open
-    def open_and_execute(request, timeout=None):
-        if request.full_url.endswith(wc.SESSION_PATH) and request.data:
-            plan, levels = resolve_plan(RunRequest.from_mapping(json.loads(request.data)["request"]),
-                                        targets=lambda: ())
-            report = preflight_levels(plan, facts(plan), levels)
-            plan = report.plan
-            conductor = _conductor(FlowSeams())
-            door, analyze, assessor, execute = host.bind_run_door(
-                host=SimpleNamespace(_wired_stimulus_capture=lambda *a, **kw: None, bind_v2_engine_seams=engine),
-                device=SimpleNamespace(model_key="minidsp_umik2"), evidence_store=store, manifest=manifest,
-                production=SimpleNamespace(graph=fakes.graph, compose=None),
-                conductor=conductor, refs={},
-                ceiling_s=30, ceiling_db_spl=85, camilla_factory=lambda: box,
-                ladder=report if isinstance(report, LevelLadder) else None,
-            )
-            runner = wired.build_v2_wired_run_and_consume(
-                conductor, door=door, signals=plan_run.RunSignals(), position_gate=gate,
-                ceiling_s=30, manifest=manifest, request=plan, analyze=analyze, assessor=assessor,
-                captures=(prepare_level_captures if plan.levels else plan_run.prepare_plan_captures)(
-                    plan, roles_bands=conductor._roles), execute=execute,
-            )
-            asyncio.run(runner(SimpleNamespace(session_id=manifest.run_id)))
-            bundles.mark_state(bundle, "closed")
-            opener.pages[wc.SESSION_PATH] = '{"session_id": "run-1"}'
-        return open_request(request, timeout)
-    opener.open = open_and_execute
-
-    def view(view, target, *, set_id=None, **kw):
-        if view != "bass":
-            return {"view": view, "status": "unavailable"}
-        inputs = round_inputs(target)
-        document = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts/crossover_v2/run-1/run_manifest.json").read_text())
-        selected = resolve_set(inputs, set_id, manifest=document)
-        group = next(group for group in document["sets"] if group["set_id"] == selected.set_id)
-        takes = []
-        for entry in group["takes"]:
-            take = deepcopy(bass_fit_pairs[0][0])
-            take["record_path"] = entry["record_id"]
-            take["record"] = json.loads((inputs.session_dir / EVIDENCE_ROOT / "artifacts" / take["record_path"]).read_text())
-            take.update(freqs_hz=[20, 30, 40, 50, 60, 80, 100, 200], fundamental_qualified=[True] * 8,
-                        fundamental_db=[take["record"]["level_db"] - (6 if group["base"] else 1)] * 8)
-            take["frequency_curve"]["magnitude_db"] = [take["record"]["level_db"]] * 3
-            takes.append(take)
-        path = default_out(inputs, target, "bass_view.json", set_id)
-        path.write_text(json.dumps({"schema": BASS_VIEW_SCHEMA, "takes": takes}))
-        return {"view": view, "status": "written", "out": str(path)}
-    monkeypatch.setattr(round_bookkeeping, "run_bookkeeping", view)
-    bank = round_bank.bank_round
-    monkeypatch.setattr(round_bank, "bank_round", lambda path, **kw: bank(path, campaign_root=tmp_path / "campaigns", **kw))
-    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
-    argv = ["run", "--program", "bass", "--layout", "bass_axis",
-            *(["--candidates", f"base,{candidate.fingerprint}"] if trial else [])]
-    code, body = _run([*argv, *flags, "--wait", "--attest-rig-clear"], opener, monkeypatch, capsys)
-    assert code == 0, body
-    expected = [(probe_db, "lateral")] + [
-        (level, "lateral") for level in levels for _ in range(2 if trial else 1)]
-    assert [(call["level_db"], call["spec"].program_phase) for call in fakes.play.calls] == expected
-    assert len(gate.grants) == fakes.graph.restores == 1
-    assert box.volume_db == entry_volume
-    packet = json.loads(Path(body["packet"]).read_text())
-    assert packet["result"] == "complete" and len(packet.get("runs", [packet])) == len(levels)
-    assert Path(body["packet"]) == Path(body["round_dir"]) / "packet.json"
-    assert {"sets", "series", "limits", "applied", "artifacts", "unavailable"} <= packet.keys()
-    assert len(packet["artifacts"]["bass_views"]) == len(levels) * (2 if trial else 1)
-    assert len(packet["bass"]) == len(packet["artifacts"]["bass_views"])
-    unread = {group["set_id"] for group in json.loads(Path(packet["artifacts"]["manifest"]).read_text())["sets"]
-              if group["capture_basis"].get("graph_scope") == "timing" or group["capture_basis"].get("level_probe")}
-    assert {entry["set_id"] for entry in packet["bass"]} == {group["set_id"] for group in packet["sets"]} - unread
-    for entry in packet["bass"]:
-        assert entry == {**json.loads(Path(entry["out"]).read_text()), "set_id": entry["set_id"], "out": entry["out"]}
-    assert {take["record"]["level_db"] for entry in packet["bass"] for take in entry["takes"]} == set(levels)
-    assert {take["record"]["level_db"] for view in packet["artifacts"]["bass_views"]
-            for take in json.loads(Path(view["out"]).read_text())["takes"]} == set(levels)
-    assert join.call_count == (1 if len(levels) > 1 else 0)
-    if len(levels) == 1:
-        assert "bass_table" not in packet
-        return
-    assert packet["bass_table"].get("schema") == "jts_bass_run_table/2", packet["bass_table"]
-    table, = packet["bass_table"]["tables"]
-    assert sorted(row["level_key"]["level_db"] for row in table["levels"]) == sorted(levels)
 
 
 @pytest.mark.parametrize("dry_run,attested,available,changes,context,reason,action", [
@@ -1706,10 +1531,10 @@ def test_run_owns_arm_until_parked(ending, preflight_ready, arm_runtime, monkeyp
 @pytest.mark.parametrize("flags", [[], ["--mover", "arm"]])
 def test_arm_dry_run_needs_neither_wait_nor_attestation(flags, preflight_ready, arm_runtime, monkeypatch, capsys):
     opener = _opener()
-    code, body = _run(["run", "--program", "bass", "--layout", "bass_axis", "--dry-run", *flags], opener, monkeypatch, capsys)
+    code, body = _run(["run", "--program", "room", "--layout", "room_quick", "--dry-run", *flags], opener, monkeypatch, capsys)
     assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"]
     assert "walk_rig_clear_not_attested" not in {issue["code"] for issue in body["issues"]}
-    assert body["levels"] and not opener.requests and not arm_runtime.threads
+    assert not opener.requests and not arm_runtime.threads
     arm_runtime.mover.available.assert_called_once_with()
     arm_runtime.install.assert_not_called()
 

@@ -105,17 +105,6 @@ async def test_uc1_the_twin_drives_the_measure_verb():
     assert measured.record_ids != ()
 
 
-async def test_uc1_a_ladder_is_position_times_rung():
-    async with open_session() as (session, fakes):
-        outcome = await session.measure(_walk(level_ladder_dbfs=decl.LADDER_DBFS))
-
-    expected = len(decl.WALK_DEG) * len(decl.LADDER_DBFS)
-    assert len(outcome.stimuli) == expected
-    assert fakes.play.rungs == list(decl.LADDER_DBFS) * len(decl.WALK_DEG)
-    # One claim, taken once: a ladder moves the stimulus, never the fader.
-    assert fakes.volume.acquired == [decl.SESSION_VOLUME_DB]
-
-
 async def test_uc1_the_session_is_handed_back_closed_so_the_test_owns_the_lifetime():
     """``tuning_session`` is the un-opened door; half these tests are ABOUT
     opening, so the harness must not have done it already."""

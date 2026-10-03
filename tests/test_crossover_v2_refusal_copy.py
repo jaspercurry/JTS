@@ -142,7 +142,6 @@ def test_every_registry_row_offers_a_next_action_except_a_silent_auto_retry():
     (take_reading.REFUSE_COMPARE_RATES_DIFFER, "name_comparand"),
     (take_reading.REFUSE_PREVIEW_UNREADABLE, "name_comparand"),
     (take_reading.REFUSE_COMPARE_NO_COMPARAND, "name_comparand"),
-    (take_reading.REFUSE_BASS_COMPARAND_VIEW_NOT_FILED, "name_comparand"),
     ("measurement_captures_missing", "measure_again"),
     ("dsp_replay_window_unavailable", "choose_window"),
     ("bass_replay_manifest_predates_adr_0359", "render_again"),

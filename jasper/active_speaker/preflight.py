@@ -128,6 +128,7 @@ class PreflightReport:
     spl_ceiling_db_spl: float | None
     rung_admission: Mapping[str, Any] = field(default_factory=dict)
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    #: The whole run's ``captures``, ``mic_moves`` and ``seconds`` (:func:`priced_preflight`).
     price: Mapping[str, int] = field(default_factory=dict)
 
     @property
@@ -198,8 +199,8 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
 
 
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightReport:
-    """Whether ``plan`` may run here, its schedule, margins and, with this speaker's context, price: its
-    captures, mic moves and seconds. A take at the run's fader before the run's probe refuses (ADR-0403 §4)."""
+    """Whether ``plan`` may run here, its schedule, and its run's margins. A run
+    is refused when a take at its fader would play before its probe (ADR-0403 §4)."""
     issues = list(facts.issues)
     # Remove when measurement owns an explicit household-authorized unmute.
     if facts.output_volume.get("muted") is True:
@@ -324,6 +325,17 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         except (TypeError, ValueError) as exc:
             admission.update(status="blocked")
             add(WALK_LEVEL_POLICY_INVALID, str(exc))
-    price = {"captures": len(prepared), "seconds": round(preview_schedule(plan, prepared, facts.context)["estimated_seconds"]),
-             "mic_moves": mic_moves(capture.stop.pose for capture in prepared)} if facts.context and schedule else {}
-    return PreflightReport(plan, tuple(issues), schedule, ceiling, admission, facts.driver_caps, price)
+    return PreflightReport(plan, tuple(issues), schedule, ceiling, admission, facts.driver_caps)
+
+
+def priced_preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightReport:
+    """``plan``'s preflight and the price of the run it plays: every take, its
+    microphone moves and its estimated seconds. A plan with no schedule, or read
+    without this speaker's context, has none."""
+    report = preflight(plan, facts)
+    if facts.context is None or not report.schedule:
+        return report
+    captures = prepare_plan_captures(plan, roles_bands=facts.roles_bands)
+    seconds = preview_schedule(plan, captures, facts.context)["estimated_seconds"]
+    return replace(report, price={"captures": len(captures), "seconds": round(seconds),
+                                  "mic_moves": mic_moves(capture.stop.pose for capture in captures)})

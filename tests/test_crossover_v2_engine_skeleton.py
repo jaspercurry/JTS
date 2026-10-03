@@ -740,27 +740,20 @@ async def test_one_measure_reports_one_entry_per_position_it_names():
     }
 
 
-async def test_a_ladder_measures_every_position_at_every_rung():
-    """R-4's axis: the unit is position × rung, and each rung is a stimulus
-    level — never a second claim on the fader (ruling S8)."""
+async def test_a_takes_level_moves_the_stimulus_never_the_claim():
+    """The unit is one position, and a take's level is a stimulus level —
+    never a second claim on the fader (ruling S8)."""
     session, parts = _session()
 
     async with session:
-        outcome = await session.measure(MeasureSpec(
-            kind=MEASURE_KIND_BASELINE, positions=(0, 22),
-            level_ladder_dbfs=(-20.0, -12.0),
-        ))
+        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(0, 22), level_dbfs=-12.0))
 
-    assert [(s.position_deg, s.stimulus_dbfs) for s in outcome.stimuli] == [
-        (0, -20.0), (0, -12.0), (22, -20.0), (22, -12.0),
-    ]
-    assert len(outcome.record_ids) == 4
-    # One claim, taken once, at the declared level — the ladder never moved it.
+    assert [(s.position_deg, s.stimulus_dbfs) for s in outcome.stimuli] == [(0, -12.0), (22, -12.0)]
+    assert len(outcome.record_ids) == 2
+    # One claim, taken once, at the declared level — the take's level never moved it.
     assert parts["volume"].acquired == [-20.0]
     assert {call["level_db"] for call in parts["play"].calls} == {-20.0}
-    assert [row["stimulus_dbfs"] for row in parts["records"].banked] == [
-        -20.0, -12.0, -20.0, -12.0,
-    ]
+    assert [row["stimulus_dbfs"] for row in parts["records"].banked] == [-12.0, -12.0]
 
 
 async def test_a_spec_naming_no_position_measures_the_design_axis():
@@ -819,12 +812,11 @@ async def test_a_banked_record_names_the_capture_the_transaction_wrote():
 @pytest.mark.parametrize("calls", [1, 2])
 async def test_session_banks_the_injected_take_ids_and_cannot_reopen(calls):
     session, parts = _session()
-    names = [f"run_take_{i:04d}" for i in range(calls * 4)]
+    names = [f"run_take_{i:04d}" for i in range(calls * 2)]
     session.allocate_take_id = iter(names).__next__
     async with session:
         for _ in range(calls):
-            await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(0, 22),
-                                             level_ladder_dbfs=(-12.0, -6.0)))
+            await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(0, 22), level_dbfs=-12.0))
     assert [row["take_id"] for row in parts["records"].banked] == names
     with pytest.raises(SessionStateError):
         await session.open()

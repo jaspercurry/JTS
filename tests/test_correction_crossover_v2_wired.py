@@ -39,7 +39,6 @@ from tests.test_arm_walk import FakeMover, _walk as arm_run
 from jasper.active_speaker.plan_run import RunSignals
 from jasper.active_speaker.angle_capture import AngleCaptureRequest, AngleStop, request_for_preset
 from jasper.active_speaker.measurement_programs import Pose, run_preset
-from jasper.active_speaker.run_levels import preflight_levels
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RunManifest
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.session_volume_plan import SessionVolumeRestoreResult
@@ -78,8 +77,7 @@ from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 from jasper.active_speaker.crossover_v2 import summed_alignment
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
-from tests.test_plan_run import AnsweredGate, _Store, _ladder_walk, _walk
-from tests.test_preflight import ready_facts
+from tests.test_plan_run import AnsweredGate, _Store, _walk
 from tests.engine_twin import FakeSeams as EngineSeams
 from jasper.web.correction_runtime import refusal_envelope
 from tests.wired_capture_fixtures import FakePcm
@@ -87,7 +85,7 @@ from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import (
     HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _phase_program, _pilot_obs, _verify_analysis,
-    _verify_pilot, plan_context,
+    _verify_pilot,
 )
 from tests.test_crossover_envelope_v2 import _status
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
@@ -813,9 +811,10 @@ async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, 
             if opened:
                 door.isolation = SimpleNamespace(restore_result=SessionVolumeRestoreResult.EXACT_RESTORED)
 
+    monkeypatch.setattr(plan_run, "run_plan", execute)
     runner = v2wired.build_v2_wired_run_and_consume(
         conductor, door=door, signals=RunSignals(), ceiling_s=30,
-        manifest=None, request=None, captures=None, analyze=None, assessor=None, execute=execute,
+        manifest=None, request=None, captures=None, analyze=None, assessor=None,
     )
     with pytest.raises(RuntimeError):
         await runner(SimpleNamespace(session_id=conductor.session_id))
@@ -840,7 +839,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
 
     async def compose_and_play(**kwargs):
         programs.append(correction_run_host.compose_plan_program(
-            conductor, kwargs["spec"], kwargs["stimulus_dbfs"], context=plan_context()))
+            conductor, kwargs["spec"], kwargs["stimulus_dbfs"]))
         return await play(**kwargs)
 
     monkeypatch.setattr(fakes.play, "run", compose_and_play)
@@ -876,7 +875,7 @@ async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, t
 
     runner, session, _, manifest, _, _ = _plan_host(
         monkeypatch, tmp_path, box, gate=RetakingGate(), signals=signals,
-        request=_ladder_walk([0], ("fp-a", "fp-b", "fp-c")),
+        request=_walk([0], ("fp-a", "fp-b", "fp-c")), phase="verify",
     )
     verdicts = iter([
         *(refusal_copy.TakeVerdict(False, "snr_floor", next="fix_and_retake", charge="operator") for _ in range(3)),
@@ -972,7 +971,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     signals = plan_run.RunSignals()
     gate = AnsweredGate()
     runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate, signals=signals,
-                                                        request=_ladder_walk([0, 20]))
+                                                        request=_walk([0, 20]), phase="verify")
     def assessed(*args, **kwargs):
         if len(gate.grants) == 1:
             signals.retake.set()
@@ -1089,7 +1088,7 @@ async def test_host_binds_assessment_and_applies_its_retry_level(monkeypatch, ph
     gain = None
     ceilings = conductor._measure_gain_ceiling_db
     for attempt in range(1, 4 if clipped_take else 2):
-        program = compose_plan_program(conductor, spec, gain, context=plan_context())
+        program = compose_plan_program(conductor, spec, gain)
         peak = max(seg.gain_db for seg in program.segments if seg.kind in STIMULUS_KINDS)
         if gain is not None:
             assert peak == pytest.approx(gain)
@@ -1123,7 +1122,7 @@ def test_host_aims_only_check_at_the_first_spots_target(monkeypatch, caplog, sen
     monkeypatch.setattr(correction_run_host, "isolation_hold", lambda **_kwargs: None)
     target = sensitivity.dbfs_from_db_spl(80.0) + SWEEP_PEAK_TO_RMS_DB if sensitivity is not None else None
     with caplog.at_level(logging.INFO):
-        door, analyze, _assessor, _execute = correction_run_host.bind_run_door(
+        door, analyze, _assessor = correction_run_host.bind_run_door(
             host=SimpleNamespace(session_volume_plan=lambda: None),
             device=_device(), evidence_store=None, manifest=SimpleNamespace(calibration={}, capture_record=dict),
             production=SimpleNamespace(graph=None), conductor=conductor, refs={},
@@ -1255,15 +1254,13 @@ def test_predictive_segment_count_survives_solved_gains_and_live_level(scope, ph
     spec = MeasureSpec(kind="baseline", graph_scope=scope, program_phase=phase,
                        candidate_id=None if scope == "drivers" else "fp-a",
                        branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
-    declaring = plan_context()
     context = SimpleNamespace(roles_bands=conductor._roles, driver_caps_dbfs=conductor._excitation.caps_dbfs,
-                              fc_hz=conductor._excitation.fc_hz, safety_profile=declaring.safety_profile,
-                              role_targets=declaring.role_targets,
+                              fc_hz=conductor._excitation.fc_hz,
                               driver_sweep_duration_limits_s=conductor._excitation.sweep_duration_limits_s,
                               driver_bands=conductor._excitation.target_bands)
     predicted = predictive_program_for_spec(context)(spec)
     for stimulus_dbfs in (None, -48.0):
-        live = compose_plan_program(conductor, spec, stimulus_dbfs, context=declaring)
+        live = compose_plan_program(conductor, spec, stimulus_dbfs)
         assert len(live.stimulus_segments()) == len(predicted.stimulus_segments())
 
 
@@ -1274,7 +1271,7 @@ def test_driver_retry_program_preserves_the_solved_role_levels(target):
     from tests.crossover_v2_fixtures import FakeSeams, _conductor
 
     conductor = _conductor(FakeSeams(), gain_plan_db={"woofer": -50.0, "tweeter": -57.0})
-    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target, context=plan_context())
+    program = compose_plan_program(conductor, MeasureSpec(kind="baseline", graph_scope="drivers"), target)
     delta = 0 if target is None else target + 50.0
     assert program.segment("sweep_w").gain_db == pytest.approx(-50.0 + delta)
     assert program.segment("sweep_t").gain_db == pytest.approx(-57.0 + delta)
@@ -1288,78 +1285,11 @@ def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan)
 
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
-    program = compose_plan_program(conductor, spec, None, context=plan_context())
+    program = compose_plan_program(conductor, spec, None)
     expected = conductor._excitation.verify_program(courtesy_prelude=True).segment("sweep_verify").gain_db
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
-    windowed = compose_plan_program(conductor, spec, -60.0, context=plan_context())
+    windowed = compose_plan_program(conductor, spec, -60.0)
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)
-
-
-async def test_host_analyzes_each_rung_with_its_own_capture(monkeypatch, tmp_path, box):
-    from jasper.active_speaker import plan_run
-    from jasper.active_speaker.plan_run import PlanCapture
-    from jasper.active_speaker.angle_capture import LevelPolicy
-    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-    from jasper.active_speaker.run_manifest import RunManifest
-    from jasper.web.correction_run_host import bind_plan_analysis, compose_plan_program
-    from tests.crossover_v2_fixtures import FakeSeams as FlowSeams, _conductor
-    from tests.engine_twin import FakeSeams
-    from tests.test_plan_run import _Store, _walk
-
-    flow, fakes = FlowSeams(), FakeSeams()
-    conductor = _conductor(flow, index_phase_map={1: "verify"})
-    request = replace(_walk([0]), level=LevelPolicy(level_db=-20))
-    spec = MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="fp-a",
-                       program_phase="verify", level_ladder_dbfs=(-30.0, -24.0))
-    manifest = RunManifest("two-rungs", _Store(fakes.records))
-    def answer():
-        rung = fakes.play.calls[-1]["stimulus_dbfs"]
-        program = compose_plan_program(conductor, spec, rung, context=plan_context())
-        return WiredCaptureAnswer(wav=b"", program=program.to_dict(), device={"rung_dbfs": rung})
-    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
-    analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
-    session = SimpleNamespace(session_id=manifest.run_id)
-    door = _run_door(tmp_path, box, fakes, manifest, records)
-    monkeypatch.setattr(v2state, "persist_conductor_state", lambda *a, **k: None)
-    monkeypatch.setattr(v2state, "persist_execution_result", lambda *a, **k: None)
-    signals = plan_run.RunSignals()
-    run = v2wired.build_v2_wired_run_and_consume(
-        conductor, door=door,
-        signals=signals, ceiling_s=30,
-        manifest=manifest, request=request, captures=(PlanCapture(request.stops[0], spec),),
-        analyze=analyze, assessor=assessor,
-    )
-    await run(session)
-    assert manifest.status == "complete"
-    assert [row[2].device["rung_dbfs"] for row in flow.analyzed] == [-30.0, -24.0]
-
-
-async def test_a_rung_asking_louder_rearms_only_once_its_capture_has_played(monkeypatch, tmp_path, box):
-    """A rung that grades retake_louder rearms the gain plan after its capture's
-    later rung is composed, so that rung plays the levels the capture began with
-    (ADR-0383)."""
-    conductor = _conductor(FlowSeams(), index_phase_map={1: "measure"}, gain_plan_db={"woofer": -20.0, "tweeter": -26.0},
-                           driver_caps_dbfs={"woofer": 0.0, "tweeter": 0.0})
-    spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure", level_ladder_dbfs=(-24.0, -18.0))
-    declared = [compose_plan_program(conductor, spec, rung, context=plan_context()).to_dict()
-                for rung in spec.level_ladder_dbfs]
-    fakes, played = EngineSeams(), []
-    manifest = RunManifest("louder", _Store(fakes.records))
-
-    def answer():
-        program = compose_plan_program(conductor, spec, fakes.play.calls[-1]["stimulus_dbfs"], context=plan_context())
-        played.append(program.to_dict())
-        return WiredCaptureAnswer(wav=b"", program=program.to_dict())
-    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=answer))
-    analyze, assessor = correction_run_host.bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
-    graded = iter([refusal_copy.TakeVerdict(True, next="retake_louder", charge="speaker", next_gain_db=-20.0,
-                                            evidence={"next_gain_db.tweeter": -20.0})])
-    monkeypatch.setattr(correction_run_host, "assess", lambda *_a, **_k: next(graded, refusal_copy.TakeVerdict(True)))
-    request = replace(_walk([0]), level=LevelPolicy(level_db=-20))
-    result = await plan_run.run_plan(request, door=_run_door(tmp_path, box, fakes, manifest, records), manifest=manifest,
-                                     analyze=analyze, assessor=assessor, aborts={},
-                                     captures=(plan_run.PlanCapture(request.stops[0], spec),))
-    assert (result.status, played[:2], conductor.gain_plan_db["tweeter"]) == ("complete", declared, -20.0)
 
 
 @pytest.mark.parametrize("analysis_error", [None, ValueError(), AttributeError(), TypeError()])
@@ -1436,32 +1366,24 @@ _TAKE_RECORD_KEYS = frozenset({
     ("speaker/mark", None, (), "measure", "bearing", []),
     ("nearfield/each", None, (), "lateral", "close", ["woofer"]),
     ("room/seat", None, ("speaker-candidate",), "lateral", "seat", []),
-    ("bass/axis", "bass_axis", (), "lateral", "bearing", []),
     ("rear/pair", "rear_behind", ("speaker-candidate",), "lateral", "behind", ["woofer"]),
     ("speaker/mark", None, (), "check", "bearing", []),
     ("speaker/mark", None, (), "timing", "bearing", []),
-], ids=["speaker", "reference", "room", "bass", "rear", "check", "timing"])
+], ids=["speaker", "reference", "room", "rear", "check", "timing"])
 def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, layout, candidates, phase, kind, targets):
     """A take of every purpose banks the same keys, naming its run, preset,
     layout, pose, targets and its stop's purpose, a CHECK take its speaker
-    program's; a CHECK take banks no curves (ADR-0383, #2902). A preset with a
-    level ladder banks one take per rung, each on its own child run. Every row
-    of the run manifest, a ladder's merged one too, points at its take's record
-    and holds nothing else (ADR-0395)."""
+    program's; a CHECK take banks no curves (ADR-0383, #2902). Every row of the
+    run manifest points at its take's record and holds nothing else (ADR-0395)."""
     preset = run_preset(name, layout)
     request = request_for_preset(preset, mover=preset.mover or "human", candidates=candidates)
-    ladder = preflight_levels(request, ready_facts(request), preset.levels) if preset.levels else None
     planned = next(capture for capture in plan_run.prepare_plan_captures(request, roles_bands=_roles())
                    if (capture.spec.program_phase, capture.stop.pose.kind) == (phase, kind))
     program = (build_check_program(_roles()) if phase == "check" else
                build_measure_program({"woofer": -20.0, "tweeter": -24.0}, _roles())
                if planned.spec.graph_scope == "drivers" else None)
-    banked = bank_executor_take(tmp_path, monkeypatch, program=program, request=request, planned=planned,
-                                ladder=ladder, gate=AnsweredGate(),
-                                door=lambda manifest, seams, records: _run_door(tmp_path, box, seams, manifest, records))
-    takes = banked if ladder else (banked,)
-    assert [record["run_id"] for record in takes] == (
-        [f"executor-level-{rung}" for rung in range(1, len(ladder.admissible) + 1)] if ladder else ["executor"])
+    takes = (bank_executor_take(tmp_path, monkeypatch, program=program, request=request, planned=planned),)
+    assert [record["run_id"] for record in takes] == ["executor"]
     driver = planned.stop.pose.driver or None
     for record in takes:
         pose = record["pose"]
@@ -1477,10 +1399,9 @@ def test_every_take_banks_one_record_shape(tmp_path, monkeypatch, box, name, lay
     rows = [take for manifest in manifests for group in manifest["sets"] for take in group["takes"]]
     assert {manifest["schema_version"] for manifest in manifests} == {5}
     assert rows and all(set(take) == {"take_id", "record_id", "selected"} for take in rows)
-    # A ladder's first rung probes first; its probe's row is an attempt no view keeps (ADR-0403 §4).
     assert {json.loads(take_artifact_path(session, take["record_id"]).read_text())["take_id"]
             for take in rows if take["selected"]} == {record["take_id"] for record in takes}
-    assert all(take["selected"] for take in rows) is (ladder is None)
+    assert all(take["selected"] for take in rows)
 
 
 async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypatch):
@@ -1499,7 +1420,7 @@ async def test_host_drift_preempts_consumption_and_reaches_the_manifest(monkeypa
     manifest.begin({"index": 1, "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
-    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None, context=plan_context())
+    program = compose_plan_program(conductor, MeasureSpec(kind="verify", graph_scope="candidate", candidate_id="baseline-room", program_phase="verify"), None)
     record = {"take_id": "drifting", "index": 1, "attempt": 1, "program": program.to_dict()}
     records.enrich(None, record)
     analysis = await asyncio.to_thread(analyze, record)

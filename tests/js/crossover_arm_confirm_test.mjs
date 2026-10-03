@@ -13,11 +13,11 @@ const posted = [], asked = [];
 let answer = false;
 const confirm = {title: 'Is the arm\'s path clear?', message: 'Check the path.', confirm_label: 'The path is clear',
   attest: 'attest_rig_clear'};
-const arm = {id: 'bass/axis', label: 'bass/axis', default: true, lines: ['plan'], action: {id: 'run_program',
-  label: 'Start measurement', endpoint: '/v2/session', body: {request: {program: 'bass/axis', layout: 'bass_axis'}}, confirm}};
-const person = {id: 'bass/axis@seat_express', label: 'bass/axis@seat_express', default: false, lines: ['plan'],
+const arm = {id: 'room/seat@room_quick', label: 'room/seat@room_quick', default: true, lines: ['plan'], action: {id: 'run_program',
+  label: 'Start measurement', endpoint: '/v2/session', body: {request: {program: 'room/seat', layout: 'room_quick'}}, confirm}};
+const person = {id: 'room/seat', label: 'room/seat', default: false, lines: ['plan'],
   action: {id: 'run_program', label: 'Start measurement', endpoint: '/v2/session',
-    body: {request: {program: 'bass/axis', layout: 'seat_express'}}}};
+    body: {request: {program: 'room/seat', layout: 'seat_express'}}}};
 const env = {capture: null, round_choices: [arm, person], round_lines: []};
 const {elements, render, renderRoundChoice} = await crossoverMainModule({
   ids: [...CROSSOVER_IDS, ...['lines', 'choice', 'select', 'summary', 'start'].map(id => `crossover-round-${id}`)],
