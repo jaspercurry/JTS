@@ -14,5 +14,6 @@
   compositions that sized it, `CAPTURE_ENTRY_MARGIN_MS`, and the arguments only they used.
 - **Consequences:** every played program and its recorder window stay the same. The plan wire loses
   `entries[].duration_ms`; no other process reads it. The sweep spec's own `duration_ms`, read only
-  by its validation, now sits at its 30 s floor. A plan whose take cannot compose now meets that at
-  the take, not while preparing.
+  by its validation, now sits at its 30 s floor. Preparation still composes every take through the
+  production composer (the page's preview and the dry run's price), so a take that cannot compose
+  still refuses before any sound; only the never-played per-entry compositions go.
