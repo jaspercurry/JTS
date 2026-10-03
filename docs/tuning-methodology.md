@@ -23,7 +23,9 @@ can have another cause. Driver class is context, not a diagnosis by itself.
 | Repeat spread | The round's own mark takes (ADR-0341) | Random measurement uncertainty |
 
 Geometry is useful when available: speaker acoustic-centre height, mic height,
-distance, and optional ceiling height. `jasper-declare-geometry --help` lists
+distance, and the optional ceiling height, cabinet-back gap, cabinet depth,
+toe-in and side wall; the earliest bounce they describe sets the derived floor
+(ADR-0427). `jasper-declare-geometry --help` lists
 units. Derived floors must use each capture's own distance. An absent declaration
 is unknown, not zero. Driver centre spacings are declared with the speaker;
 waveguide coverage may exist only in operator notes; label that source instead
