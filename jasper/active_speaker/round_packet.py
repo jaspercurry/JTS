@@ -181,7 +181,7 @@ def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
     """A set's takes as the packet carries them, each read with its record; only a kept
     take's curve is read, for its gate. A fault is the verdict's, else the capture's incident (ADR-0395)."""
     role = SetTakes.from_row(group).role
-    return [{**{key: take.get(key) for key in ("take_id", "pose", "selected")}, "role": role,
+    return [{**{key: take.get(key) for key in ("take_id", "pose", "selected", "cleared_layers")}, "role": role,
              "alignment": (take.get("level") or {}).get("alignment"), "screens": verdict.get("screens", []),
              "fault": verdict.get("fault") or take.get("incident") or None,
              **({"record": take["record"]} if "record" in take else {}),

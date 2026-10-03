@@ -22,6 +22,7 @@ import pytest
 
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.active_speaker import baseline_profile as bp
+from jasper.active_speaker.applied_identity import layer_fingerprints
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.candidate_bank import publish_authored_candidate
 from jasper.active_speaker.frequency_reference import band_limited_curve
@@ -747,7 +748,7 @@ def test_packet_stats_measure_flatness_about_the_series_mean(tmp_path, window, l
     assert stats["low_end_means_db"]["20_30"]["value"] is None
     assert packet["applied"] == {
         "candidate": "a123456789bc" + "0" * 52, "record": "123456789abc", "config_path": "/config.yml",
-        "applied_at": applied["applied_at"],
+        "applied_at": applied["applied_at"], "layer_fingerprints": layer_fingerprints(applied),
         "layers": {"driver": True, "room": True, "bass": True, "rear": False},
     }
     match = re.search(r"^Applied: candidate ([0-9a-f]{12}) · record ([0-9a-f]{12}) · (.+)$",

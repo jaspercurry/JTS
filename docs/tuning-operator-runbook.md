@@ -11,11 +11,13 @@ Run every tool as root on the speaker: `sudo /opt/jasper/.venv/bin/<tool>`, as t
 First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` without a round. Read `applied`,
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
 `last_banked` keeps the latest round per applicable program that kept a take: `round_id`, `round_dir`,
-`banked_at`, `status`, and `stale`. `stale: true` means its applied identity differs or it was
-banked at or before the last apply; only current rounds guide the next action.
-With a current-identity round, all applicable layers applied, and none stale,
-`next` is `{"program": null, "reason_code": "complete"}`. Without a current round,
-`next` uses applied layers; `never_measured` means no profile is applied.
+`banked_at`, `status`, `stale`, and `stale_by`. `stale: true` means a layer at or under its program
+changed since its bank, and a kept take played that layer; `stale_by` names the programs whose layer
+changed ([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)). A preference
+EQ save stales nothing. Only a current round is offered to copy.
+With all applicable layers applied, `next` is `{"program": null, "reason_code": "complete"}`, unless
+room's latest round went stale through a layer under room: then `next` is room with `upstream_changed`.
+Otherwise `next` uses applied layers; `never_measured` means no profile is applied.
 `next_commands` lists commands; add a round path for its evidence and its `catalog` call.
 
 Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).

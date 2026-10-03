@@ -12,7 +12,7 @@ from jasper.active_speaker.measurement_view import round_choices
 from tests.crossover_v2_fixtures import with_rear_target
 
 from jasper.active_speaker import applied_tune, baseline_profile, commissioning_coordinator as coordinator
-from jasper.active_speaker.applied_identity import applied_identity
+from jasper.active_speaker.applied_identity import applied_identity, layer_fingerprints
 from jasper.active_speaker.commissioning_coordinator import next_program_action, load_commissioning_view
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, near_field_drivers
 from jasper.active_speaker import tuning_handoff
@@ -21,7 +21,6 @@ from jasper.cli import round as round_cli
 from jasper.cli.doctor import active_speaker as doctor
 from jasper.platform.doctor_contract import check_row
 from jasper.identity.reader import SPEAKER_SETUP_PAGE_PATH
-from jasper.platform.json_fields import parse_utc_iso
 from jasper.web import sound_active_speaker
 from tests.test_correction_crossover_v2_endpoints import _inline_context, _seed_baseline_apply_environment
 
@@ -85,15 +84,14 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("blocked", "profile", "save_baseline_profile", False, None, (), (), None),
     ("applied", "profile", "run_program", True, "bass", ("speaker",), (), "layer_not_applied"),
     ("not_required", "layout", "run_program", True, "bass", (), (), None),
-    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", 1),), None),
-    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", 0),), None),
-    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", 1),), None),
-    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", 1),), None),
-    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", 1),), None),
-    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", 1),), None),
-    ("applied", "profile", None, False, None, ("speaker", "room", "bass"), (("speaker", 1),), "complete"),
-    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", 1),), None),
-    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", -1),), "layer_not_applied"),
+    ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", False),), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", False),), None),
+    ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", False),), None),
+    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", False),), None),
+    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", False),), None),
+    ("applied", "profile", None, False, None, ("speaker", "room", "bass"), (("speaker", False),), "complete"),
+    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", False),), None),
+    ("applied", "profile", "run_program", True, "speaker", (), (("speaker", True),), "layer_not_applied"),
 ])
 def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds, reason_code):
     draft = _ready_design()
@@ -105,8 +103,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     elif status == "needs_driver_safety_profile":
         draft["driver_safety_profile"]["issues"] = [{"code": "tweeter:required_highpass_missing"}]
     applied = _applied_anchor(layers=layers)
-    applied_at = parse_utc_iso(applied["applied_at"])
-    recent = {name: {"round_dir": f"/bank/{name}", "started_at": applied_at + age} for name, age in rounds}
+    recent = {name: {"round_dir": f"/bank/{name}", "stale": stale} for name, stale in rounds}
     view = build_commissioning_view(
         topology, design_draft=draft, crossover_preview=_ready_preview(),
         baseline_profile=_applied_baseline_profile(permissions={"may_compile": status != "blocked"}),
@@ -132,7 +129,7 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
 
 def test_the_coordinator_walks_the_programs_in_tuning_order():
     order = tuple(next_program_action(
-        _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]), {},
+        _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]),
         {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
     )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
     assert order == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
@@ -178,7 +175,6 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     (("speaker", "rear"), {}, "bass", "layer_not_applied"),
     (("speaker", "rear", "bass"), {}, "room", "layer_not_applied"),
     (RUNNABLE_PROGRAMS, {}, None, "complete"),
-    (RUNNABLE_PROGRAMS, {"room": {"started_at": 1}, "speaker": {"started_at": 2}}, "room", "upstream_changed"),
     (("speaker", "rear"), {"bass": {"round_dir": "/bank/bass", "started_at": 1}}, "bass", "round_available"),
 ])
 def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, expected, reason):
@@ -187,23 +183,28 @@ def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, ex
         group, = topology.speaker_groups
         channel = replace(group.channels[0], output_variant="rear", physical_output_index=2)
         topology = replace(topology, speaker_groups=(replace(group, channels=(*group.channels, channel)),))
-    action = next_program_action(None if layers is None else _applied_anchor(layers=layers), {}, rounds,
+    action = next_program_action(None if layers is None else _applied_anchor(layers=layers), rounds,
                                  programs=coordinator.programs_for_topology(topology))
     assert (action["program"], action["reason_code"]) == ("rear" if rear and layers == ("speaker",) else expected, reason)
     assert action["enabled"] is (expected is not None)
 
 
-@pytest.mark.parametrize("upstream", ["speaker", "rear", "bass"])
-@pytest.mark.parametrize("age", [0, 1, 2])
-@pytest.mark.parametrize("room_applied", [False, True])
-def test_room_repeats_after_newer_upstream_round(upstream, age, room_applied):
+@pytest.mark.parametrize("stale_by,room_applied,expected", [
+    (["speaker"], True, ("run_program", "room", "upstream_changed")),
+    (["rear"], True, ("run_program", "room", "upstream_changed")),
+    (["bass", "room"], True, ("run_program", "room", "upstream_changed")),
+    (["room"], True, (None, None, "complete")),
+    ([], True, (None, None, "complete")),
+    (["bass"], False, ("run_program", "room", "layer_not_applied")),
+    ([], False, ("copy_prompt", "room", "round_available")),
+])
+def test_room_repeats_after_a_layer_under_it_changes(stale_by, room_applied, expected):
+    """The applied room was fitted through the layers under it, so a change to one of them since room's latest
+    round points at room again; a change to the room layer alone does not (ADR-0420)."""
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
-    rounds = {"room": {"round_dir": "/bank/room", "started_at": 1},
-              upstream: {"round_dir": "/bank/upstream", "started_at": age}}
-    action = next_program_action(_applied_anchor(layers=layers), {}, rounds, programs=RUNNABLE_PROGRAMS)
-    expected = ("run_program", "room") if age > 1 else (
-        (None, None) if room_applied else ("copy_prompt", "room"))
-    assert (action["id"], action["program"]) == expected
+    rounds = {"room": {"round_dir": "/bank/room", "stale": bool(stale_by), "stale_by": stale_by}}
+    action = next_program_action(_applied_anchor(layers=layers), rounds, programs=RUNNABLE_PROGRAMS)
+    assert (action["id"], action["program"], action["reason_code"]) == expected
 
 
 def _assert_household_safe(text: str, where: str) -> None:
@@ -246,9 +247,9 @@ def test_loaded_commissioning_view_uses_banked_rounds(monkeypatch, tmp_path):
     profile = _applied_anchor(layers=())
     identities = []
 
-    def recent(identity, *, programs):
+    def recent(identity, *, programs, include_stale):
         identities.append((identity, programs))
-        return {"speaker": {"round_dir": "/bank/speaker", "started_at": parse_utc_iso(profile["applied_at"]) + 1}}
+        return {"speaker": {"round_dir": "/bank/speaker"}}
 
     monkeypatch.setattr(round_inputs, "latest_banked_rounds", recent)
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: profile)
@@ -300,12 +301,13 @@ def test_applied_identity_is_shared_by_commissioning_and_doctor(monkeypatch, rec
                "source": {"measured_candidate_fingerprint": "48a805ab" * 8}}
     applied["config"]["sha256"] = "7edfa758981e" + "a" * 52
     expected = {"candidate": "48a805ab" * 8, "record": "7edfa758981e",
-                "config_path": applied["config"]["path"], "applied_at": applied["applied_at"]}
+                "config_path": applied["config"]["path"], "applied_at": applied["applied_at"],
+                "layer_fingerprints": layer_fingerprints(applied)}
     if record == "absent":
         applied = expected = None
     elif record == "legacy":
         applied = {"status": "applied", "candidate_fingerprint": "unrelated-profile-id"}
-        expected = dict.fromkeys(expected)
+        expected = {**dict.fromkeys(expected), "layer_fingerprints": {}}
     monkeypatch.setattr(baseline_profile, "load_applied_baseline_profile_state", lambda: applied)
     monkeypatch.setattr(doctor.evidence, "active_speaker_setup_status", lambda: {
         "protected_profile": {"layer_a_binding": {"matches": True}} if applied else None,
@@ -313,8 +315,8 @@ def test_applied_identity_is_shared_by_commissioning_and_doctor(monkeypatch, rec
     assert applied_identity(applied) == expected
     view =build_commissioning_view(_topology(), applied_profile=applied)["applied_profile"]
     assert {"candidate" if key == "candidate_fingerprint" else key: view[key]
-            for key in ("candidate_fingerprint", "record", "config_path", "applied_at")} == (
-                expected or dict.fromkeys(("candidate", "record", "config_path", "applied_at")))
+            for key in ("candidate_fingerprint", "record", "config_path", "applied_at")} == {
+                key: (expected or {}).get(key) for key in ("candidate", "record", "config_path", "applied_at")}
     assert check_row(doctor.check_active_speaker_applied_graph()).get("applied_identity") == expected
 
 
