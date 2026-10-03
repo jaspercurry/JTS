@@ -556,12 +556,18 @@ def bank_trial(tuning_profile, isolated_candidate_bank, monkeypatch):
     ({"room": "document", "bass": "document"}, (), "room/seat", "seat_express", "human"),
     ({"bass": "cleared"}, (), "room/seat", "seat_express", "human"),
     ({"bass": "document"}, ("--mover", "arm"), "room/seat", "room_quick", "arm"),
-    ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "rear/seat", "seat_express", "human"),
+    ({"rear_calibration": "document"}, (), "rear/seat", "seat_express", "human"),
+    ({"rear_calibration": "document", "driver": "document"}, (), "rear/seat", "seat_express", "human"),
+    ({"rear_calibration": "document", "room": "document"}, (), "room/seat", "seat_express", "human"),
+    ({"rear_calibration": "document", "bass": "document", "room": "document"}, (), "room/seat", "seat_express", "human"),
     ({"driver": "base", "alignment": "saved"}, (), None, None, None),
 ])
 def test_trial_runs_the_program_its_document_states(
     bank_trial, monkeypatch, capsys, resolution, flags, program, layout, mover, arm_plan_answer,
 ):
+    """A trial runs the program its document states. A document with a bass or a room section
+    trials on the in-room round, rear included, since a rear take plays bass and room off
+    (ADR-0429, ADR-0436)."""
     fingerprint = bank_trial(resolution)
     opener = _opener(session='{"session_id": "trial-1"}')
     code, body = _run(["trial", fingerprint, "--wait", "--attest-rig-clear", *flags], opener, monkeypatch, capsys)

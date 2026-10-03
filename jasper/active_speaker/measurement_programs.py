@@ -774,10 +774,14 @@ def trial_preset(
     sections: Collection[str], mover: str | None = None, layout: str | None = None,
 ) -> Preset | None:
     """The first program the document states of rear, bass, room, speaker (reverse document
-    order): its first trial preset that offers ``layout``, else its first trial layout
+    order) whose candidate takes play every layer it states, so a document with a bass or a
+    room section trials on the in-room round, never on a rear trial, which plays them off
+    (ADR-0436): its first trial preset that offers ``layout``, else its first trial layout
     ``mover`` can walk; ``None`` when it states none."""
-    row = next((row for row in reversed(PROGRAM_DOCUMENT_ORDER)
-                if any(section.name in sections for section in row.sections)), None)
+    stated = [row for row in reversed(PROGRAM_DOCUMENT_ORDER) if any(section.name in sections for section in row.sections)]
+    layers = {row.candidate_fields[0].name for row in stated}
+    row = next((row for row in stated
+                if not layers.intersection(cleared_layers(row.purpose, base=False, regime=REGIME_SUMMED))), None)
     if row is None:
         return None
     trials = [run_preset(trial, trial_layout) for trial, trial_layout in row.trial]
