@@ -233,7 +233,7 @@ class FakePlay:
       tests are about the exceptions.
 
     Every call is recorded whole, so a test can assert what the engine asked
-    for — the bearing, the prompt, the declared level, the ladder rung — rather
+    for — the bearing, the prompt, the declared level, the stimulus level — rather
     than only what it got back.
     """
 
@@ -274,8 +274,8 @@ class FakePlay:
         return [call["position_deg"] for call in self.calls]
 
     @property
-    def rungs(self) -> list[float | None]:
-        """Which ladder rung each stimulus was played at, in order."""
+    def stimulus_dbfs(self) -> list[float | None]:
+        """The stimulus level each play asked for, in order; ``None`` asked none."""
         return [call["stimulus_dbfs"] for call in self.calls]
 
 

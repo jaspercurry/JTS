@@ -183,8 +183,7 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None)
 def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   ceiling_s: float, ceiling_db_spl: float | None,
-                  camilla_factory: Any, provenance: Any = None, margin_db: float = 0.0,
-                  context: Any = None) -> tuple[RunDoor, Any, Any]:
+                  camilla_factory: Any, provenance: Any = None, context: Any = None) -> tuple[RunDoor, Any, Any]:
     sensitivity = resolved_household_sensitivity(device)
     check_target = None
     if sensitivity is not None:
@@ -213,7 +212,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
         isolation_hold(graph=production.graph, camilla_factory=camilla_factory,
                        action="measuring", plan=v2volume.session_volume_plan(), wall_clock_ceiling_s=ceiling_s),
         build, sensitivity, device, ceiling_db_spl,
-        program_for_spec=predictive_program_for_spec(context) if context else None, margin_db=margin_db,
+        program_for_spec=predictive_program_for_spec(context) if context else None,
     )
     door.caps_dbfs = conductor.caps_dbfs
     return door, analyze, assessor

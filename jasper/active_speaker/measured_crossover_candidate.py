@@ -187,12 +187,6 @@ def rear_is_silent(document: Mapping[str, Any]) -> bool:
     )
 
 
-def plays_rear(candidate: MeasuredCrossoverCandidate) -> bool:
-    """Whether ``candidate``'s graph plays a rear woofer: a rear output with no
-    fitted document is muted (ADR-0318)."""
-    return bool(candidate.rear_calibration) and not rear_is_silent(candidate.rear_calibration)
-
-
 def _rear_calibration_disclosure(document: Mapping[str, Any]) -> dict[str, str] | None:
     """A warning when the document leaves only the tweeter audible."""
     if not rear_is_silent(document) or not _chain_is_silent(document["front"]):

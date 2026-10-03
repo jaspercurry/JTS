@@ -79,7 +79,7 @@ async def test_not_heard_take_stops_only_when_output_is_muted(monkeypatch, caplo
     read.assert_called_once_with()
     assert event_field_maps(caplog, "active_speaker.measurement_output_muted") == (
         [{"muted": "true", "household_percent": "0"}] if muted else [])
-    assert len(fakes.play.rungs) == (1 if muted else 2)
+    assert len(fakes.play.stimulus_dbfs) == (1 if muted else 2)
     assert result.reason == ("measurement_output_muted" if muted else "")
     fault = next(row for row in gate.progress if row.get("fault"))
     assert (fault["fault"], fault["next_action"]) == (
@@ -450,11 +450,11 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
-    rung = None
+    asked = None
     for attempt in (1, 2):
         manifest.begin({"index": 1, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 20, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
-        program = compose_plan_program(conductor, spec, rung)
+        program = compose_plan_program(conductor, spec, asked)
         gain = program.segment("sweep_w").gain_db
         assert gain == pytest.approx(-30 + (raise_db if attempt == 2 else 0))
         assert all(seg.effective_peak_dbfs <= conductor._excitation.caps_dbfs[seg.role]
@@ -468,7 +468,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
         verdict = assessor(analysis, phase="measure", program=program)
         assert verdict.next == ("retake_louder" if attempt == 1 else "accept")
         assert verdict.ok and verdict.fault is None
-        rung = verdict.next_gain_db
+        asked = verdict.next_gain_db
         manifest.judge = AsyncMock(return_value=(verdict, {}))
         record_id = await manifest.bank({**record, "analysis": analysis_json(analysis)})
         (banked, _), = manifest.pending_records

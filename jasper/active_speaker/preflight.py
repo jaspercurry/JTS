@@ -4,35 +4,30 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass, field, replace
 from itertools import product
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import RoleBand
-from jasper.bass_extension.dynamic import dynamic_bass_gain_reserve_db
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.json_fields import finite_float
 
-from .capture_schedule import (
-    UNPROBED_TAKE_DETAIL, PlanCapture, prepare_plan_captures, run_probe_index, run_takes, unprobed_take_at_fader,
-)
+from .capture_schedule import prepare_plan_captures
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
-    AngleCaptureRequest, WALK_LEVEL_POLICY_INVALID,
+    AngleCaptureRequest,
     REGIME_BRANCHES,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
-from .crossover_v2.measure_spec import CANDIDATE_SCOPES, branch_target_ids_for
+from .crossover_v2.measure_spec import branch_target_ids_for
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
     REASON_WALK_BRANCH_PAIR_UNDECLARED, REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
     REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED,
 )
 from .measured_crossover_candidate import (
-    MeasuredCrossoverCandidate, candidate_room_peqs,
-    compile_candidate_config, plays_rear, prove_candidate_config,
+    MeasuredCrossoverCandidate, candidate_room_peqs, compile_candidate_config, prove_candidate_config,
 )
 from .movers import MOVER_ARM
 from .measurement_programs import (
@@ -96,9 +91,6 @@ class PreflightFacts:
     issues: tuple[PreflightIssue, ...] = ()
     #: The declared room's unreadable field, ``None`` when it reads (ADR-0388).
     geometry_unreadable: str | None = None
-    applied_bass_extension: Mapping[str, Any] = field(default_factory=dict)
-    #: Whether the run's base graph plays a rear woofer; ``None`` when it could not be read.
-    applied_rear_plays: bool | None = False
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
@@ -126,7 +118,6 @@ class PreflightReport:
     issues: tuple[PreflightIssue, ...]
     schedule: tuple[ScheduledCapture, ...]
     spl_ceiling_db_spl: float | None
-    rung_admission: Mapping[str, Any] = field(default_factory=dict)
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     price: Mapping[str, int] = field(default_factory=dict)
 
@@ -146,65 +137,17 @@ class PreflightReport:
             "spl_ceiling_db_spl": self.spl_ceiling_db_spl,
             "level": self.plan.level.to_dict(),
             "live_admission": list(LIVE_ADMISSION),
-            "rung_admission": dict(self.rung_admission),
             "driver_caps": {target: dict(cap) for target, cap in self.driver_caps.items()},
         }
 
 
-def bass_lift_db(bass: Mapping[str, Any], under: Mapping[str, Any]) -> float:
-    """How much more one graph's dynamic bass can lift than another's: the
-    difference of their reserves, never negative (ADR-0370)."""
-    return max(0.0, dynamic_bass_gain_reserve_db(bass) - dynamic_bass_gain_reserve_db(under))
-
-
-def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
-                bass_extensions: Mapping[str, Mapping[str, Any]]) -> dict[str, float]:
-    """How much louder than the take a run probes its other takes at the run's
-    fader may play: the largest bass lift against the graph the probe plays and,
-    for a rear woofer the probe's graph mutes and a later take plays, the coherent
-    sum of the woofers sharing its band (ADR-0403 §4, ADR-0370). Empty when no
-    take plays at the run's fader. Clearing the room layer adds nothing: of the
-    takes at a fader only a bass run's clear it, its probe too (ADR-0413 §3)."""
-    takes = [(scope, levelled) for scope, levelled, _ in run_takes(captures)]
-    probed = run_probe_index(takes)
-    if probed is None:
-        return {}
-    at_fader = [capture for capture, (scope, levelled) in zip(captures, takes)
-                if scope in CANDIDATE_SCOPES and not levelled]
-
-    def bass(capture: Any) -> Mapping[str, Any]:
-        cleared = "bass_extension" in capture.spec.cleared_layers
-        return {} if cleared else bass_extensions.get(candidate_identity(capture.stop.candidate_id), {})
-
-    probe = captures[probed]
-    lift = max(bass_lift_db(bass(capture), bass(probe)) for capture in at_fader)
-
-    def graph(capture: Any) -> tuple[Any, ...]:
-        return capture.spec.graph_scope, capture.stop.candidate_id, capture.spec.cleared_layers
-
-    def rear(capture: Any, *, unread: bool) -> bool:
-        name = candidate_identity(capture.stop.candidate_id)
-        candidate = facts.candidates.get(name)
-        known = (plays_rear(candidate) if isinstance(candidate, MeasuredCrossoverCandidate) else
-                 facts.applied_rear_plays if name == BASE_CANDIDATE else None)
-        return unread if known is None else known
-
-    # Woofers sharing a band add in phase at worst: 20·log10(N_take / N_probe).
-    others = [capture for capture in at_fader if graph(capture) != graph(probe)]
-    summed = max((20 * math.log10((1 + rear(capture, unread=True)) / (1 + rear(probe, unread=False)))
-                  for capture in others), default=0.0)
-    summed = max(0.0, summed)
-    return {"lift_bound_db": lift, "rear_sum_db": summed, "run_margin_db": lift + summed}
-
-
 def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightReport:
-    """Whether ``plan`` may run here, its schedule, its run's margins and, read with a context, its price."""
+    """Whether ``plan`` may run here, its schedule and, read with a context, its price."""
     issues = list(facts.issues)
     # Remove when measurement owns an explicit household-authorized unmute.
     if facts.output_volume.get("muted") is True:
         code = REASON_MEASUREMENT_OUTPUT_MUTED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence=facts.output_volume))
-    admission: dict[str, Any] = {}
 
     def add(code: str, detail: str, *, blocking: bool = True) -> None:
         issues.append(PreflightIssue.from_code(code, detail, blocking=blocking))
@@ -264,11 +207,9 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         return PreflightReport(plan, tuple(issues), (), facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     scopes: dict[str, str] = {}
-    bass_extensions: dict[str, Mapping[str, Any]] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
         candidate = facts.candidates.get(name)
         if name == BASE_CANDIDATE and candidate is None:
-            bass_extensions[name] = facts.applied_bass_extension
             continue
         if isinstance(candidate, PreflightIssue):
             issues.append(candidate)
@@ -280,7 +221,6 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
             graph = compile_candidate_config(candidate, playback_device="null", room_peqs=candidate_room_peqs(candidate))
             prove_candidate_config(candidate, graph)
             scopes[name] = "candidate"
-            bass_extensions[name] = candidate.bass_extension
         except ValueError as exc:
             add("measurement_candidate_invalid", f"{name}: {exc}")
 
@@ -314,15 +254,6 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
     preparable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
                                      for stop in plan.stops)
     prepared = prepare_plan_captures(plan, roles_bands=facts.roles_bands) if preparable else ()
-    if unprobed_take_at_fader(run_takes(prepared)):
-        admission.update(status="blocked")
-        add(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
-    elif preparable and bass_extensions:
-        try:
-            admission.update(run_margins(prepared, facts, bass_extensions))
-        except (TypeError, ValueError) as exc:
-            admission.update(status="blocked")
-            add(WALK_LEVEL_POLICY_INVALID, str(exc))
-    return PreflightReport(plan, tuple(issues), schedule, ceiling, admission, facts.driver_caps, {
+    return PreflightReport(plan, tuple(issues), schedule, ceiling, facts.driver_caps, {
         "captures": len(prepared), "seconds": round(preview_schedule(plan, prepared, facts.context)["estimated_seconds"]),
         "mic_moves": mic_moves(capture.stop.pose for capture in prepared)} if facts.context is not None and prepared else {})

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any
 
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
@@ -17,12 +17,10 @@ from jasper.platform.control_client import read_output_volume
 
 from .angle_capture import AngleCaptureRequest
 from . import candidate_bank
-from .baseline_profile import load_applied_baseline_profile_state
-from .candidate_parts import candidate_from_applied_profile
 from .commission_wiring import commissioning_spl_ceiling_db
 from .crossover_v2.conductor_context import published_driver_caps, resolve_conductor_context
 from .crossover_v2.refusal_copy import CrossoverV2Refused
-from .measured_crossover_candidate import MeasuredCrossoverCandidate, plays_rear
+from .measured_crossover_candidate import MeasuredCrossoverCandidate
 from .measurement_programs import BASE_CANDIDATE, candidate_identity, near_field_drivers
 from .preflight import PreflightFacts, PreflightIssue
 from .setup_status import conductor_status
@@ -54,22 +52,11 @@ def read_preflight_facts(
     except WiredCaptureError:
         pass
     stop = None
-    applied_bass_extension: Mapping[str, Any] = {}
-    applied_rear: bool | None = False
     if context is not None:
         try:
             stop = commissioning_spl_ceiling_db(context.topology, preset=context.preset)
         except ValueError:
             pass
-        state: Mapping[str, Any] | None = None
-        try:
-            state = load_applied_baseline_profile_state() or {}
-            applied = candidate_from_applied_profile(context.topology, state)
-            applied_bass_extension = applied.bass_extension
-            applied_rear = plays_rear(applied)
-        except (OSError, RuntimeError, ValueError, LookupError):
-            # No applied profile has no rear; one that cannot be read has an unknown one.
-            applied_rear = False if state is not None and state.get("status") != "applied" else None
     candidates: dict[str, MeasuredCrossoverCandidate | PreflightIssue] = {}
     for name in dict.fromkeys(candidate_identity(stop.candidate_id) for stop in plan.stops):
         if name == BASE_CANDIDATE:
@@ -91,7 +78,6 @@ def read_preflight_facts(
         mic_sensitivity=resolved_household_sensitivity(device) if device is not None else None,
         geometry_unreadable=_geometry_unreadable(),
         commissioning_stop_db_spl=stop, mover=plan.mover, issues=tuple(issues),
-        applied_bass_extension=applied_bass_extension, applied_rear_plays=applied_rear,
         declared_target_ids=tuple(context.role_targets) if context is not None else None,
         # A driver sweeping a declared band is offered only when that sweep, clipped to the driver's
         # own band, starts at or below the near-field view's top band, so its takes read a band.

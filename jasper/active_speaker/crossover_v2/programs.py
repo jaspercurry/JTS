@@ -186,34 +186,19 @@ def probe_fader_db(caps_dbfs: Mapping[str, float]) -> float:
     return min(0.0, max(caps_dbfs.values()))
 
 
-def _probe_ceiling(probe: ExcitationProgram, caps_dbfs: Mapping[str, float]) -> tuple[float, float, bool]:
-    """A run probe's last burst gain, the fader it played at, and whether the tightest cap held that burst."""
-    last = max(probe.stimulus_segments(), key=lambda segment: segment.gain_db)
-    fader = last.effective_peak_dbfs - last.gain_db
-    return last.gain_db, fader, last.gain_db >= back_off_gain(math.inf, fader, min(caps_dbfs.values())) - 1e-9
-
-
-def run_fader_db(probe: ExcitationProgram, solved_dbfs: float, caps_dbfs: Mapping[str, float],
-                 cut_db: float = 0.0) -> float:
+def run_fader_db(probe: ExcitationProgram, solved_dbfs: float, caps_dbfs: Mapping[str, float]) -> float:
     """The fader at which the take a run probed, with no level asked, plays no
     louder than the peak its probe solved, or than its own last burst when that
-    is lower, less ``cut_db``, never above the probe's own fader (ADR-0403 §4).
-    The probe's last burst is that take's level unless the tightest cap held it
-    lower; then the fader is solved against the summed level before any scope
-    cut, which no summed take plays over, so a take that cap holds at the output
-    comes down too."""
-    ceiling, fader, held = _probe_ceiling(probe, caps_dbfs)
-    target = min(solved_dbfs, ceiling) - cut_db
+    is lower, never above the probe's own fader (ADR-0403 §4). The probe's last
+    burst is that take's level unless the tightest cap held it lower; then the
+    fader is solved against the summed level before any scope cut, which no
+    summed take plays over."""
+    last = max(probe.stimulus_segments(), key=lambda segment: segment.gain_db)
+    ceiling, fader = last.gain_db, last.effective_peak_dbfs - last.gain_db
+    held = ceiling >= back_off_gain(math.inf, fader, min(caps_dbfs.values())) - 1e-9
+    target = min(solved_dbfs, ceiling)
     level = BASE_STIMULUS_PEAK_DBFS if held and target < ceiling else ceiling
     return min(fader, fader + target - level)
-
-
-def probe_backoff_db(probe: ExcitationProgram, caps_dbfs: Mapping[str, float]) -> float:
-    """How far a summed take on another graph can play over the take a run
-    probed: that take's own scope backoff. None when the tightest cap held the
-    probe, since that cap holds every summed take (ADR-0403 §4)."""
-    ceiling, _, held = _probe_ceiling(probe, caps_dbfs)
-    return 0.0 if held else max(0.0, BASE_STIMULUS_PEAK_DBFS - ceiling)
 
 
 def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
