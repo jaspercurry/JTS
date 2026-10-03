@@ -64,8 +64,8 @@ def prepare_plan_captures(
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
-    # A driver's takes, and the first take of each close driverless set, branch set or, over a timing
-    # take, candidate graph's set, find their level (ADR-0365, ADR-0403, ADR-0408).
+    # A driver's takes, and the first take of each close driverless set, branch set or candidate
+    # graph's summed set, find their level (ADR-0365, ADR-0403, ADR-0423).
     starts = level_sets([capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])
     return tuple(replace(capture, spec=replace(capture.spec, level_probe=True))
                  if start is not None and (capture.stop.pose.driver or start == index) else capture

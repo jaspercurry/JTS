@@ -380,22 +380,22 @@ def test_incomplete_candidate_graph_refuses_preflight(monkeypatch, tuning_profil
 
 
 @pytest.mark.parametrize("program,layout,applied_db,trial_db,lift", [
-    ("speaker", "speaker_mark", 18, None, "none"), ("room", "seat_express", 18, None, "none"),
-    ("room", "seat_express", 6, 18, "trial over applied")])
+    ("speaker", "speaker_mark", 18, None, "none"), ("bass", "seat_express", 18, None, "none"),
+    ("bass", "seat_express", 6, 18, "trial over its base")])
 def test_the_margins_are_measured_against_the_graph_the_probe_plays(tuning_profile, program, layout, applied_db,
                                                                     trial_db, lift):
     """A run's margin is how much more its takes' dynamic bass may lift than the
     graph its probe plays: none over a speaker run's timing take, since each
     candidate graph there probes itself (ADR-0408); none over a take on the same
-    graph; and a trial's lift over the applied one (ADR-0403 §4, ADR-0370)."""
+    graph; and, over a bass ladder's base, which plays its bass cleared, a trial's
+    whole reserve (ADR-0403 §4, ADR-0370, ADR-0423)."""
     applied = _boost(applied_db)
     trial = replace(_room_candidate(tuning_profile), bass_extension=_boost(trial_db)) if trial_db else None
     plan = request_for_preset(run_preset(program, layout), candidates=("base", trial.fingerprint) if trial else ("base",))
     report = preflight(plan, ready_facts(plan, applied_bass_extension=applied,
                                          candidates={trial.fingerprint: trial} if trial else {}))
     assert not report.blocking
-    expected = {"none": 0.0,
-                "trial over applied": bass_lift_db(trial.bass_extension if trial else {}, applied)}[lift]
+    expected = {"none": 0.0, "trial over its base": bass_lift_db(trial.bass_extension if trial else {}, {})}[lift]
     assert report.rung_admission["run_margin_db"] == pytest.approx(expected) and expected >= 0.0
     assert (lift == "none") is (expected == 0.0)
 
@@ -439,20 +439,20 @@ def _cardioid_trial(profile=None):
 
 @pytest.mark.parametrize(("program", "layout", "rear", "trial", "rear_sum_db"), [
     ("speaker", "speaker_mark", False, "cardioid", 0.0),
-    ("room", "seat_express", True, "plain", 0.0),
-    ("room", "seat_express", False, "cardioid", _REAR_SUM_DB),
-    ("room", "seat_express", True, "cardioid", 0.0),
-    ("room", "seat_express", None, "plain first", _REAR_SUM_DB),
-    ("room", "seat_express", None, "cardioid", _REAR_SUM_DB)],
+    ("bass", "seat_express", True, "plain", 0.0),
+    ("bass", "seat_express", False, "cardioid", _REAR_SUM_DB),
+    ("bass", "seat_express", True, "cardioid", 0.0),
+    ("bass", "seat_express", None, "plain first", _REAR_SUM_DB),
+    ("bass", "seat_express", None, "cardioid", _REAR_SUM_DB)],
     ids=["over a timing take each graph probes itself", "probe on the candidate's own graph",
          "a seat probe that mutes the rear", "a seat probe that plays it too",
          "an unread base after a probe that mutes it", "an unread probe under a trial that plays it"])
 def test_a_rear_the_probe_mutes_adds_the_woofers_coherent_sum(tuning_profile, program, layout, rear, trial,
                                                               rear_sum_db):
-    """A rear woofer the probe's graph mutes and a later take at the run's fader
-    plays adds the coherent sum of two woofers, 6.02 dB, to the woofer's band. Over
-    a timing take each candidate graph probes itself, so none plays at the run's
-    fader (ADR-0403 §4, ADR-0408)."""
+    """A rear woofer the probe's graph mutes and a later take at the run's fader,
+    a bass ladder's, plays adds the coherent sum of two woofers, 6.02 dB, to the
+    woofer's band. Over a timing take each candidate graph probes itself, so none
+    plays at the run's fader (ADR-0403 §4, ADR-0408, ADR-0423)."""
     candidates = ("trial", "base") if trial == "plain first" else ("base", "trial")
     plan = request_for_preset(run_preset(program, layout), candidates=candidates)
     report = preflight(plan, ready_facts(
@@ -525,7 +525,7 @@ def test_live_facts_read_a_cardioid_base_and_its_rear(monkeypatch):
 
 
 def test_unreadable_bass_descriptor_blocks_the_margin():
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="speaker"),))
+    plan = request_for_preset(run_preset("speaker", "speaker_mark"))
     report = preflight(plan, ready_facts(plan, applied_bass_extension={"low_boost_db": 6}))
     assert report.blocking_issue.code == "walk_level_policy_invalid"
     assert report.rung_admission["status"] == "blocked"
@@ -534,7 +534,8 @@ def test_unreadable_bass_descriptor_blocks_the_margin():
 @pytest.mark.parametrize("descriptor", [None, {}, BASS_EXTENSION])
 def test_live_facts_resolve_applied_bass_from_the_candidate_bank(monkeypatch, tuning_profile, descriptor):
     candidate = replace(_room_candidate(tuning_profile), bass_extension=_boost(18))
-    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint),),
+    plan = AngleCaptureRequest((AngleStop(Pose(0, 0), REGIME_SUMMED, purpose="bass", candidate_id=candidate.fingerprint,
+                                          stimulus=BASS),),
                                candidates=(candidate.fingerprint,), level=LevelPolicy(level_db=0))
     sensitivity = ready_facts(plan).mic_sensitivity
     applied = replace(_room_candidate(tuning_profile), bass_extension=descriptor or {})
