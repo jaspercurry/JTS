@@ -67,7 +67,7 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
                             "started_at": (root / f"{index:02}").stat().st_mtime, "round_id": f"{index:02}",
-                            "set_id": "set-0", "status": "partial", "stale": False, "stale_by": [],
+                            "set_id": None, "status": "partial", "stale": False, "stale_by": [], "base_stale_by": [],
                             "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
@@ -114,43 +114,64 @@ def test_a_round_goes_stale_only_when_a_layer_under_it_changes(tmp_path, monkeyp
     assert (found["stale"], found["stale_by"]) == (bool(stale_by), stale_by)
 
 
-#: A seat trial's sets: each one's id, the applied layers it played, and whether its takes played bass and room off.
-_CARDIOID_TRIAL = (("base", ("speaker",), True), ("seed", ("speaker", "rear"), True))
-_ROOM_TRIAL = (("base", ("speaker", "rear"), True), ("candidate", RUNNABLE_PROGRAMS, False))
+def _tune(*layers, rear="S1"):
+    """An applied tune that plays ``layers``, its rear stage the seed ``rear``."""
+    profile = _applied_anchor(layers=layers)
+    profile["recomposition_snapshot"]["rear_calibration"] = {"seed": rear} if "rear" in layers else {}
+    return profile
 
 
-@pytest.mark.parametrize("preset,trial,applied,named,action", [
-    ("rear/seat", _CARDIOID_TRIAL, ("speaker",), "base", ("copy_prompt", "rear", "round_available")),
-    ("rear/seat", _CARDIOID_TRIAL, ("speaker", "rear"), "seed", ("copy_prompt", "room", "round_available")),
-    ("rear/seat", _CARDIOID_TRIAL, ("speaker", "rear", "room"), "seed", (None, None, "complete")),
-    ("room/seat", _ROOM_TRIAL, RUNNABLE_PROGRAMS, "base", (None, None, "complete")),
-], ids=["cardioid-nothing-applied-since", "cardioid-seed-applied", "cardioid-room-applied-without-a-trial",
-        "room-candidate-applied"])
-def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeypatch, preset, trial, applied, named, action):
+def _trial(name, base, candidate, *, preset="rear/seat", off=True):
+    """A seat trial's two sets and the tunes they played: its base, with bass and room off, and its candidate,
+    the seed of a cardioid trial with bass and room off too, or a room trial's candidate as composed (ADR-0429,
+    ADR-0436)."""
+    return name, preset, (("base", base, True), ("candidate", candidate, off))
+
+
+@pytest.mark.parametrize("trials,applied,named,action", [
+    ([_trial("trial", _tune("speaker"), _tune("speaker", "rear"))], _tune("speaker"),
+     ("trial", "base"), ("copy_prompt", "rear", "trial", None, "round_available")),
+    ([_trial("trial", _tune("speaker"), _tune("speaker", "rear"))], _tune("speaker", "rear"),
+     ("trial", "candidate"), ("copy_prompt", "room", "trial", "candidate", "round_available")),
+    ([_trial("trial", _tune("speaker", "rear", "room"), _tune("speaker", "rear", "room", rear="S2"))],
+     _tune("speaker", "rear", "room", rear="S2"),
+     ("trial", "candidate"), ("copy_prompt", "room", "trial", "candidate", "upstream_changed")),
+    ([_trial("trial", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat", off=False)],
+     _tune(*RUNNABLE_PROGRAMS), ("trial", "base"), (None, None, None, None, "complete")),
+    ([_trial("older", _tune("speaker"), _tune("speaker", "rear")),
+      _trial("newer", _tune("speaker"), _tune("speaker", "rear", rear="S2"))], _tune("speaker", "rear"),
+     ("older", "candidate"), ("copy_prompt", "room", "older", "candidate", "round_available")),
+], ids=["cardioid-nothing-applied-since", "cardioid-seed-applied", "cardioid-seed-applied-over-a-room-layer",
+        "room-candidate-applied", "an-older-current-trial"])
+def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeypatch, trials, applied, named, action):
     """A seat trial plays the applied tune and a candidate. Until an apply its base set is current; once the
-    candidate is applied, the candidate's set is current too. The round names a current set whose takes played
-    bass and room off, so a room document previews on it: after a cardioid seed's apply the seed's set, which a
-    later room apply with no trial leaves current, and after a room candidate's apply the base set (ADR-0437)."""
+    candidate is applied, its set is current too, and a current round comes before a newer stale one. The
+    pointer names a current set whose takes played bass and room off, so a room document previews on it, and
+    copies the room prompt on it, with ``upstream_changed`` when a layer under room changed since the stack the
+    round was banked on (ADR-0437)."""
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
-    sets = [{"set_id": set_id, "base": set_id == "base", "layer_fingerprints": layer_fingerprints(_applied_anchor(layers=played)),
-             "takes": [{"selected": True, "cleared_layers": list(IN_ROOM_CLEARED) if off else []}] * 3}
-            for set_id, played, off in trial]
-    _bank_packet(tmp_path / "campaigns" / "trial", applied_identity(_applied_anchor(layers=trial[0][1])), preset,
-                 room=[{}], bass=[{}], sets=sets)
-    profile = _applied_anchor(layers=applied)
+    banked = {}
+    for age, (name, preset, sets) in enumerate(trials):
+        banked[name] = [{"set_id": set_id, "base": set_id == "base", "layer_fingerprints": layer_fingerprints(tune),
+                         "takes": [{"selected": True, "cleared_layers": list(IN_ROOM_CLEARED) if off else []}] * 3}
+                        for set_id, tune, off in sets]
+        _bank_packet(tmp_path / "campaigns" / name, applied_identity(sets[0][1]), preset, room=[{}], bass=[{}],
+                     sets=banked[name], finalized_at=1.0 + age)
 
-    rounds = latest_banked_rounds(applied_identity(profile), include_stale=True)
-    found = next_program_action(profile, rounds, programs=RUNNABLE_PROGRAMS)
+    rounds = latest_banked_rounds(applied_identity(applied), include_stale=True)
+    found = next_program_action(applied, rounds, programs=RUNNABLE_PROGRAMS)
+    room = rounds["room"]
     base = BankedCandidate(_candidate(), "", "", Path("candidate.json"))
     preview = preview_prescription_document(
         {"kind": "jts_prescription", "schema": 1, "base": base.fingerprint, "rationale": "", "sections": {"room": room_document()}},
         round_dir=None, base=base, evidence=PrescriptionEvidence(
-            {"room_median": {**_room_median(), "set_id": rounds["room"]["set_id"]}, "bass_evidence": {},
-             "manifest": {"incumbent": {"room": None, "bass": None}, "sets": sets}},
-            room_median_sha256=MEDIAN_SHA256, round_id="trial"))
+            {"room_median": {**_room_median(), "set_id": room["set_id"]}, "bass_evidence": {},
+             "manifest": {"incumbent": {"room": "applied", "bass": "applied"}, "sets": banked[room["round_id"]]}},
+            room_median_sha256=MEDIAN_SHA256, round_id=room["round_id"]))
 
-    assert {(row["set_id"], row["stale"]) for row in rounds.values()} == {(named, False)}
-    assert (found["id"], found["program"], found["reason_code"]) == action
+    assert (room["round_id"], room["set_id"], room["stale"]) == (*named, False)
+    assert (found["id"], found["program"], found.get("round_dir") and Path(found["round_dir"]).name,
+            found.get("set_id"), found["reason_code"]) == action
     assert preview["section"] == "room"
 
 
@@ -178,12 +199,6 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert before["speaker"]["round_id"] == "speaker"
     assert before["room"]["banked_at"] == before["room"]["started_at"] == base + 5
     assert (action["program"], action["reason_code"]) == (None, "complete")
-
-    stale = tmp_path / "campaigns" / "speaker-stale"
-    _bank_packet(stale, {**identity, "layer_fingerprints": {BASE_LAYER: "previous"}}, "speaker", finalized_at=base + 6)
-    history = latest_banked_rounds(identity, include_stale=True)
-    assert (history["speaker"]["round_id"], history["speaker"]["stale"]) == ("speaker-stale", True)
-    assert history["room"]["stale"] is False
 
     old = tmp_path / "campaigns" / "speaker-old"
     packet = old / "packet.json"

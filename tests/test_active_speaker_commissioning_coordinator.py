@@ -102,7 +102,8 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
     elif status == "needs_driver_safety_profile":
         draft["driver_safety_profile"]["issues"] = [{"code": "tweeter:required_highpass_missing"}]
     applied = _applied_anchor(layers=layers)
-    recent = {name: {"round_dir": f"/bank/{name}", "stale": stale} for name, stale in rounds}
+    recent = {name: {"round_dir": f"/bank/{name}", "stale": stale, **({"set_id": "seat"} if name == "room" and not stale else {})}
+              for name, stale in rounds}
     view = build_commissioning_view(
         topology, design_draft=draft, crossover_preview=_ready_preview(),
         baseline_profile=_applied_baseline_profile(permissions={"may_compile": status != "blocked"}),
@@ -176,7 +177,7 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
     (("speaker", "rear", "bass"), {}, "room", "layer_not_applied"),
     (("speaker", "rear", "room"), {}, None, "complete"),
     (RUNNABLE_PROGRAMS, {}, None, "complete"),
-    (("speaker", "rear"), {"room": {"round_dir": "/bank/room", "started_at": 1}}, "room", "round_available"),
+    (("speaker", "rear"), {"room": {"round_dir": "/bank/room", "started_at": 1, "set_id": "seat"}}, "room", "round_available"),
 ])
 def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, expected, reason):
     """Bass is an option inside the in-room program: after speaker (and rear), room is next until a room
@@ -203,10 +204,11 @@ def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, ex
 ])
 def test_room_repeats_after_a_layer_under_it_changes(stale_by, room_applied, expected):
     """The applied room was fitted through the speaker and rear layers under the in-room program, so a
-    change to one of them since room's latest round points at room again; a change to the room or the
-    bass layer does not, since bass is an option inside that program (ADR-0420, ADR-0429)."""
+    change to one of them since the stack room's latest round was banked on points at room again; a change
+    to the room or the bass layer does not, since bass is an option inside that program (ADR-0420, ADR-0429,
+    ADR-0437)."""
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
-    rounds = {"room": {"round_dir": "/bank/room", "stale": bool(stale_by), "stale_by": stale_by}}
+    rounds = {"room": {"round_dir": "/bank/room", "base_stale_by": stale_by, **({} if stale_by else {"set_id": "seat"})}}
     action = next_program_action(_applied_anchor(layers=layers), rounds, programs=RUNNABLE_PROGRAMS)
     assert (action["id"], action["program"], action["reason_code"]) == expected
 
