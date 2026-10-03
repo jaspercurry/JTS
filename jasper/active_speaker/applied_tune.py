@@ -28,8 +28,7 @@ from .state_paths import baseline_candidate_config_path
 REAR_CALIBRATION_WALL_GAP_MISMATCH = "rear_calibration_wall_gap_differs"
 REAR_CALIBRATION_FRONT_DELAY_SHIFTS_TIMING = "rear_calibration_front_delay_shifts_timing"
 REAR_CALIBRATION_ROOM_BAND_OVERLAP = "rear_calibration_room_band_overlap"
-# The wizard declares the wall gap in millimetres while a document carries an
-# inch-derived value (0.2032 m), so only a millimetre-scale difference is real.
+# The wizard declares the wall gap in millimetres, so only a millimetre-scale difference is real.
 REAR_CALIBRATION_WALL_GAP_TOLERANCE_M = 0.001
 
 

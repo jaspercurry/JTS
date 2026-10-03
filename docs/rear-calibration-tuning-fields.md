@@ -4,12 +4,13 @@ What the fields of the `jts_rear_calibration` document mean
 (`jasper/active_speaker/rear_calibration.py`, `read_rear_calibration`).
 Decisions live in [ADR-0316](adr/0316-rear-woofer-outputs-have-a-physical-variant-identity.md),
 [ADR-0317](adr/0317-wall-placement-starts-at-the-cabinet-back.md),
-[ADR-0318](adr/0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md)
-and [ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md).
+[ADR-0318](adr/0318-rear-calibration-separates-acoustic-targets-from-electrical-settings.md),
+[ADR-0322](adr/0322-rear-calibration-is-a-candidate-section.md)
+and [ADR-0425](adr/0425-the-rear-seed-is-computed-from-the-declared-geometry.md).
 Examples: [`docs/examples/rear_calibration_handoff.json`](examples/rear_calibration_handoff.json)
 (blank `acoustic_targets` skeleton) and
 [`docs/examples/rear_calibration_electrical_example.json`](examples/rear_calibration_electrical_example.json)
-(`diagnostic_seed(48000)` output).
+(the seed for woofers 330 mm apart, with the front panel 0.5 m from the wall).
 
 ## Authoring path
 
@@ -71,17 +72,15 @@ conversion and causal fitting.
 stage compile for `electrical_dsp`/`branches` (`compile_rear_stage`),
 reachable via `jasper-crossover-prescriber judge --preview <doc> --round
 <pair round>` at the declared cabinet's outputs (`compiled_stage`); the seed
-in `jasper-crossover-prescriber contract --section rear` (`seed`).
+in `jasper-crossover-prescriber contract --round <round> --section rear` (`seed`).
+The seed is computed from that round's declared rear woofer spacing and wall
+gap, and its trim from the round's pair take at the mark (ADR-0425).
 
-**PROVISIONAL** (untuned, seeded from a single idealized snapshot, not
-measured): the diagnostic seed's cancellation branch (`-0.84 dB`,
-inverted, `1.14 ms`) reproduces only the ideal CAD model's ~200 Hz ratio,
-not a broadband fit; the seed's `cabinet_back_wall_m` default (`0.2032 m`)
-is a CAD reference geometry, not this cabinet's declared value (compare
-against `jasper-declare-geometry`; a mismatch is disclosed, never blocked,
-ADR-0322); any `valid_band_hz` or filter fit an acoustic task later derives
-from the CAD dataset, since that model is an idealized free-field (plus one
-image-source wall estimate) BEM computation, not a measurement.
+**PROVISIONAL** (computed or modelled, not measured): the seed, a
+two-point-source design that the seat trial judges; any `valid_band_hz` or
+filter fit an acoustic task later derives from the CAD dataset, since that
+model is an idealized free-field (plus one image-source wall estimate) BEM
+computation, not a measurement.
 
 **MEASURED:** the front/rear/both pair take reports `rear_polarity` and
 `arrival_gap` in `crossover_v2/rear_views.py`. Measured tunes exist; see the

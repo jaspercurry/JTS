@@ -451,6 +451,11 @@ fitted at 106 Hz without a cardioid dug a −19 dB notch after the cardioid
 had already flattened that peak, while the cuts on the 54–59 Hz room mode
 still earned their place. Refit room after the rear stage changes.
 
+The contract's `seed` (`contract --round <pair round> --section rear`) is a
+first tune computed from the declared rear woofer spacing and wall gap, with
+its trim from that round's level gap at the mark (ADR-0425). Preview it,
+trial it at the seat and vary from it.
+
 First tune, from the pair take: give the bass branch a Linkwitz-Riley
 low-pass and the cancellation branch a Linkwitz-Riley high-pass at ONE
 shared corner near 80–100 Hz; complementary slopes leave no hole at the
@@ -518,7 +523,7 @@ This is the hand loop of record for a cardioid box. Keep the cabinet at its wall
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
    Fit, trial and apply the speaker there, then bank the model:
    `sudo /opt/jasper/.venv/bin/jasper-round run --program rear/pair --layout speaker_mark --wait`.
-2. Write the rear seed (`contract --section rear` carries one as `seed`) and preview variants from that pair round:
+2. Write the rear seed (`contract --round <pair-round> --section rear` carries one as `seed`) and preview variants from that pair round:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
    Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber compose <doc> --round <pair-round>`.

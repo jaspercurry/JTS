@@ -33,7 +33,7 @@ REAR_SEED_GEOMETRY_UNDECLARED = "rear_seed_geometry_undeclared"
 PLACEMENT_FIELDS = ("cabinet_back_wall_m", "cabinet_depth_m", "toe_in_degrees")
 ASSUMPTIONS = (
     "Computed from the declared geometry: two point sources at the declared woofer spacing (ADR-0425).",
-    "The trim is the pair take's level gap at the mark, which both woofers' wall reflections colour.",
+    "The trim is the pair take's level gap at the mark, which both woofers' wall reflections change.",
 )
 
 
@@ -44,12 +44,12 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
     ``packet`` is the round's banked packet; its rear pair view levels the rear woofer to the front.
     """
     spacing_m = declared_driver_spacing_m(draft, "rear_woofer_spacing_mm")
-    missing = [*(["rear_woofer_spacing_mm"] if spacing_m is None else []),
-               *(name for name in PLACEMENT_FIELDS if geometry is None or getattr(geometry, name) is None)]
+    declared = {"rear_woofer_spacing_mm": spacing_m, **{name: getattr(geometry, name, None) for name in PLACEMENT_FIELDS}}
+    missing = [name for name, value in declared.items() if value is None]
     if spacing_m is None or geometry is None or missing:
         return unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})
     speed = DEFAULT_SOUND_SPEED_M_S
-    # The front panel's distance to the wall, whose quarter-wave notch is c / (4 * wall).
+    # The front panel's distance to the wall; its quarter-wave notch is c / (4 * wall_m).
     wall_m = geometry.boundary_walls()[0]["front"]
     handover_hz = round(speed / (6.0 * wall_m), 4)
     lowpass = combo("ButterworthLowpass", round(speed / (4.0 * spacing_m), 4), LOWPASS_ORDER)

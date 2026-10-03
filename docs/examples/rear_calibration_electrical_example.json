@@ -5,30 +5,38 @@
   "sample_rate_hz": 48000,
   "phase_convention": "positive_delay_has_negative_phase",
   "geometry": {
-    "cabinet_back_wall_m": 0.2032,
+    "cabinet_back_wall_m": 0.2,
     "sources": {
       "front": null,
       "rear": null
     },
-    "details": null
+    "details": {
+      "rear_woofer_spacing_m": 0.33,
+      "cabinet_depth_m": 0.3,
+      "toe_in_degrees": 0.0
+    }
   },
   "reference": {
     "quantity": "electrical_filter_transfer",
     "units": "linear output/input",
     "level": null
   },
-  "conditions": {},
+  "conditions": {
+    "trim_db": 0.0,
+    "level_gap_db": null,
+    "pair_round": null
+  },
   "valid_band_hz": null,
   "assumptions": [
-    "Untuned diagnostic seed: the acoustic 200 Hz ratio is not an electrical calibration.",
-    "Band-limiting filters remain to be fitted from the full saved dataset, including their phase."
+    "Computed from the declared geometry: two point sources at the declared woofer spacing (ADR-0425).",
+    "The trim is the pair take's level gap at the mark, which both woofers' wall reflections change."
   ],
   "included_stages": {
     "front": [],
     "rear": []
   },
-  "common_delay_ms": 0.0,
-  "rear_muted": true,
+  "common_delay_ms": 3.2913,
+  "rear_muted": false,
   "front": {
     "gain_db": 0.0,
     "inverted": false,
@@ -47,14 +55,58 @@
       "inverted": false,
       "delay_ms": 0.0,
       "muted": false,
-      "filters": []
+      "filters": [
+        {
+          "type": "BiquadCombo",
+          "parameters": {
+            "type": "LinkwitzRileyLowpass",
+            "freq": 114.3333,
+            "order": 4
+          }
+        },
+        {
+          "type": "Biquad",
+          "parameters": {
+            "type": "Lowshelf",
+            "freq": 16000.0,
+            "q": 0.7071,
+            "gain": 0.0
+          }
+        }
+      ]
     },
     "cancellation": {
-      "gain_db": -0.84,
+      "gain_db": 0.0,
       "inverted": true,
-      "delay_ms": 1.14,
+      "delay_ms": -3.2913,
       "muted": false,
-      "filters": []
+      "filters": [
+        {
+          "type": "BiquadCombo",
+          "parameters": {
+            "type": "LinkwitzRileyHighpass",
+            "freq": 114.3333,
+            "order": 4
+          }
+        },
+        {
+          "type": "BiquadCombo",
+          "parameters": {
+            "type": "ButterworthLowpass",
+            "freq": 259.8485,
+            "order": 8
+          }
+        },
+        {
+          "type": "Biquad",
+          "parameters": {
+            "type": "Lowshelf",
+            "freq": 16000.0,
+            "q": 0.7071,
+            "gain": 0.0
+          }
+        }
+      ]
     }
   }
 }

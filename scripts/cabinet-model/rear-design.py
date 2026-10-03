@@ -35,7 +35,7 @@ from scipy.optimize import least_squares
 from _cabinet import Cabinet, db, rear_ratio, roughness_db, seat_deviation
 from jasper.active_speaker.branch_chain import camilla_filter_response, rear_stage_peak_db, rear_stage_response
 from jasper.active_speaker.crossover_v2.prescription_document import read_prescription_document, saved_document
-from jasper.active_speaker.rear_calibration import compile_rear_stage, read_rear_calibration
+from jasper.active_speaker.rear_calibration import compile_rear_stage, flat_shelf, read_rear_calibration
 from jasper.active_speaker.rear_fit import (
     BASS_ORDER, BASS_SEED_HZ, DELAY_SLOPE_BAND_HZ, HIGHPASS_ORDER, LOWPASS_ORDER, PARAM_LOWER, PARAM_UPPER,
     branch_ratio as branch_model, build_document, combo, group_delay_ms, target_delay_ms,
@@ -50,7 +50,6 @@ SEATS = ((2.0, 0), (2.0, 20), (2.0, 30), (1.5, 0), (2.5, 0))  # (listener m, bea
 TABLE_HZ = (30, 40, 50, 63, 80, 100, 125, 160, 200, 315, 500, 800)
 PARAMS = ("bass corner Hz", "bass delay ms", "cancel HP Hz", "cancel LP Hz", "cancel delay ms", "bass gain dB",
           "cancel gain dB")
-FLAT_BOOST_HZ = 16000.0  # a Lowshelf this high is flat to 0.001 dB and 0.7 degrees below 1.2 kHz
 
 
 def main() -> None:
@@ -110,7 +109,7 @@ def main() -> None:
                      "channels assumed to share one latency.",
                      "Listening trial: compare against the previously applied candidate."])
     shift = -document["front"]["gain_db"]
-    boost = {"type": "Biquad", "parameters": {"type": "Lowshelf", "freq": FLAT_BOOST_HZ, "gain": round(shift, 4), "q": 0.7071}}
+    boost = flat_shelf(shift)
     if shift > 0:
         document["front"]["gain_db"] = 0.0
         for branch in ("bass", "cancellation"):
