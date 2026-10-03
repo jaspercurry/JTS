@@ -34,7 +34,10 @@ other graph to charge, and no run's probe plays at a seat.
      (`capture_schedule.unprobed_take_at_fader`, `run_takes` and `UNPROBED_TAKE_DETAIL`). The
      ladder was its last input. CHECK and MEASURE still play at a run's fader, but only a speaker
      preset's base plays them, and that base always takes its timing take at the run's first
-     placement, where the executor plays the probe first.
+     placement, where the executor plays the probe first. A registry test keeps that true: every
+     shipped preset at every layout places its run's probe no later than any take at the run's fader
+     (`test_every_shipped_preset_plans_its_probe_before_the_takes_at_its_fader`; ADR-0405's
+     probe-first design).
    - `PreflightReport.rung_admission`: with rule A and that refusal gone, it holds nothing.
 2. **The rule.** A run whose probe finds its fader holds the fader that probe solves
    (`programs.run_fader_db`), never above a level the run states (ADR-0403 §4). Each candidate

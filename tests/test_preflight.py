@@ -4,6 +4,7 @@
 
 import logging
 import math
+from itertools import groupby
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,14 +12,15 @@ from unittest.mock import Mock
 import pytest
 
 from jasper.active_speaker.angle_capture import (
-    AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER, REGIME_SUMMED, request_for_preset,
+    AngleCaptureRequest, AngleStop, REGIME_PER_DRIVER, REGIME_SUMMED, level_sets, request_for_preset,
 )
+from jasper.active_speaker.capture_schedule import prepare_plan_captures, run_probe_index
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_programs import Pose, preset, run_preset
+from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
 from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 from jasper.active_speaker import arm_walk, preflight_live
@@ -377,6 +379,33 @@ _REAR_SUM_DB = 20 * math.log10(2)
 def _cardioid_trial():
     """A trial on a cardioid cabinet whose rear woofer plays (ADR-0318)."""
     return replace(_trial_candidate(SimpleNamespace(preset=_rear_pair("mono")[0])), rear_calibration=_rear_document())
+
+
+def test_every_shipped_preset_plans_its_probe_before_the_takes_at_its_fader(tuning_profile):
+    """Every shipped preset at every layout it offers, with the applied tune and with an
+    A/B trial, places its run's probe no later than any take that plays at the run's
+    fader, so no such take opens before the probe has found that fader (ADR-0403 §4,
+    ADR-0405)."""
+    roles = (RoleBand("woofer", 0, FrequencyBand(20, 4000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000)))
+    trial = _room_candidate(tuning_profile)
+    for name in available_presets():
+        for layout in preset(name).layouts:
+            selected = run_preset(name, layout)
+            if selected.regime == REGIME_BRANCHES:
+                trials = ((trial.fingerprint,),)
+            else:
+                trials = ((),) if any(pose.driver for pose in selected.poses) else ((), ("base", trial.fingerprint))
+            for candidates in trials:
+                plan = request_for_preset(selected, mover=selected.mover or "human", targets=("woofer", "tweeter"),
+                                          candidates=candidates)
+                captures = prepare_plan_captures(plan, roles_bands=roles)
+                levelled = [start is not None for start in level_sets(
+                    [capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])]
+                places = [index for index, (_, group) in enumerate(
+                    groupby(captures, key=lambda capture: capture.stop.pose.place)) for _ in group]
+                probe = run_probe_index([(capture.spec.graph_scope, own) for capture, own in zip(captures, levelled)])
+                at_fader = [place for place, own in zip(places, levelled) if not own]
+                assert not at_fader or (probe is not None and min(at_fader) >= places[probe]), (name, layout, candidates)
 
 
 @pytest.mark.parametrize("mover,attested,blocking", [
