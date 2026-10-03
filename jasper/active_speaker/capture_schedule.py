@@ -11,9 +11,10 @@ from typing import Sequence
 
 from jasper.audio_measurement.program import RoleBand
 from .angle_capture import (
-    AngleCaptureRequest, AngleStop, ResolvedStop, design_axis_spec, level_sets, resolve_request, stop_specs,
+    AngleCaptureRequest, AngleStop, ResolvedStop, level_sets, resolve_request, stop_specs,
 )
 from .crossover_v2.capture_plan import wall_clock_ceiling_s
+from .crossover_v2.contracts import MEASURE_KIND_CANDIDATE
 from .crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_LATERAL, PHASE_TIMING
 from .crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec
 from .measurement_programs import BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMMED, PURPOSE_SPEAKER, Pose
@@ -43,7 +44,7 @@ def prepare_plan_captures(
     if any(stop.regime == REGIME_PER_DRIVER and not stop.pose.driver for stop in request.stops):
         captures.append(PlanCapture(
             AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose=PURPOSE_SPEAKER),
-            replace(design_axis_spec(request), program_phase=PHASE_CHECK),
+            MeasureSpec(kind=MEASURE_KIND_CANDIDATE, program_phase=PHASE_CHECK),
         ))
     if request.takes_timing:
         base_request = replace(request, stops=(AngleStop(Pose(0, 0), REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
@@ -58,10 +59,10 @@ def prepare_plan_captures(
     for offset, spec in enumerate(placed):
         stop = request.stops[offset // request.repeats]
         if spec is None:
-            spec = replace(design_axis_spec(request), positions=(stop.pose.azimuth_deg,),
-                           vertical_deg=stop.pose.elevation_deg, stimulus=stop.stimulus,
-                           pose_prompts=(resolved[offset // request.repeats].prompt.text,),
-                           branch_target_ids=(stop.pose.driver,) if stop.pose.driver else ())
+            spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(stop.pose.azimuth_deg,),
+                               vertical_deg=stop.pose.elevation_deg, stimulus=stop.stimulus,
+                               pose_prompts=(resolved[offset // request.repeats].prompt.text,),
+                               branch_target_ids=(stop.pose.driver,) if stop.pose.driver else ())
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))
@@ -106,7 +107,7 @@ def unprobed_take_at_fader(takes: Sequence[tuple[str, bool, int]]) -> bool:
     return any(not levelled and (probe is None or placement < takes[probe][2]) for _, levelled, placement in takes)
 
 
-def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int | float | None]:
+def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = ()) -> dict[str, int]:
     """Price the same capture schedule shown by the page, including preparation."""
     captures = len(prepare_plan_captures(request, roles_bands=roles_bands))
     return {
@@ -114,11 +115,6 @@ def walk_price(request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] 
         "captures": captures,
         "ceiling_min": math.ceil(
             wall_clock_ceiling_s(captures) / 60
-        ),
-        "stimulus_s": (
-            None if request.template.sweep_s is None
-            else captures * request.template.sweep_s
-            * max(1, len(request.template.level_ladder_dbfs))
         ),
     }
 

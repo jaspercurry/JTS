@@ -35,9 +35,7 @@ from .crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
 )
-from .crossover_v2.measure_spec import (
-    GRAPH_SCOPE_DRIVERS, MeasureSpec, branch_target_ids_for,
-)
+from .crossover_v2.measure_spec import MeasureSpec, branch_target_ids_for
 from .measurement_programs import (
     BASE_CANDIDATE, POSE_KIND_BEARING,
     BRANCH_PAIR_DRIVERS,
@@ -104,10 +102,8 @@ __all__ = [
     "AngleStop",
     "AngleCaptureRequest",
     "ResolvedStop",
-    "DEFAULT_TEMPLATE",
     "TEMPLATE_SWEEP_SCOPE",
     "pose_at_angle",
-    "design_axis_spec",
     "stop_specs",
     "request_for_preset",
     "resolve_request",
@@ -117,7 +113,6 @@ __all__ = [
     "WALK_COMMISSIONING_STOP_UNSET",
     "WALK_STIMULUS_NOT_ACCEPTED",
     "WALK_OVER_CAPTURE_CAPACITY",
-    "WALK_TEMPLATE_NOT_ACCEPTED",
     "WALK_CANDIDATE_NOT_MEASURABLE",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
@@ -318,21 +313,6 @@ def _stated(record: Any, always: tuple[str, ...]) -> dict[str, Any]:
 TEMPLATE_SWEEP_SCOPE = "candidate"
 
 
-def _states_summed_sweep(sweep_band_hz: object, sweep_s: object) -> bool:
-    return bool(sweep_band_hz) or sweep_s is not None
-
-
-#: What a walk that states no spec carries: the design-axis capture the host has
-#: always built, with no stimulus stated.
-DEFAULT_TEMPLATE = MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
-
-#: The template fields the EXECUTOR or its composition seam assigns per capture,
-#: and which a walk therefore may not state: a stated one would be silently
-#: replaced at every stop and silently kept on the design-axis spec.
-_EXECUTOR_ASSIGNED = ("positions", "pose_prompts", "candidate_id", "branch_target_ids", "level_probe",
-                      "bass_reserve_db")
-
-
 @dataclass(frozen=True)
 class LevelPolicy:
     """The fader every take of a run holds: the one its probe finds, capped at a
@@ -356,12 +336,10 @@ class AngleCaptureRequest:
     ``program`` (the preset id) and ``layout`` (its named layout, or ``custom``)
     are provenance, and the preset's ``timing_take`` decides the timing take;
     geometry and purpose come from the stops.
-    ``template`` supplies the stimulus to the two spec builders.
     """
 
     stops: tuple[AngleStop, ...]
     mover: str = MOVER_HUMAN
-    template: MeasureSpec = DEFAULT_TEMPLATE
     program: str = ""
     layout: str = ""
     candidates: tuple[str, ...] = ()
@@ -397,7 +375,6 @@ class AngleCaptureRequest:
                 f"reach a {', '.join(unreachable)} pose",
             )
         self._validate_policy()
-        self._refuse_bad_template()
 
     @property
     def takes_timing(self) -> bool:
@@ -449,7 +426,7 @@ class AngleCaptureRequest:
     def to_dict(self) -> dict[str, Any]:
         return {
             **{key: value for key, value in asdict(self).items() if key != "levels" or value is not None},
-            "template": self.template.to_dict(), "level": self.level.to_dict(),
+            "level": self.level.to_dict(),
             "stops": [
                 {**_stated(stop, ("regime", "purpose")), "candidate_id": candidate_identity(stop.candidate_id),
                  "pose": _stated(stop.pose, ("azimuth_deg", "elevation_deg"))}
@@ -457,35 +434,6 @@ class AngleCaptureRequest:
             ],
             "candidates": list(self.candidates),
         }
-
-    def _refuse_bad_template(self) -> None:
-        """The questions about a template that are the WALK's, not the spec's:
-        what it may not state, and what its stops can play."""
-        if not isinstance(self.template, MeasureSpec):
-            raise LateralWalkRefused(
-                WALK_TEMPLATE_NOT_ACCEPTED, f"template must be a MeasureSpec, got {self.template!r}",
-            )
-        stated = [name for name in _EXECUTOR_ASSIGNED if getattr(self.template, name)
-                  and not (name == "candidate_id" and self.template.candidate_id == BASE_CANDIDATE)]
-        if stated:
-            raise LateralWalkRefused(
-                WALK_TEMPLATE_NOT_ACCEPTED,
-                f"a walk's template states what each capture is measured at, "
-                f"so it cannot carry {', '.join(stated)}",
-            )
-        if self.template.level_ladder_dbfs and (self.takes_timing or any(stop.level is not None for stop in self.stops)):
-            # A take that levels itself, and a timing take, which finds its run's fader, play
-            # their probe first (ADR-0361 §3, ADR-0405, ADR-0408).
-            raise LateralWalkRefused(
-                WALK_TEMPLATE_NOT_ACCEPTED,
-                "a take that levels itself finds its own level, so the template cannot state level_ladder_dbfs",
-            )
-        summed_stop = any(stop.plays_summed for stop in self.stops)
-        if _states_summed_sweep(self.template.sweep_band_hz, self.template.sweep_s) and not summed_stop:
-            raise LateralWalkRefused(
-                WALK_STIMULUS_NOT_ACCEPTED,
-                "sweep_band_hz/sweep_s ride summed stops; this walk names none",
-            )
 
     def _refuse_beyond_reach(
         self, axis: str, bound: int, asked: tuple[int, ...]
@@ -565,21 +513,8 @@ def _offset_cm_at(degrees: int, distance_m: float = MARK_DISTANCE_M) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# template -> the specs that play
+# the specs that play
 # --------------------------------------------------------------------------- #
-
-
-def design_axis_spec(request: AngleCaptureRequest) -> MeasureSpec:
-    """The spec this walk's design-axis MEASURE captures play: the template at
-    :data:`~.crossover_v2.measure_spec.GRAPH_SCOPE_DRIVERS`, the band and duration
-    stripped since that scope cannot play a summed sweep (:data:`TEMPLATE_SWEEP_SCOPE`)."""
-    return replace(
-        request.template,
-        kind=MEASURE_KIND_CANDIDATE,
-        graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
-        sweep_band_hz=(),
-        sweep_s=None,
-    )
 
 
 def stop_specs(
@@ -595,12 +530,9 @@ def stop_specs(
         if not stop.plays_summed:
             placed.append(None)
             continue
-        placed.append(replace(
-            request.template,
+        placed.append(MeasureSpec(
             kind=MEASURE_KIND_CANDIDATE if stop.candidate_id else MEASURE_KIND_VERIFY,
             positions=(stop.pose.azimuth_deg,),
-            sweep_band_hz=() if stop.stimulus else request.template.sweep_band_hz,
-            sweep_s=None if stop.stimulus else request.template.sweep_s,
             vertical_deg=stop.pose.elevation_deg,
             pose_prompts=(prompt.text,),
             candidate_id=stop.candidate_id or baseline_id,
@@ -744,21 +676,12 @@ WALK_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 #: own ``jasper.cli.measure.REFUSE_BOX_NOT_READY``.
 WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 
-#: The walk's stimulus statement is not one that can be played: a summed sweep
-#: with no summed stop to ride (:class:`AngleCaptureRequest`, statement time), a
-#: stop's declared stimulus its pose and regime cannot play (:class:`AngleStop`), or
-#: a stop pose it refuses when the host places the template (:func:`stop_specs`) --
-#: detail is the spec's own sentence.
+#: A stop's declared stimulus is one its pose and regime cannot play
+#: (:class:`AngleStop`); detail is the spec's own sentence.
 WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-
-#: The walk's template carries what the EXECUTOR assigns per capture
-#: (:data:`_EXECUTOR_ASSIGNED`), so the walk would measure somewhere other than
-#: the stops it states. Decided by :class:`AngleCaptureRequest` at statement
-#: time, like :data:`WALK_OVER_MOVER_ENVELOPE`.
-WALK_TEMPLATE_NOT_ACCEPTED = "walk_template_not_accepted"
 
 WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 
@@ -776,7 +699,6 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_COMMISSIONING_STOP_UNSET,
     WALK_STIMULUS_NOT_ACCEPTED,
     WALK_OVER_CAPTURE_CAPACITY,
-    WALK_TEMPLATE_NOT_ACCEPTED,
     WALK_CANDIDATE_NOT_MEASURABLE,
 })
 
