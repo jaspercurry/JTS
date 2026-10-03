@@ -36,24 +36,28 @@ def next_program_action(
     *,
     programs: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Choose from applied layers and each program's latest round, current or stale."""
+    """Choose from applied layers and each program's latest round, current before stale."""
     from .baseline_profile import applied_layers  # lazy: baseline imports measurement
 
     # Decision d18 / ADR-0301: the trial verifies an apply; a new baseline round is not required.
     layers = applied_layers(profile)
-    # A layer under the in-room program changed since room's round; bass is an option inside it (ADR-0420, ADR-0429).
-    upstream_changed = layers[PURPOSE_ROOM] and any(
-        name not in (PURPOSE_ROOM, *IN_ROOM_OPTIONS) for name in (recent_rounds.get(PURPOSE_ROOM) or {}).get("stale_by") or ())
+    # A layer under the in-room program changed since the stack room's round was banked on; bass is an option
+    # inside it (ADR-0420, ADR-0429, ADR-0437).
+    upstream_changed = layers[PURPOSE_ROOM] and any(name not in (PURPOSE_ROOM, *IN_ROOM_OPTIONS)
+                                                    for name in (recent_rounds.get(PURPOSE_ROOM) or {}).get("base_stale_by") or ())
     program = next((name for name in programs if name not in IN_ROOM_OPTIONS and not layers[name]
                     or name == PURPOSE_ROOM and upstream_changed), None)
     if program is None:
         return {"id": None, "enabled": False, "program": None, "label": "Tuning complete", "reason_code": "complete"}
     round_ = recent_rounds.get(program) or {}
-    if not layers[program] and round_ and not round_.get("stale"):
-        return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True,
-                "program": program, "round_dir": round_["round_dir"], "reason_code": "round_available"}
-    reason = ("upstream_changed" if program == PURPOSE_ROOM and upstream_changed else
+    # Room is designed on a current set that played bass and room off; another program's round need only be current.
+    copies = round_.get("set_id") if program == PURPOSE_ROOM else not layers[program] and round_ and not round_.get("stale")
+    reason = ("upstream_changed" if program == PURPOSE_ROOM and upstream_changed else "round_available" if copies else
               "layer_not_applied" if profile is not None else "never_measured")
+    if copies:
+        return {"id": "copy_prompt", "label": f"Copy the {program} prompt", "enabled": True, "program": program,
+                "round_dir": round_["round_dir"], **({"set_id": round_["set_id"]} if round_.get("set_id") else {}),
+                "reason_code": reason}
     return {"id": "run_program", "enabled": True, "program": program, "label": _MEASURE_LABELS[program], "reason_code": reason}
 
 

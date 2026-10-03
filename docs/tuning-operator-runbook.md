@@ -10,15 +10,23 @@ Run every tool as root on the speaker: `sudo /opt/jasper/.venv/bin/<tool>`, as t
 
 First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` without a round. Read `applied`,
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
-`last_banked` keeps the latest round per applicable program that kept a take: `round_id`, `round_dir`,
-`banked_at`, `status`, `stale`, and `stale_by`. `stale: true` means a layer at or under its program
-changed since its bank, and a kept take played that layer; `stale_by` names the programs whose layer
-changed ([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)). A preference
-EQ save stales nothing. Only a current round is offered to copy.
+`last_banked` keeps the latest round per applicable program that kept a take, a current one before a newer
+stale one: `round_id`, `set_id`, `round_dir`, `banked_at`, `status`, `stale`, and `stale_by`. Each set of a
+round is judged alone, by the layers it played: a candidate's set by the layers an apply of that candidate
+would record. A set is stale when a layer at or under its program changed since the set played it, and a
+kept take of the set played that layer. `stale: true` means no set is current, and `stale_by` names the
+programs whose layer changed under the set the round is judged by. `set_id` names the current
+set that the program can design on, whose kept takes played the program's own layer cleared (for room and
+bass, a set with bass and room off); pass it as `--set`. A speaker round names none
+([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md),
+[ADR-0437](adr/0437-a-rounds-staleness-is-judged-per-set.md)). A preference EQ save stales nothing.
 Bass is an option inside the in-room program, so `next` never asks for it. With every other applicable
-layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless room's latest round went
-stale through the speaker or rear layer: then `next` is room with `upstream_changed`
-([ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)).
+layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless the speaker or rear layer
+changed since room's latest round was banked: then `next` is room with `upstream_changed`
+([ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)). When room is next
+and its round names a set, design on that set and trial the candidate; the copied room prompt says so, so
+after a cardioid seed's apply no in-room round is measured. Another program's round is offered to copy only
+while it is current.
 Otherwise `next` uses applied layers; `never_measured` means no profile is applied.
 `next_commands` lists commands; add a round path for its evidence and its `catalog` call.
 

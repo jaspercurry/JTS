@@ -18,6 +18,7 @@ from jasper.audio_routes.output_topology import (
     topology_config_fingerprint,
 )
 
+from .applied_identity import layer_fingerprints
 from .baseline_profile import (
     BASELINE_PROFILE_KIND, PROVENANCE_AUTHORED_BY_MODEL, PROVENANCE_MANUAL, PROVENANCE_MEASURED, SCHEMA_VERSION,
 )
@@ -124,6 +125,24 @@ def _candidate_timing(
     return None
 
 
+def candidate_sections(
+    candidate: MeasuredCrossoverCandidate, preset: ActiveSpeakerPreset,
+    *, projected: MeasuredCrossoverCandidate | None = None,
+) -> dict[str, Any]:
+    """The snapshot sections ``candidate`` decides on the declared ``preset``: its crossover and timing
+    (``projected``'s, when an apply resolved them), its trims, and each program's layer."""
+    from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
+
+    shaped = candidate if projected is None else projected
+    return {
+        "preset": effective_preset(candidate_on_declaration(shaped, preset)).to_dict(),
+        "corrections": driver_corrections(shaped),
+        "linearization": linearization_filters_by_role(candidate.linearization),
+        **{field.name: field.type(getattr(candidate, field.name)) for row in PROGRAM_DOCUMENT_ORDER
+           for field in row.candidate_fields if field.snapshot and field.name != "linearization"},
+    }
+
+
 def recomposition_snapshot_for(
     candidate: MeasuredCrossoverCandidate,
     *,
@@ -139,22 +158,22 @@ def recomposition_snapshot_for(
     sections; one a single caller assembles by hand is a graph the runtime
     door cannot prove (ADR-0322's ``rear_calibration``).
     """
-    from .linearization_fit import linearization_filters_by_role  # lazy: applied graph recording imports NumPy
-
-    shaped = candidate if projected is None else projected
     return {
         **((provenance or {}).get("recomposition_snapshot") or {}),
         "schema_version": 1, "domain": "full", "topology_id": declaration.topology.topology_id,
         "topology_fingerprint": topology_fingerprint or topology_config_fingerprint(declaration.topology),
-        "preset": effective_preset(candidate_on_declaration(shaped, declaration.preset)).to_dict(),
-        "corrections": driver_corrections(shaped),
-        "linearization": linearization_filters_by_role(candidate.linearization),
-        **{field.name: field.type(getattr(candidate, field.name)) for row in PROGRAM_DOCUMENT_ORDER
-           for field in row.candidate_fields if field.snapshot and field.name != "linearization"},
+        **candidate_sections(candidate, declaration.preset, projected=projected),
         "driver_protection": protection_projection(design_draft.get("driver_safety_profile")),
         "playback_device": declaration.playback_device,
         "measured_candidate_fingerprint": candidate.fingerprint,
     }
+
+
+def candidate_layer_fingerprints(candidate: MeasuredCrossoverCandidate, snapshot: Mapping[str, Any]) -> dict[str, str]:
+    """The layer fingerprints an apply of ``candidate`` would record over the applied ``snapshot``: the
+    candidate's sections on the snapshot's routing, device and driver protection (ADR-0437)."""
+    preset = ActiveSpeakerPreset.from_mapping(snapshot["preset"])
+    return layer_fingerprints({"recomposition_snapshot": {**snapshot, **candidate_sections(candidate, preset)}})
 
 
 def prepare_applied_baseline_profile(

@@ -9,20 +9,26 @@ from datetime import datetime, timezone
 import pytest
 
 from jasper.active_speaker import bundles
-from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity
+from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity, layer_fingerprints
+from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.commissioning_coordinator import next_program_action
+from jasper.active_speaker.crossover_v2.prescription_document import PrescriptionEvidence, preview_prescription_document
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import parse_utc_iso
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_crossover_v2_room_prescription import MEDIAN_SHA256, _document as room_document, _room_median
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, packet_purposes, take_artifact_name
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_purpose
+from jasper.active_speaker.measurement_programs import REGIME_SUMMED, RUNNABLE_PROGRAMS, cleared_layers, run_purpose
 
 
-def _bank_packet(directory, identity, program, **fields):
+def _bank_packet(directory, identity, program, *, sets=({"takes": [{"selected": True}]},), **fields):
+    """A banked packet whose sets played the applied ``identity``'s layers, unless a set names its own."""
     (directory / "bundle" / directory.name).mkdir(parents=True)
     (directory / "packet.json").write_text(json.dumps({
-        "applied": identity, "preset": program, "result": "partial", "sets": [{"takes": [{"selected": True}]}],
-        **fields,
+        "applied": identity, "preset": program, "result": "partial",
+        "sets": [{"set_id": f"set-{index}", "layer_fingerprints": identity.get("layer_fingerprints") or {}, **group}
+                 for index, group in enumerate(sets)], **fields,
     }))
 
 
@@ -59,8 +65,8 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     wanted = RUNNABLE_PROGRAMS if wanted is None else wanted
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
-                            "started_at": (root / f"{index:02}").stat().st_mtime,
-                            "round_id": f"{index:02}", "status": "partial", "stale": False, "stale_by": [],
+                            "started_at": (root / f"{index:02}").stat().st_mtime, "round_id": f"{index:02}",
+                            "set_id": None, "status": "partial", "stale": False, "stale_by": [], "base_stale_by": [],
                             "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
@@ -107,6 +113,70 @@ def test_a_round_goes_stale_only_when_a_layer_under_it_changes(tmp_path, monkeyp
     assert (found["stale"], found["stale_by"]) == (bool(stale_by), stale_by)
 
 
+def _tune(*layers, rear="S1"):
+    """An applied tune that plays ``layers``, its rear stage the seed ``rear``."""
+    profile = _applied_anchor(layers=layers)
+    profile["recomposition_snapshot"]["rear_calibration"] = {"seed": rear} if "rear" in layers else {}
+    return profile
+
+
+def _trial(name, base, candidate, *, preset="rear/seat", kind="seat"):
+    """A trial's two sets and the tunes they played: its base and its candidate, a cardioid trial's seed; its
+    takes stand at seats unless ``kind`` says otherwise."""
+    return name, preset, (("base", base), ("candidate", candidate)), kind
+
+
+@pytest.mark.parametrize("trials,applied,named,action", [
+    ([_trial("trial", _tune("speaker"), _tune("speaker", "rear"))], _tune("speaker"),
+     ("trial", "base"), ("copy_prompt", "rear", "trial", None, "round_available")),
+    ([_trial("trial", _tune("speaker"), _tune("speaker", "rear"))], _tune("speaker", "rear"),
+     ("trial", "candidate"), ("copy_prompt", "room", "trial", "candidate", "round_available")),
+    ([_trial("trial", _tune("speaker", "rear", "room"), _tune("speaker", "rear", "room", rear="S2"))],
+     _tune("speaker", "rear", "room", rear="S2"),
+     ("trial", "candidate"), ("copy_prompt", "room", "trial", "candidate", "upstream_changed")),
+    ([_trial("trial", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat")],
+     _tune(*RUNNABLE_PROGRAMS), ("trial", "base"), (None, None, None, None, "complete")),
+    ([_trial("older", _tune("speaker"), _tune("speaker", "rear")),
+      _trial("newer", _tune("speaker"), _tune("speaker", "rear", rear="S2"))], _tune("speaker", "rear"),
+     ("older", "candidate"), ("copy_prompt", "room", "older", "candidate", "round_available")),
+    ([_trial("seats", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat"),
+      _trial("arm-smoke", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat", kind="bearing")],
+     _tune("speaker", "rear"), ("seats", "base"), ("copy_prompt", "room", "seats", "base", "round_available")),
+], ids=["cardioid-nothing-applied-since", "cardioid-seed-applied", "cardioid-seed-applied-over-a-room-layer",
+        "room-candidate-applied", "an-older-current-trial", "a-newer-round-off-the-seats"])
+def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeypatch, trials, applied, named, action):
+    """A seat trial plays the applied tune and a candidate. Until an apply its base set is current; once the
+    candidate is applied, its set is current too, and a current round comes before a newer stale one. The
+    pointer names a current set whose takes played bass and room off, so a room document previews on it, and
+    copies the room prompt on it, with ``upstream_changed`` when a layer under room changed since the stack the
+    round was banked on (ADR-0437)."""
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    banked = {}
+    for age, (name, preset, sets, kind) in enumerate(trials):
+        banked[name] = [{"set_id": set_id, "base": set_id == "base", "layer_fingerprints": layer_fingerprints(tune),
+                         "takes": [{"selected": True, "pose": {"kind": kind}, "cleared_layers": list(cleared_layers(
+                             run_purpose(preset), base=set_id == "base", regime=REGIME_SUMMED))}] * 3}
+                        for set_id, tune in sets]
+        _bank_packet(tmp_path / "campaigns" / name, applied_identity(sets[0][1]), preset, room=[{}], bass=[{}],
+                     sets=banked[name], finalized_at=1.0 + age)
+
+    rounds = latest_banked_rounds(applied_identity(applied), include_stale=True)
+    found = next_program_action(applied, rounds, programs=RUNNABLE_PROGRAMS)
+    room = rounds["room"]
+    base = BankedCandidate(_candidate(), "", "", Path("candidate.json"))
+    preview = preview_prescription_document(
+        {"kind": "jts_prescription", "schema": 1, "base": base.fingerprint, "rationale": "", "sections": {"room": room_document()}},
+        round_dir=None, base=base, evidence=PrescriptionEvidence(
+            {"room_median": {**_room_median(), "set_id": room["set_id"]}, "bass_evidence": {},
+             "manifest": {"incumbent": {"room": "applied", "bass": "applied"}, "sets": banked[room["round_id"]]}},
+            room_median_sha256=MEDIAN_SHA256, round_id=room["round_id"]))
+
+    assert (room["round_id"], room["set_id"], room["stale"]) == (*named, False)
+    assert (found["id"], found["program"], found.get("round_dir") and Path(found["round_dir"]).name,
+            found.get("set_id"), found["reason_code"]) == action
+    assert preview["section"] == "room"
+
+
 @pytest.mark.parametrize("timestamp_source", ["provenance", "finalized_at", "started_at", "session"])
 def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, monkeypatch, timestamp_source):
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
@@ -131,12 +201,6 @@ def test_rewriting_old_packet_preserves_banked_order_and_next_action(tmp_path, m
     assert before["speaker"]["round_id"] == "speaker"
     assert before["room"]["banked_at"] == before["room"]["started_at"] == base + 5
     assert (action["program"], action["reason_code"]) == (None, "complete")
-
-    stale = tmp_path / "campaigns" / "speaker-stale"
-    _bank_packet(stale, {**identity, "layer_fingerprints": {BASE_LAYER: "previous"}}, "speaker", finalized_at=base + 6)
-    history = latest_banked_rounds(identity, include_stale=True)
-    assert (history["speaker"]["round_id"], history["speaker"]["stale"]) == ("speaker-stale", True)
-    assert history["room"]["stale"] is False
 
     old = tmp_path / "campaigns" / "speaker-old"
     packet = old / "packet.json"

@@ -46,11 +46,22 @@ def catalog_command(program: str) -> str:
     return f"sudo {_BIN}/jasper-round-views catalog --program {program}"
 
 
-def pointer_commands(program_id: str, round_dir: str | None = None) -> tuple[str, str, str]:
+def pointer_commands(program_id: str, round_dir: str | None = None, set_id: str | None = None) -> tuple[str, str, str]:
     """Where tuning stands, what the agent can ask, and what a document may write, its bounds
-    evaluated on ``round_dir`` when there is one (#5928 TB6)."""
-    on_round = f" --round {shlex.quote(round_dir)}" if round_dir else ""
+    evaluated on ``round_dir``, and its set ``set_id``, when there is one (#5928 TB6)."""
+    on_round = (f" --round {shlex.quote(round_dir)}" if round_dir else "") + (f" --set {shlex.quote(set_id)}" if set_id else "")
     return (f"{_PRESCRIBER} status", catalog_command(program_id), f"{_PRESCRIBER} contract{on_round} --section {program_id}")
+
+
+def _design_lines(round_dir: str, set_id: str) -> tuple[str, ...]:
+    """The room prompt's next step when the next-program pointer names a round and a set: design on that set,
+    which measured the tune that plays with bass and room off, then trial the candidate (ADR-0437)."""
+    on = f"--round {shlex.quote(round_dir)} --set {shlex.quote(set_id)}"
+    return (f"Design on round {round_dir}, set {set_id}: it measured the tune that plays, with bass and room off,"
+            " so measure no new room round.",
+            f"Preview: {_PRESCRIBER} judge --preview <document.json> {on}",
+            f"Bank: {_PRESCRIBER} compose <document.json> {on}",
+            f"Trial: sudo {_BIN}/jasper-round trial <fingerprint>")
 
 
 def _declared_components(design_draft: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -98,6 +109,7 @@ def build_tuning_handoff_binding(
     applied = applied if isinstance(applied, Mapping) else {}
     has_applied = applied.get("exists") is True
     rounds = recent_round_sessions(limit=1)
+    action = commissioning_view.get("next_action") or {}
     return {
         "speaker_name": identity.name,
         "hostname": identity.hostname,
@@ -111,6 +123,9 @@ def build_tuning_handoff_binding(
         "applied_record": applied.get("record") if has_applied else None,
         "applied_at": applied.get("applied_at") if has_applied else None,
         "latest_round_dir": str(banked_round_of(rounds[0]) or rounds[0]) if rounds else None,
+        # The round and set room designs on, when the next-program pointer names them (ADR-0437).
+        "room_round": ({key: action[key] for key in ("round_dir", "set_id")}
+                       if action.get("program") == PURPOSE_ROOM and action.get("set_id") else None),
     }
 
 
@@ -137,7 +152,9 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
     latest_round = binding.get("latest_round_dir")
     components = binding.get("components") or ()
     presets = binding.get("one_driver_presets") or ()
-    status, catalog, contract = pointer_commands(program_id, latest_round)
+    design = binding.get("room_round") if program_id == PURPOSE_ROOM else None
+    status, catalog, contract = pointer_commands(
+        program_id, *((design["round_dir"], design["set_id"]) if design else (latest_round,)))
     return "\n".join((
         "Read these documents in this order:",
         documents,
@@ -157,11 +174,12 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         "",
         f"Run the tuning programs in order: {' → '.join(name for name in RUNNABLE_PROGRAMS if name not in IN_ROOM_OPTIONS)}"
         " (skip rear if there is no rear driver).",
-        "Re-run room after any upstream change.",
+        *(() if design else ("Re-run room after any upstream change.",)),
         f"Program: {entry['title']}",
         entry["description"],
         *((PROGRAM_NOTES[program_id],) if program_id in PROGRAM_NOTES else ()),
-        f"Run: sudo {_BIN}/jasper-round run --program {first.preset} --layout {first.layout}",
+        *(_design_lines(design["round_dir"], design["set_id"]) if design else (
+            f"Run: sudo {_BIN}/jasper-round run --program {first.preset} --layout {first.layout}",)),
         "",
         f"Use existing SSH access to {hostname}; ask for a login only if access is missing.",
         f"Where tuning stands: {status}",

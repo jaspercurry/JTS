@@ -15,10 +15,12 @@ from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE, Evidenc
 from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action
 
-from .applied_identity import applied_identity
+from .applied_identity import applied_identity, layer_fingerprints
 from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIMING_NEEDS_MEASUREMENT
 from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
+from .baseline_record import candidate_layer_fingerprints
+from .candidate_bank import CandidateBankRefusal, find_banked_candidate
 from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fingerprinted
 from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.position_cycle import OWN_WINDOW, take_curve
@@ -122,6 +124,19 @@ def _packet_takes(group: Mapping[str, Any]) -> list[dict[str, Any]]:
             for take in group["takes"] for verdict in [take.get("verdict") or {}]]
 
 
+def _set_layers(group: Mapping[str, Any], profile: Mapping[str, Any], root: Path) -> dict[str, Any]:
+    """A view set's ``layer_fingerprints``: the applied tune's for the run's base, else those an apply of
+    its candidate would record. A candidate set the bank cannot read against an applied tune names none
+    (ADR-0437)."""
+    if group.get("base"):
+        return {"layer_fingerprints": layer_fingerprints(profile)}
+    try:
+        candidate = find_banked_candidate(group["capture_basis"]["candidate_id"], root=root).candidate
+        return {"layer_fingerprints": candidate_layer_fingerprints(candidate, profile["recomposition_snapshot"])}
+    except (CandidateBankRefusal, *ROUND_INPUT_ERRORS):
+        return {}
+
+
 def write_round_packet(target: Path, manifest_path: str | None, views: list[dict[str, Any]]) -> dict[str, Any]:
     inputs = round_inputs(target)
     # A record that cannot be read is disclosed, never the reason a round is not banked.
@@ -203,7 +218,8 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),
               "applied": {**(applied_identity(profile) or {}), "layers": applied_layer_names(profile)},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
-                        "takes": _packet_takes(g)} for g in manifest.get("sets", ())], "series": series,
+                        "takes": _packet_takes(g), **(_set_layers(g, profile, target.parent) if g in sets else {})}
+                       for g in manifest.get("sets", ())], "series": series,
               # A fit is gated speaker evidence; a rear take is measured ungated
               # below the gate's trusted floor and proposes no driver filters.
               "fits": [] if purpose == PURPOSE_REAR else _fits(inputs, manifest, sources, clouds, refused),
