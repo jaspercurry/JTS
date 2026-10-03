@@ -29,7 +29,7 @@ from jasper.audio_measurement.rear_evidence import confident_arrival_gap_s, grad
 from jasper.cli import crossover_prescriber
 from jasper.cli._refusal import EXIT_UNREADABLE
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
-from tests.active_speaker_fixtures import _active_topology, rear_seed_document
+from tests.active_speaker_fixtures import _active_topology, full_band_rear_document, rear_seed_document
 from tests.test_prescription_document import document
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_round_views_rear import (
@@ -49,14 +49,6 @@ def cardioid_box(monkeypatch):
     monkeypatch.setattr(crossover_prescriber, "load_output_topology", lambda: topology)
     saved = BankedCandidate(_candidate(preset=preset, rear_calibration=_rear_document()), "", "", Path())
     monkeypatch.setattr(crossover_prescriber, "saved_base", lambda: (saved, None))
-
-
-def _full_band(bass: dict, cancellation: dict) -> dict:
-    """A rear stage whose branches carry no filters, the shape the compare figures below were pinned on."""
-    document = rear_seed_document(common_delay_ms=0.0)
-    for name, fields in (("bass", bass), ("cancellation", cancellation)):
-        document["rear"][name].update({"filters": [], "delay_ms": 0.0, **fields})
-    return document
 
 
 def _preview(tmp_path, capsys, sections, root=None, extra=()):
@@ -277,7 +269,7 @@ def test_the_preview_compiles_the_stage_at_the_declared_cabinet(tmp_path, capsys
 def test_the_preview_answers_the_program_charge_judge_answers(tmp_path, capsys, rear_muted):
     """The one charge (ADR-0385): the document composed on its base, as ``judge`` composes it."""
     root = pair_round(tmp_path)
-    document = _full_band({}, {"gain_db": -0.84, "delay_ms": 1.14})
+    document = full_band_rear_document({}, {"gain_db": -0.84, "inverted": True, "delay_ms": 1.14})
     preview = _preview(tmp_path, capsys, {"rear_calibration": {**document, "rear_muted": rear_muted}}, root)
     assert crossover_prescriber.main(["judge", str(tmp_path / "document.json"), "--round", str(root)]) == 0
     assert preview["program_charge_db"] == json.loads(capsys.readouterr().out)["program_charge_db"]
@@ -396,7 +388,7 @@ def compare_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv(state_paths.AUDITION_STATE_ENV, str(runtime / "audition.json"))
     at = "2026-09-20T12:00:00Z"
     (root / "provenance.json").write_text(json.dumps({"banked_at_utc": at}))
-    section = _full_band({"inverted": True}, {"muted": True})
+    section = full_band_rear_document({"inverted": True}, {"muted": True})
     applied = {"candidate_fingerprint": "later-tune", "applied_at": "2026-09-21T12:00:00Z",
                "recomposition_snapshot": {"rear_calibration": section}}
     load = baseline_profile.load_applied_baseline_profile_state
@@ -455,7 +447,8 @@ def test_compare_trim_is_the_previewed_change_alone(compare_evidence, seed, delt
     trim follows the previewed change alone, also for a stage that peaks over unity."""
     root, applied = compare_evidence
     if seed:
-        applied["recomposition_snapshot"]["rear_calibration"] = _full_band({}, {"gain_db": -0.84, "delay_ms": 1.14})
+        applied["recomposition_snapshot"]["rear_calibration"] = full_band_rear_document(
+            {}, {"gain_db": -0.84, "inverted": True, "delay_ms": 1.14})
     inputs = round_inputs(root)
     preview = rear_preview.preview_rear_section(
         applied["recomposition_snapshot"]["rear_calibration"], inputs=inputs, manifest=read_run_manifest(inputs))

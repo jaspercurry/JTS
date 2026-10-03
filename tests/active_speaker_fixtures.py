@@ -43,6 +43,15 @@ def rear_seed_document(**overrides) -> dict:
     return {**rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, packet={}), **overrides}
 
 
+def full_band_rear_document(bass: dict, cancellation: dict) -> dict:
+    """A rear stage whose branches carry no filter, so their sum can peak over unity: each branch at
+    0 dB, in phase and undelayed, with ``bass`` and ``cancellation`` set on top."""
+    document = rear_seed_document(common_delay_ms=0.0)
+    for name, fields in (("bass", bass), ("cancellation", cancellation)):
+        document["rear"][name].update({"filters": [], "delay_ms": 0.0, "inverted": False, **fields})
+    return document
+
+
 def _topology(groups: list[dict], routing: dict | None = None, *,
               device_label: str = "HiFiBerry DAC8x") -> OutputTopology:
     return OutputTopology.from_mapping({

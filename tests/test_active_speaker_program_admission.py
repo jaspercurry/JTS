@@ -87,7 +87,9 @@ from jasper.audio_measurement.program import (
     write_program_wav,
 )
 from tests._log_events import event_field_maps, event_fields, event_records
-from tests.active_speaker_fixtures import mono_output_topology, isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import (
+    full_band_rear_document, mono_output_topology, isolated_candidate_bank as isolated_candidate_bank,
+)
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
 from tests.test_crossover_v2_session_graph import FakeCam, _entry, _graph as _session_graph
@@ -1825,8 +1827,8 @@ async def test_take_composer_uses_installed_scope_gain_and_all_programs_remain_a
         _rear_pair("mono")[0] if rear else _preset(), topology,
         {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
         protection_sections_by_role=confirmed_protection_sections(safety, targets))
-    candidate = replace(_trial_candidate(profile, gain=-8),
-                        rear_calibration=_rear_document() if rear else {})
+    stage = full_band_rear_document({}, {"gain_db": -0.84, "inverted": True, "delay_ms": 1.14})
+    candidate = replace(_trial_candidate(profile, gain=-8), rear_calibration=stage if rear else {})
     graphs = {"candidate": compile_tuning_graph(profile, candidate),
               "drivers": emit_measurement_graph(profile),
               "timing": compile_tuning_graph(profile, candidate, scope="timing")}

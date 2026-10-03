@@ -44,8 +44,8 @@ from jasper.active_speaker.runtime_contract import (
 
 from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import _dynamic_bass_descriptor
-from tests.active_speaker_fixtures import _active_topology
-from tests.test_rear_output_foundation import _cardioid_baseline, _classify as _classify_rear, _rear_document
+from tests.active_speaker_fixtures import _active_topology, full_band_rear_document
+from tests.test_rear_output_foundation import _cardioid_baseline, _classify as _classify_rear
 from jasper.bass_extension.dynamic_graph import PREFIX, validated_base_graph
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.branch_chain import branch_headroom_db
@@ -803,11 +803,11 @@ def test_a_cardioid_graph_proves_its_rear_stage_by_number(lift_db, refused):
     """The whole graph's peak, rear stage included, is charged with one 1.0 dB
     margin (ADR-0385), so a headroom gain lifted past the margin refuses with no
     boost anywhere else."""
-    _, topology, text = _cardioid_baseline()
+    document = full_band_rear_document({}, {"gain_db": -0.84, "inverted": True, "delay_ms": 1.14})
+    _, topology, text = _cardioid_baseline(document)
     headroom = yaml.safe_load(text)["filters"]["active_baseline_headroom"]["parameters"]["gain"]
     graph = _classify_rear(
-        topology, _edited(text, ("active_baseline_headroom", "gain", headroom + lift_db)),
-        document=_rear_document(),
+        topology, _edited(text, ("active_baseline_headroom", "gain", headroom + lift_db)), document=document,
     )
     assert [issue["code"] for issue in graph.issues] == (
         [LINEARIZATION_HEADROOM_UNPROVEN_CODE] if refused else []
