@@ -59,7 +59,8 @@ def prepare_plan_captures(
             spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(stop.pose.azimuth_deg,),
                                vertical_deg=stop.pose.elevation_deg, stimulus=stop.stimulus,
                                pose_prompts=(resolved[offset // request.repeats].prompt.text,),
-                               branch_target_ids=(stop.pose.driver,) if stop.pose.driver else ())
+                               branch_target_ids=(stop.pose.driver,) if stop.pose.driver else (),
+                               sweeps_per_take=stop.sweeps_per_take)
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
         )), offset % request.repeats + 1))

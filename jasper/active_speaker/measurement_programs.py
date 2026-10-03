@@ -16,7 +16,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
-from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S, NEAR_FIELD_SILENCE_S
+from jasper.audio_measurement.excitation import DECONV_PRE_GUARD_S, NEAR_FIELD_SILENCE_S, SWEEPS_PER_TAKE
 from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M, at_driver_near_field
 from jasper.audio_routes.output_topology import OutputTopology, topology_is_subless_passive_mains
 from jasper.platform.speaker_layout import cardioid_cabinet_channels, measurement_target_id, measurement_target_parts
@@ -293,6 +293,14 @@ def validated_stimulus(stimulus: Any) -> Mapping[str, Any]:
     return stimulus
 
 
+def validated_sweeps_per_take(sweeps: Any) -> int:
+    """How many sweeps each driver plays in one take, one check for a preset row
+    and a pose: a positive whole number (ADR-0434). Raises ``ValueError``."""
+    if isinstance(sweeps, bool) or not isinstance(sweeps, int) or sweeps < 1:
+        raise ValueError(f"sweeps_per_take is a positive whole number, got {sweeps!r}")
+    return sweeps
+
+
 def validated_branch_pair(branch_pair: str, regime: str) -> str:
     """The branch pair a take names, judged against the regime that plays it."""
     if branch_pair not in BRANCH_PAIRS:
@@ -359,12 +367,17 @@ class Pose:
     #: (``woofer``, ``woofer:rear``); empty when the pose plays the program's own
     #: scope (:func:`validated_pose_driver`).
     driver: str = ""
+    #: How many sweeps each driver plays in one take here; ``None`` plays the
+    #: preset's (:attr:`Preset.sweeps_per_take`, ADR-0434).
+    sweeps_per_take: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "azimuth_deg", validated_angle(self.azimuth_deg))
         object.__setattr__(self, "elevation_deg", validated_angle(self.elevation_deg))
         if isinstance(self.repeats, bool) or not isinstance(self.repeats, int) or self.repeats <= 0:
             raise ValueError(f"pose repeats must be a positive integer, got {self.repeats!r}")
+        if self.sweeps_per_take is not None:
+            validated_sweeps_per_take(self.sweeps_per_take)
         if not all(isinstance(text, str) for text in (self.headline, self.detail, self.driver)):
             raise ValueError("a pose's headline, detail and driver are text")
         if self.kind not in POSE_KINDS:
@@ -467,6 +480,10 @@ class Preset:
     use_when: str = ""
     #: Whether a run takes the ADR-0319 timing take, MEASURE's in-session prior.
     timing_take: bool = False
+    #: How many sweeps each driver plays in one take of a pose that states none:
+    #: a MEASURE take and a driver's pose read it; a summed or branch take plays
+    #: its own shape (ADR-0434).
+    sweeps_per_take: int = SWEEPS_PER_TAKE
 
     def __post_init__(self) -> None:
         if not self.poses:
@@ -475,6 +492,7 @@ class Preset:
         validated_branch_pair(self.branch_pair, self.regime)
         if not isinstance(self.timing_take, bool):
             raise ValueError("timing_take must be a boolean")
+        validated_sweeps_per_take(self.sweeps_per_take)
 
     @property
     def purpose(self) -> str:
@@ -610,7 +628,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
         unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "stimulus",
-                              "branch_pair", "description", "use_when", "timing_take"}
+                              "branch_pair", "description", "use_when", "timing_take", "sweeps_per_take"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
         try:
@@ -646,6 +664,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
             description=_text(row.get("description"), f"preset {preset_id} description"),
             use_when=_text(row.get("use_when"), f"preset {preset_id} use_when"),
             timing_take=row.get("timing_take", False),
+            sweeps_per_take=row.get("sweeps_per_take", SWEEPS_PER_TAKE),
         )
     return MappingProxyType(presets), MappingProxyType(layouts)
 

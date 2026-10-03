@@ -32,6 +32,7 @@ from jasper.active_speaker.program_admission import (
 )
 from jasper.active_speaker.test_signal_plan import driver_sweep_duration_s
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.excitation import SWEEPS_PER_TAKE
 from jasper.audio_measurement.program import (
     DEFAULT_TWEETER_SWEEP_S,
     DEFAULT_WOOFER_SWEEP_S,
@@ -421,7 +422,7 @@ def test_the_production_composer_admits_the_shape_it_actually_plays():
             session_volume_db=sv,
             fc_hz=1600.0,
             sweep_duration_limits_s=sweep_duration_limits_s,
-        ).measure_program({role: caps[role] for role in caps}, courtesy_prelude=False)
+        ).measure_program({role: caps[role] for role in caps}, courtesy_prelude=False, repeat_count=SWEEPS_PER_TAKE)
 
     refused = _admit(topology, profile, targets, _measure({}), sv)
     assert not refused.allowed

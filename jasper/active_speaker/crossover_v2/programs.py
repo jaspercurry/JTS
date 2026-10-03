@@ -152,8 +152,8 @@ def _solo_sweeps(spec: Any, role: str) -> dict[str, Any]:
 def compose_target_program(excitation: SessionExcitation, spec: Any,
                            stimulus_dbfs: float | None = None) -> ExcitationProgram:
     """A one-driver take's program: the one target its spec names, alone, its
-    pilots and bit-identical sweeps on its own channel at its own band, cap and
-    duration limit.
+    pilots and its ``sweeps_per_take`` bit-identical sweeps on its own channel at
+    its own band, cap and duration limit.
 
     The program is as wide as the graph that plays it
     (:func:`~jasper.active_speaker.camilla_yaml.program_channel_count`), so every
@@ -164,7 +164,7 @@ def compose_target_program(excitation: SessionExcitation, spec: Any,
     band, ceiling, channels = _solo_take(excitation, spec)
     gain = ceiling if stimulus_dbfs is None else min(ceiling, stimulus_dbfs)
     return build_measure_program(
-        {band.role: gain}, (band,), **_solo_sweeps(spec, band.role),
+        {band.role: gain}, (band,), **_solo_sweeps(spec, band.role), repeat_count=spec.sweeps_per_take,
         sweep_duration_limits_s={band.role: excitation.sweep_duration_limits_s[band.role]},
         downstream_gain_db=excitation.session_volume_db,
         leading_pilot_gains_db=pilot_gains(gain), leading_pilot_role=band.role,
@@ -305,10 +305,11 @@ class SessionExcitation:
         )
 
     def measure_program(
-        self, gain_plan_db: Mapping[str, float], *, courtesy_prelude: bool, extra_backoff_db: float = 0.0,
+        self, gain_plan_db: Mapping[str, float], *, courtesy_prelude: bool, repeat_count: int,
+        extra_backoff_db: float = 0.0,
     ) -> ExcitationProgram:
-        """MEASURE's per-driver sweeps at the solved gains, clamped PER ROLE
-        and fitted to each role's duration limit.
+        """MEASURE's per-driver sweeps, ``repeat_count`` of each, at the solved
+        gains, clamped PER ROLE and fitted to each role's duration limit.
 
         A sweep realizes at the nearest phase-closing length (#2921), so a
         nominal 4 s woofer realizes 4.00577 s and admission refused the whole
@@ -325,7 +326,7 @@ class SessionExcitation:
                 cap,
             )
         return build_measure_program(
-            gains, self.roles,
+            gains, self.roles, repeat_count=repeat_count,
             sweep_duration_limits_s=self.sweep_duration_limits_s,
             downstream_gain_db=self.session_volume_db,
             leading_pilot_gains_db=self.pilot_gains(gains[self.leading_pilot_role]),
@@ -385,7 +386,8 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
         if stimulus_dbfs is not None and stimulus_dbfs != max(gains.values()):
             delta = stimulus_dbfs - max(gains.values())
             gains = {role: gain + delta for role, gain in gains.items()}
-        return excitation.measure_program(gains, courtesy_prelude=spec.courtesy_prelude)
+        return excitation.measure_program(gains, courtesy_prelude=spec.courtesy_prelude,
+                                          repeat_count=spec.sweeps_per_take)
     program = compose_summed_program(excitation, spec, stimulus_dbfs)
     if spec.graph_scope == "candidate_branches":
         program = build_branch_program(program, branch_channels_for(spec), _alone_gains_db(excitation, spec))
