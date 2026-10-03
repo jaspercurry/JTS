@@ -39,7 +39,7 @@
   - The floor is only as honest as the gate (finding F11). jts3's speaker takes found no
     reflection, so the window stayed at the 7 ms search ceiling and the takes trust 357 Hz and up.
     The wall bounce arrives about 3 ms after the direct sound, inside that window. Step C3's
-    declared geometry ends the search at the declared first bounce, which makes the floor honest.
+    declared geometry ends the gate's search at the declared first bounce, which improves the floor.
   - `round_gate` stays a ceiling source until no applied tune carries it (ADR-0400).
   - Rejected:
     - The floor of the one take a prescription was judged on (#6110's other option). A document
