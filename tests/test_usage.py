@@ -1418,7 +1418,8 @@ async def test_starting_another_writer_preserves_live_billable_interval(tmp_path
         try:
             with sqlite3.connect(db) as conn:
                 assert conn.execute("SELECT closed_at FROM connection_intervals").fetchone() == (None,)
-            assert second.spend_last_24h_usd() >= 0.05
+            # start() can return before the first snapshot, e.g. on a busy lock (disclosed as write_degraded).
+            await _wait_usage(lambda: second.spend_last_24h_usd() >= 0.05)
             meter.mark_ended()
             total = first.spend_last_24h_usd()
             await _wait_usage(lambda: abs(second.spend_last_24h_usd() - total) < 1e-9)
