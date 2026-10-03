@@ -336,11 +336,10 @@ def _plannable(monkeypatch, next_program):
 
 
 @pytest.mark.parametrize("program,default_id", [
-    ("rear", "rear/pair@speaker_mark"), ("speaker", "speaker/mark"), ("bass", "room/seat"), ("room", "room/seat")])
+    ("rear", "rear/pair"), ("speaker", "speaker/mark"), ("bass", "room/seat"), ("room", "room/seat")])
 def test_the_page_offers_the_next_programs_first_plan(monkeypatch, program, default_id):
-    """The rear tune starts from the pair model banked at the mark (the playbook's Seat loop), not from the
-    rear program's default preset, and bass from the in-room round (ADR-0429); the other programs start at
-    theirs."""
+    """Each program starts at its default preset, the rear tune at its one pair take at the mark
+    (ADR-0436), and bass from the in-room round (ADR-0429)."""
     _plannable(monkeypatch, program)
     choices = round_choices({}, "")
     assert [choice["id"] for choice in choices if choice["default"]] == [default_id]

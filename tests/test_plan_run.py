@@ -1684,7 +1684,7 @@ _JTS3_BASS = {"linkwitz_transform": {"source_hz": 112.8, "source_q": 1.23, "targ
 
 
 @pytest.mark.parametrize(("program", "layout", "lands_db"), [
-    ("speaker", "speaker_mark", 79.0), ("room", "seat_express", 73.0), ("rear", "rear_express", 79.0),
+    ("speaker", "speaker_mark", 79.0), ("room", "seat_express", 73.0), ("rear/express", "rear_express", 79.0),
     ("room", "room_quick", 79.0)],
     ids=["over a timing take", "at the seats", "at the mark's spots", "on the arm"])
 @pytest.mark.parametrize(("box", "over_db"), [
@@ -1848,7 +1848,7 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
     ("speaker", "baseline_express", True, 6), ("room", "seat_express", False, 3),
-    ("rear", "rear_express", False, 3),
+    ("rear/express", "rear_express", False, 3),
 ])
 def test_program_timing_take_and_placement_count(purpose, layout, entry, poses):
     request = ac.request_for_preset(run_preset(purpose, layout))

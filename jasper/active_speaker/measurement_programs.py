@@ -90,8 +90,8 @@ class TuningProgram:
     run_headline: str | None
     #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
     trial: tuple[tuple[str, str], ...]
-    #: The ``(preset, layout)`` the measure page offers first, where the program's first measurement is not
-    #: its default preset's (the playbook's loop for it); none: the default preset at its default layout.
+    #: The ``(preset, layout)`` the measure page offers first for a program with no preset of its own
+    #: (ADR-0429); none: its default preset at its default layout.
     start: tuple[str, str] | None = None
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
@@ -129,10 +129,11 @@ _PROGRAM_SECTIONS = (
     TuningProgram(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
         (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
-        "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
+        "Cardioid tuning", "Set the rear woofer to cut the wall bounce at your listening position.",
         "Measure the rear woofer", "rear",
-        run_headline="JTS is measuring how the rear woofer shapes the sound in front of and behind the speaker. Follow the step below.",
-        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")), start=("rear/pair", "speaker_mark"),
+        run_headline=("JTS is measuring the rear woofer, to cut the wall bounce at your listening position. "
+                      "Follow the step below."),
+        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
         clears=("room_correction", "bass_extension"), branches_clear_own=True,
     ),

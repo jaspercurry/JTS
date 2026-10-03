@@ -722,7 +722,7 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
             for t in active_driver_targets(topology))))
     names = ("base", *bank)
     assert len(names) == 4
-    argv = ["run", "--program", "rear", "--layout", "rear_behind", "--candidates", ",".join(names), "--dry-run"]
+    argv = ["run", "--program", "rear/express", "--layout", "rear_behind", "--candidates", ",".join(names), "--dry-run"]
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
     opener = _opener()
@@ -730,7 +730,7 @@ def test_rear_behind_dry_run_counts_each_candidate_at_both_poses(monkeypatch, ca
     assert code == 0 and body["schema"] == ANSWER_SCHEMAS["jasper-round run --dry-run"] and body["issues"] == []
     assert (body["subject"], body["parameters"]["repeats"]) == ({"candidate_ids": list(names)}, repeats or 1)
     assert not opener.requests
-    poses = run_preset("rear", "rear_behind").poses
+    poses = run_preset("rear/express", "rear_behind").poses
     assert Counter((tuple(row["pose"]), row["candidate_id"]) for row in body["schedule"]) == {
         (pose.place, name): repeats or 1 for pose in poses for name in names}
     assert {row["regime"] for row in body["schedule"]} == {"summed"}

@@ -534,7 +534,7 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
         (mp.preset("tournament/express"), ("fp-a", "fp-b")),
         (mp.run_preset("tournament", "tournament_full"), ("fp-a", "fp-b", "fp-c")),
         (mp.run_preset("speaker", "baseline_express"), ("fp-a", "fp-b")),
-        (mp.run_preset("rear", "rear_behind"), ("base", "fp-a", "muted")),
+        (mp.run_preset("rear/express", "rear_behind"), ("base", "fp-a", "muted")),
     ],
     ids=["no-cycle", "one-pose", "three-poses", "with-repeats", "rear-behind"],
 )
