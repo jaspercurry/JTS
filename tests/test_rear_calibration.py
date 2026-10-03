@@ -205,5 +205,5 @@ def test_a_panel_nearer_the_wall_than_two_thirds_of_the_spacing_has_no_seed():
     """Woofers 0.33 m apart, the front panel 0.2 m from the wall (under 2d/3 = 0.22 m): the
     hand-over high-pass sits above the low-pass, so the pair can cancel no band."""
     assert rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=_geometry(back_m=0.05, depth_m=0.15), views=()) == unavailable(
-        REAR_SEED_BAND_EMPTY, {"handover_hz": 285.8333, "lowpass_hz": 259.8485, "front_wall_m": 0.2,
+        REAR_SEED_BAND_EMPTY, {"handover_hz": 285.8333, "lowpass_hz": 259.8485, "front_panel_to_wall_m": 0.2,
                                "rear_woofer_spacing_m": 0.33})

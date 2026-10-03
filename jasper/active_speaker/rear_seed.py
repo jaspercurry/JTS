@@ -58,7 +58,8 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
     lowpass_hz = round(speed / (4.0 * spacing_m), 4)
     if handover_hz >= lowpass_hz:
         return unavailable(REAR_SEED_BAND_EMPTY, {"handover_hz": handover_hz, "lowpass_hz": lowpass_hz,
-                                                  "front_wall_m": round(wall_m, 4), "rear_woofer_spacing_m": spacing_m})
+                                                  "front_panel_to_wall_m": round(wall_m, 4),
+                                                  "rear_woofer_spacing_m": spacing_m})
     lowpass = combo("ButterworthLowpass", lowpass_hz, LOWPASS_ORDER)
     centre_hz = math.sqrt(handover_hz * lowpass["parameters"]["freq"])
     delay_ms = round(SUPERCARDIOID_RATIO * spacing_m / speed * 1e3 - _group_delay_ms(lowpass, centre_hz), 4)
