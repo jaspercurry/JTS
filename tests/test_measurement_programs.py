@@ -19,7 +19,7 @@ from tests.program_baseline_fixtures import banked_program_baselines  # noqa: F4
 from jasper.active_speaker import baseline_record
 from jasper.active_speaker import measurement_programs as mp, baseline_profile as bp, commissioning_coordinator as cc
 from jasper.active_speaker import measured_crossover_candidate as mc, measurement_emit as me, tuning_handoff as th
-from jasper.active_speaker import angle_capture as ac, rear_calibration
+from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 from jasper.active_speaker.candidate_bank import BankedCandidate
@@ -259,18 +259,6 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
             prompt = prompt.replace(value, blank)
         templates.add(prompt)
     assert len(templates) == 1
-
-
-def test_the_rear_prompt_names_the_axis_that_unmutes_a_fresh_speakers_rear_seed():
-    """The contract's rear seed ships muted (#5928 TB10), so only the rear prompt carries the axis a first
-    rear tune varies, and that axis resolves on a rear document and unmutes it."""
-    axis = f"--vary {th.REAR_FIRST_TUNE_VARY}"
-    assert [program for program in mp.RUNNABLE_PROGRAMS
-            if axis in th.build_tuning_handoff_prompt({}, program)] == [mp.PURPOSE_REAR]
-    seed = rear_calibration.diagnostic_seed(48000)
-    document = {"base": "saved", "sections": {"rear_calibration": seed}}
-    (_, variant), = pd.vary_document(document, [pd.parse_vary_axis(th.REAR_FIRST_TUNE_VARY)])
-    assert (seed["rear_muted"], variant["sections"]["rear_calibration"]["rear_muted"]) == (True, False)
 
 
 def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_preset(monkeypatch):

@@ -81,7 +81,7 @@ from .position_cycle import parse_curve_complex, take_curve
 from .record_index import take_pose_kind
 from .room_selection import SeatTake, analyzed_purpose_takes, purpose_take_records
 from .room_views import room_ceiling
-from .round_captures import doc_pose_key
+from .round_captures import ON_AXIS_KEY_PREFIX, doc_pose_key
 from .round_inputs import ROUND_INPUT_ERRORS, RoundInputs, SetTakes, banked_round_of, comparands, round_inputs
 from .take_impulses import IMPULSES_KEY, TakeImpulsesUnreadable, impulse_for, take_impulses
 
@@ -585,7 +585,7 @@ class PairTake:
 
 
 def front_on_axis(pose_key: str, pose_kind: str) -> bool:
-    return pose_kind == POSE_KIND_BEARING and pose_key.startswith("az+0.00_el+0.00_")
+    return pose_kind == POSE_KIND_BEARING and pose_key.startswith(ON_AXIS_KEY_PREFIX)
 
 
 def pair_diagnostic(record: Mapping[str, Any]) -> tuple[float, dict[str, Any]] | None:

@@ -54,10 +54,12 @@ from jasper.active_speaker.crossover_v2.round_inputs import (
     SetTakes, subject,
 )
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverCandidateError
+from jasper.active_speaker.measurement_programs import PURPOSE_REAR
 from jasper.active_speaker.output_contract import classify_output_contract, rear_cabinet_channels
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE, REASON_UNWRITABLE, EvidenceUnavailable, unavailable
+from jasper.audio_measurement.measurement_geometry import load_declared_geometry
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import sha256_file
 from jasper.audio_routes.output_topology_store import load_output_topology
@@ -295,7 +297,10 @@ def _cmd_contract(args: argparse.Namespace) -> int:
         if args.section != "all" and args.section not in programs:
             return failed(EXIT_REFUSED, "prescription_section_unavailable", args.section)
         # A named section is built alone, so a section it never reads cannot refuse it.
-        contracts = prescription_contracts(programs=programs if args.section == "all" else (args.section,), **sources)
+        built = programs if args.section == "all" else (args.section,)
+        geometry = (load_declared_geometry(inputs.declared_geometry_path)
+                    if inputs and inputs.declared_geometry_path and PURPOSE_REAR in built else None)
+        contracts = prescription_contracts(programs=built, declared_geometry=geometry, **sources)
         document = contracts if args.section == "all" else contracts[args.section]
         payload = contract_json(document)
     except RoundSetRefused as exc:

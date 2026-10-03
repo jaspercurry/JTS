@@ -37,7 +37,6 @@ from jasper.active_speaker.crossover_v2.round_captures import doc_pose_key
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, round_inputs
 from jasper.active_speaker.crossover_v2.take_impulses import write_take_impulses
 from jasper.active_speaker.measurement_programs import POSE_KIND_BEHIND
-from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.round_bank import _bookkeeping, bank_round
 from jasper.active_speaker.bundles import mark_state
 from jasper.active_speaker.round_packet import write_round_packet
@@ -68,7 +67,7 @@ from tests.crossover_v2_banked_round import (
 from tests.run_manifest_fixture import manifest_set, write_manifest
 from tests.room_median_fixture import analyzed_room_documents as analyzed_room_documents
 from tests.test_active_speaker_audition import _applied_profile
-from tests.active_speaker_fixtures import _active_topology
+from tests.active_speaker_fixtures import _active_topology, rear_seed_document
 from tests.test_crossover_v2_round_frequency_view import summed_capture_bundle as summed_capture_bundle
 
 #: The declared cabinet, and the wall bounce it predicts (ADR-0317): a rigid
@@ -107,7 +106,7 @@ def _combo(kind: str, freq_hz: float) -> dict:
 
 
 def _rear_document(*, muted: bool = False, bass_lowpass_hz: float = _BASS_LOWPASS_HZ) -> dict:
-    document = diagnostic_seed(_SAMPLE_RATE_HZ)
+    document = rear_seed_document()
     document["rear_muted"] = muted
     document["rear"]["bass"]["filters"] = [_combo("LinkwitzRileyLowpass", bass_lowpass_hz)]
     document["rear"]["cancellation"]["filters"] = [

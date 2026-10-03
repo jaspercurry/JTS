@@ -34,17 +34,11 @@ NO_APPLIED_BASELINE = "no_applied_baseline"
 _BIN = "/opt/jasper/.venv/bin"
 _PRESCRIBER = f"sudo {_BIN}/jasper-crossover-prescriber"
 
-#: The axis that unmutes a rear seed for a fresh speaker's first rear tune; the contract's seed ships muted (#5928 TB10).
-REAR_FIRST_TUNE_VARY = "rear_calibration.rear_muted=false"
 #: The laptop-side cabinet model can seed these programs (ADR-0353).
 _CABINET_MODEL_NOTE = ("If this machine has the CAD repo with a solved Boundary Lab case for this cabinet, "
                        "scripts/cabinet-model can seed this program; see the runbook's Cabinet model section.")
-#: The line only one program's prompt carries, after its row's words.
-PROGRAM_NOTES = {
-    PURPOSE_REAR: f"A fresh speaker's first rear tune varies rear_muted=false (--vary {REAR_FIRST_TUNE_VARY}), "
-                  f"because its rear seed is muted. {_CABINET_MODEL_NOTE}",
-    PURPOSE_ROOM: _CABINET_MODEL_NOTE,
-}
+#: The line only these programs' prompts carry, after their row's words.
+PROGRAM_NOTES = dict.fromkeys((PURPOSE_REAR, PURPOSE_ROOM), _CABINET_MODEL_NOTE)
 
 
 def catalog_command(program: str) -> str:

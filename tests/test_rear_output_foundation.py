@@ -18,9 +18,7 @@ from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.path_safety import staged_target_signature, topology_target_signature
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SpeakerBaselineProfile
-from jasper.active_speaker.rear_calibration import (
-    diagnostic_seed, rear_stage_mixer_names,
-)
+from jasper.active_speaker.rear_calibration import flat_shelf, rear_stage_mixer_names
 from jasper.active_speaker.output_contract import active_ring_channels_for_topology
 from jasper.active_speaker.safe_playback import playback_target_signature
 from jasper.bass_extension.dynamic_graph import validated_base_graph
@@ -33,7 +31,7 @@ from tests.test_active_speaker_profile import _two_way_preset
 from tests.test_active_speaker_runtime_contract import (
     _classify_staged_active, _dynamic_bass_descriptor, _staged_metadata, classify_camilla_graph,
 )
-from tests.active_speaker_fixtures import _active_topology
+from tests.active_speaker_fixtures import _active_topology, rear_seed_document
 from tests.test_active_speaker_staging import _crossover_preview
 
 
@@ -184,8 +182,8 @@ ACTIVE_PCM = "jts_ring_active_playback"
 
 
 def _rear_document(**overrides) -> dict:
-    """The diagnostic document, audible unless a case asks otherwise."""
-    return {**diagnostic_seed(48000), "rear_muted": False, **overrides}
+    """The computed seed, audible unless a case asks otherwise."""
+    return rear_seed_document(**overrides)
 
 
 def _cardioid_baseline(document: dict | None = None, **kwargs) -> tuple[ActiveSpeakerPreset, OutputTopology, str]:
@@ -252,7 +250,7 @@ def test_rear_calibration_plays_the_rear_behind_the_shared_woofer_chain():
 
 
 def test_the_stage_delays_the_rear_branch_without_a_subsample_allpass():
-    payload = yaml.safe_load(_cardioid_baseline(_rear_document(common_delay_ms=2.0))[2])
+    payload = yaml.safe_load(_cardioid_baseline()[2])
     delays = {
         name for name, spec in payload["filters"].items()
         if spec["type"] == "Delay" and name.startswith("rear_out2_")
@@ -361,7 +359,9 @@ def test_runtime_refuses_a_stage_that_is_not_the_saved_document_recompiled(tampe
     elif tamper == "repointed_channel":
         _retarget(payload, "rear_out2_front_gain", 1)
     elif tamper == "subsample":
-        payload["filters"]["rear_out2_cancellation_delay"]["parameters"]["subsample"] = True
+        delay = next(name for name, spec in payload["filters"].items()
+                     if name.startswith("rear_out2_") and spec["type"] == "Delay")
+        payload["filters"][delay]["parameters"]["subsample"] = True
     elif tamper == "mixer":
         payload["mixers"]["rear_out2_sum"]["mapping"][0]["sources"].append(
             {"channel": 3, "gain": 0.0, "inverted": False}
@@ -488,7 +488,10 @@ def test_a_take_that_names_the_rear_lifts_only_its_mute():
 
 
 def test_the_emitted_baseline_absorbs_the_stages_peak_and_one_margin():
-    audible = yaml.safe_load(_cardioid_baseline()[2])
+    boosted = _rear_document()
+    for branch in ("bass", "cancellation"):
+        boosted["rear"][branch]["filters"][-1] = flat_shelf(3.0)
+    audible = yaml.safe_load(_cardioid_baseline(boosted)[2])
     assert program_peak(audible, charged=True).db == pytest.approx(-1.0, abs=0.001)
     muted = yaml.safe_load(_cardioid_baseline(_rear_document(rear_muted=True))[2])
     assert muted["filters"]["active_baseline_headroom"]["parameters"]["gain"] == 0.0

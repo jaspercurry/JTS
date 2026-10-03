@@ -19,13 +19,13 @@ from jasper.active_speaker.linearization_envelope import DEFAULT_ENVELOPE_GRID_H
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
 from jasper.active_speaker.flat_spec_views import directivity_table, log_pooled_residual
 from jasper.active_speaker.measurement_bass import bass_view
-from jasper.active_speaker.rear_calibration import diagnostic_seed
 from jasper.active_speaker.speaker_fit import _envelope_answer
 from jasper.audio_measurement.band_ladders import BAND_LADDERS, CROSSOVER_SNR_BANDS_HZ, SNR_BANDS_HZ
 from jasper.platform.json_fields import sha256_file
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.snr_policy import band_snr_verdicts, framed_ambient_band_report
 from jasper.cli.round_views import main
+from tests.active_speaker_fixtures import rear_seed_document
 from tests.room_median_fixture import room_median_document
 from tests.test_active_speaker_crossover_v2_round_views import gate_sweep_round as gate_sweep_round
 from tests.test_bass_level_evidence import pair as pair
@@ -123,7 +123,7 @@ def test_band_payloads_name_the_registry_edges(builder, ladder, rows_key, edge_k
         payload, _ = result
         if builder == "rear_preview":
             takes = rear_views.pair_takes([{"branch_diagnostic": _branch_diagnostic(), "pose_kind": "bearing"}])
-            payload = rear_preview._position(takes, payload, diagnostic_seed(48000))
+            payload = rear_preview._position(takes, payload, rear_seed_document())
         else:
             low, high = payload["coverage_hz"]
             expected = tuple((lo, hi) for lo, hi in expected if lo >= low and hi <= high)
