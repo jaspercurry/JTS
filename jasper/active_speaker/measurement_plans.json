@@ -119,9 +119,9 @@
       "use_when": "Use to take each driver alone without moving the microphone.",
       "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "driver": "woofer"}, {"azimuth_deg": 0, "elevation_deg": 0, "driver": "tweeter"}]},
     "rear_behind": {
-      "description": "Two poses held by hand: 1 m in front of the cabinet, then behind it, halfway to the wall.",
+      "description": "Two poses held by hand: 1 m in front of the cabinet, then 0.1 m behind its back panel.",
       "use_when": "Use to read the cardioid null toward the wall, which the arm cannot reach.",
-      "mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "Halfway between the back of the cabinet and the wall, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
+      "mover": "human", "poses": [{"azimuth_deg": 0, "elevation_deg": 0, "headline": "Place the microphone in front of the speaker", "detail": "One metre in front of the cabinet, at woofer height, pointed at the front baffle. Keep it still for all passes."}, {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1, "headline": "Place the microphone behind the speaker", "detail": "0.1 m behind the back panel, at woofer height, pointed at the back of the cabinet. Keep it still for all passes."}]}
   },
   "presets": [
     {"preset": "speaker/mark", "layout": "speaker_mark", "layouts": ["speaker_mark", "baseline_express", "baseline_full"], "purposes": ["speaker"], "regime": "per_driver", "timing_take": true,
