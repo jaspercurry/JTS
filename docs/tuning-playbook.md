@@ -351,8 +351,9 @@ positions, with the band above the rear stage unchanged. A front-side sweep
 cannot prove a polar pattern. At the mark, late energy helps distinguish
 cancellation from in-phase fill; the [Seat section](#seat) gives its seat limit.
 
-The [Seat loop](#seat) is the loop of record. The pair take plays the front
-woofer alone, the rear alone and both on one clock, with the rear stage cleared.
+The [Seat loop](#seat) is the default. The pair take plays the front woofer
+alone, the rear alone and both on one clock, with the rear stage, bass and room
+cleared.
 Read `packet["rear"][].pair.positions[*]`: `superposition_residual_db` tests
 the model; `arrival_gap` gives the rear-minus-front gap, confidence and
 `search_ms`; `rear_polarity` gives the measured sign, read only in the lowest
@@ -371,12 +372,13 @@ front chain's electrical level, the only prediction above the pair's coverage.
 The rear views carry no charge. `program_charge_db`, beside `preview`, is the
 document's program charge on its `base` (ADR-0385). A trial plays each
 candidate at its own charge: to read a preview as a trial, subtract the rise
-of `program_charge_db` over the rear-muted copy's.
+of `program_charge_db` over the rear-off reference's.
 
 At the mark, positive `late_energy.early_late_change_db` means a higher
 early-to-late energy ratio. Read `arrival_shift_ms` beside it. A preview's
 change is against its own document with the rear muted; a trial's is against
-the batch's played rear-muted candidate. When their front chains differ, the
+the batch's rear-off reference: a rear-muted candidate, else a base that plays
+no rear stage. When their front chains differ, the
 two changes have different zeros: re-base on the absolutes each `late_energy`
 carries (`muted`/`predicted` in a preview, `reference`/`candidate` in a trial).
 `gradient_residual.db` measures distance from an ideal gradient at the measured
@@ -441,8 +443,8 @@ still earned their place. Refit room after the rear stage changes.
 
 The contract's `seed` (`contract --round <pair round> --section rear`) is a
 first tune computed from the declared rear woofer spacing and wall gap, with
-its trim from that round's level gap at the mark (ADR-0425). Preview it,
-trial it at the seat and vary from it.
+its trim from that round's level gap at the mark (ADR-0425). Preview it, vary
+from it only when the preview misses, and trial it at the seat.
 
 First tune, from the pair take: give the bass branch a Linkwitz-Riley
 low-pass and the cancellation branch a Linkwitz-Riley high-pass at ONE
@@ -458,7 +460,7 @@ the boost (ADR-0385). Keep the bass branch in phase. Carry a filter
 that flattens the front woofer itself on all three chains, so the rear/front
 ratio stays the one you fitted.
 
-A `rear/pair --layout rear_behind` round takes one pass per pose: 1 m in front, then behind
+The behind check is optional. A `rear/pair --layout rear_behind` round takes one pass per pose: 1 m in front, then behind
 the cabinet, halfway to the wall at woofer height. Each take repeats both
 woofers on one clock. Use `--repeats 2` for two passes per pose. Its `behind`
 position is a peer row in the pair block and in every preview: `change_db` in the
@@ -470,7 +472,7 @@ A low band below the first room mode can carry rumble without hurting
 the model in the cancellation band.
 
 After a preview predicts the wall-ward null, play the candidates:
-`sudo /opt/jasper/.venv/bin/jasper-round run --program rear --layout rear_behind --candidates base,<a>,<b>,<rear-muted>`
+`sudo /opt/jasper/.venv/bin/jasper-round run --program rear/express --layout rear_behind --candidates base,<a>,<b>,<rear-muted>`
 uses two person-held poses, in front and behind the cabinet. Read the `behind`
 row's `bands[].change_db` only, against rear-muted next to the preview's;
 `late_energy` has no meaning there (no direct arrival behind the cabinet).
@@ -500,45 +502,47 @@ front/rear pair round.
 The match is broadband power over 40 Hz–16 kHz, not bass tone.
 The switch compares only the applied tune with its rear off, not two banked tunes.
 
-The stack plays as composed: room and bass stay in, the same in every
-candidate. After a rear change is adopted, check the room and bass
-responses and refit them if needed.
+Every rear take plays bass and room off, the same for every candidate, so the
+seat trial's chosen set is the in-room base (ADR-0436). After a rear change is
+adopted, the in-room program designs room and bass on that set.
 
 ## Seat
 
-This is the hand loop of record for a cardioid box. Keep the cabinet at its wall.
+This is the default loop for a cardioid box. Keep the cabinet at its wall.
 
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
-   Fit, trial and apply the speaker there, then bank the model:
-   `sudo /opt/jasper/.venv/bin/jasper-round run --program rear/pair --layout speaker_mark --wait`.
-2. Write the rear seed (`contract --round <pair-round> --section rear` carries one as `seed`) and preview variants from that pair round:
-   `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round> --vary '<path>=<value>,<value>' --out-dir <variants-dir>`.
-   Compose the seed, selected variants and a copy with `rear_muted: true` (each document's `base` is `saved`):
+   Fit, trial and apply the speaker there, then take the pair model, one `rear/pair` take at the mark:
+   `sudo /opt/jasper/.venv/bin/jasper-round run --program rear --wait`.
+2. Read the seed: `contract --round <pair-round> --section rear` carries it as `seed`. Preview it, with no sound:
+   `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round>`.
+   Only if it misses, add `--vary '<path>=<value>,<value>' --out-dir <variants-dir>` and take the best variant.
+   Compose it (its `base` is `saved`):
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber compose <doc> --round <pair-round>`.
-3. Compare them at the seats:
-   `sudo /opt/jasper/.venv/bin/jasper-round trial <seed-fp> --candidates base,<seed>,<v1>,<v2>,<muted> --wait`.
-   These placeholders are composed fingerprints. Read the figures below and choose.
-4. Join the chosen candidate to `packet["sets"]` by `candidate_id`, then to
-   `packet["room"]` by `set_id`; it holds a room document per candidate set.
-   Write the room fit from that set with the chosen rear stage as its `base` (`<chosen-fp>`):
+3. Trial it at the seats: `sudo /opt/jasper/.venv/bin/jasper-round trial <seed-fp> --wait` plays `rear/seat`,
+   the base and the seed at three seats with bass and room off. On a first build the base plays no rear
+   stage, so it is the rear-off reference. On a re-tune the base plays the applied rear stage: for a rear-off
+   reference, compose a copy with `rear_muted: true` and add `--candidates base,<seed-fp>,<muted-fp>`.
+   Read the figures below and choose. Apply a chosen document with
+   `sudo /opt/jasper/.venv/bin/jasper-round apply <chosen-fp>`; if the base wins, apply nothing.
+4. The chosen set is the in-room base: its takes played bass and room off. Join the chosen candidate to
+   `packet["sets"]` by `candidate_id`, then to `packet["room"]` and `packet["bass"]` by `set_id`. Write the
+   in-room document (room, and bass if wanted; its `base` is `saved`), then preview and compose it on that set:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber compose <room-doc> --round <seat-round> --set <chosen-set-id>`.
-5. Measure the composed document: `sudo /opt/jasper/.venv/bin/jasper-round trial <document-fp> --wait`.
+5. Trial it: `sudo /opt/jasper/.venv/bin/jasper-round trial <document-fp> --wait`.
    If its packet supports adoption, run `sudo /opt/jasper/.venv/bin/jasper-round apply <document-fp>`.
 
-Placement budget: **1 + 3 + 3** — the shared mark, the comparison seats, then
-the composed-document seats. Counts come from `measurement_plans.json`'s
-`layouts.speaker_mark` and `layouts.seat_express`, loaded by `measurement_programs._PROGRAMS`.
-Each candidate plays at each seat before the mic moves: candidates per seat,
-**candidates × seats** sweeps per trial; repeats add sweeps, not placements.
-The hand rear trial is `rear/seat`, with `purposes: ["rear", "room"]`; the banker
-runs rear and room views on the same takes. The arm uses `rear_express`.
+Takes: **1 + 6 + 6** — one pair take at the mark, the base and the seed at three seats, then the base and
+the in-room document at the same seats; placements 1 + 3 + 3 (`measurement_plans.json`'s layouts). Each
+candidate plays at each seat before the mic moves, so a trial plays **candidates × seats** takes; repeats
+add takes, not placements. `rear/seat` names the purposes rear, room and bass, so the banker runs the rear,
+room and bass views on the same takes. The arm uses `rear/express` at `rear_express`.
 
 Read `packet["rear"][].candidates[]`, then each candidate's `positions` seat
 rows, then `across_positions`: per-figure median, worst value and
 `worst_regression` against base. Keep missing-position reasons. Software never ranks.
 
-- Band levels (`bands`, ladder `rear_level`) are against
-  rear-muted over `band_ladders.LEVEL_BANDS_HZ`. Read level beside every shape.
+- Band levels (`bands`, ladder `rear_level`) are against the rear-off
+  reference over `band_ladders.LEVEL_BANDS_HZ`. Read level beside every shape.
 - `dip` is the front-wall hole only when front-wall geometry is declared:
   the band's `source` is `declared_geometry`, printed as `comparison.band_source`.
   Otherwise read `geometry_reason`: `geometry_undeclared`,

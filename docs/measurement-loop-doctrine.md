@@ -37,13 +37,16 @@ summed, cloud, on-axis, and off-axis.
   [ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)).
 - **Preference EQ:** subjective bass, warmth, and other voicing belongs to
   normal listening. It never participates in linearization measurements.
-- **Rear (cardioid) stage:** play the stack as composed — the applied speaker,
-  bass and room layers with the candidate's rear section — and compare rear
-  settings on one band against one rear-muted reference per position; the
-  pair take plays the raw woofers with the rear section cleared, which the
-  rear program row declares and the door derives (see
+- **Rear (cardioid) stage:** play the applied speaker layer and the
+  candidate's rear section, with bass and room off, and compare rear settings
+  on one band against one rear-off reference per position: a candidate with
+  its rear muted, else a base that plays no rear stage. The pair take also
+  clears the rear section, so it plays the raw woofers. The rear program row
+  declares this and the door derives it, and the chosen seat set is the
+  in-room base (see
   [ADR-0325](adr/0325-rear-program-compares-measured-symptoms-and-previews-by-superposition.md),
-  [ADR-0386](adr/0386-a-rear-pair-take-clears-the-rear-layer-at-the-door.md)).
+  [ADR-0386](adr/0386-a-rear-pair-take-clears-the-rear-layer-at-the-door.md),
+  [ADR-0436](adr/0436-the-cardioid-default-one-pair-take-then-one-seat-trial-against-the-rear-off-base.md)).
 
 Retain household settings while measurement uses its temporary graph. Restore
 normal playback after the operation. Record the graph that actually played;
