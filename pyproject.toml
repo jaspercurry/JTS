@@ -14,7 +14,7 @@ streambox = [
     # through a paired remote's mic (push-to-talk, no wake word). Exactly
     # [full] minus plots and the wake/mic/AEC/XVF runtimes that path never loads.
     # See docs/adr/0217-a-streambox-runs-the-assistant-only-while-a-mic-bearing-remote-is-paired.md
-    "google-genai==2.22.0",
+    "google-genai==2.25.0",
     "openai[realtime]>=3.12.0",
     "audioop-lts>=0.2",
     "camilladsp @ https://github.com/HEnquist/pycamilladsp/archive/fdc0d163e02dd73206a493402b43c83502ad83d7.tar.gz#sha256=d9d33cab26c4cabcd85daccfbb39a3294579eed8816fbe0ca77f36fe0370f087",
@@ -24,7 +24,7 @@ streambox = [
     "spotipy==2.26.0",
     "httpx==0.28.1",
     "gtfs-realtime-bindings==3.0.0",
-    "protobuf==7.36.1",
+    "protobuf==7.36.2",
     "rapidfuzz>=3.6,<4",
     "google-auth>=2.56.0",
     "google-auth-oauthlib>=1.2",
@@ -38,7 +38,7 @@ streambox = [
 
 full = [
     "matplotlib>=3.8,<4",
-    "google-genai==2.22.0",
+    "google-genai==2.25.0",
     "openai[realtime]>=3.12.0",
     # `audioop` was removed from Python 3.13's stdlib (PEP 594).
     "audioop-lts>=0.2",
@@ -69,7 +69,7 @@ full = [
     # runtime explicit because ONNX Runtime and the Google client stack
     # consume it too.
     "gtfs-realtime-bindings==3.0.0",
-    "protobuf==7.36.1",
+    "protobuf==7.36.2",
     "rapidfuzz>=3.6,<4",
     # XVF3800 control: jasper.xvf.xvf_host talks to the chip's USB
     # vendor-control interface for boot-time profile writes and diagnostics.
