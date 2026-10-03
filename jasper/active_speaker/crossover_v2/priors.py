@@ -54,13 +54,15 @@ def configured_crossover_transfers(
 ) -> tuple[dict[str, Any], dict[str, int]]:
     """``(response_by_role, polarity_sign_by_role)`` for the committed crossover.
 
-    ONE derivation, two readers: MEASURE consumes it as §4.2's ``C_c``, the
-    summed-alignment reference as the graph's design target (#1868).
+    Both name every declared role: a role no region names runs full range, so its
+    response is unity. ONE derivation, two readers: MEASURE consumes it as §4.2's
+    ``C_c``, the summed-alignment reference as the graph's design target (#1868).
     """
+    polarity = role_polarity(source_preset)
+    sections = sections_by_role(source_preset.crossover_regions)
     return (
-        role_transfers(sections_by_role(source_preset.crossover_regions)),
-        {role: -1 if inverted else 1
-         for role, inverted in role_polarity(source_preset).items()},
+        role_transfers({role: sections.get(role, ()) for role in polarity}),
+        {role: -1 if inverted else 1 for role, inverted in polarity.items()},
     )
 
 

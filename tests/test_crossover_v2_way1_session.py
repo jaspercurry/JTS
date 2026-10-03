@@ -53,6 +53,7 @@ from tests.crossover_v2_fixtures import (
     _way1_conductor,
     _way1_measure_analysis,
 )
+from jasper.active_speaker.branch_chain import crossover_response_complex
 from jasper.active_speaker.crossover_section import CrossoverSection
 
 _WAY1_INDEX_PHASE_MAP = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_TIMING}
@@ -141,6 +142,39 @@ def test_a_way1_measure_capture_banks_the_solo_and_names_the_pair_it_skipped():
     assert verdict.fault is None
     assert analysis.phase == PHASE_MEASURE
     assert (analysis.alignment, analysis.measure_pair_not_evaluated) == (None, MEASURE_PAIR_SINGLE_DRIVER)
+
+
+def test_a_way1_measure_take_de_embeds_its_protection():
+    """MEASURE's own priors on a 1-way: the high-pass the program graph played is
+    divided out and no crossover goes back in, so the take reads the bare plant."""
+    from tests.test_audio_measurement_program_analysis import SR, _band_impulse, _synthesize
+
+    protection = (CrossoverSection(fc_hz=100.0, order=4, highpass=True),)
+    conductor = _way1_conductor(
+        FakeSeams(), index_phase_map=_WAY1_INDEX_PHASE_MAP, gain_plan_db={"full_range": -11.0},
+        measurement_protection_sections_by_role={"full_range": protection},
+    )
+    program = _phase_program(conductor, PHASE_MEASURE)
+    plant = np.zeros(1 << 16)
+    plant[:4096] = _band_impulse(200, WAY1_BAND.lower_hz, WAY1_BAND.upper_hz, 1.0)
+    played = np.fft.irfft(np.fft.rfft(plant) * crossover_response_complex(
+        np.fft.rfftfreq(plant.size, 1.0 / SR), protection), plant.size)
+
+    take = analyze_program_capture(
+        program, _synthesize(program, woofer_ir=played, tweeter_ir=played), SR,
+        priors=conductor.measure_priors(),
+    )
+    bare = analyze_program_capture(
+        program, _synthesize(program, woofer_ir=plant, tweeter_ir=plant), SR,
+        priors=MeasurementPriors(),
+    )
+
+    assert take.configured_path_composed is True
+    assert take.measure_pair_not_evaluated == MEASURE_PAIR_SINGLE_DRIVER
+    (solo,), (truth,) = take.driver_responses, bare.driver_responses
+    sweep = program.segment("sweep_w")
+    band = (solo.freqs_hz >= sweep.f1_hz) & (solo.freqs_hz <= sweep.f2_hz)
+    np.testing.assert_allclose(solo.magnitude_db[band], truth.magnitude_db[band], atol=0.25)
 
 
 def test_the_one_way_preset_emits_a_protected_neutral_program_graph():

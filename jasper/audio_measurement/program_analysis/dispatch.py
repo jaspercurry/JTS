@@ -782,9 +782,6 @@ def _build_candidate(
 ABSOLUTE_NO_FC = "no_crossover_fc"
 ABSOLUTE_NO_TARGET = "no_candidate_crossover_target"
 ABSOLUTE_NO_TRUSTED_BAND = "no_trusted_crossover_region"
-#: The speaker HAS no crossover region — a 1-way main (#3480), distinct from
-#: the three above, which say a round could not establish a region it does have.
-ABSOLUTE_NO_CROSSOVER_TOPOLOGY = "no_crossover_topology"
 
 
 def _verify_absolute_result(
@@ -806,10 +803,6 @@ def _verify_absolute_result(
     response with no noise to smooth).
     """
     transfers = priors.configured_crossover_response_by_role
-    if transfers is not None and not transfers:
-        # An EMPTY map, never a missing one — "has no crossover" vs "nobody
-        # said where", both arriving with fc_hz is None.
-        return {"not_evaluated": ABSOLUTE_NO_CROSSOVER_TOPOLOGY}
     if fc_hz is None:
         return {"not_evaluated": ABSOLUTE_NO_FC}
     if not transfers:
