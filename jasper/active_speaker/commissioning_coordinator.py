@@ -17,7 +17,7 @@ from .design_draft import load_design_draft
 from jasper.audio_routes.output_topology import OutputTopology
 from jasper.audio_routes.output_topology_store import load_output_topology
 from .measurement_programs import (
-    PURPOSE_ROOM, PURPOSE_SPEAKER, PROGRAM_ROWS, near_field_drivers, programs_for_topology,
+    IN_ROOM_OPTIONS, PURPOSE_ROOM, PURPOSE_SPEAKER, PROGRAM_ROWS, near_field_drivers, programs_for_topology,
 )
 
 COORDINATOR_KIND = "jts_active_speaker_commissioning_view"
@@ -41,10 +41,10 @@ def next_program_action(
 
     # Decision d18 / ADR-0301: the trial verifies an apply; a new baseline round is not required.
     layers = applied_layers(profile)
-    # The applied room was fitted through a layer under it that has changed since (ADR-0420).
+    # A layer under the in-room program changed since room's round; bass is an option inside it (ADR-0420, ADR-0429).
     upstream_changed = layers[PURPOSE_ROOM] and any(
-        name != PURPOSE_ROOM for name in (recent_rounds.get(PURPOSE_ROOM) or {}).get("stale_by") or ())
-    program = next((name for name in programs if not layers[name]
+        name not in (PURPOSE_ROOM, *IN_ROOM_OPTIONS) for name in (recent_rounds.get(PURPOSE_ROOM) or {}).get("stale_by") or ())
+    program = next((name for name in programs if name not in IN_ROOM_OPTIONS and not layers[name]
                     or name == PURPOSE_ROOM and upstream_changed), None)
     if program is None:
         return {"id": None, "enabled": False, "program": None, "label": "Tuning complete", "reason_code": "complete"}

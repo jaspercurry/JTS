@@ -28,14 +28,13 @@ summed, cloud, on-axis, and off-axis.
   Previous linearization, blend, room correction, and preference EQ are absent.
   A candidate adds only the corrective filters, trims, and alignment changes
   being tested.
-- **Bass extension:** play through the applied speaker layer with room
-  correction off, with bass off for the base and on for the candidate. The bass
-  program row declares this, the measurement door derives the played graph, and
-  nothing measurement-only is banked (see
-  [ADR-0370](adr/0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md)).
-- **Room correction:** play through the applied speaker layer and applied bass
-  extension so the room fit absorbs what the bass boost leaves above its band.
-  Preference EQ remains absent.
+- **In-room (room correction and bass extension):** the base plays through the
+  applied speaker and rear layers with bass and room off; a candidate adds its
+  composed bass and room. The room fit and the bass boost are designed together
+  on that one seat set
+  ([ADR-0421](adr/0421-bass-has-a-preview-model-the-in-room-preview-adds-the-composed-boost.md)).
+  The room program row declares this and the door derives the played graph (see
+  [ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)).
 - **Preference EQ:** subjective bass, warmth, and other voicing belongs to
   normal listening. It never participates in linearization measurements.
 - **Rear (cardioid) stage:** play the stack as composed — the applied speaker,

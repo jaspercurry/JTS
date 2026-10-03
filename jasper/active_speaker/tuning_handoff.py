@@ -13,8 +13,8 @@ from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQU
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.excitation_safety_plan import role_sensitivities
 from jasper.active_speaker.measurement_programs import (
-    PROGRAM_ENTRIES, PURPOSE_BASS, PURPOSE_REAR, PURPOSE_REFERENCE, RUNNABLE_PROGRAMS, available_presets, first_plan,
-    offered_here, preset,
+    IN_ROOM_OPTIONS, PROGRAM_ENTRIES, PURPOSE_REAR, PURPOSE_REFERENCE, PURPOSE_ROOM, RUNNABLE_PROGRAMS, available_presets,
+    first_plan, offered_here, preset,
 )
 from jasper.active_speaker.tuning_docs import reading_order
 from jasper.identity.reader import (
@@ -43,7 +43,7 @@ _CABINET_MODEL_NOTE = ("If this machine has the CAD repo with a solved Boundary 
 PROGRAM_NOTES = {
     PURPOSE_REAR: f"A fresh speaker's first rear tune varies rear_muted=false (--vary {REAR_FIRST_TUNE_VARY}), "
                   f"because its rear seed is muted. {_CABINET_MODEL_NOTE}",
-    PURPOSE_BASS: _CABINET_MODEL_NOTE,
+    PURPOSE_ROOM: _CABINET_MODEL_NOTE,
 }
 
 
@@ -161,7 +161,8 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         applied,
         *((f"Latest round directory: {latest_round}",) if latest_round else ()),
         "",
-        f"Run the tuning programs in order: {' → '.join(RUNNABLE_PROGRAMS)} (skip rear if there is no rear driver).",
+        f"Run the tuning programs in order: {' → '.join(name for name in RUNNABLE_PROGRAMS if name not in IN_ROOM_OPTIONS)}"
+        " (skip rear if there is no rear driver).",
         "Re-run room after any upstream change.",
         f"Program: {entry['title']}",
         entry["description"],

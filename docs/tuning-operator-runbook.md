@@ -15,12 +15,14 @@ First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` withou
 changed since its bank, and a kept take played that layer; `stale_by` names the programs whose layer
 changed ([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)). A preference
 EQ save stales nothing. Only a current round is offered to copy.
-With all applicable layers applied, `next` is `{"program": null, "reason_code": "complete"}`, unless
-room's latest round went stale through a layer under room: then `next` is room with `upstream_changed`.
+Bass is an option inside the in-room program, so `next` never asks for it. With every other applicable
+layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless room's latest round went
+stale through the speaker or rear layer: then `next` is room with `upstream_changed`
+([ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)).
 Otherwise `next` uses applied layers; `never_measured` means no profile is applied.
 `next_commands` lists commands; add a round path for its evidence and its `catalog` call.
 
-Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
+Run the tuning programs in order: speaker → rear → room (skip rear if there is no rear driver); room designs the optional bass boost with the room correction.
 Graph layer order is not program order: a composed graph stacks speaker → room → bass ([ADR-0303](adr/0303-a-trial-plays-the-candidate-as-composed.md)), and the row order in [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py) owns program order.
 Re-run room after any upstream change, even when round history is unavailable.
 The rear program's hand loop of record is the [Seat trial](tuning-playbook.md#seat):
@@ -53,13 +55,13 @@ The [Rear section](tuning-playbook.md#rear) explains the model and its figures.
 
 `sudo /opt/jasper/.venv/bin/jasper-round run --program bass --dry-run` lists the ladder's four steps without sound: 0, −5, −10, and −15 dB under the level its first rung finds. `--level-db L` caps one run's fader at L.
 
-`sudo /opt/jasper/.venv/bin/jasper-round run --program bass` (or `sudo /opt/jasper/.venv/bin/jasper-round trial <fp>` for a bass candidate, or the measure page's bass choice) runs the admissible level ladder at each pose under one hold, finishing a pose before the next, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join.
+`sudo /opt/jasper/.venv/bin/jasper-round run --program bass` runs the admissible level ladder at each pose under one hold, finishing a pose before the next, and `wait` joins the levels into the packet. `--level-db L` keeps one level, whose packet carries its bass view without a join. A bass candidate's `sudo /opt/jasper/.venv/bin/jasper-round trial <fp>` runs the in-room round instead, and the measure page offers that round first for bass (see Room).
 
-`bass/axis` plays by hand at `seat_express` (the three seat poses rear and room use). The arm layouts stay selectable: `--layout bass_axis` pins the arm, and `trial --mover arm` picks it. The 85 dB SPL stop still watches every take.
+`bass/axis` plays by hand at `seat_express` (the three seat poses rear and room use). The arm layouts stay selectable: `--layout bass_axis` pins the arm. The 85 dB SPL stop still watches every take.
 
 ## Room
 
-Room defaults to `room/seat`: the three `seat_express` poses with the human mover, summed and ungated through the applied candidate, including its applied bass extension; room is off only when the run composes a candidate without it. Follow the page prompts; use Retake or Done there. `--layout room_quick` keeps the three bearings for smoke tests; a take at a bearing also banks its gated window, and the room views read the ungated one ([ADR-0400](adr/0400-the-window-follows-the-pose-not-the-purpose.md)). A room candidate trial uses the seat set; `trial <fp> --mover arm --attest-rig-clear --wait` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied tune's trusted floor, clamped to room bounds; with none it stops at the 350 Hz default and says so ([ADR-0424](adr/0424-the-applied-speaker-tune-carries-its-woofers-trusted-floor.md)). Use `room` for the document and trial at the same poses.
+Room defaults to `room/seat`, the in-room round: the three `seat_express` poses with the human mover, summed and ungated. Its base plays the applied speaker and rear layers with bass and room off, and each named candidate plays as composed, so one seat set serves the room view and the bass view ([ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)). Follow the page prompts; use Retake or Done there. `--layout room_quick` keeps the three bearings for smoke tests; a take at a bearing also banks its gated window, and the room views read the ungated one ([ADR-0400](adr/0400-the-window-follows-the-pose-not-the-purpose.md)). A room or bass candidate trial uses the seat set; `trial <fp> --mover arm --attest-rig-clear --wait` selects the smoke set. The commissioning stop still applies. The room layer stops at the applied tune's trusted floor, clamped to room bounds; with none it stops at the 350 Hz default and says so ([ADR-0424](adr/0424-the-applied-speaker-tune-carries-its-woofers-trusted-floor.md)). Use `room` for the document and trial at the same poses.
 
 ## Near-field
 
@@ -110,11 +112,11 @@ Each take banks how the playback route's counters moved across its capture in `c
 | `jasper-round-views delay-landscape <this-round>` | Which branch delay sums the two drivers best through the crossover? | a take with both drivers' curves at one pose (speaker/mark) and a crossover corner, applied or --fc-hz | record | speaker |
 | `jasper-round-views room <this-round> --set <set-id>` | What is the room's median response at the seats, with its ceiling, lasting features and incumbent? | one set of summed takes at the seat poses (room/seat or rear/seat) | record | room |
 | `jasper-round-views room-grade <this-round> --set <set-id>` | Does a room set lose any band against its incumbent from the same run? | a room set and its incumbent set from one run, each with its room view (room/seat with candidates) | record | room |
-| `jasper-round-views bass <this-round> --set <set-id>` | What are each bass take's response, quiet-window SNR and H2/H3? | one bass set: summed bass sweeps through a candidate graph (bass/axis) | record | bass |
+| `jasper-round-views bass <this-round> --set <set-id>` | What are each bass take's response, quiet-window SNR and H2/H3? | one set of the in-room round: summed sweeps through a candidate graph at the seats (room/seat) | record | bass |
 | `jasper-round-views bass-compare <before-round> <this-round> --before-set <before-set-id> --after-set <set-id> --change <change>` | How did the bass change between two sets, across one candidate, volume, demand or diagnostic change? | two bass sets whose bass views are filed, before and after the change; or one bass take and its comparand (no --before-* flag) | record | bass |
 | `jasper-round-views bass-fit-table <this-round> --candidate <candidate.json>` | How much reach, drive and headroom does each bass candidate have at each level? | bass rounds with their bass views: each candidate's takes beside its baseline's at every level | record | bass |
 | `jasper-round-views bass-alignment <this-round>` | What sealed-box corner and Q does each driver's near-field curve fit: the Linkwitz transform's source? | each woofer's takes alone near its cone (nearfield/each); --band-hz states the band the fit reads | record | reference |
-| `jasper-round-views bass-alignment --take <take-id> <this-round> --set <set-id>` | What corner and Q does one bass take's curve fit, as played through its graph and the room? | one bass take by its id (bass/axis); a base take plays no bass boost | record | bass |
+| `jasper-round-views bass-alignment --take <take-id> <this-round> --set <set-id>` | What corner and Q does one bass take's curve fit, as played through its graph and the room? | one take of the in-room round by its id (room/seat); a base take plays no bass boost | record | bass |
 | `jasper-round-views nearfield <this-round>` | What does each driver radiate close up, band by band and per distance, and does its step match a piston? | each driver's takes alone: near field at 15 and 30 mm (nearfield/each) or at the mark (drivers/each) | record | reference |
 | `jasper-round-views rear-fit <this-round> --set <set-id> --take <take-id> --target <acoustic_targets.json>` | Which rear branches realize an acoustic rear/front target on one pair take's two woofers? | one rear/pair take (each woofer alone at one pose) and an acoustic_targets rear calibration document | record | rear |
 | `jasper-round-views repeat --set <set-id> <this-round>` | How much do one set's repeated takes vary in delay, polarity, ripple and trims? | one set with two or more takes at one 0°/0° pose, each with its banked analysis (speaker/mark) | record | speaker |

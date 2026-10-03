@@ -82,15 +82,14 @@ def _applied_baseline_profile(**overrides) -> dict:
     ("needs_driver_safety_profile", "research", "save_driver_values", True, None, (), (), None),
     ("ready_to_save_profile", "profile", "save_baseline_profile", True, None, (), (), None),
     ("blocked", "profile", "save_baseline_profile", False, None, (), (), None),
-    ("applied", "profile", "run_program", True, "bass", ("speaker",), (), "layer_not_applied"),
-    ("not_required", "layout", "run_program", True, "bass", (), (), None),
+    ("applied", "profile", "run_program", True, "room", ("speaker",), (), "layer_not_applied"),
+    ("not_required", "layout", "run_program", True, "room", (), (), None),
     ("applied", "profile", "copy_prompt", True, "speaker", (), (("speaker", False),), None),
-    ("applied", "profile", "run_program", True, "bass", ("speaker",), (("speaker", False),), None),
+    ("applied", "profile", "run_program", True, "room", ("speaker",), (("speaker", False),), None),
     ("applied", "profile", "copy_prompt", True, "room", ("speaker", "bass"), (("room", False),), None),
-    ("applied", "profile", "run_program", True, "bass", ("speaker", "room"), (("room", False),), None),
-    ("applied", "profile", "copy_prompt", True, "bass", ("speaker", "room"), (("bass", False),), None),
+    ("applied", "profile", None, False, None, ("speaker", "room"), (("bass", False),), "complete"),
     ("applied", "profile", None, False, None, ("speaker", "room", "bass"), (("speaker", False),), "complete"),
-    ("not_required", "layout", "copy_prompt", True, "bass", (), (("bass", False),), None),
+    ("not_required", "layout", "copy_prompt", True, "room", (), (("room", False),), None),
     ("applied", "profile", "run_program", True, "speaker", (), (("speaker", True),), "layer_not_applied"),
 ])
 def test_every_commissioning_state_has_one_next_action(status, current, action, enabled, program, layers, rounds, reason_code):
@@ -128,11 +127,12 @@ def test_every_commissioning_state_has_one_next_action(status, current, action, 
 
 
 def test_the_coordinator_walks_the_programs_in_tuning_order():
+    """Bass is an option inside the in-room program, so the walk never stops at it (ADR-0429)."""
     order = tuple(next_program_action(
         _applied_anchor(layers=RUNNABLE_PROGRAMS[:index]),
         {"speaker": {"round_dir": "/bank/speaker", "started_at": 1}}, programs=RUNNABLE_PROGRAMS,
-    )["program"] for index in range(len(RUNNABLE_PROGRAMS)))
-    assert order == RUNNABLE_PROGRAMS == ("speaker", "rear", "bass", "room")
+    )["program"] for index in range(len(RUNNABLE_PROGRAMS) + 1))
+    assert order == ("speaker", "rear", "room", "room", None)
 
 
 @pytest.mark.parametrize("rear,passive", [(False, False), (True, False), (False, True)])
@@ -171,13 +171,16 @@ def test_round_and_handoff_menus_follow_topology(monkeypatch, rear, passive):
 @pytest.mark.parametrize("layers,rounds,expected,reason", [
     (None, {}, "speaker", "never_measured"),
     ((), {}, "speaker", "layer_not_applied"),
-    (("speaker",), {}, "bass", "layer_not_applied"),
-    (("speaker", "rear"), {}, "bass", "layer_not_applied"),
+    (("speaker",), {}, "room", "layer_not_applied"),
+    (("speaker", "rear"), {}, "room", "layer_not_applied"),
     (("speaker", "rear", "bass"), {}, "room", "layer_not_applied"),
+    (("speaker", "rear", "room"), {}, None, "complete"),
     (RUNNABLE_PROGRAMS, {}, None, "complete"),
-    (("speaker", "rear"), {"bass": {"round_dir": "/bank/bass", "started_at": 1}}, "bass", "round_available"),
+    (("speaker", "rear"), {"room": {"round_dir": "/bank/room", "started_at": 1}}, "room", "round_available"),
 ])
 def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, expected, reason):
+    """Bass is an option inside the in-room program: after speaker (and rear), room is next until a room
+    layer is applied, with or without bass (ADR-0429)."""
     topology = _topology()
     if rear:
         group, = topology.speaker_groups
@@ -192,15 +195,16 @@ def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, ex
 @pytest.mark.parametrize("stale_by,room_applied,expected", [
     (["speaker"], True, ("run_program", "room", "upstream_changed")),
     (["rear"], True, ("run_program", "room", "upstream_changed")),
-    (["bass", "room"], True, ("run_program", "room", "upstream_changed")),
+    (["bass", "room"], True, (None, None, "complete")),
     (["room"], True, (None, None, "complete")),
     ([], True, (None, None, "complete")),
     (["bass"], False, ("run_program", "room", "layer_not_applied")),
     ([], False, ("copy_prompt", "room", "round_available")),
 ])
 def test_room_repeats_after_a_layer_under_it_changes(stale_by, room_applied, expected):
-    """The applied room was fitted through the layers under it, so a change to one of them since room's latest
-    round points at room again; a change to the room layer alone does not (ADR-0420)."""
+    """The applied room was fitted through the speaker and rear layers under the in-room program, so a
+    change to one of them since room's latest round points at room again; a change to the room or the
+    bass layer does not, since bass is an option inside that program (ADR-0420, ADR-0429)."""
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
     rounds = {"room": {"round_dir": "/bank/room", "stale": bool(stale_by), "stale_by": stale_by}}
     action = next_program_action(_applied_anchor(layers=layers), rounds, programs=RUNNABLE_PROGRAMS)
@@ -332,10 +336,11 @@ def _plannable(monkeypatch, next_program):
 
 
 @pytest.mark.parametrize("program,default_id", [
-    ("rear", "rear/pair@speaker_mark"), ("speaker", "speaker/mark"), ("bass", "bass/axis"), ("room", "room/seat")])
+    ("rear", "rear/pair@speaker_mark"), ("speaker", "speaker/mark"), ("bass", "room/seat"), ("room", "room/seat")])
 def test_the_page_offers_the_next_programs_first_plan(monkeypatch, program, default_id):
     """The rear tune starts from the pair model banked at the mark (the playbook's Seat loop), not from the
-    rear program's default preset; the other programs start at theirs."""
+    rear program's default preset, and bass from the in-room round (ADR-0429); the other programs start at
+    theirs."""
     _plannable(monkeypatch, program)
     choices = round_choices({}, "")
     assert [choice["id"] for choice in choices if choice["default"]] == [default_id]
