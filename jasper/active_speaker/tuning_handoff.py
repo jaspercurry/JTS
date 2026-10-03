@@ -194,6 +194,7 @@ def build_tuning_handoff(
         "reason": reason,
         "binding": binding,
         "driver_spacing_mm": commissioning_view.get("driver_spacing_mm"),
+        "rear_woofer_spacing_mm": commissioning_view.get("rear_woofer_spacing_mm"),
         "programs": [_program_entry(name) for name in commissioning_view["programs"]],
         "program": program_id,
         "prompt": build_tuning_handoff_prompt(binding, program_id) if ready else "",

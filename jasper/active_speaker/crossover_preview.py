@@ -44,7 +44,9 @@ def _manual_crossover_settings(design_draft: Mapping[str, Any]) -> Mapping[str, 
     manual = _as_mapping(design_draft.get("manual_settings"))
     if manual is None:
         return None
-    return {**{key: value for key, value in manual.items() if value is not None}, "drivers": [
+    # The rear stage's spacing binds no driver trim: a layer above never stales one below (#6227).
+    return {**{key: value for key, value in manual.items()
+               if value is not None and key != "rear_woofer_spacing_mm"}, "drivers": [
         {key: value for key, value in driver.items() if key != "installation"}
         for driver in manual.get("drivers", [])
     ]}

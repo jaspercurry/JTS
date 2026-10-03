@@ -16,7 +16,7 @@ import json
 import math
 import threading
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, get_args
 
 from jasper.platform.atomic_io import atomic_write_text
 from jasper.platform.json_fields import CodedFieldError
@@ -45,6 +45,7 @@ from .driver_safety import (
     build_driver_research_context,
 )
 from .installation import normalise_installation
+from .layout import layout_choices
 from .profile import SUPPORTED_POLARITY
 from .declaration_vocabulary import (
     declared_filter_type_compiles,
@@ -74,6 +75,9 @@ _MAX_DRIVERS = 16
 _MAX_CANDIDATES = 16
 _MAX_SOURCES = 8
 MAX_DRIVER_NOTE_CHARS = 2048
+#: A declared acoustic-center spacing in mm: woofer<->tweeter (#1864), or
+#: front<->rear woofer, which only a cardioid layout keeps (#6227).
+SpacingField = Literal["driver_spacing_mm", "rear_woofer_spacing_mm"]
 
 
 class ActiveSpeakerDesignDraftError(CodedFieldError):
@@ -474,9 +478,8 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
     if raw is None or raw == "":
         return None
     raw = _mapping(raw, "manual_settings")
-    driver_spacing_mm = _positive_float(
-        raw.get("driver_spacing_mm"), "manual_settings.driver_spacing_mm"
-    )
+    spacings = {field: _positive_float(raw.get(field), f"manual_settings.{field}")
+                for field in get_args(SpacingField)}
     drivers = [
         _normalise_manual_driver(item, f"manual_settings.drivers[{index}]")
         for index, item in enumerate(_sequence(
@@ -511,25 +514,20 @@ def normalise_manual_settings(raw: Any) -> dict[str, Any] | None:
         for candidate in candidates
         if candidate.get("frequency_hz") is not None
     ]
-    if not drivers and not candidates and driver_spacing_mm is None:
+    if not drivers and not candidates and all(value is None for value in spacings.values()):
         return None
-    return {
-        "drivers": drivers,
-        "crossover_candidates": candidates,
-        "driver_spacing_mm": driver_spacing_mm,
-    }
+    return {"drivers": drivers, "crossover_candidates": candidates, **spacings}
 
 
-def declared_driver_spacing_m(draft: Mapping[str, Any] | None) -> float | None:
-    """The declared woofer<->tweeter acoustic-center spacing, in metres (#1864).
+def declared_driver_spacing_m(
+    draft: Mapping[str, Any] | None, field: SpacingField = "driver_spacing_mm",
+) -> float | None:
+    """A declared acoustic-center spacing, in metres.
 
-    ``manual_settings.driver_spacing_mm`` is the ONE owner of this physical
-    fact -- the same declaration surface ``driver_class``/``radiating_diameter_mm``
-    use (#1665/#1675), never a second config surface. ``None`` means
-    undeclared; callers must not substitute a nominal distance -- the crossover
-    v2 parallax correction (``MeasurementGeometry.parallax_us``) already treats
-    an undeclared/zero spacing as "no correction", which is the same as today's
-    behaviour before this spacing was threaded through.
+    ``manual_settings`` is the ONE owner of these physical facts -- the same
+    declaration surface ``driver_class``/``radiating_diameter_mm`` use
+    (#1665/#1675), never a second config surface. ``None`` means undeclared;
+    callers must not substitute a nominal distance.
     """
 
     if not isinstance(draft, Mapping):
@@ -537,7 +535,7 @@ def declared_driver_spacing_m(draft: Mapping[str, Any] | None) -> float | None:
     manual = draft.get("manual_settings")
     if not isinstance(manual, Mapping):
         return None
-    value = manual.get("driver_spacing_mm")
+    value = manual.get(field)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     millimetres = float(value)
@@ -760,6 +758,8 @@ def build_design_draft(
                 + ", ".join(unknown_target_ids)
             )
     manual = normalise_manual_settings(manual_settings)
+    if manual and not layout_choices(topology)["cardioid"]:
+        manual["rear_woofer_spacing_mm"] = None
     validate_manual_target_bindings(topology, manual)
     research = normalise_driver_research(driver_research)
     if research:

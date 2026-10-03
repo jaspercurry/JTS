@@ -9,7 +9,7 @@ import { jtsConfirm } from '/assets/shared/js/dialog.js';
 
 const root = document.getElementById('view-body');
 const status = document.getElementById('status');
-let view, layout, inputs, manual, driverStyles, busy = false;
+let view, layout, inputs, manual, driverStyles, geometry, busy = false;
 const openSections = new Map();
 
 function adopt(next) {
@@ -22,6 +22,7 @@ function adopt(next) {
   driverStyles = Object.fromEntries(view.draft.targets.filter(t => t.role === 'tweeter').map(t => [t.target_id, t.driver_style || '']));
   manual = structuredClone(view.draft.manual_settings);
   manual.drivers ||= [];
+  geometry = structuredClone(view.geometry.values);
   render();
 }
 
@@ -167,6 +168,8 @@ function detailsCard() {
   const card = section('2. Driver details', view.stage === 'details',
     view.stage === 'details' && issueLines(),
     view.draft.targets.map(driverCard),
+    view.layout.choices.cardioid && field('Front-to-rear woofer spacing (mm)', manual.rear_woofer_spacing_mm,
+      value => edit(manual, 'rear_woofer_spacing_mm', value), { type: 'number' }),
     field('Build notes (optional)', inputs.notes, value => { inputs.notes = value; }),
     button('Save details', () => run(() => postJSON('./setup/details', { operator_inputs: inputs, manual_settings: manual, driver_styles: driverStyles }), 'Details saved.'), true));
   card.id = 'driver-safety-issues';
@@ -249,8 +252,17 @@ function startingCard() {
     }, true));
 }
 
+function placementForm() {
+  const { fields, values, issue } = view.geometry;
+  return h('details', { open: Boolean(issue) || !Object.keys(values).length }, h('summary', {}, 'Speaker and microphone placement'),
+    h('fieldset', {}, issue && h('p.form-hint', {}, issue.message),
+      h('p.form-hint', {}, 'Heights are from the floor to the speaker centre and to the microphone. Toe-in is 0 when the speaker faces straight out from the wall.'),
+      Object.entries(fields).map(([key, label]) => field(label, geometry[key], value => edit(geometry, key, value), { type: 'number' })),
+      button('Save placement', () => run(() => postJSON('./setup/geometry', geometry), 'Placement saved.'))));
+}
+
 function tuningCard() {
-  return section('4. Tuning', view.stage === 'tune',
+  return section('4. Tuning', view.stage === 'tune', placementForm(),
     h('div', {}, h('h3', {}, 'Tune with an AI assistant'),
       h('p', {}, 'Connect to this Pi from an AI coding assistant such as Claude or Codex. Copy a program’s prompt into that session. The assistant will guide you and provide a link to take measurements.')),
     // The measurement page measures an active crossover: a passive speaker has no speaker program.
