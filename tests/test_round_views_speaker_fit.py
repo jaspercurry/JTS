@@ -345,6 +345,7 @@ def test_a_feature_that_moves_with_angle_stays_uncorrected(speaker_round):
     directory, _ = round_artifact_dir(inputs.session_dir)
     response = replace(response_from_banked_curve(record["curves"][1])[0], repeat_responses=())
     rows = []
+    # The walk stays inside the mark's boost bell (about ±0.24 octave), where the classifier tracks it.
     for index, (azimuth, elevation, null_hz) in enumerate(
         [(0, 0, 6000), (-20, 0, 5300), (20, 0, 6800), (0, -10, 5500), (0, 10, 6500), (-10, 0, 7000)],
     ):

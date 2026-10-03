@@ -33,9 +33,10 @@
     (13 poses) qualifies now. `speaker_mark` and `baseline_express` (5 poses) do not, and their
     fits do not change. Part 2 of D3 follows: a 6-spot linearization layout with 1 sweep per
     driver off axis, which needs a per-pose sweep count.
-  - The change only removes correction. No cap, envelope term or boost permission widens. The
-    refit can spend a filter slot that it freed on another feature, inside the same envelope and
-    caps. The fit's residual covers only the bins that it may correct.
+  - The change only takes bands away from the fit. No cap, envelope term or boost permission
+    widens. Inside the same envelope and caps, the refit can spend a filter slot that it freed on
+    another feature. Its target level no longer reads the excluded bins, so its other filters can
+    move a little. The fit's residual covers only the bins that it may correct.
   - When no feature is position-variant, which is always so below six positions, the fit
     documents stay byte-identical. The answer gets the empty `excluded_bands_hz` key; adding a key
     keeps the schema (ADR-0344 §4).
@@ -44,9 +45,9 @@
     (`too_few_positions`). The fit of an off-axis take whose bell sits at one end of the walk sees
     only part of the walk, so it can keep its correction. Linearization is gated at the mark.
   - The rule that F7 cites, "Position spread is report-only"
-    (`jasper/active_speaker/linearization_envelope.py:333`), stays true: the level spread over the
-    positions is still only a disclosure. This decision is a separate use of the positions: the
-    classifier's verdict.
+    (`jasper/active_speaker/linearization_envelope.py:333` at `084638bc7`), stays true: the level
+    spread over the positions is still only a disclosure. This decision is a separate use of the
+    positions: the classifier's verdict.
   - Rejected:
     - Detecting features on the cloud before the fit. That is a second detector, and it needs a Q
       for each feature. The fit's own bells are the corrections in question, and the verdicts
