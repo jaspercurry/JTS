@@ -201,9 +201,21 @@ def test_the_seed_names_each_missing_declaration_instead_of_a_default(draft, geo
         REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})
 
 
-def test_a_panel_nearer_the_wall_than_two_thirds_of_the_spacing_has_no_seed():
-    """Woofers 0.33 m apart, the front panel 0.2 m from the wall (under 2d/3 = 0.22 m): the
-    hand-over high-pass sits above the low-pass, so the pair can cancel no band."""
-    assert rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=_geometry(back_m=0.05, depth_m=0.15), views=()) == unavailable(
-        REAR_SEED_BAND_EMPTY, {"handover_hz": 285.8333, "lowpass_hz": 259.8485, "front_panel_to_wall_m": 0.2,
-                               "rear_woofer_spacing_m": 0.33})
+@pytest.mark.parametrize("spacing_mm, back_m, corners_hz", [
+    # Woofers 0.33 m apart, the front panel 0.2 m from the wall: nearer than 2d/3 = 0.22 m.
+    pytest.param(330.0, 0.05, (285.8333, 259.8485), id="nearer"),
+    # Woofers 0.3 m apart, the front panel at 2d/3 = 0.2 m: both corners are 285.8333 Hz.
+    pytest.param(300.0, 0.05, (285.8333, 285.8333), id="at_the_edge"),
+    pytest.param(300.0, 0.0501, None, id="just_farther"),
+])
+def test_a_panel_at_or_nearer_the_wall_than_two_thirds_of_the_spacing_has_no_seed(spacing_mm, back_m, corners_hz):
+    """The hand-over high-pass at or above the low-pass leaves the pair no band to cancel; a front
+    panel 0.1 mm farther out than the edge gets a seed."""
+    draft = {"manual_settings": {"rear_woofer_spacing_mm": spacing_mm}}
+    seed = rear_seed(48000, draft=draft, geometry=_geometry(back_m=back_m, depth_m=0.15), views=())
+    if corners_hz is None:
+        assert rear_operating_facts(read_rear_calibration(seed, sample_rate=48000))["band_hz"] == [285.6905, 285.8333]
+        return
+    assert seed == unavailable(REAR_SEED_BAND_EMPTY, {
+        "handover_hz": corners_hz[0], "lowpass_hz": corners_hz[1], "front_panel_to_wall_m": 0.2,
+        "rear_woofer_spacing_m": spacing_mm / 1000})
