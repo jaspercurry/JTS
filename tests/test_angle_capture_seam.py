@@ -894,16 +894,16 @@ def test_each_summed_stop_gets_a_spec_at_its_own_pose_and_a_per_driver_stop_none
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("candidates", [(), ("base",), ("base", "room-fp"), ("base", "room-fp", "base")])
 def test_request_document_and_capture_schedule(repeats, candidates):
+    row = mp.run_preset("room", "room_quick")
     request = ac.request_for_preset(
-        mp.run_preset("room", "room_quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
-        level=ac.LevelPolicy(level_db=-25),
+        replace(row, poses=tuple(replace(pose, repeats=repeats) for pose in row.poses)), mover=ac.MOVER_ARM,
+        candidates=candidates, level=ac.LevelPolicy(level_db=-25),
     )
     doc = request.to_dict()
     assert doc["candidates"] == list(candidates)
-    assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
+    assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3 * repeats
     assert doc["level"] == {"level_db": -25}
     assert doc["level_source"] == "operator"
-    assert doc["repeats"] == repeats
     specs = ac.stop_specs(request, baseline_id="banked-base",
                           prompts=[s.prompt for s in ac.resolve_request(request)])
     assert {spec.kind for spec in specs if spec.candidate_id == "banked-base"} == {MEASURE_KIND_VERIFY}
@@ -963,13 +963,6 @@ def test_invalid_level_policy_refuses_at_construction(level_db):
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
-@pytest.mark.parametrize("fields", [{"repeats": v} for v in (0, -1, True, 1.5)])
-def test_invalid_walk_fields_refuse_by_name(fields):
-    with pytest.raises(ac.LateralWalkRefused) as refused:
-        replace(_stops_at([0], regimes=(ac.REGIME_SUMMED,)), **fields)
-    assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
-
-
 @pytest.mark.parametrize("program,layout,mover,reason", [
     ("room", "room_quick", ac.MOVER_ARM, None),
     ("room", "room_quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
@@ -999,8 +992,8 @@ def test_stop_specs_places_the_banked_baseline_without_opening_it(monkeypatch):
 
 def test_a_stop_is_one_take_of_its_pose():
     """A layout's take count repeats the stop, so a stop's pose states none,
-    and a stop whose pose states one refuses: the request's ``repeats`` is the
-    one per-stop repeat (#5737 F1)."""
+    and a stop whose pose states one refuses: a pose's repeats are its
+    duplicate stops (#5737 F1)."""
     row = mp.run_preset("speaker", "baseline_express")
     doc = ac.request_for_preset(row).to_dict()
     assert [stop["pose"] for stop in doc["stops"]].count({"azimuth_deg": 0, "elevation_deg": 0}) == row.poses[0].repeats > 1

@@ -3,7 +3,6 @@
 
 import json
 import asyncio
-from dataclasses import replace
 from copy import deepcopy
 from pathlib import Path
 
@@ -98,7 +97,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
     program = build_measure_program({"woofer": -20, "tweeter": -20}, [
         RoleBand("woofer", 0, FrequencyBand(200, 4000)), RoleBand("tweeter", 1, FrequencyBand(1000, 20000))])
     def stand_in(record):
-        return _measure_analysis(program, predicted_ripple_db=float(record["repeat"]))
+        return _measure_analysis(program, predicted_ripple_db=float(record["index"]))
     class Records(FakeRecords):
         async def bank(self, record):
             # What the capture host banks on the take (ADR-0383).
@@ -110,7 +109,7 @@ def test_executor_keeps_each_takes_scalar_analysis(monkeypatch, tmp_path, capsys
         analysis = stand_in(record)
         expected.append({**analysis_json(analysis), "bass": None, "distortion": None})
         return analysis
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), repeats=2), analyze=analyze,
+    result, fakes = asyncio.run(_run_gated(_walk([0], repeats=2), analyze=analyze,
                                            seams=FakeSeams(records=Records()), gate=AnsweredGate()))
     assert result.status == "complete"
     assert len(expected) == 2

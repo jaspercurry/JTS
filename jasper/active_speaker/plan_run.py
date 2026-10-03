@@ -173,8 +173,8 @@ def _pose(stop: Any) -> dict[str, Any]:
             **({"driver": pose.driver} if pose.driver else {})}
 
 
-def _planned_row(index: int, repeat: int, stop: Any) -> dict[str, Any]:
-    return {"index": index, "repeat": repeat, "pose": _pose(stop),
+def _planned_row(index: int, stop: Any) -> dict[str, Any]:
+    return {"index": index, "repeat": 1, "pose": _pose(stop),
             "candidate_id": stop.candidate_id, "purpose": stop.purpose, "purposes": list(stop.purposes)}
 
 
@@ -275,10 +275,9 @@ async def run_plan(
     manifest.asked = {
         "poses": list({stop.pose.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)),
-        "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
+        "mover": request.mover, "level": asdict(request.level),
     }
-    manifest.planned = [_planned_row(index * request.repeats + repeat, repeat, stop)
-                        for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
+    manifest.planned = [_planned_row(index, stop) for index, stop in enumerate(request.stops, 1)]
     try:
         resolve_request(request)
         try:
@@ -295,7 +294,7 @@ async def run_plan(
     specs = tuple(replace(capture.spec, candidate_id=baseline_id)
                   if capture.spec.candidate_id == BASE_CANDIDATE else capture.spec for capture in captures)
     stops = [capture.resolved(request) for capture in captures]
-    manifest.planned = [_planned_row(index, capture.repeat, capture.stop) for index, capture in enumerate(captures, 1)]
+    manifest.planned = [_planned_row(index, capture.stop) for index, capture in enumerate(captures, 1)]
     angle_stops = [capture.stop for capture in captures]
     places = [stop.pose.place for stop in angle_stops]
     scopes = [spec.graph_scope for spec in specs]

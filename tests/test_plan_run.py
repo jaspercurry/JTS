@@ -84,10 +84,16 @@ from tests.test_crossover_v2_tuning_scope import tuning_profile as tuning_profil
 
 _ABORTS = {SeamFailure: "seam_failed"}
 
-def _walk(angles, candidates=("fp-a",)):
+def _walk(angles, candidates=("fp-a",), repeats=1):
+    """Each angle's takes, each of every candidate, as a preset spreads its repeats (``request_for_preset``)."""
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
         ac.AngleStop(Pose(angle, 0), ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
-        for angle in angles for candidate in candidates), program="tournament/express")
+        for angle in angles for _ in range(repeats) for candidate in candidates), program="tournament/express")
+
+
+def _repeated(row, repeats=2):
+    """A preset whose every pose takes ``repeats`` takes, as a run request's repeats ask (``resolve_plan``)."""
+    return replace(row, poses=tuple(replace(pose, repeats=repeats) for pose in row.poses))
 
 
 def _analysis(_record):
@@ -143,8 +149,7 @@ def _summed_captures(request):
     preparation phase and no probe."""
     specs = ac.stop_specs(request, prompts=tuple(stop.prompt for stop in ac.resolve_request(request)),
                           baseline_id=ac.BASE_CANDIDATE)
-    rows = [(stop, repeat) for stop in request.stops for repeat in range(1, request.repeats + 1)]
-    return tuple(plan_run.PlanCapture(stop, spec, repeat) for (stop, repeat), spec in zip(rows, specs) if spec is not None)
+    return tuple(plan_run.PlanCapture(stop, spec) for stop, spec in zip(request.stops, specs) if spec is not None)
 
 
 async def _run_gated(request, *, seams=None, gate=None, analyze=_analysis, signals=None, captures=None, **kwargs):
@@ -182,7 +187,7 @@ def test_a_take_that_names_no_purpose_refuses_by_its_code(tmp_path, reader):
 @pytest.mark.parametrize(("angles", "candidates"), [([0], ("fp-a",)), ([0, 20], ("fp-a", "fp-b")), ([0, -20, 20], ("fp-a",))])
 @pytest.mark.parametrize("repeats", [1, 2, 3])
 def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidates, repeats):
-    request, gate = replace(_walk(angles, candidates), repeats=repeats), AnsweredGate()
+    request, gate = _walk(angles, candidates, repeats), AnsweredGate()
     captures = plan_run.prepare_plan_captures(request)
     result, fakes = asyncio.run(_run_gated(request, gate=gate))
     assert result.status == "complete"
@@ -193,8 +198,8 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
     doc = json.loads(json.dumps(result.joined()))
     assert len(doc["sets"]) == len(set(candidates))
     for group in doc["sets"]:
-        assert [(t["pose"]["azimuth_deg"], t["repeat"], t["selected"]) for t in group["takes"]] == [
-            (angle, repeat, True) for angle in angles for repeat in range(1, repeats + 1)]
+        assert [(t["pose"]["azimuth_deg"], t["selected"]) for t in group["takes"]] == [
+            (angle, True) for angle in angles for _ in range(repeats)]
     assert len({t["take_id"] for t in _takes(doc)}) == len(captures)
     assert (doc["not_measured"], doc["honoured"]["takes_refused"]) == ([], 0)
     assert all(row["budget"]["by_household"] == row["budget"]["by_speaker"] == 0 for row in gate.progress)
@@ -663,7 +668,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
 
 def test_a_run_given_its_level_announces_its_first_take_only():
     """A run that does not find its fader still announces itself, once (ADR-0417)."""
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0, 20]), repeats=2)))
+    result, fakes = asyncio.run(_run_gated(_walk([0, 20], repeats=2)))
     assert result.status == "complete"
     assert [call["spec"].courtesy_prelude for call in fakes.play.calls] == [True, False, False, False]
 
@@ -710,15 +715,15 @@ def test_run_resolves_one_baseline_before_any_take(monkeypatch, available, prepa
         return "banked-base"
     monkeypatch.setattr("jasper.active_speaker.candidate_parts.baseline_candidate_id", baselines)
     monkeypatch.setattr(plan_run, "assess", lambda *args, **kwargs: TakeVerdict(True, next="accept"))
-    request = replace(_walk([0, 20, -20], ("base",)), repeats=2)
+    request = _walk([0, 20, -20], ("base",), repeats=2)
     captures = plan_run.prepare_plan_captures(request) if prepared else None
     assert calls == []
     result, fakes = asyncio.run(_run_gated(request, captures=captures))
     assert len(calls) == 1
     if available:
         assert result.status == "complete"
-        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * (6 + request.repeats * prepared)
-        assert fakes.graph.scopes == [("timing", "banked-base")] * (request.repeats * prepared) + [("candidate", "banked-base")] * 6
+        assert [spec.candidate_id for spec in result.specs.values()] == ["banked-base"] * (6 + prepared)
+        assert fakes.graph.scopes == [("timing", "banked-base")] * prepared + [("candidate", "banked-base")] * 6
     else:
         assert result.reason == "measurement_baseline_unavailable"
         assert result.finalized and not result.attempts
@@ -762,17 +767,15 @@ async def test_run_door_requires_a_resolved_ceiling_and_watch(tmp_path, box, cei
 
 @pytest.mark.parametrize("layout", ["baseline_express", "baseline_full"])
 def test_a_baseline_keeps_timing_at_entry_and_reads_no_room(layout):
-    """A speaker baseline takes its timing at entry, then each driver at each
-    pose, and no room sweep: room evidence comes from a room or rear seat
-    round (ADR-0400)."""
-    program = run_preset("speaker", layout)
-    request = ac.request_for_preset(program, repeats=2)
-    captures = plan_run.prepare_plan_captures(request)
-    timing = [capture for capture in captures if capture.spec.graph_scope == "timing"]
-    assert [(capture.stop.pose.azimuth_deg, capture.repeat) for capture in timing] == [(0, 1), (0, 2)]
+    """A speaker baseline takes its timing at entry, once however many takes its
+    poses ask, then each driver at each pose, and no room sweep: room evidence
+    comes from a room or rear seat round (ADR-0400)."""
+    program = _repeated(run_preset("speaker", layout))
+    captures = plan_run.prepare_plan_captures(ac.request_for_preset(program))
+    assert [capture.stop.pose.azimuth_deg for capture in captures if capture.spec.graph_scope == "timing"] == [0]
     assert {capture.stop.purpose for capture in captures} == {"speaker"}
     assert [capture.stop.pose.place for capture in captures if capture.spec.program_phase == "measure"] == [
-        pose.place for pose in program.poses for _ in range(pose.repeats * 2)]
+        pose.place for pose in program.poses for _ in range(2)]
 
 
 def test_a_speaker_preset_walks_its_driver_stops_and_no_summed_stop_names_a_band():
@@ -806,21 +809,19 @@ def test_a_speaker_preset_walks_its_driver_stops_and_no_summed_stop_names_a_band
 ])
 @pytest.mark.parametrize("repeats", [1, 3])
 def test_inline_plan_derives_only_the_preparation_it_needs(regime, candidate, purpose, program, phases, scope, repeats):
-    """The timing take is the named preset's (its ``timing_take`` flag), taken on the base; a plan
+    """The timing take is the named preset's (its ``timing_take`` flag), taken once on the base; a plan
     naming no preset takes none."""
     request = ac.AngleCaptureRequest(
-        stops=(ac.AngleStop(Pose(20, 0), regime, candidate_id=candidate, purpose=purpose),),
-        candidates=(candidate,), repeats=repeats, program=program,
+        stops=(ac.AngleStop(Pose(20, 0), regime, candidate_id=candidate, purpose=purpose),) * repeats,
+        candidates=(candidate,), program=program,
     )
     captures = plan_run.prepare_plan_captures(request)
-    phase_repeats = {"check": 1, "timing": repeats, "measure": repeats, "lateral": repeats}
+    phase_repeats = {"check": 1, "timing": 1, "measure": repeats, "lateral": repeats}
     assert tuple(capture.spec.program_phase for capture in captures) == tuple(
         phase for phase in phases for _ in range(phase_repeats[phase]))
-    assert [capture.repeat for capture in captures[-repeats:]] == list(range(1, repeats + 1))
     assert [capture.stop.pose.azimuth_deg for capture in captures[-repeats:]] == [20] * repeats
     assert all(capture.stop.pose.azimuth_deg == 0 for capture in captures[:-repeats])
     baseline = [capture for capture in captures if capture.spec.program_phase == "timing"]
-    assert [capture.repeat for capture in baseline] == (list(range(1, repeats + 1)) if scope else [])
     assert all((capture.spec.graph_scope, capture.stop.regime, capture.spec.positions, capture.spec.vertical_deg)
                == (scope, "summed", (0,), 0) for capture in baseline)
     assert all(capture.spec.graph_scope == ("drivers" if regime == "per_driver" else "candidate")
@@ -1154,8 +1155,8 @@ def test_a_close_driverless_set_shares_one_level():
     """A close driverless set probes once, at its first take. Its repeats and its
     lateral pose play at the level that take landed and answer to their repeats,
     so a lateral that reads 4 dB under the target is not raised (ADR-0403)."""
-    request = replace(ac.request_for_preset(run_preset("rear/express", poses=json.dumps([
-        {"azimuth_deg": angle, "elevation_deg": 0, "distance_m": 0.5} for angle in (0, 20)]))), repeats=2)
+    request = ac.request_for_preset(run_preset("rear/express", poses=json.dumps([
+        {"azimuth_deg": angle, "elevation_deg": 0, "distance_m": 0.5, "repeats": 2} for angle in (0, 20)])))
 
     result, fakes, selected, _ = _run_levelled(request, (90.0, 80.0, 80.4, 76.0, 76.3))
 
@@ -1271,7 +1272,7 @@ def test_a_branch_set_is_one_placement_and_the_preview_prices_its_probes():
     """Each placement probes what it plays: a branch take at a second bearing is a
     new set that probes both branches again, and the preview prices those probes;
     a repeat at one placement shares them (ADR-0407)."""
-    one = replace(ac.request_for_preset(run_preset("rear/pair", None, "0")), repeats=2)
+    one = ac.request_for_preset(_repeated(run_preset("rear/pair", None, "0")))
     two = ac.request_for_preset(run_preset("rear/pair", None, "0,80"))
     composer = partial(program_for_spec, excitation=_CHAIN_EXCITATION, gain_plan_db=None)
     captures = {name: plan_run.prepare_plan_captures(request) for name, request in (("one", one), ("two", two))}
@@ -1294,8 +1295,7 @@ def test_each_graph_of_a_close_set_probes_once():
     """A close set is one candidate graph: an A/B pair at two behind spots, with
     repeats, plays one probe per graph, at that graph's first take, and the
     graph's repeats and lateral take carry its level (ADR-0406)."""
-    request = replace(ac.request_for_preset(run_preset("rear/express", poses=_BEHIND), candidates=("base", "trial")),
-                      repeats=2)
+    request = ac.request_for_preset(_repeated(run_preset("rear/express", poses=_BEHIND)), candidates=("base", "trial"))
 
     captures = plan_run.prepare_plan_captures(request)
 
@@ -1345,8 +1345,7 @@ def test_a_cardioid_on_off_trial_behind_the_cabinet_lands_each_graph_at_80_db(mo
     the base that mutes it. Each graph's first take there probes and levels
     itself, so both land at 80 ± 2 dB, under the 85 dB stop, at both behind spots
     and every repeat (ADR-0406)."""
-    request = replace(ac.request_for_preset(run_preset("rear/express", poses=_BEHIND), candidates=("base", "trial")),
-                      repeats=2)
+    request = ac.request_for_preset(_repeated(run_preset("rear/express", poses=_BEHIND)), candidates=("base", "trial"))
     report = preflight(request, ready_facts(request, candidates={"trial": _cardioid_trial()}))
     assert not report.blocking
 
@@ -1367,9 +1366,9 @@ def test_a_branch_set_finds_its_own_level_after_a_summed_set_at_its_spot():
     """A branch take after a close summed take at the same spot never shares the
     summed probe's level, which bounds neither branch alone (ADR-0403 §3)."""
     pose = Pose(0, 0, kind="behind", distance_m=0.1)
-    request = ac.AngleCaptureRequest(stops=(
-        ac.AngleStop(pose, ac.REGIME_SUMMED, purpose="rear"),
-        ac.AngleStop(pose, ac.REGIME_BRANCHES, purpose="rear", branch_pair="front_rear")), repeats=2)
+    summed, branches = (ac.AngleStop(pose, ac.REGIME_SUMMED, purpose="rear"),
+                        ac.AngleStop(pose, ac.REGIME_BRANCHES, purpose="rear", branch_pair="front_rear"))
+    request = ac.AngleCaptureRequest(stops=(summed, summed, branches, branches))
 
     captures = plan_run.prepare_plan_captures(request)
 
@@ -1425,7 +1424,7 @@ def test_a_branch_set_whose_first_take_never_lands_carries_both_branches_level()
 def test_a_close_set_that_finds_no_level_plays_no_more_takes():
     """The behind spot's probe never reads over the room, so its set found no
     level. The rest of the set does not play (ADR-0361 §3, ADR-0403 §3)."""
-    request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
+    request = ac.request_for_preset(_repeated(run_preset("rear/express", "rear_behind")))
 
     result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0) + (70.0,) * 8,
                                         verdicts=lambda take: _UNHEARD if take >= 4 else None)
@@ -1476,7 +1475,7 @@ def test_a_redo_as_a_set_finds_no_level_plays_the_rest_at_the_level_it_then_land
     """The behind spot's probe is never heard, and the operator presses Redo just
     as that take is left unmeasured. The redone take lands, and the rest of the
     set plays at its level, not skipped as level_unsolved (ADR-0403 §3)."""
-    request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
+    request = ac.request_for_preset(_repeated(run_preset("rear/express", "rear_behind")))
 
     result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0) + (70.0,) * 4 + (92.0, 80.0, 80.0),
                                         verdicts=lambda take: _UNHEARD if 4 <= take <= 7 else None,
@@ -1490,7 +1489,7 @@ def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_le
     """A close set's first take that reads loud at every level is left unmeasured
     once its retakes are spent. The rest of its set plays at the last level solved
     for it, never at the take's ceiling (ADR-0403)."""
-    request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
+    request = ac.request_for_preset(_repeated(run_preset("rear/express", "rear_behind")))
 
     result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0, 92.0) + (86.0,) * 3 + (80.0,))
 
@@ -1809,13 +1808,13 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
 
 
 @pytest.mark.parametrize(("readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
-    ((70.0, 70.0, 73.0, 70.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4, 5}, [], 1),
+    ((70.0, 70.0, 70.0, 73.0, 70.0, 70.0), (), {3}, {0, 1, 2, 4, 5}, [], 1),
     ((70.0,) * 4 + (73.0,) * 2, (), {4, 5}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 1),
-    ((70.0,) * 12 + (73.0, 70.0, 70.0), (5, 10), {12}, {10, 11, 13, 14}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
-    ((70.0, 70.0, 73.0) + (75.0,) * 5, (3,), {2}, {3, 4, 5, 6, 7}, [], 1),
+    ((70.0,) * 13 + (73.0, 70.0), (5, 10), {13}, {10, 11, 12, 14}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
+    ((70.0, 70.0, 70.0, 73.0) + (75.0,) * 5, (4,), {3}, {4, 5, 6, 7, 8}, [], 1),
     ((70.0,) * 15, (5, 10, 15), set(), set(), [REASON_RETRIES_SPENT] * 5, 0),
-], ids=["a timing repeat drifts once", "a MEASURE repeat drifts twice to one reading", "no retry left", "a redo of a drifted take",
-        "a redo its placement cannot pay for"])
+], ids=["a MEASURE repeat drifts once", "a MEASURE repeat drifts twice to one reading", "no retry left",
+        "a redo of a drifted take", "a redo its placement cannot pay for"])
 def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap(
         readings, redo_at, drifted, kept, unmeasured, left):
     """A take at its run's fader never levels itself: a repeat more than SAME_POSE_DRIFT_DB
@@ -1824,8 +1823,8 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
     by (ADR-0383); a second drift to the same reading spends the placement (ADR-0428).
     A redo spends one, the takes it plays again none, and its new placement's level is
     no drift (#5722)."""
-    request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-                                     program="speaker/mark", repeats=2)
+    request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),) * 3,
+                                     program="speaker/mark")
 
     result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
 
@@ -2046,7 +2045,7 @@ def test_schedule_sweeps_repeats_and_retry_progress(monkeypatch, retry, trial):
     roles = ["summed"] * 3 if trial else roles
     segments = tuple(SimpleNamespace(role=role, kind="pilot" if trial and n != 1 else "sweep", start_sample=0, n_samples=4)
                      for n, role in enumerate(roles))
-    request = (replace(_walk([0], ("fp-a", "fp-b", "fp-c", "fp-d")), repeats=2) if trial == 8 else
+    request = (_walk([0], ("fp-a", "fp-b", "fp-c", "fp-d"), repeats=2) if trial == 8 else
                _walk([0, -20, 20], ("fp-a", "fp-b", "fp-c")) if trial == 9 else _walk([0, -20, 20]))
     counts = [8] if trial == 8 else [3, 3, 3] if trial == 9 else [1, 1, 1]
     captures = plan_run.prepare_plan_captures(request)
@@ -2145,21 +2144,20 @@ def test_the_preview_times_every_play_whole_and_announces_the_run_once():
         + len(row.poses) * plan_run.HUMAN_MOVE_ALLOWANCE_S)
 
 
-@pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
-def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timing, preparation):
+@pytest.mark.parametrize("repeats, counts, preparation", [(1, [15, 8, 8], 12), (2, [23, 16, 16], 18)])
+def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, preparation):
+    """A pose's repeats repeat its takes; the run's timing take plays once."""
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
-    request = ac.request_for_preset(run_preset("tournament", "tournament_full"), repeats=repeats)
+    request = ac.request_for_preset(_repeated(run_preset("tournament", "tournament_full"), repeats))
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     facts = plan_run.preview_schedule(request, captures, context)
     assert facts["measurements"] == len(captures)
     assert sum(facts["measurements_per_pose"]) == len(captures)
     assert facts["sweeps_per_pose"] == counts
-    assert facts["timing_sweeps"] == timing
+    assert facts["timing_sweeps"] == 1
     assert facts["preparation_sweeps"] == preparation
     assert facts["sweeps"] == sum(counts)
-    timing_rows = [row for row in facts["pose_sweeps"][0] if row["kind"] == "summed_sweep"]
-    assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
 
 
 @pytest.mark.parametrize("stated,played_at_one,repeats_at_one", [

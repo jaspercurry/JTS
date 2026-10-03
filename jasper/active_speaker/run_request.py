@@ -94,5 +94,5 @@ def run_envelope(plan: AngleCaptureRequest) -> tuple[dict[str, Any], dict[str, A
     takes = Counter((stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops)
     return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
             {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
-             "repeats": _shared(count * plan.repeats for count in takes.values()),
+             "repeats": _shared(takes.values()),
              "driver": _shared(stop.pose.driver for stop in plan.stops if stop.pose.driver)})

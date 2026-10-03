@@ -277,7 +277,7 @@ def test_preflight_issues(change, code):
         facts = replace(facts, commissioning_stop_db_spl=None,
                         issues=(PreflightIssue.from_code(code, ""),) if change == "context" else ())
     elif change == "capacity":
-        plan = replace(plan, repeats=129)
+        plan = replace(plan, stops=plan.stops * 129)
     report = preflight(plan, facts)
     issue, = report.issues
     assert issue.code == code
@@ -290,15 +290,14 @@ def test_clean_schedule_preserves_consecutive_places_and_repeat_order(tuning_pro
     candidate = _room_candidate(tuning_profile)
     name = candidate.fingerprint
     plan = AngleCaptureRequest(
-        tuple(AngleStop(Pose(angle, 0), REGIME_SUMMED, candidate_id=cid, purpose="speaker") for angle in (0, 20, 0) for cid in ("", name)),
-        candidates=("base", name), repeats=2, program="tournament/express",
+        tuple(AngleStop(Pose(angle, 0), REGIME_SUMMED, candidate_id=cid, purpose="speaker")
+              for angle in (0, 20, 0) for _ in range(2) for cid in ("", name)),
+        candidates=("base", name), program="tournament/express",
     )
     report = preflight(plan, ready_facts(plan, candidates={name: candidate}))
     assert report.issues == ()
-    assert [(row.pose, row.candidate_id, row.repeat) for row in report.schedule] == [
-        (stop.pose.place, stop.candidate_id or "base", repeat)
-        for stop in plan.stops for repeat in (1, 2)
-    ]
+    assert [(row.pose, row.candidate_id) for row in report.schedule] == [
+        (stop.pose.place, stop.candidate_id or "base") for stop in plan.stops]
     assert report.spl_ceiling_db_spl == 85
     assert {row.graph_scope for row in report.schedule} == {"candidate"}
 

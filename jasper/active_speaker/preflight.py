@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from itertools import product
 from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
@@ -168,7 +167,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
             add(REASON_WALK_RIG_CLEAR_NOT_ATTESTED, REASON_REGISTRY[REASON_WALK_RIG_CLEAR_NOT_ATTESTED].message)
         if not facts.mover_available:
             issues.append(mover_unavailable_issue(plan.program))
-    captures = len(plan.stops) * plan.repeats if valid_shape else 0
+    captures = len(plan.stops) if valid_shape else 0
     if captures > MAX_CAPTURE_PLAN_ATTEMPTS:
         add(WALK_OVER_CAPTURE_CAPACITY, f"captures={captures}; limit={MAX_CAPTURE_PLAN_ATTEMPTS}")
         valid_shape = False
@@ -244,12 +243,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         ceiling = stop
 
     schedule = tuple(
-        ScheduledCapture(index + 1, stop.pose.place,
-                         candidate_identity(stop.candidate_id), repeat,
+        ScheduledCapture(index, stop.pose.place,
+                         candidate_identity(stop.candidate_id), 1,
                          ("candidate_branches" if stop.regime == REGIME_BRANCHES and not stop.pose.driver else
                           scopes.get(stop.candidate_id) if stop.candidate_id else
                           "candidate" if stop.plays_summed else "drivers"), stop.regime)
-        for index, (stop, repeat) in enumerate(product(plan.stops, range(1, plan.repeats + 1)))
+        for index, stop in enumerate(plan.stops, 1)
     ) if valid_shape else ()
     preparable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
                                      for stop in plan.stops)
