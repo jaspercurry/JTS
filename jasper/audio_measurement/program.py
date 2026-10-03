@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -412,10 +413,26 @@ def take_stimulus_id(program: Mapping[str, Any]) -> str | None:
                         [ProgramSegment.from_dict(s) for s in stimulus["segments"]], stimulus["total_samples"])
 
 
+def _one_cycle(stimulus: Mapping[str, Any]) -> Mapping[str, Any]:
+    """A MEASURE program document as it plays at one sweep per driver: the cycles
+    it repeats, from the gap before the first repeat to the last, gone, and the
+    segments after them starting where they did."""
+    segments = stimulus["segments"]
+    later = [index for index, segment in enumerate(segments) if occurrence_index(segment["segment_id"])]
+    if stimulus["phase"] != PROGRAM_PHASE_MEASURE or not later:
+        return stimulus
+    first, last = segments[later[0] - 1], segments[later[-1]]
+    length = last["start_sample"] + last["n_samples"] - first["start_sample"]
+    return {**stimulus, "total_samples": stimulus["total_samples"] - length,
+            "segments": [*segments[:later[0] - 1], *({**segment, "start_sample": segment["start_sample"] - length}
+                                                     for segment in segments[later[-1] + 1:])]}
+
+
 def stimulus_shape_id(program: Mapping[str, Any]) -> str:
     """:func:`take_stimulus_id` with no level in it: each segment without its
-    gain. Takes that differ only in how loud they play share it."""
-    stimulus = _unannounced(program)
+    gain. Takes that differ only in how loud they play share it, and so do
+    MEASURE takes that differ only in how many sweeps each driver plays (ADR-0435)."""
+    stimulus = _one_cycle(_unannounced(program))
     return json_fingerprint({
         **{key: stimulus[key] for key in ("phase", "sample_rate_hz", "channels", "total_samples")},
         "segments": [{key: value for key, value in segment.items() if key not in ("gain_db", "effective_peak_dbfs")}
@@ -811,6 +828,16 @@ def _occurrence_suffix(index: int) -> str:
     if index == 1:
         return "_rep"
     return f"_rep{index}"
+
+
+_OCCURRENCE_SUFFIX_RE = re.compile(r"_rep(\d*)$")
+
+
+def occurrence_index(segment_id: str) -> int:
+    """The 0-based occurrence a MEASURE segment id names, :func:`_occurrence_suffix`
+    read back: a bare id is the first."""
+    match = _OCCURRENCE_SUFFIX_RE.search(segment_id)
+    return 0 if match is None else int(match.group(1) or 1)
 
 
 def build_measure_program(

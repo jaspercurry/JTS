@@ -88,6 +88,7 @@ from jasper.audio_measurement.program import (
     build_measure_program,
     build_verify_program,
     mesm_gap_samples,
+    occurrence_index,
     render_program_pcm,
 )
 from jasper.audio_measurement.comparison_bands import (
@@ -173,7 +174,7 @@ from jasper.audio_measurement.program_analysis.dispatch import (
     ABSOLUTE_NO_TARGET,
     ABSOLUTE_NO_TRUSTED_BAND,
 )
-from jasper.audio_measurement.program_analysis.drift import _sweep_occurrence_index, estimate_drift
+from jasper.audio_measurement.program_analysis.drift import estimate_drift
 from jasper.audio_measurement.program_analysis.signals import _band_average_db, _complex_tf, _peak_dbfs
 from jasper.active_speaker.branch_chain import (
     crossover_response_complex,
@@ -1356,12 +1357,11 @@ def test_era_tolerance_old_shaped_program_analyzes_without_crash_or_version_flag
 
 @pytest.mark.parametrize("n", [0, 1, 2, 5])
 def test_sweep_occurrence_index_round_trips_through_occurrence_suffix(n):
-    """Analysis-side ``_sweep_occurrence_index`` must invert composition-side
-    ``_occurrence_suffix`` exactly — the contract ``_sweep_occurrences_by_role``
-    relies on to group located sweeps by occurrence order rather than physical
-    schedule position under the N=3 interleaved MEASURE layout (design §5.4,
-    sweep-composition PR-A #1668)."""
-    assert _sweep_occurrence_index(f"sweep_w{_occurrence_suffix(n)}") == n
+    """``occurrence_index`` must invert ``_occurrence_suffix`` exactly — the
+    contract ``_sweep_occurrences_by_role`` relies on to group located sweeps by
+    occurrence order rather than physical schedule position under the
+    interleaved MEASURE layout (design §5.4, sweep-composition PR-A #1668)."""
+    assert occurrence_index(f"sweep_w{_occurrence_suffix(n)}") == n
 
 
 # glitch injection
