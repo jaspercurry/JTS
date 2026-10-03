@@ -645,7 +645,8 @@ def test_a_take_banked_as_its_run_is_cancelled_is_never_assessed():
     {"side": "right"}, {"role": "tweeter"},
 ])
 def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
-    """Neither a pose nor the window it picks (ADR-0400) is a set boundary."""
+    """Neither a pose nor the window it picks (ADR-0400) is a set boundary, nor
+    the level a stimulus played at (ADR-0433)."""
     manifest = RunManifest("run", _Store(FakeSeams().records))
     record = {"candidate_id": "", "graph_fingerprint": "graph", "stimulus_id": "program",
               "level_db": -20.0, "stimulus_dbfs": -18.0, "pose_kind": "bearing", "gating_applied": True,
@@ -657,7 +658,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
                                   TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
     groups = manifest.to_dict()["sets"]
-    split = bool(set(changed) - {"pose_kind", "gating_applied"})
+    split = bool(set(changed) - {"pose_kind", "gating_applied", "stimulus_id", "stimulus_dbfs"})
     assert len(groups) == (2 if split else 1)
     poses = {take["take_id"]: take["pose"]["azimuth_deg"] for take in manifest.takes}
     assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if split else {0, 10, 20})
@@ -670,33 +671,34 @@ def test_a_run_given_its_level_announces_its_first_take_only():
     assert [call["spec"].courtesy_prelude for call in fakes.play.calls] == [True, False, False, False]
 
 
-def test_the_take_that_announces_a_run_stays_in_its_set():
-    """Only a run's first take plays the courtesy prelude. It measures the same
-    stimulus as the takes after it, so it shares their sets (ADR-0417)."""
+@pytest.mark.parametrize(("first", "sets", "first_gains"), [
+    ({"courtesy_prelude": True}, [3, 3], (-24.0, -18.0)),
+    ({"gain_plan": {"woofer": -12.0, "tweeter": -21.0}}, [3, 3], (-21.0, -12.0)),
+    ({"sweep_durations": {"woofer": 0.5, "tweeter": 0.5}}, [1, 1, 2, 2], (-24.0, -18.0)),
+], ids=["announced", "louder", "another-shape"])
+def test_a_set_holds_one_stimulus_shape_and_each_row_its_own_level(first, sets, first_gains):
+    """The take that announces a run (ADR-0417), and a take that plays louder,
+    as the take a raise rides does, measure the shape the run's other takes
+    measure, so they share each role's set; each row names the gain its role's
+    sweeps played, never the one its record asked. A take of another shape
+    starts its own sets (ADR-0433)."""
     manifest = RunManifest("run", _Store(FakeSeams().records))
     roles = [RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))]
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
             manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
-            program = build_measure_program({"woofer": -18.0, "tweeter": -24.0}, roles, courtesy_prelude=index == 1)
-            await manifest.append({"take_id": manifest.allocate_take_id(), "level_db": -20.0, "program": program.to_dict()},
+            program = build_measure_program(**{"gain_plan": {"woofer": -18.0, "tweeter": -24.0}, "roles_bands": roles,
+                                               **(first if index == 1 else {})})
+            await manifest.append({"take_id": manifest.allocate_take_id(), "level_db": -20.0, "stimulus_dbfs": -12.0,
+                                   "program": program.to_dict()},
                                   f"record-{index}", TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
-    assert [len(group["takes"]) for group in manifest.to_dict()["sets"]] == [3, 3]
-
-
-def test_manifest_names_emitted_role_levels():
-    manifest = RunManifest("run", _Store(FakeSeams().records))
-    manifest.begin({"index": 1, "repeat": 1, "pose": {"azimuth_deg": 0}}, attempt=1, pose_index=0)
-    program = build_measure_program({"woofer": -18.0, "tweeter": -24.0}, [
-        RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))])
-    record = {"take_id": manifest.allocate_take_id(), "stimulus_dbfs": -12, "program": program.to_dict(),
-              "curves": [{"role": "woofer", "band_hz": [20, 2000], "validity_floor_hz": 100}]}
-    asyncio.run(manifest.append(record, "record", TakeVerdict(True), complete=True, level_observation={}))
     groups = manifest.to_dict()["sets"]
-    assert {group["capture_basis"]["role"]: group["capture_basis"]["stimulus_dbfs"]
-            for group in groups} == {"woofer": -18, "tweeter": -24}
-    assert manifest.takes_measured == 1
+    assert [len(group["takes"]) for group in groups] == sets
+    played = {(group["capture_basis"]["role"], take["index"]): take["level"]["stimulus_dbfs"]
+              for group, take in zip((group for group in groups for _ in group["takes"]), manifest.takes)}
+    assert played == {("tweeter", 1): first_gains[0], ("woofer", 1): first_gains[1],
+                      **{("tweeter", index): -24.0 for index in (2, 3)}, **{("woofer", index): -18.0 for index in (2, 3)}}
 
 
 @pytest.mark.parametrize("available", [True, False])

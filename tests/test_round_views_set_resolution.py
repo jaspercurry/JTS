@@ -258,8 +258,7 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         median = read_room_median(doc)
         assert median.band_hz == (30.0, 200.0)
         assert median.evidence == doc["evidence"]
-        expected_program = changed["stimulus_id"] if record is second and "stimulus_id" in changed else record["program"]["stimulus_id"]
-        assert median.evidence["basis"]["stimulus_id"] == expected_program
+        assert median.evidence["basis"]["stimulus_shape_id"] == stimulus_shape_id(record["program"])
         grade = _run(capsys, ["room-grade", str(round_dir), "--set", set_id])
         assert grade["evidence"] == doc["evidence"]
         assert grade["graph_scopes"] == [record["graph_scope"]]

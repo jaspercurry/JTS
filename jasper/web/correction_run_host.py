@@ -63,7 +63,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     answers: dict[str, tuple[Any, Any]] = {}
     roles = tuple(band.role for band in conductor.roles_bands)
     diameters = context.radiating_diameter_mm_by_target if context is not None else {}
-    phase = ""
+    phase, index = "", 0
     answer: Any = None
 
     def index_of(record: Any) -> int:
@@ -141,9 +141,10 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
         return analysis
 
     def analyze(record: Any) -> Any:
-        nonlocal phase, answer
+        nonlocal phase, answer, index
         answer, analysis = answers[record["take_id"]]
-        phase = conductor.phase_of_index(index_of(record))
+        index = index_of(record)
+        phase = conductor.phase_of_index(index)
         if isinstance(analysis, Exception):
             raise analysis
         return analysis
@@ -164,9 +165,11 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
             kwargs.update(gain_ceiling_db=conductor.measure_gain_ceiling_db, caps_dbfs=conductor.caps_dbfs,
                           session_volume_db=conductor.excitation.session_volume_db,
                           spl_stop_db_spl=conductor.spl_stop_db_spl,
-                          spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"))
+                          spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"),
+                          raise_rides_next=conductor.raise_rides_next(index),
+                          reads_timing=conductor.reads_timing(index))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
-        if verdict is None and phase == PHASE_MEASURE and assessed.next in {"retake_louder", "retake_quieter"}:
+        if verdict is None and phase == PHASE_MEASURE and any(key.startswith("next_gain_db.") for key in assessed.evidence):
             after_grading(partial(conductor.rearm_measure_after_transient, assessed))
         return assessed
 

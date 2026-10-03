@@ -34,10 +34,12 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     CrossoverV2FlowError,
+    on_design_axis,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
+    PHASE_MEASURE,
 )
 from jasper.active_speaker.crossover_v2.measure_spec import (
     MeasureSpec,
@@ -294,6 +296,18 @@ class CrossoverV2Session:
         if phase is None:
             raise CrossoverV2FlowError(f"no v2 phase for capture index {index}")
         return phase
+
+    def raise_rides_next(self, index: int) -> bool:
+        """A later MEASURE take of the plan plays at this take's pose, so a raise this take asks
+        rides it (ADR-0433)."""
+        pose = self.capture_geometry(PHASE_MEASURE, index)
+        return any(later > index and phase == PHASE_MEASURE and self.capture_geometry(phase, later) == pose
+                   for later, phase in self._index_phase_map.items())
+
+    def reads_timing(self, index: int) -> bool:
+        """A decision reads this MEASURE take's timing: it plays at the mark (ADR-0345, ADR-0433)."""
+        pose = self.capture_geometry(PHASE_MEASURE, index)
+        return on_design_axis(pose.position_deg, pose.vertical_deg)
 
     def _slot_of_index(self, index: int) -> str:
         """The retry-budget key for one capture index."""

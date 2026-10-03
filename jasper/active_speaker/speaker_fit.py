@@ -34,7 +34,7 @@ from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement.evidence_reasons import REASON_FIT_NOT_FINITE, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.interference_nulls import POSITION_VARIANT, feature_position_variance
 from jasper.audio_measurement.mic_identity import mic_tier_for_model
-from jasper.audio_measurement.program import ExcitationProgram, take_stimulus_id
+from jasper.audio_measurement.program import ExcitationProgram, stimulus_shape_id
 from jasper.audio_measurement.series_stats import power_mean_db
 from jasper.audio_measurement.spatial_combine import _band_spread, octave_bands_hz
 
@@ -168,7 +168,7 @@ def speaker_fit(
     program = ExcitationProgram.from_dict(record["program"])
     if program.phase != "measure":
         raise RoundViewsError("speaker-fit requires a Speaker MEASURE take")
-    if take_stimulus_id(record["program"]) != selected.capture_basis["stimulus_id"]:
+    if stimulus_shape_id(record["program"]) != selected.capture_basis.get("stimulus_shape_id"):
         raise RoundViewsError("selected take does not match its manifest")
     sources = prescription_sources(inputs) if sources is None else sources
     try:

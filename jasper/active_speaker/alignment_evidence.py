@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 from .applied_identity import applied_identity
 from .baseline_profile import profile_driver_corrections
 from .crossover_v2.conductor_context import driver_spacing_source
+from .crossover_v2.contracts import on_design_axis
 from .crossover_v2.round_inputs import SetTakes, capture_identity, latest_measure_takes, take_order
 
 
@@ -70,5 +71,5 @@ def round_alignment(
 
 def commissioning_alignment(rows: Sequence[Mapping[str, Any]], candidate_id: str | None = None) -> Mapping[str, Any] | None:
     return max((row for row in rows if (candidate_id is None or row["base"] or row["candidate_id"] in (None, candidate_id))
-                and row["pose"].get("azimuth_deg") == 0 and row["pose"].get("elevation_deg") == 0),
+                and on_design_axis(row["pose"].get("azimuth_deg"), row["pose"].get("elevation_deg"))),
                key=take_order, default=None)

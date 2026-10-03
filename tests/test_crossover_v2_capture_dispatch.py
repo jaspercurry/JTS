@@ -371,7 +371,7 @@ def test_effective_caps_become_digital_gain_ceilings(cap, volume, expected):
     verdict = cd.assess(_analysis(driver_responses=(response,)), phase="measure", gain_db={"tweeter": -50},
                         gain_ceiling_db={"tweeter": -50}, caps_dbfs=caps, session_volume_db=volume,
                         spl_stop_db_spl=85, spl={"max_window_db_spl": 30, "ceiling_db_spl": 85})
-    assert verdict.next_gain_db == (pytest.approx(expected) if expected is not None else None)
+    assert verdict.evidence.get("next_gain_db.tweeter") == (pytest.approx(expected) if expected is not None else None)
 
 
 @pytest.mark.parametrize("cap,volume,session_headroom,spl_headroom,magnitude,raise_db,capped_by,residual", [
@@ -387,6 +387,7 @@ def test_effective_caps_become_digital_gain_ceilings(cap, volume, expected):
     (-33.2, -16.9, 4, float("inf"), "ok", 4, "spl_unobserved", 6),
     (None, -16.9, 4, 20, "ok", 0, "ceiling_unavailable", 6),
     (-33.2, -16.9, 0, 20, "insufficient", 0, None, None),
+    (-33.2, -16.9, 4, 20, "insufficient", 4, None, None),
 ])
 @pytest.mark.parametrize("stop", [80, 85])
 def test_alignment_only_retry_uses_driver_and_spl_headroom(
@@ -400,6 +401,11 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     residual,
     stop,
 ):
+    """A take whose magnitude passes asks only its alignment's raise, inside the driver's
+    ceiling and the SPL headroom its loudest window leaves. A raise those caps hold under
+    the take's 6 dB shortfall cannot lift it to its floor, so the take is kept with the
+    raise in its evidence; a raise that can is retaken. A take whose magnitude fails is
+    retaken at any raise (ADR-0433)."""
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
         noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
@@ -411,9 +417,10 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
         gain_ceiling_db={"woofer": -30 + session_headroom}, caps_dbfs={"woofer": cap} if cap is not None else {},
         session_volume_db=volume, spl_stop_db_spl=stop,
         spl={"max_window_db_spl": stop - 3 - spl_headroom if spl_headroom is not None else None, "ceiling_db_spl": 85})
+    retaken = bool(raise_db) and (magnitude == "insufficient" or raise_db >= 6)
     assert verdict.ok and verdict.fault is None
-    assert verdict.next == ("retake_louder" if raise_db else "accept")
-    assert verdict.next_gain_db == (pytest.approx(-30 + raise_db) if raise_db else None)
+    assert (verdict.next, verdict.charge) == (("retake_louder", "speaker") if retaken else ("accept", "none"))
+    assert verdict.next_gain_db == (pytest.approx(-30 + raise_db) if retaken else None)
     assert {
         key.removeprefix("next_gain_db."): float(value)
         for key, value in verdict.evidence.items()
@@ -426,13 +433,19 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     assert verdict.evidence.get("alignment.woofer.alignment_snr_residual_shortfall_db") == (pytest.approx(residual) if residual is not None else None)
 
 
-@pytest.mark.parametrize("cap,peak,raise_db,noise_drop_db,capped_by,after", [
-    (-37.99, 62, 12, 0, None, 0), (-45.99, 62, 4, 0, "driver_cap", 2),
-    (-37.99, 79, 3, 0, "spl_stop", 3), (-45.99, 62, 4, 3, None, 0),
+@pytest.mark.parametrize("takes,cap,peak,raise_db,noise_drop_db,capped_by,after", [
+    (1, -37.99, 62, 12, 0, None, 0),
+    (2, -37.99, 62, 12, 0, None, 0), (2, -45.99, 62, 4, 0, "driver_cap", 2),
+    (2, -37.99, 79, 3, 0, "spl_stop", 3), (2, -45.99, 62, 4, 3, None, 0),
 ])
-async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, peak, raise_db, noise_drop_db, capped_by, after):
-    """The retake's record banks its alignment levels with the shortfall its
-    stop's first attempt measured before it (ADR-0383 §4, ADR-0395)."""
+async def test_round_retake_banks_played_levels_and_measured_shortfalls(
+        takes, cap, peak, raise_db, noise_drop_db, capped_by, after):
+    """The last MEASURE take at the mark is retaken at a raise that can lift it
+    to its floor, and the retake's record banks its alignment levels with the
+    shortfall its stop's first attempt measured before it (ADR-0383 §4,
+    ADR-0395). With a later MEASURE take there, the first is kept and the next
+    plays at the raise the retake would have played; its record banks its own
+    shortfall (ADR-0433)."""
     def measure(program):
         band = snr_policy.band_snr_verdicts(
             decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000],
@@ -443,30 +456,31 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
         return replace(_measure_analysis(program),
                        driver_responses=(replace(_driver_response("woofer", 8), snr={"alignment": band}),))
 
-    conductor = _conductor(FakeSeams(measure=measure), index_phase_map={1: "measure"}, gain_plan_db=GAINS,
-                           driver_caps_dbfs={"woofer": cap, "tweeter": -30})
+    conductor = _conductor(FakeSeams(measure=measure), index_phase_map=dict.fromkeys(range(1, takes + 1), "measure"),
+                           gain_plan_db=GAINS, driver_caps_dbfs={"woofer": cap, "tweeter": -30})
     conductor._measure_gain_ceiling_db.update(GAINS)
     manifest = RunManifest("alignment", SimpleNamespace(bank=AsyncMock(side_effect=lambda record: record.get("take_id", "manifest"))))
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
     spec = MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="measure")
     asked = None
-    for attempt in (1, 2):
-        manifest.begin({"index": 1, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 20, "elevation_deg": 0}},
+    for index, attempt in ((1, 1), (1, 2)) if takes == 1 else ((1, 1), (2, 1)):
+        first = (index, attempt) == (1, 1)
+        manifest.begin({"index": index, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
         program = compose_plan_program(conductor, spec, asked)
         gain = program.segment("sweep_w").gain_db
-        assert gain == pytest.approx(-30 + (raise_db if attempt == 2 else 0))
+        assert gain == pytest.approx(-30 + (0 if first else raise_db))
         assert all(seg.effective_peak_dbfs <= conductor._excitation.caps_dbfs[seg.role]
                    for seg in program.stimulus_segments())
         spl = {"max_window_db_spl": peak + gain + 30, "ceiling_db_spl": 85}
         capture = WiredCaptureAnswer(wav=b"", program=program.to_dict(), capture_integrity={"spl": spl})
-        record = {"take_id": f"take-{attempt}", "index": 1, "attempt": attempt,
+        record = {"take_id": f"take-{index}-{attempt}", "index": index, "attempt": attempt,
                   "phase": "measure", "program": program.to_dict()}
         records.enrich(capture, record)
         analysis = analyze(record)
         verdict = assessor(analysis, phase="measure", program=program)
-        assert verdict.next == ("retake_louder" if attempt == 1 else "accept")
+        assert (verdict.next, verdict.charge) == (("retake_louder", "speaker") if first and takes == 1 else ("accept", "none"))
         assert verdict.ok and verdict.fault is None
         asked = verdict.next_gain_db
         manifest.judge = AsyncMock(return_value=(verdict, {}))
@@ -477,10 +491,13 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
     pair, = rows
     level = pair["levels"]["woofer"]
     assert level["alignment_level_db"] == pytest.approx(-30 + raise_db)
-    assert level["alignment_snr_shortfall_db"] == {"before": 6, "after": pytest.approx(after)}
+    assert level["alignment_snr_shortfall_db"] == {"before": 6 if takes == 1 else pytest.approx(after),
+                                                   "after": pytest.approx(after)}
     assert level.get("alignment_level_capped_by") == capped_by
     assert level.get("alignment_snr_residual_shortfall_db") == (after if capped_by else None)
     assert pair["snr"]["woofer"]["verdict"] == ("ok" if after == 0 else "insufficient")
+    assert [[take["selected"] for take in group["takes"]] for group in manifest.to_dict()["sets"]] == [
+        [takes == 2, True]] * 2
     assert conductor._measure_gain_ceiling_db == GAINS
 
 
