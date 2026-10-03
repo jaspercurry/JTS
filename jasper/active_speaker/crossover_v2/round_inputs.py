@@ -23,7 +23,7 @@ from jasper.audio_measurement.evidence_reasons import (
 )
 from jasper.active_speaker.applied_identity import BASE_LAYER
 from jasper.active_speaker.measurement_programs import (
-    CANDIDATE_LAYERS, POSE_KIND_BEARING, PROGRAM_ROWS, PURPOSE_BASS, PURPOSE_REFERENCE, PURPOSE_ROOM,
+    CANDIDATE_LAYERS, POSE_KIND_BEARING, POSE_KIND_SEAT, PROGRAM_ROWS, PURPOSE_BASS, PURPOSE_REFERENCE, PURPOSE_ROOM,
     PURPOSE_SPEAKER, RUNNABLE_PROGRAMS, run_purpose, run_purposes,
 )
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
@@ -316,7 +316,7 @@ def _judged(packet: Mapping[str, Any], identity: Mapping[str, Any], purpose: str
     """A round of ``purpose`` judged two ways (ADR-0437). ``stale`` and ``stale_by`` judge one of its sets that
     kept a take and names its layers, each by the layers it played but those each of its kept takes played
     cleared: a current set first, then one the program can design on (each kept take played the program's own
-    layer cleared), then the newest (the last the packet lists). ``set_id`` names that set when it is current
+    layer cleared, and for room and bass stood at a seat), then the newest (the last the packet lists). ``set_id`` names that set when it is current
     and the program can design on it. ``base_stale_by`` judges the stack the round was banked on, the applied
     tune at its bank. A layer above the program counts for neither, and a purpose outside the stack plays none."""
     under = RUNNABLE_PROGRAMS[:RUNNABLE_PROGRAMS.index(purpose) + 1] if purpose in RUNNABLE_PROGRAMS else ()
@@ -324,10 +324,13 @@ def _judged(packet: Mapping[str, Any], identity: Mapping[str, Any], purpose: str
     current = identity.get("layer_fingerprints") or {}
     sets = []
     for group in reversed(packet.get("sets") or ()):
-        kept = [take.get("cleared_layers") or () for take in group["takes"] if take.get("selected")]
+        kept = [take for take in group["takes"] if take.get("selected")]
         if kept and "layer_fingerprints" in group:
-            cleared = set(CANDIDATE_LAYERS).intersection(*kept)
-            sets.append((_stale_by(group["layer_fingerprints"], current, under, cleared), own in cleared, group["set_id"]))
+            cleared = set(CANDIDATE_LAYERS).intersection(*(take.get("cleared_layers") or () for take in kept))
+            seated = purpose not in (PURPOSE_ROOM, PURPOSE_BASS) or all(
+                (take.get("pose") or {}).get("kind") == POSE_KIND_SEAT for take in kept)
+            sets.append((_stale_by(group["layer_fingerprints"], current, under, cleared), own in cleared and seated,
+                         group["set_id"]))
     stale_by, designs, set_id = min(sets, key=lambda row: (bool(row[0]), not row[1]), default=(list(under), False, None))
     return {"set_id": set_id if designs and not stale_by else None, "stale": bool(stale_by), "stale_by": stale_by,
             "base_stale_by": _stale_by((packet.get("applied") or {}).get("layer_fingerprints") or {}, current, under)}
@@ -338,14 +341,16 @@ def latest_banked_rounds(
     programs: tuple[str, ...] = RUNNABLE_PROGRAMS, include_stale: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Latest packet per program within a bounded window, judged by :func:`_judged`: by default only a current
-    one, and with ``include_stale`` a current one before a newer stale one."""
+    one, and with ``include_stale`` a current one before a newer stale one; among current ones, one that names a
+    set to design on before a newer one that names none."""
     found: dict[str, dict[str, Any]] = {}
     for directory, packet, banked_at in banked_rounds(session_dir, limit=limit):
         for name in (name for name in packet_purposes(packet) if name in programs):
             judged = _judged(packet, identity, name)
             prior = found.get(name)
-            if (include_stale or not judged["stale"]) and (prior is None or (not judged["stale"], banked_at, str(directory))
-                                                           > (not prior["stale"], prior["started_at"], prior["round_dir"])):
+            rank = (not judged["stale"], judged["set_id"] is not None, banked_at, str(directory))
+            if (include_stale or not judged["stale"]) and (prior is None or rank > (
+                    not prior["stale"], prior["set_id"] is not None, prior["started_at"], prior["round_dir"])):
                 found[name] = {"round_dir": str(directory), "started_at": banked_at, "round_id": directory.name,
                                "banked_at": banked_at, "status": packet.get("result"), **judged,
                                **({"alignment_verdict": packet.get("alignment_verdict"),

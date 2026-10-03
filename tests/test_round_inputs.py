@@ -120,9 +120,10 @@ def _tune(*layers, rear="S1"):
     return profile
 
 
-def _trial(name, base, candidate, *, preset="rear/seat"):
-    """A seat trial's two sets and the tunes they played: its base and its candidate, a cardioid trial's seed."""
-    return name, preset, (("base", base), ("candidate", candidate))
+def _trial(name, base, candidate, *, preset="rear/seat", kind="seat"):
+    """A trial's two sets and the tunes they played: its base and its candidate, a cardioid trial's seed; its
+    takes stand at seats unless ``kind`` says otherwise."""
+    return name, preset, (("base", base), ("candidate", candidate)), kind
 
 
 @pytest.mark.parametrize("trials,applied,named,action", [
@@ -138,8 +139,11 @@ def _trial(name, base, candidate, *, preset="rear/seat"):
     ([_trial("older", _tune("speaker"), _tune("speaker", "rear")),
       _trial("newer", _tune("speaker"), _tune("speaker", "rear", rear="S2"))], _tune("speaker", "rear"),
      ("older", "candidate"), ("copy_prompt", "room", "older", "candidate", "round_available")),
+    ([_trial("seats", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat"),
+      _trial("arm-smoke", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat", kind="bearing")],
+     _tune("speaker", "rear"), ("seats", "base"), ("copy_prompt", "room", "seats", "base", "round_available")),
 ], ids=["cardioid-nothing-applied-since", "cardioid-seed-applied", "cardioid-seed-applied-over-a-room-layer",
-        "room-candidate-applied", "an-older-current-trial"])
+        "room-candidate-applied", "an-older-current-trial", "a-newer-round-off-the-seats"])
 def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeypatch, trials, applied, named, action):
     """A seat trial plays the applied tune and a candidate. Until an apply its base set is current; once the
     candidate is applied, its set is current too, and a current round comes before a newer stale one. The
@@ -148,9 +152,9 @@ def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeyp
     round was banked on (ADR-0437)."""
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
     banked = {}
-    for age, (name, preset, sets) in enumerate(trials):
+    for age, (name, preset, sets, kind) in enumerate(trials):
         banked[name] = [{"set_id": set_id, "base": set_id == "base", "layer_fingerprints": layer_fingerprints(tune),
-                         "takes": [{"selected": True, "cleared_layers": list(cleared_layers(
+                         "takes": [{"selected": True, "pose": {"kind": kind}, "cleared_layers": list(cleared_layers(
                              run_purpose(preset), base=set_id == "base", regime=REGIME_SUMMED))}] * 3}
                         for set_id, tune in sets]
         _bank_packet(tmp_path / "campaigns" / name, applied_identity(sets[0][1]), preset, room=[{}], bass=[{}],

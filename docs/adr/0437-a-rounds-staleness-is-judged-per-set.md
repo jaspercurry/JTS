@@ -42,12 +42,13 @@ that the round was banked on.
 3. **Which set the program designs on.** `latest_banked_rounds` judges a round by one of its sets that
    kept a take and names its layers. It picks in this order:
    - a current set before a stale set;
-   - then a set whose kept takes all played the program's own layer cleared. For room and bass, that is
-     a set with bass and room off: the in-room base, or the seed's set of a cardioid trial;
+   - then a set whose kept takes all played the program's own layer cleared and, for room and bass, all
+     stood at a seat. For room and bass, that is a seat set with bass and room off: the in-room base, or
+     the seed's set of a cardioid trial (an arm smoke round at 1 m bearings is not one);
    - then the newest set (the last that the packet lists, which is the last set that the run began).
 
-   `stale` and `stale_by` are that set's. `set_id` names it only when it is current and each of its kept
-   takes played the program's own layer cleared, the set that the program can design on. So a room or a
+   `stale` and `stale_by` are that set's. `set_id` names it only when it is current and the program can
+   design on it (its own layer cleared, and for room and bass at a seat). So a room or a
    bass round names its set with bass and room off, a rear pair round names a pair set, and a speaker
    round names none. A round with no such set names none.
 4. **Whether the applied room is still right.** `base_stale_by` names the programs at or under the
@@ -77,7 +78,8 @@ Each line of ADR-0420 that this changes:
   layer changed under the round." Each set is now judged alone, by the layers that it played and the
   layers that its own kept takes cleared. `stale_by` is that of the set the round is judged by.
 - §5, line 34: "The next-program pointer reads the latest round of each program, current or stale." A
-  current round now comes before a newer stale one.
+  current round now comes before a newer stale one, and among current rounds one that names a set to
+  design on comes before a newer one that names none.
 - §5, lines 34–36: "When the room layer is applied and room's latest round went stale through a layer
   under room (speaker, rear or bass), room is next: `run_program` with reason code `upstream_changed`."
   "Went stale" reads the stack the round was banked on (`base_stale_by`). When the round names a set, the
