@@ -75,9 +75,9 @@ def _require_range(name: str, value: object, lo: float, hi: float, unit: str = "
 class DeclaredGeometry:
     """Operator-declared rig geometry: two heights, a distance, the room around it.
 
-    Every optional field is ``None`` when nothing was declared, never ``0``: the
-    ceiling-bounce family is then absent from :meth:`first_bounce_s`'s minimum,
-    and an undeclared wall is absent from :func:`boundary_prior`.
+    Every optional field is ``None`` when nothing was declared, never ``0``: an
+    undeclared ceiling or wall then has no bounce in :meth:`first_bounce_s`'s
+    minimum, and an undeclared wall is absent from :func:`boundary_prior`.
     ``cabinet_back_wall_m`` is perpendicular from rear-panel centre to the wall
     behind it. Depth joins rear/front panel centres; toe-in is relative to the
     wall normal (zero faces straight away). ``side_wall_m`` is speaker to the
@@ -140,7 +140,12 @@ class DeclaredGeometry:
                     "distance_m",
                     f"distance_m must be a positive finite length (got {distance_m!r})",
                 )
-        direct_m = math.hypot(distance, self.speaker_height_m - self.mic_height_m)
+        rise_m = self.speaker_height_m - self.mic_height_m
+        direct_m = math.hypot(distance, rise_m)
+        # Each path runs from the speaker's image in one surface to the microphone,
+        # which sits on the speaker's axis, turned by the toe-in from the wall
+        # normal. The toe's direction is undeclared, so the side wall's image keeps
+        # the microphone as far from that wall as the speaker. See ADR-0427.
         bounce_paths_m = [
             math.hypot(distance, self.speaker_height_m + self.mic_height_m),
         ]
@@ -152,6 +157,13 @@ class DeclaredGeometry:
                     + (self.ceiling_height_m - self.mic_height_m),
                 )
             )
+        walls, _ = self.boundary_walls()
+        if "front" in walls and self.toe_in_degrees is not None:
+            toe = math.radians(self.toe_in_degrees)
+            bounce_paths_m.append(math.hypot(
+                2.0 * walls["front"] + distance * math.cos(toe), distance * math.sin(toe), rise_m))
+        if "side" in walls:
+            bounce_paths_m.append(math.hypot(distance, 2.0 * walls["side"], rise_m))
         return (min(bounce_paths_m) - direct_m) / DEFAULT_SOUND_SPEED_M_S
 
     def entanglement_floor_hz(self, distance_m: float | None = None) -> float:
@@ -159,7 +171,7 @@ class DeclaredGeometry:
         return f_entanglement_floor_hz(self.first_bounce_s(distance_m))
 
     def boundary_walls(self) -> tuple[dict[str, float], str]:
-        """Baffle-reference distances for the advisory prior, never DSP delay.
+        """Baffle-reference distances for the advisory prior and :meth:`first_bounce_s`, never DSP delay.
 
         The derived front distance is to the front-panel centre, not an assumed
         acoustic centre for every driver. A directivity fit needs source geometry.

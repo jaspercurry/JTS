@@ -7,9 +7,9 @@
 Issue #3502: the measured reflection finder in
 :mod:`jasper.audio_measurement.gating` structurally never fires on this rig
 class, so ``entanglement_floor_hz`` needs a declared-geometry source. These
-tests pin the geometry math against an independently-derived worked case
-(never the module's own formula fed back to itself), the ceiling-family
-participation rule, field-level validation bounds, and the JSON round trip.
+tests pin the geometry math against independently-derived worked cases
+(never the module's own formula fed back to itself), which declared surface's
+bounce comes first, field-level validation bounds, and the JSON round trip.
 """
 from __future__ import annotations
 
@@ -39,56 +39,40 @@ from jasper.audio_measurement.measurement_geometry import (
 )
 
 
-def test_first_bounce_and_entanglement_floor_match_an_independently_derived_case():
-    # h_s = h_m = 0.84 m, d = 1.0 m: direct path is exactly the distance (the
-    # heights cancel), and the floor-bounce path is the mirror-image geometry
-    # sqrt(d^2 + (h_s+h_m)^2). Computed here from the raw geometry, not by
-    # calling the method under test on itself.
-    geometry = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0)
-    direct_m = math.hypot(1.0, 0.84 - 0.84)
-    floor_path_m = math.hypot(1.0, 0.84 + 0.84)
-    expected_t_s = (floor_path_m - direct_m) / DEFAULT_SOUND_SPEED_M_S
-
-    assert direct_m == pytest.approx(1.0)
-    assert floor_path_m == pytest.approx(1.9550967, abs=1e-6)
-    assert geometry.first_bounce_s() == pytest.approx(expected_t_s, rel=1e-12)
-    assert geometry.first_bounce_s() == pytest.approx(2.7846e-3, abs=1e-6)
-    assert geometry.entanglement_floor_hz() == pytest.approx(
-        TRUSTED_FLOOR_MULTIPLIER / expected_t_s, rel=1e-12
-    )
-    assert geometry.entanglement_floor_hz() == pytest.approx(897.7, abs=0.5)
+_FLOOR_IMAGE = (0.0, 0.0, -0.9)
+_CABINET = {"cabinet_back_wall_m": 0.2, "cabinet_depth_m": 0.3}
 
 
-def test_ceiling_family_is_absent_from_the_minimum_when_not_declared():
-    geometry = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0)
-    direct_m = math.hypot(1.0, 0.0)
-    floor_path_m = math.hypot(1.0, 1.68)
-    assert geometry.first_bounce_s() == pytest.approx(
-        (floor_path_m - direct_m) / DEFAULT_SOUND_SPEED_M_S, rel=1e-12
-    )
+@pytest.mark.parametrize("placement, image_m, floor_hz", [
+    pytest.param({}, _FLOOR_IMAGE, 750.8, id="nothing_declared_floor"),
+    pytest.param({"cabinet_back_wall_m": 0.2}, _FLOOR_IMAGE, 750.8, id="back_gap_alone_floor"),
+    pytest.param({"ceiling_height_m": 3.0}, _FLOOR_IMAGE, 750.8, id="high_ceiling_floor"),
+    pytest.param({"ceiling_height_m": 1.1}, (0.0, 0.0, 1.3), 21962.9, id="low_ceiling"),
+    pytest.param({**_CABINET, "toe_in_degrees": 0}, (0.0, -1.0, 0.9), 859.6, id="near_back_wall"),
+    pytest.param({**_CABINET, "toe_in_degrees": 30},
+                 (0.0, -2 * (0.2 + 0.3 * math.cos(math.radians(30))), 0.9), 1006.4, id="toed_in_back_wall"),
+    pytest.param({**_CABINET, "cabinet_back_wall_m": 1.0, "toe_in_degrees": 0}, _FLOOR_IMAGE, 750.8,
+                 id="far_back_wall_floor"),
+    pytest.param({"side_wall_m": 0.5}, (-1.0, 0.0, 0.9), 2077.5, id="near_side_wall"),
+    pytest.param({"side_wall_m": 1.4}, _FLOOR_IMAGE, 750.8, id="far_side_wall_floor"),
+])
+def test_the_earliest_declared_bounce_sets_the_floor(placement, image_m, floor_hz):
+    """jts3's heights (speaker 0.9 m, microphone 1.0 m) at 1 m; ADR-0427.
 
+    Points in metres: the front-panel centre above the origin, ``y`` out along
+    the wall normal, ``z`` up. ``image_m`` is the speaker mirrored in the surface
+    whose bounce comes first. The microphone is on the speaker's axis, turned by
+    the declared toe-in. Path lengths come from the points, not from the module's
+    formula.
+    """
+    toe = math.radians(placement.get("toe_in_degrees", 0.0))
+    speaker, mic = (0.0, 0.0, 0.9), (math.sin(toe), math.cos(toe), 1.0)
+    expected_s = (math.dist(image_m, mic) - math.dist(speaker, mic)) / DEFAULT_SOUND_SPEED_M_S
+    geometry = DeclaredGeometry(speaker_height_m=0.9, mic_height_m=1.0, distance_m=1.0, **placement)
 
-def test_a_high_ceiling_does_not_change_the_floor_bounce_result():
-    without_ceiling = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0)
-    with_high_ceiling = DeclaredGeometry(
-        speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0, ceiling_height_m=3.0,
-    )
-    assert with_high_ceiling.first_bounce_s() == pytest.approx(
-        without_ceiling.first_bounce_s(), rel=1e-12
-    )
-
-
-def test_a_low_ceiling_wins_the_minimum_over_the_floor():
-    without_ceiling = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0)
-    with_low_ceiling = DeclaredGeometry(
-        speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0, ceiling_height_m=0.85,
-    )
-    ceiling_path_m = math.hypot(1.0, (0.85 - 0.84) + (0.85 - 0.84))
-    direct_m = 1.0
-    assert with_low_ceiling.first_bounce_s() == pytest.approx(
-        (ceiling_path_m - direct_m) / DEFAULT_SOUND_SPEED_M_S, rel=1e-12
-    )
-    assert with_low_ceiling.first_bounce_s() < without_ceiling.first_bounce_s()
+    assert geometry.first_bounce_s() == pytest.approx(expected_s, rel=1e-12)
+    assert geometry.entanglement_floor_hz() == pytest.approx(TRUSTED_FLOOR_MULTIPLIER / expected_s, rel=1e-12)
+    assert geometry.entanglement_floor_hz() == pytest.approx(floor_hz, abs=0.1)
 
 
 @pytest.mark.parametrize(
