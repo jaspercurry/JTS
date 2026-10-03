@@ -13,9 +13,9 @@
   operator could ask for (ruling #2086), and six of any charge. The six came with the executor's
   ledger on 2026-09-11 to bound USB-fault work; no ADR or ruling set it. On jts3, a dead rear woofer
   cost about 16 min across runs 2 and 3 of [#6113](https://github.com/jaspercurry/JTS/issues/6113):
-  its probes played to full scale and read only the room, each asked for the microphone again, and
-  the run then waited out the 10-minute hold. A failed room round played 12 of 12 takes that failed
-  the same way at the same level.
+  its probes played to full scale and asked for the microphone again, and the run then waited out
+  the 10-minute hold. A failed room round played 12 of 12 takes that failed the same way at the same
+  level.
 - **Decision:**
   1. **One cap.** A placement gets its first take free and at most two more
      (`MAX_EXTRA_ATTEMPTS_PER_POSITION`), of every charge that counts: an operator's retry and a
@@ -33,7 +33,7 @@
 - **Consequences:**
   - This change only removes plays. No level, ramp bound, stop, clamp or driver cap changes.
   - A placement plays at most two charged plays after its first, where it could play six. A driver's
-    take that lands off its target gets two level retakes.
+    take that lands off its target gets at most two level retakes.
   - A dead driver costs one probe. The run stops with copy that names the driver's wiring and amp,
     in place of a new placement prompt and a 10-minute hold. The stop verdict keeps the probe's
     `level_db_spl` and `level_floor_db_spl` when it read a burst, and
