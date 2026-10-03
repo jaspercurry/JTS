@@ -40,24 +40,13 @@ def baseline_candidate_fingerprint(candidate: Mapping[str, Any]) -> str:
 
     source = candidate.get("source")
     snapshot = candidate.get("recomposition_snapshot")
-    hashed_snapshot = dict(snapshot) if isinstance(snapshot, Mapping) else None
-    if hashed_snapshot is not None and isinstance(
-        hashed_snapshot.get("level_match"), Mapping
-    ):
-        # Capture recency changes on recompose; graph identity must not.
-        # Candidates without this field must keep their stored fingerprint.
-        hashed_snapshot["level_match"] = {
-            key: value
-            for key, value in hashed_snapshot["level_match"].items()
-            if key != "newest_capture_at"
-        }
     return _fingerprint({
         "artifact_schema_version": candidate.get("artifact_schema_version"),
         "kind": candidate.get("kind"),
         "source_fingerprint": (
             source.get("fingerprint") if isinstance(source, Mapping) else None
         ),
-        "recomposition_snapshot": hashed_snapshot,
+        "recomposition_snapshot": dict(snapshot) if isinstance(snapshot, Mapping) else None,
     })
 
 
@@ -122,7 +111,6 @@ def _frozen_applied_profile(
         "gain_provenance": dict(applied.get("gain_provenance") or {}),
         "corrections_provenance": dict(applied.get("corrections_provenance") or {}),
         "level_match": dict(applied.get("level_match") or {}),
-        "automatic_candidate": dict(applied.get("automatic_candidate") or {}),
         "linearization": dict(applied.get("linearization") or {}),
         "linearization_outcome": str(applied.get("linearization_outcome") or ""),
         "trim_decision": dict(applied.get("trim_decision") or {}),

@@ -22,29 +22,9 @@ from .profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_dri
 TUNING_OWNERS = frozenset({"manual", "automatic"})
 
 
-def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
-    """Does this profile carry an applied level match backed by measurement?
-
-    ANY role sourced ``measured`` is enough, deliberately: an operator pinning
-    one driver does not un-measure the speaker, and the whole profile is still
-    the product of a measured level match.
-    """
-
-    sources = {
-        str(value)
-        for value in as_mapping(snapshot.get("corrections_source")).values()
-    }
-    return (
-        as_mapping(snapshot.get("level_match")).get("applied") is True
-        and "measured" in sources
-    )
-
-
 def _snapshot_owner(profile: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str:
     owner = str(snapshot.get("tuning_owner") or profile.get("tuning_owner") or "")
-    if owner in TUNING_OWNERS:
-        return owner
-    return "automatic" if measured_level_match_applied(snapshot) else "manual"
+    return owner if owner in TUNING_OWNERS else "manual"
 
 
 def crossover_snapshot_state(
