@@ -34,9 +34,13 @@ measured exactly the tune that now plays.
    program that it played still has the same fingerprint, or each of the set's kept takes played that
    layer cleared. A round is current for a program when at least one of its sets that kept a take and
    names its layers is current.
-3. **The pointer names the set.** `latest_banked_rounds` returns the set that it judged the round by, as
-   `set_id`: the newest current set (the last that the packet lists, which is the last set that the run
-   began). When no set is current, it returns the newest set and that set's `stale_by`.
+3. **The pointer names the set that the program can design on.** `latest_banked_rounds` returns the set
+   that it judged the round by, as `set_id`, with that set's `stale_by`. It picks in this order:
+   - a current set before a stale set;
+   - then a set whose kept takes all played the program's own layer cleared. For room and bass, that is
+     a set with bass and room off: the in-room base, or the seed's set of a cardioid trial;
+   - then the newest set (the last that the packet lists, which is the last set that the run began).
+
    `jasper-crossover-prescriber status` shows `set_id` in `last_banked`. The copied prompt sends the LLM
    there first, and the next step passes it as `--set`.
 4. A round with one set is judged as before.
@@ -66,10 +70,11 @@ measured exactly the tune that now plays.
   routing, device and driver protection that a candidate does not carry, so that base would never match
   an apply.
 - After a room trial's candidate is applied, two sets are current: the base set (bass and room off) and
-  the candidate's set (room and bass on). `set_id` names the newer one, the candidate's. A bass or room
-  document judged on that set refuses `room_median_played_layer`
-  ([ADR-0421](0421-bass-has-a-preview-model-the-in-room-preview-adds-the-composed-boost.md)), so a new
-  design names the base set with `--set`.
+  the candidate's set (room and bass on). `set_id` names the base set, because a bass or room document
+  judged on the candidate's set refuses `room_median_played_layer`
+  ([ADR-0421](0421-bass-has-a-preview-model-the-in-room-preview-adds-the-composed-boost.md)).
+- When no set is current, the same order picks the set, so room's `upstream_changed` reads the set that
+  room designs on.
 - The prediction holds while the apply reads the same routing, device, driver protection and declared
   preset that the applied snapshot holds, and resolves the candidate's timing as the candidate states
   it. When one of these changes, the set reads stale, as ADR-0420's base layer does.

@@ -12,13 +12,15 @@ First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` withou
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
 `last_banked` keeps the latest round per applicable program that kept a take: `round_id`, `set_id`,
 `round_dir`, `banked_at`, `status`, `stale`, and `stale_by`. Each set of a round is judged alone, by the
-layers it played: a candidate's set by the layers an apply of that candidate would record. `stale: true`
-means that, in every set, a layer at or under its program changed since the set played it, and a kept
-take of the set played that layer; `stale_by` names the programs whose layer changed under the newest set
-([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md),
-[ADR-0437](adr/0437-a-rounds-staleness-is-judged-per-set.md)). `set_id` names the newest current set
-(else the newest set); pass it as `--set`. So after a seed's apply, the cardioid trial's seed set is the
-in-room base. A preference EQ save stales nothing. Only a current round is offered to copy.
+layers it played: a candidate's set by the layers an apply of that candidate would record. A set is stale
+when a layer at or under its program changed since the set played it, and a kept take of the set played
+that layer. `set_id` names the set to pass as `--set`: a current set first, then one whose kept takes
+played the program's own layer cleared (for room and bass, a set with bass and room off), then the newest.
+`stale: true` means no set is current, and `stale_by` names the programs whose layer changed under the
+named set ([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md),
+[ADR-0437](adr/0437-a-rounds-staleness-is-judged-per-set.md)). So after a seed's apply, the cardioid
+trial's seed set is the in-room base. A preference EQ save stales nothing. Only a current round is offered
+to copy.
 Bass is an option inside the in-room program, so `next` never asks for it. With every other applicable
 layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless room's latest round went
 stale through the speaker or rear layer: then `next` is room with `upstream_changed`

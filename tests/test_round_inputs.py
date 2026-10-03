@@ -10,10 +10,15 @@ import pytest
 
 from jasper.active_speaker import bundles
 from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity, layer_fingerprints
+from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.commissioning_coordinator import next_program_action
+from jasper.active_speaker.crossover_v2.prescription_document import PrescriptionEvidence, preview_prescription_document
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import parse_utc_iso
+from tests.run_manifest_fixture import IN_ROOM_CLEARED
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_crossover_v2_room_prescription import MEDIAN_SHA256, _document as room_document, _room_median
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, packet_purposes, take_artifact_name
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_purpose
 
@@ -109,30 +114,44 @@ def test_a_round_goes_stale_only_when_a_layer_under_it_changes(tmp_path, monkeyp
     assert (found["stale"], found["stale_by"]) == (bool(stale_by), stale_by)
 
 
-@pytest.mark.parametrize("applied,current_set,action", [
-    ((), "base", ("copy_prompt", "rear", "round_available")),
-    (("rear",), "seed", ("copy_prompt", "room", "round_available")),
-    (("rear", "room"), "seed", (None, None, "complete")),
-], ids=["nothing-applied-since", "seed-applied", "room-applied-without-a-trial"])
-def test_a_trial_round_is_judged_by_the_set_whose_layers_still_play(tmp_path, monkeypatch, applied, current_set, action):
-    """A cardioid seat trial plays the applied tune and the rear seed, every take with bass and room off.
-    Until an apply its base set is current; once the seed is applied its seed set is, so the round stays
-    the in-room base, and a later room apply with no trial leaves it so (ADR-0437)."""
+#: A seat trial's sets: each one's id, the applied layers it played, and whether its takes played bass and room off.
+_CARDIOID_TRIAL = (("base", ("speaker",), True), ("seed", ("speaker", "rear"), True))
+_ROOM_TRIAL = (("base", ("speaker", "rear"), True), ("candidate", RUNNABLE_PROGRAMS, False))
+
+
+@pytest.mark.parametrize("preset,trial,applied,named,action", [
+    ("rear/seat", _CARDIOID_TRIAL, ("speaker",), "base", ("copy_prompt", "rear", "round_available")),
+    ("rear/seat", _CARDIOID_TRIAL, ("speaker", "rear"), "seed", ("copy_prompt", "room", "round_available")),
+    ("rear/seat", _CARDIOID_TRIAL, ("speaker", "rear", "room"), "seed", (None, None, "complete")),
+    ("room/seat", _ROOM_TRIAL, RUNNABLE_PROGRAMS, "base", (None, None, "complete")),
+], ids=["cardioid-nothing-applied-since", "cardioid-seed-applied", "cardioid-room-applied-without-a-trial",
+        "room-candidate-applied"])
+def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeypatch, preset, trial, applied, named, action):
+    """A seat trial plays the applied tune and a candidate. Until an apply its base set is current; once the
+    candidate is applied, the candidate's set is current too. The round names a current set whose takes played
+    bass and room off, so a room document previews on it: after a cardioid seed's apply the seed's set, which a
+    later room apply with no trial leaves current, and after a room candidate's apply the base set (ADR-0437)."""
     monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
-    takes = [{"selected": True, "cleared_layers": ["bass_extension", "room_correction"]}] * 3
-    tune = _applied_anchor(layers=("speaker",))
-    _bank_packet(tmp_path / "campaigns" / "trial", applied_identity(tune), "rear/seat", room=[{}], bass=[{}], sets=[
-        {"set_id": "base", "takes": takes},
-        {"set_id": "seed", "layer_fingerprints": layer_fingerprints(_applied_anchor(layers=("speaker", "rear"))),
-         "takes": takes}])
-    profile = _applied_anchor(layers=("speaker", *applied))
+    sets = [{"set_id": set_id, "base": set_id == "base", "layer_fingerprints": layer_fingerprints(_applied_anchor(layers=played)),
+             "takes": [{"selected": True, "cleared_layers": list(IN_ROOM_CLEARED) if off else []}] * 3}
+            for set_id, played, off in trial]
+    _bank_packet(tmp_path / "campaigns" / "trial", applied_identity(_applied_anchor(layers=trial[0][1])), preset,
+                 room=[{}], bass=[{}], sets=sets)
+    profile = _applied_anchor(layers=applied)
 
     rounds = latest_banked_rounds(applied_identity(profile), include_stale=True)
     found = next_program_action(profile, rounds, programs=RUNNABLE_PROGRAMS)
+    base = BankedCandidate(_candidate(), "", "", Path("candidate.json"))
+    preview = preview_prescription_document(
+        {"kind": "jts_prescription", "schema": 1, "base": base.fingerprint, "rationale": "", "sections": {"room": room_document()}},
+        round_dir=None, base=base, evidence=PrescriptionEvidence(
+            {"room_median": {**_room_median(), "set_id": rounds["room"]["set_id"]}, "bass_evidence": {},
+             "manifest": {"incumbent": {"room": None, "bass": None}, "sets": sets}},
+            room_median_sha256=MEDIAN_SHA256, round_id="trial"))
 
-    assert {name: (row["set_id"], row["stale"]) for name, row in rounds.items()} == dict.fromkeys(
-        ("rear", "room", "bass"), (current_set, False))
+    assert {(row["set_id"], row["stale"]) for row in rounds.values()} == {(named, False)}
     assert (found["id"], found["program"], found["reason_code"]) == action
+    assert preview["section"] == "room"
 
 
 @pytest.mark.parametrize("timestamp_source", ["provenance", "finalized_at", "started_at", "session"])

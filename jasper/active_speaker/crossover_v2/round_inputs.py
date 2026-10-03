@@ -315,14 +315,19 @@ def _stale_by(group: Mapping[str, Any], current: Mapping[str, Any], under: tuple
 
 def _current_set(packet: Mapping[str, Any], identity: Mapping[str, Any], purpose: str) -> tuple[str | None, list[str]]:
     """The set a round of ``purpose`` is judged by, with the programs whose layer changed under it: of the sets
-    that kept a take and name the layers they played, the newest current one (the last the packet lists),
-    else the newest. A layer above the program does not count, and a purpose outside the stack plays none.
-    A round whose sets name no layers is stale by every program at or under its own (ADR-0437)."""
+    that kept a take and name the layers they played, a current one first, then one the program can design on
+    (each kept take played the program's own layer cleared), then the newest (the last the packet lists). A
+    layer above the program does not count, and a purpose outside the stack plays none. A round whose sets
+    name no layers is stale by every program at or under its own (ADR-0437)."""
     under = RUNNABLE_PROGRAMS[:RUNNABLE_PROGRAMS.index(purpose) + 1] if purpose in RUNNABLE_PROGRAMS else ()
+    own = {owner: layer for layer, owner in _LAYER_OWNERS}.get(purpose)
     current = identity.get("layer_fingerprints") or {}
-    judged = [(group["set_id"], _stale_by(group, current, under)) for group in reversed(packet.get("sets") or ())
+    judged = [(group["set_id"], _stale_by(group, current, under),
+               all(own in (take.get("cleared_layers") or ()) for take in group["takes"] if take.get("selected")))
+              for group in reversed(packet.get("sets") or ())
               if "layer_fingerprints" in group and any(take.get("selected") for take in group["takes"])]
-    return next((row for row in judged if not row[1]), judged[0] if judged else (None, list(under)))
+    set_id, stale_by, _ = min(judged, key=lambda row: (bool(row[1]), not row[2]), default=(None, list(under), False))
+    return set_id, stale_by
 
 
 def latest_banked_rounds(
