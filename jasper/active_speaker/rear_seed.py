@@ -29,6 +29,7 @@ SUPERCARDIOID_RATIO = 0.6
 #: ADR-0325's complementary Linkwitz-Riley hand-over between the two rear branches.
 HANDOVER_ORDER = 4
 REAR_SEED_GEOMETRY_UNDECLARED = "rear_seed_geometry_undeclared"
+REAR_SEED_BAND_EMPTY = "rear_seed_band_empty"
 #: The placement the wall distance is derived from (ADR-0317).
 PLACEMENT_FIELDS = ("cabinet_back_wall_m", "cabinet_depth_m", "toe_in_degrees")
 ASSUMPTIONS = (
@@ -49,12 +50,16 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
     if spacing_m is None or geometry is None or missing:
         return unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})
     speed = DEFAULT_SOUND_SPEED_M_S
-    # The front panel's distance to the wall; its quarter-wave notch is c / (4 * wall_m).
-    # A panel nearer the wall than 2d/3 puts the high-pass above the low-pass; d under ~3.6 mm puts the
-    # low-pass above Nyquist, which the door refuses.
+    # The front panel's distance to the wall; its quarter-wave notch is c / (4 * wall_m). A panel nearer
+    # the wall than 2d/3 puts the high-pass at or above the low-pass: that notch lies above the band the
+    # pair can cancel. d under ~3.6 mm puts the low-pass above Nyquist, which the door refuses.
     wall_m = geometry.boundary_walls()[0]["front"]
     handover_hz = round(speed / (6.0 * wall_m), 4)
-    lowpass = combo("ButterworthLowpass", round(speed / (4.0 * spacing_m), 4), LOWPASS_ORDER)
+    lowpass_hz = round(speed / (4.0 * spacing_m), 4)
+    if handover_hz >= lowpass_hz:
+        return unavailable(REAR_SEED_BAND_EMPTY, {"handover_hz": handover_hz, "lowpass_hz": lowpass_hz,
+                                                  "front_wall_m": round(wall_m, 4), "rear_woofer_spacing_m": spacing_m})
+    lowpass = combo("ButterworthLowpass", lowpass_hz, LOWPASS_ORDER)
     centre_hz = math.sqrt(handover_hz * lowpass["parameters"]["freq"])
     delay_ms = round(SUPERCARDIOID_RATIO * spacing_m / speed * 1e3 - _group_delay_ms(lowpass, centre_hz), 4)
     trim_db, gap_db = _trim(views, (handover_hz, lowpass["parameters"]["freq"]))
