@@ -2524,7 +2524,8 @@ def test_the_preview_times_every_play_whole_and_announces_the_run_once():
     once (ADR-0417), and a person's move to each spot."""
     context = SimpleNamespace(roles_bands=tuple(_roles()), driver_caps_dbfs={}, fc_hz=2500,
                               driver_sweep_duration_limits_s={}, driver_bands={}, safety_profile={}, role_targets={})
-    request = ac.request_for_preset(run_preset("room", "seat_express"))
+    row = run_preset("room", "seat_express")
+    request = ac.request_for_preset(row)
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     compose = predictive_program_for_spec(context)
     first, *rest = (capture.spec for capture in captures)
@@ -2534,7 +2535,7 @@ def test_the_preview_times_every_play_whole_and_announces_the_run_once():
 
     assert facts["estimated_seconds"] == pytest.approx(
         sum(play.total_samples / play.sample_rate_hz + WIRED_POST_ROLL_S for play in plays)
-        + len(captures) * plan_run.HUMAN_MOVE_ALLOWANCE_S)
+        + len(row.poses) * plan_run.HUMAN_MOVE_ALLOWANCE_S)
 
 
 @pytest.mark.parametrize("repeats, counts, timing, preparation", [(1, [15, 8, 8], 1, 12), (2, [26, 16, 16], 2, 20)])
