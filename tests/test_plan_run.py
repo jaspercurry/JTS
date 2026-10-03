@@ -1808,19 +1808,20 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
 
 @pytest.mark.parametrize(("retries", "readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
     (2, (70.0, 70.0, 73.0, 70.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4, 5}, [], 1),
-    (2, (70.0,) * 4 + (73.0,) * 3, (), {4, 5, 6}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
+    (2, (70.0,) * 4 + (73.0,) * 2, (), {4, 5}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 1),
     (0, (70.0, 70.0, 73.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
     (2, (70.0, 70.0, 73.0) + (75.0,) * 5, (3,), {2}, {3, 4, 5, 6, 7}, [], 1),
     (0, (70.0,) * 5, (5,), set(), set(), [REASON_RETRIES_SPENT] * 5, 0),
-], ids=["a timing repeat drifts once", "a MEASURE repeat keeps drifting", "no retry left", "a redo of a drifted take",
+], ids=["a timing repeat drifts once", "a MEASURE repeat drifts twice to one reading", "no retry left", "a redo of a drifted take",
         "a redo its placement cannot pay for"])
 def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap(
         retries, readings, redo_at, drifted, kept, unmeasured, left):
     """A take at its run's fader never levels itself: a repeat more than SAME_POSE_DRIFT_DB
     off its placement's kept takes is retaken at that level, each retake one of the
     placement's two extra takes (ADR-0422), and banks the verdict and level it was judged
-    by (ADR-0383). A redo spends one, the takes it plays again none, and its new
-    placement's level is no drift (#5722)."""
+    by (ADR-0383); a second drift to the same reading spends the placement (ADR-0428).
+    A redo spends one, the takes it plays again none, and its new placement's level is
+    no drift (#5722)."""
     request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
                                      program="speaker/mark", repeats=2, retries_per_pose=retries)
 
