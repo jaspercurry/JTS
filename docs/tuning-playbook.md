@@ -74,7 +74,8 @@ where it has evidence.
 
 A fit is already proposed. Each `fits` entry identifies its role and pose.
 A take of fewer than three sweeps per driver, such as each `baseline_express`
-spot off the mark, gets no fit: its `reason_summary` reads `too_few_repeats`.
+spot off the mark, gets no fit: the fit refuses it as `fit_too_few_sweeps`,
+and its `reason_summary` says so.
 Read `reason_summary` before `filters`, `residual_rms_db`, `residual_max_db`
 and `boost_evidence`. `envelope_fitted` means the bin was fitted.
 `position_spread_db` reports standard error across positions in dB at the

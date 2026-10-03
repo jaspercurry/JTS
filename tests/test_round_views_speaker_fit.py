@@ -42,7 +42,7 @@ from jasper.active_speaker.measurement_programs import run_preset
 from jasper.active_speaker.profile import ActiveSpeakerPreset, CrossoverRegion, required_driver_roles
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
-from jasper.audio_measurement.evidence_reasons import REASON_NO_REPEATS, TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_TOO_FEW_SWEEPS, TAKE_CURVES_NOT_BANKED, EvidenceUnavailable
 from jasper.audio_measurement.gating import FLOOR_SEARCH_BOUND, f_trusted_floor_hz
 from jasper.audio_measurement.program import RoleBand, build_measure_program
 from jasper.audio_measurement.timing_verification import TIMING_RESIDUAL_FLOOR_DB, timing_verification
@@ -389,7 +389,8 @@ async def test_a_six_spot_round_keeps_each_driver_in_one_set_that_every_angle_re
     """ADR-0435: ``baseline_express``, composed and banked as a run plays it, keeps each
     driver's mark takes and one-sweep spots in one set. Its design cloud holds six
     positions, so the fit at the mark excludes a null that walks with angle; directivity
-    reads the five spots against the mark; a one-sweep spot gets no packet fit."""
+    reads the five spots against the mark; the fit refuses a one-sweep spot by code, and
+    the packet carries that refusal."""
     root, record, *_ = speaker_round
     inputs = round_inputs(root)
     directory, _ = round_artifact_dir(inputs.session_dir)
@@ -433,9 +434,12 @@ async def test_a_six_spot_round_keeps_each_driver_in_one_set_that_every_angle_re
     assert round_views.main(["directivity", str(root), "--set", tweeter_set]) == round_views.EXIT_OK
     answer = json.loads(capsys.readouterr().out)
     assert (len(answer["reference_take_ids"]), len(answer["poses"])) == (2, 5)
+    with pytest.raises(EvidenceUnavailable) as refused:
+        speaker_fit(inputs, joined, tweeter_set, "six-3")
+    assert refused.value.reason == REASON_FIT_TOO_FEW_SWEEPS
     rows = _fits(inputs, joined, prescription_sources(inputs), design_clouds(joined))
     assert {(row["take_id"], row["role"]): row["reason_summary"].get("unavailable") for row in rows} == {
-        (f"six-{index}", role): None if index <= 2 else REASON_NO_REPEATS
+        (f"six-{index}", role): None if index <= 2 else REASON_FIT_TOO_FEW_SWEEPS
         for index in range(1, len(measures) + 1) for role in ("woofer", "tweeter")}
 
 

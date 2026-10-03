@@ -19,6 +19,7 @@ from jasper.active_speaker.crossover_v2.journey import (
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
 from jasper.active_speaker.crossover_v2.programs import GAIN_CAP_BACKOFF_DB, PILOT_LEVEL_DELTA_DB
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.evidence_reasons import REASON_FIT_TOO_FEW_SWEEPS, EvidenceUnavailable
 from jasper.audio_measurement.program import (
     RoleBand,
     BASE_STIMULUS_PEAK_DBFS,
@@ -334,22 +335,18 @@ def test_measure_program_keeps_solved_gains_per_role_and_identical_per_repeat():
 # Layer-1a driver linearization (#1668 PR-C)
 
 
-def test_compose_sigma_db_none_when_own_under_paired_threshold():
-    own = _resp_with_repeats("woofer", 1)  # 2 total occurrences, < 3
-    sibling = _resp_with_repeats("tweeter", 4)  # 5 total, plenty
-    assert 1 + len(own.repeat_responses) < LINEARIZATION_MIN_PAIRED_OCCURRENCES
-    sigma = _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
-    assert sigma is None
-
-
-def test_compose_sigma_db_none_when_sibling_under_paired_threshold():
+@pytest.mark.parametrize("own_repeats,sibling_repeats", [(1, 4), (4, 1)], ids=["own", "sibling"])
+def test_compose_sigma_db_refuses_when_either_driver_is_under_the_paired_floor(own_repeats, sibling_repeats):
     """An under-repeated SIBLING voids the pair's trust even though ``own``
-    alone clears the threshold — this is the PAIRED gate, not a per-driver
-    one."""
-    own = _resp_with_repeats("woofer", 4)  # 5 total, plenty
-    sibling = _resp_with_repeats("tweeter", 1)  # 2 total, < 3
-    sigma = _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
-    assert sigma is None
+    alone clears the floor — this is the PAIRED gate, not a per-driver one —
+    and the fit refuses by its own code (ADR-0435)."""
+    own = _resp_with_repeats("woofer", own_repeats)
+    sibling = _resp_with_repeats("tweeter", sibling_repeats)
+    with pytest.raises(EvidenceUnavailable) as refused:
+        _compose_sigma_db(own, sibling, tier="reference", valid_band_hz=(150.0, 4000.0))
+    assert (refused.value.reason, refused.value.detail) == (REASON_FIT_TOO_FEW_SWEEPS, {
+        "occurrences": {"woofer": own_repeats + 1, "tweeter": sibling_repeats + 1},
+        "min_occurrences": LINEARIZATION_MIN_PAIRED_OCCURRENCES})
 
 
 def test_compose_sigma_db_returns_array_when_both_meet_threshold():

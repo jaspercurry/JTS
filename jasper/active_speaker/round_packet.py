@@ -11,8 +11,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.platform.atomic_io import atomic_write_json
-from jasper.audio_measurement.evidence_reasons import REASON_NO_REPEATS, REASON_UNREADABLE, EvidenceUnavailable, unavailable
-from jasper.audio_measurement.program import KIND_SWEEP, PROGRAM_PHASE_MEASURE
+from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.series_stats import series_stats
 from jasper.audio_measurement.timing_verification import timing_next_action
 
@@ -21,7 +20,7 @@ from jasper.audio_measurement.program_analysis.model import TIMING_MEASURED, TIM
 from .alignment_evidence import commissioning_alignment, round_alignment
 from .baseline_profile import applied_layer_names
 from .crossover_v2.evidence_packet import EVIDENCE_KEY, build_round_evidence, fingerprinted
-from .crossover_v2.intervention import LINEARIZATION_MIN_PAIRED_OCCURRENCES, CloudFitTerms
+from .crossover_v2.intervention import CloudFitTerms
 from .crossover_v2.position_cycle import OWN_WINDOW, take_curve
 from .crossover_v2.prescription_contract import contract_programs, prescription_contracts
 from .crossover_v2.round_inputs import (
@@ -87,14 +86,8 @@ def _fits(inputs: RoundInputs, manifest: Mapping[str, Any], sources: Mapping[str
             if not take["selected"] or take.get("gating_applied") is False:
                 continue
             take_id = take["take_id"]
-            program = take.get("program") or {}
-            sweeps = sum(segment["kind"] == KIND_SWEEP and segment["role"] == set_role
-                         for segment in program.get("segments", ()))
             if take_id in unclouded:
                 computed[take_id] = {set_role: {"fit": unavailable_fit(set_role, unclouded[take_id].reason)}}
-            elif program.get("phase") == PROGRAM_PHASE_MEASURE and 0 < sweeps < LINEARIZATION_MIN_PAIRED_OCCURRENCES:
-                # Fewer sweeps give the fit no repeatability, so its envelope allows no depth (ADR-0435).
-                computed[take_id] = {set_role: {"fit": unavailable_fit(set_role, REASON_NO_REPEATS)}}
             elif take_id not in computed or set_role not in computed[take_id]:
                 try:
                     result = speaker_fit(inputs, manifest, group["set_id"], take_id,
