@@ -8,11 +8,12 @@
   rule 1's fallback.
 - **Context:** ADR-0256 rule 1 (owner ruling): the room layer's upper band edge is the applied
   candidate's disclosed trusted floor, clamped to 250–500 Hz; with no readable floor it is 350 Hz,
-  disclosed. The floor's only writer went with the Gen A planner (`4d5353536e`, 09-23), and
-  ADR-0400 deleted the round gate that the ceiling read instead. So every room document used the
-  350 Hz fallback ([#6110](https://github.com/jaspercurry/JTS/issues/6110); finding F9 of the
-  [2026-10-02 measurement audit](../audits/2026-10-02-measurement-program.md)). #6110 left one
-  choice open: which floor to bank. Step C2 of
+  disclosed. The field that ADR-0256 named for the floor, `exclusion_evidence`, lost its only
+  writer with the Gen A planner (`4d5353536e`, 09-23), and that writer banked a validity floor, not
+  a trusted floor. ADR-0400 deleted the round gate that the ceiling read instead. So every room
+  document used the 350 Hz fallback ([#6110](https://github.com/jaspercurry/JTS/issues/6110);
+  finding F9 of the [2026-10-02 measurement audit](../audits/2026-10-02-measurement-program.md)).
+  #6110 left one choice open: which floor to bank. Step C2 of
   [#6227](https://github.com/jaspercurry/JTS/issues/6227) chose the highest one.
 - **Decision:**
   1. **The floor.** A composed candidate whose document names a speaker section (driver, blend,
@@ -28,7 +29,7 @@
      clamped, with source `applied_candidate` and the floor disclosed. With no floor it is the
      350 Hz fallback, with source `fallback` and its reason. The room and rear views read it.
   5. **The field.** The floor keeps the field that ADR-0256 named as its carrier,
-     `exclusion_evidence`. Nothing wrote or read its old content.
+     `exclusion_evidence`. Nothing writes or reads its old content.
 - **Consequences:**
   - Candidate fingerprints change. A speaker composition judged on a round with gated woofer
     MEASURE takes carries the floor in its fingerprinted core. A composition with no floor keeps
