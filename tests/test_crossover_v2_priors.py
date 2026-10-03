@@ -75,48 +75,7 @@ def test_check_is_told_the_corner_and_nothing_else():
     assert got.configured_crossover_response_by_role is None
 
 
-# 2. the configured-path trio moves together
-
-
-def test_the_configured_path_priors_are_all_present_or_all_absent():
-    """``_compose_configured_path_ir`` RAISES on a partial set.
-
-    So "protection is absent" must clear the response map, the polarity map and
-    the required-band map together. A half-filled set would refuse the
-    composition outright — the session would produce no candidate at all rather
-    than a slightly-worse one.
-    """
-    with_protection = priors.measure_priors(
-        fc_hz=FC_HZ, source_preset=PRESET,
-        protection_sections_by_role=PROTECTION,
-        ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None,
-    )
-    without = priors.measure_priors(
-        fc_hz=FC_HZ, source_preset=PRESET,
-        protection_sections_by_role=None,
-        ambient_report=None, alignment_delay_bounds_us=None,
-        applied_alignment=None,
-    )
-
-    present = (
-        with_protection.measurement_protection_response_by_role,
-        with_protection.configured_crossover_response_by_role,
-        with_protection.configured_polarity_sign_by_role,
-        with_protection.candidate_required_band_hz_by_role,
-    )
-    absent = (
-        without.measurement_protection_response_by_role,
-        without.configured_crossover_response_by_role,
-        without.configured_polarity_sign_by_role,
-        without.candidate_required_band_hz_by_role,
-    )
-
-    assert all(v is not None for v in present), present
-    assert all(v is None for v in absent), absent
-
-
-# 2b. the candidate-required union has ONE owner
+# 2. the candidate-required union has ONE owner
 
 
 def test_the_required_band_covers_both_declarations_without_widening():
@@ -186,13 +145,6 @@ def test_role_transfers_hands_over_callables_never_sections():
         assert np.all(np.isfinite(out))
 
 
-def test_no_sections_means_no_map_rather_than_an_empty_one():
-    """``None`` and ``{}`` mean different things downstream: absent evidence
-    versus a declared-empty filter set."""
-    assert priors.role_transfers(None) is None
-    assert priors.role_transfers({}) == {}
-
-
 # 4. what the conductor's delegates actually hand over
 #
 # The module above cannot be wrong about a value it was never given. These pin
@@ -210,7 +162,8 @@ def _wired_conductor(**kwargs):
     return flow.CrossoverV2Session(
         session_id=SESSION, source_preset=PRESET, roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
-        seams=FakeSeams().seams(), index_phase_map={1: "measure"}, driver_spacing_m=0.15, **kwargs,
+        seams=FakeSeams().seams(), index_phase_map={1: "measure"}, driver_spacing_m=0.15,
+        measurement_protection_sections_by_role=PROTECTION, **kwargs,
     )
 
 

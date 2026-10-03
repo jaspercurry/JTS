@@ -180,7 +180,7 @@ def test_the_ceiling_is_the_applied_tunes_trusted_floor_else_the_disclosed_fallb
     round_dir = bank_seat_round(tmp_path)
     candidate = _candidate(exclusion_evidence={} if floor_hz is None else {"trusted_floor_hz": floor_hz})
     snapshot = recomposition_snapshot_for(candidate, design_draft={}, declaration=MeasurementGraphProfile(
-        candidate.source_preset, mono_output_topology(), {}, "null"))
+        candidate.source_preset, mono_output_topology(), {}, "null", {}))
     (round_dir / "applied-profile.json").write_text(json.dumps({
         "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND, "status": "applied",
         "recomposition_snapshot": snapshot}))

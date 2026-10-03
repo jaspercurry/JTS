@@ -352,7 +352,7 @@ def bind_production_play(
     playback_device: str,
     safety_profile: Mapping[str, Any],
     role_targets: Mapping[str, str],
-    protection_sections_by_role: Mapping[str, Sequence[Any]] | None = None,
+    protection_sections_by_role: Mapping[str, Sequence[Any]],
     config_dir: str | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
     program_for_spec: Callable[[Any, Any], Any],

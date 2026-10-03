@@ -18,6 +18,7 @@ from jasper.active_speaker.candidate_bank import bank_candidate
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.driver_safety import driver_research_targets
 from jasper.active_speaker.output_contract import ACTIVE_BASELINE_SOURCE, ACTIVE_DRIVER_DOMAIN_SOURCE
+from jasper.active_speaker.profile import required_driver_roles
 from jasper.active_speaker.rear_seed import rear_seed
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_hardware import dac as dac_registry
@@ -507,6 +508,13 @@ def standard_design_draft(topology: OutputTopology, *, tweeter_gain_db: float = 
                                  created_at="2026-06-14T12:00:00Z")
 
 
+def empty_protection(preset) -> dict:
+    """Every driver role confirmed with no protective section: a tuning graph adds
+    no protection filter to what its candidate emits, and MEASURE divides out no
+    emitted protection."""
+    return {role: () for role in required_driver_roles(preset.way_count)}
+
+
 def applied_graph_fixture(topology, applied, *, playback_device=None):
     from jasper.active_speaker.branch_chain import confirmed_protection_sections
     from jasper.active_speaker.candidate_parts import candidate_from_applied_profile
@@ -517,7 +525,7 @@ def applied_graph_fixture(topology, applied, *, playback_device=None):
     preset = ActiveSpeakerPreset.from_mapping(snapshot["preset"])
     protection = snapshot.get("driver_protection")
     declaration = MeasurementGraphProfile(preset, topology, {}, playback_device or snapshot["playback_device"],
-        confirmed_protection_sections(protection) if protection else None)
+        confirmed_protection_sections(protection) if protection else empty_protection(preset))
     return declaration, candidate_from_applied_profile(topology, applied)
 
 
@@ -601,4 +609,5 @@ def declared_graph_fixture(topology, draft):
     from jasper.active_speaker.playback_route import resolve_active_playback_device
 
     candidate = candidate_from_design_draft(topology, draft)
-    return MeasurementGraphProfile(candidate.source_preset, topology, {}, resolve_active_playback_device(topology)[0]), candidate
+    return MeasurementGraphProfile(candidate.source_preset, topology, {}, resolve_active_playback_device(topology)[0],
+                                   empty_protection(candidate.source_preset)), candidate

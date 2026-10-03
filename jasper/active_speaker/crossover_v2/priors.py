@@ -37,16 +37,12 @@ __all__ = [
 ]
 
 
-def role_transfers(
-    sections_by_role_map: Mapping[str, Any] | None,
-) -> dict[str, Any] | None:
+def role_transfers(sections_by_role_map: Mapping[str, Any]) -> dict[str, Any]:
     """Per-role ``freqs -> complex response``, evaluated HOST-side.
 
     The kernel may not import this package, so it gets a callable, never the
     ``CrossoverSection`` behind it.
     """
-    if sections_by_role_map is None:
-        return None
     return {
         role: functools.partial(crossover_response_complex, sections=tuple(sections))
         for role, sections in sections_by_role_map.items()
@@ -55,7 +51,7 @@ def role_transfers(
 
 def configured_crossover_transfers(
     source_preset: Any,
-) -> tuple[dict[str, Any] | None, dict[str, int]]:
+) -> tuple[dict[str, Any], dict[str, int]]:
     """``(response_by_role, polarity_sign_by_role)`` for the committed crossover.
 
     ONE derivation, two readers: MEASURE consumes it as §4.2's ``C_c``, the
@@ -100,7 +96,7 @@ def measure_priors(
     *,
     fc_hz: float | None,
     source_preset: Any,
-    protection_sections_by_role: Mapping[str, Sequence[Any]] | None,
+    protection_sections_by_role: Mapping[str, Sequence[Any]],
     ambient_report: Any,
     alignment_delay_bounds_us: tuple[float, float] | None,
     applied_alignment: AppliedAlignment | None,
@@ -118,8 +114,8 @@ def measure_priors(
     it. ``ambient_report`` is CHECK's measured room floor (#1830), ``None`` only
     where CHECK produced none, leaving the SNR verdict honestly absent.
 
-    The three configured-path fields are gated on ``protection_sections_by_role``
-    together: ``_compose_configured_path_ir`` RAISES on a partial prior set.
+    The three configured-path maps travel together: ``_compose_configured_path_ir``
+    RAISES on a partial prior set.
     """
     configured_response, configured_polarity = configured_crossover_transfers(
         source_preset
@@ -132,17 +128,13 @@ def measure_priors(
         measurement_protection_response_by_role=role_transfers(
             protection_sections_by_role
         ),
-        configured_crossover_response_by_role=(
-            configured_response if protection_sections_by_role is not None else None
-        ),
-        configured_polarity_sign_by_role=(
-            configured_polarity if protection_sections_by_role is not None else None
-        ),
+        configured_crossover_response_by_role=configured_response,
+        configured_polarity_sign_by_role=configured_polarity,
         # §4.2's candidate-required bins, from their single owner above. Absent
         # with no corner: the union is half an overlap band, and a 1-way
         # declares neither.
         candidate_required_band_hz_by_role=(
-            None if protection_sections_by_role is None or fc_hz is None
+            None if fc_hz is None
             else candidate_required_band_hz(
                 sections_by_role(source_preset.crossover_regions), fc_hz=fc_hz,
             )

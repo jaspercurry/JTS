@@ -88,7 +88,7 @@ from jasper.audio_measurement.program import (
 )
 from tests._log_events import event_field_maps, event_fields, event_records
 from tests.active_speaker_fixtures import (
-    full_band_rear_document, mono_output_topology, isolated_candidate_bank as isolated_candidate_bank,
+    empty_protection, full_band_rear_document, mono_output_topology, isolated_candidate_bank as isolated_candidate_bank,
 )
 from tests.test_active_speaker_audition import ACTIVE_PCM, _applied_profile
 from tests.test_crossover_v2_tuning_scope import BASS_EXTENSION, _trial_candidate
@@ -678,7 +678,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
     applied = _applied_profile(topology)
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph_yaml = compile_tuning_graph(MeasurementGraphProfile(
-        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM, empty_protection(preset),
     ), candidate=candidate_from_applied_profile(topology, applied))
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
@@ -1356,9 +1356,9 @@ def test_summed_room_band_uses_resolved_floor_without_adding_highpass(tmp_path, 
 def test_summed_segment_refusal_codes_and_fields(tmp_path, caplog, failed):
     topology, safety, targets = _profile_and_targets(woofer_floor=40, max_sweep_duration_s=4)
     applied = _applied_profile(topology)
+    preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph = compile_tuning_graph(MeasurementGraphProfile(
-        ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"]),
-        topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM, empty_protection(preset),
     ), candidate=candidate_from_applied_profile(topology, applied))
     program = build_verify_program(
         1600, gain_db=-6, downstream_gain_db=-20, sweep_s=2,

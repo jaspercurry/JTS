@@ -7,6 +7,7 @@ from pathlib import Path
 
 from jasper.active_speaker import bundles
 from jasper.active_speaker.candidate_bank import find_banked_candidate, CandidateBankRefusal
+from tests.active_speaker_fixtures import empty_protection
 
 
 def bank_candidate(candidate):
@@ -32,7 +33,7 @@ def prepare_candidate(candidate, topology, config_path, *, design_draft=None):
     draft = design_draft or {}
     safety = draft.get("driver_safety_profile")
     declaration = MeasurementGraphProfile(candidate.source_preset, topology, {}, resolve_active_playback_device(topology)[0],
-        confirmed_protection_sections(safety) if safety else None)
+        confirmed_protection_sections(safety) if safety else empty_protection(candidate.source_preset))
     preference_filters, trim_db = saved_sound_layers()
     text = compile_tuning_graph(declaration, candidate, preference_filters=preference_filters, output_trim_db=trim_db)
     Path(config_path).write_text(text)

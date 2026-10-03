@@ -51,7 +51,7 @@ from jasper.active_speaker.crossover_v2.door import IsolationHold, level_window
 from jasper.active_speaker.session_volume_plan import SessionVolumeOpenResult, SessionVolumeRestoreResult
 from jasper.web import correction_crossover_v2_wired as wired
 from tests.test_correction_crossover_v2_wired import _device
-from tests.active_speaker_fixtures import mono_output_topology, research_design_draft
+from tests.active_speaker_fixtures import empty_protection, mono_output_topology, research_design_draft
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
@@ -614,6 +614,7 @@ def _rearm_conductor(session_id: str, *, index_phase_map: dict) -> Any:
         ),
         driver_spacing_m=0.15,
         index_phase_map=index_phase_map,
+        measurement_protection_sections_by_role=empty_protection(_preset()),
     )
 
 
@@ -680,6 +681,7 @@ def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwarg
         ),
         driver_spacing_m=0.15,
         index_phase_map=index_phase_map,
+        measurement_protection_sections_by_role=empty_protection(_preset()),
         **kwargs,
     )
 
