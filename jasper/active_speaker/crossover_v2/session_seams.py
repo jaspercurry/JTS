@@ -62,7 +62,7 @@ class SessionGraph(Protocol):
 class VolumeClaim(Protocol):
     """The session's one hold on the fader — the session-measurement claim.
 
-    One declared level for the whole session; a level ladder moves the
+    One declared level for the whole session; a take's own level moves the
     stimulus, never this claim. ``devices.volume_limit`` stays ``0.0`` and
     ``CamillaController.set_volume_db`` clamps positive writes — this seam is
     not an exception to that.

@@ -63,8 +63,8 @@ def run_mover(source: RunRequest, preset: Preset | None = None) -> str:
     return source.mover or (preset or run_preset(source.program, source.layout, source.poses)).mover or MOVER_HUMAN
 
 
-def resolve_plan(source: RunRequest, *, targets: Callable[[], Sequence[str]]) -> tuple[AngleCaptureRequest, str | None]:
-    """The plan a request runs, and ``"auto"`` when its preset steps a level ladder (ADR-0365).
+def resolve_plan(source: RunRequest, *, targets: Callable[[], Sequence[str]]) -> AngleCaptureRequest:
+    """The plan a request runs.
 
     A request plays its preset's poses with each driver role expanded to
     ``targets``, the outputs this speaker plays alone, its candidates (a rear
@@ -78,9 +78,8 @@ def resolve_plan(source: RunRequest, *, targets: Callable[[], Sequence[str]]) ->
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, str(exc)) from exc
     level, level_source = ((LevelPolicy(level_db=source.level_db), "operator") if source.level_db is not None
                            else (LevelPolicy(), "program_default"))
-    plan = request_for_preset(preset, candidates=source.candidates, level=level, level_source=level_source,
+    return request_for_preset(preset, candidates=source.candidates, level=level, level_source=level_source,
                               mover=run_mover(source, preset), targets=targets(), driver=source.driver)
-    return plan, preset.levels if source.level_db is None else None
 
 
 def _shared(values: Iterable[Any]) -> Any:
@@ -95,6 +94,5 @@ def run_envelope(plan: AngleCaptureRequest) -> tuple[dict[str, Any], dict[str, A
     takes = Counter((stop.pose.place, stop.candidate_id, stop.regime) for stop in plan.stops)
     return ({"candidate_ids": list(plan.candidates)} if plan.candidates else {},
             {"program": plan.program, "layout": plan.layout, "mover": plan.mover, "level_db": plan.level.level_db,
-             "levels": list(plan.levels) if plan.levels else None,
              "repeats": _shared(count * plan.repeats for count in takes.values()),
              "driver": _shared(stop.pose.driver for stop in plan.stops if stop.pose.driver)})

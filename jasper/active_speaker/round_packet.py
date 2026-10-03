@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE, EvidenceUnavailable, unavailable
@@ -35,59 +35,11 @@ from .speaker_fit import design_clouds, speaker_fit
 from .measurement_programs import PURPOSE_REAR, PURPOSE_SPEAKER, run_purpose
 from .round_verdicts import round_verdicts
 from .round_packet_report import gate_fields, packet_index
-from .run_manifest import RUN_MANIFEST_KIND, RunManifest, view_sets
-from .crossover_v2.refusal_copy import CrossoverV2Refused, exception_detail
+from .run_manifest import view_sets
+from .crossover_v2.refusal_copy import exception_detail
 
 if TYPE_CHECKING:
     from .round_bank import BankedRound
-
-
-class RoundPacket:
-    def __init__(self, manifest: RunManifest, schedule: Mapping[str, Any]) -> None:
-        self.manifest, self.schedule = manifest, schedule
-        self.runs: dict[str, Mapping[str, Any]] = {}
-        self.finalized = False
-
-    def to_dict(self) -> dict[str, Any]:
-        runs = list(self.runs.values())
-        sets: dict[str, dict[str, Any]] = {}
-        for run in runs:
-            for group in run["sets"]:
-                merged = sets.setdefault(group["set_id"], {**group, "takes": []})
-                merged["takes"].extend(group["takes"])
-        first = runs[0] if runs else self.manifest.to_dict()
-        measured = any(take["selected"] for group in sets.values() for take in group["takes"])
-        issues = [{"code": run["reason"] or next((row["reason"] for row in run["not_measured"]), "take_incomplete"),
-                   "blocking": False, "evidence": {"run_id": run["run_id"], "level": run["level"],
-                                                    "status": run["status"], "not_measured": run["not_measured"]}}
-                  for run in runs if run["finalized"] and run["status"] != "complete"]
-        return {**first, "run_id": self.manifest.run_id, "sets": list(sets.values()),
-                "schedule": {**self.schedule, "issues": [*self.schedule.get("issues", ()), *issues]},
-                "runs": [{key: run[key] for key in ("run_id", "level", "status", "reason", "not_measured", "request_fingerprint")}
-                         for run in runs],
-                "finalized": self.finalized,
-                "status": "complete" if self.finalized and measured else "partial",
-                "reason": self.manifest.reason or (issues[0]["code"] if issues and not measured else ""),
-                "honoured": {**first["honoured"], **{
-                    key: sum(run["honoured"][key] for run in runs)
-                    for key in ("mic_moves", "stops_planned", "takes_measured", "takes_refused", "retakes")}},
-                "attempts": sum(run["attempts"] for run in runs),
-                "wall_s": [value for run in runs for value in run["wall_s"]],
-                "not_measured": [{**take, "run_id": run["run_id"]} for run in runs for take in run["not_measured"]]}
-
-    async def bank(self, record: Mapping[str, Any]) -> str:
-        if record.get("kind") == RUN_MANIFEST_KIND:
-            self.runs[record["run_id"]] = record
-            record = self.to_dict()
-        return await self.manifest.records.bank(record)
-
-    async def finish(self) -> None:
-        self.finalized = True
-        self.manifest.path = await self.manifest.records.bank(self.to_dict())
-
-    async def update_schedule(self, schedule: Mapping[str, Any]) -> None:
-        self.schedule = dict(schedule)
-        self.manifest.path = await self.manifest.records.bank(self.to_dict())
 
 
 def banked_evidence(inputs: RoundInputs) -> tuple[dict[str, Any], Exception | None]:
@@ -111,25 +63,6 @@ def store_banked_evidence(round_dir: Path) -> Exception | None:
     packet = json.loads(path.read_text()) if path.is_file() else {}
     atomic_write_json(path, {"schema": ROUND_PACKET_SCHEMA, "round_id": round_dir.name, **packet, **stored})
     return error
-
-
-def finish_bass_packet(round_dir: Path, manifest_path: Path, *, join_levels: Callable[..., Path]) -> Path:
-    destination = round_dir / PACKET_FILENAME
-    manifest = json.loads(manifest_path.read_text())
-    if len({run["level"]["run"]["level_db"] for run in manifest.get("runs", ())}) < 2:
-        return destination
-    manifest = with_records(round_inputs(round_dir).session_dir, manifest, disclose=True)
-    candidates = sorted({row["capture_basis"]["candidate_id"] for row in view_sets(manifest) if not row["base"]})
-    try:
-        table_path = join_levels([round_dir], candidates=[Path(candidate) for candidate in candidates])
-        table = json.loads(table_path.read_text())
-    except (CrossoverV2Refused, OSError, ValueError, KeyError) as exc:
-        table = {**unavailable(_refusal_code(exc, "bass_fit_inputs_missing")), "error_type": type(exc).__name__}
-    packet = json.loads(destination.read_text())
-    packet["bass_table"] = table
-    atomic_write_json(destination, packet)
-    (round_dir / INDEX_FILENAME).write_text(packet_index(packet, round_dir, manifest))
-    return destination
 
 
 def _refusal_code(exc: Exception, fallback: str) -> str:
@@ -268,7 +201,6 @@ def write_round_packet(target: Path, manifest_path: str | None, views: list[dict
               "result": manifest.get("status"), "reason": manifest.get("reason"),
               "preset": manifest.get("preset"), "layout": manifest.get("layout"), "level": manifest.get("level"),
               "prescriptions": sources.get("candidate", {}).get("analysis", {}).get("evidence", {}).get("prescriptions", {}),
-              **({"runs": manifest["runs"]} if "runs" in manifest else {}),
               "applied": {**(applied_identity(profile) or {}), "layers": applied_layer_names(profile)},
               "sets": [{"set_id": g["set_id"], "candidate_id": g["capture_basis"].get("candidate_id"), "base": g.get("base", False),
                         "takes": _packet_takes(g)} for g in manifest.get("sets", ())], "series": series,

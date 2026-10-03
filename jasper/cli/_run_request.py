@@ -9,9 +9,8 @@ import json
 from typing import Any
 
 from jasper.active_speaker.measurement_programs import near_field_drivers
-from jasper.active_speaker.run_levels import LevelLadder, preflight_levels
 from jasper.active_speaker.run_request import REQUEST_KEYS, RunRequest, resolve_plan
-from jasper.active_speaker.preflight import PreflightReport
+from jasper.active_speaker.preflight import PreflightReport, preflight
 from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.preflight_live import read_preflight_facts
 from jasper.audio_routes.output_topology_store import load_output_topology
@@ -26,7 +25,7 @@ def read_request(args: argparse.Namespace) -> tuple[dict[str, Any], RunRequest]:
     return asked, RunRequest.from_mapping(asked)
 
 
-def preflight_run(request: RunRequest) -> PreflightReport | LevelLadder:
+def preflight_run(request: RunRequest) -> PreflightReport:
     """A dry run: the plan the session door would resolve, judged on this speaker's own facts."""
-    plan, levels = resolve_plan(request, targets=lambda: near_field_drivers(load_output_topology()))
-    return preflight_levels(plan, read_preflight_facts(plan, mover_available=mover_present(plan.mover)), levels)
+    plan = resolve_plan(request, targets=lambda: near_field_drivers(load_output_topology()))
+    return preflight(plan, read_preflight_facts(plan, mover_available=mover_present(plan.mover)))

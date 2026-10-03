@@ -60,11 +60,10 @@ class MeasureSpec:
     the whole spec, in the same frame. Nothing on this rig swings in elevation,
     so a vertical walk states no ``positions``.
 
-    ``level_ladder_dbfs`` rungs are stimulus levels in dBFS: the ladder moves
-    the STIMULUS and never the claim, which is what ruling S8's "same drive
-    voltage, nothing touched between measurements" rests on. Empty means the
-    single stimulus the program declares, or with ``level_probe`` its level
-    probe (ADR-0365, ADR-0403).
+    ``level_dbfs`` is the stimulus level in dBFS a take was levelled to: it
+    moves the STIMULUS and never the claim. ``None`` means the stimulus the
+    program declares, or with ``level_probe`` its level probe (ADR-0365,
+    ADR-0403).
     """
 
     kind: str
@@ -72,7 +71,7 @@ class MeasureSpec:
     pose_prompts: tuple[str, ...] = ()
     position_axis: str = POSITION_AXIS_HORIZONTAL
     vertical_deg: int = 0
-    level_ladder_dbfs: tuple[float, ...] = ()
+    level_dbfs: float | None = None
     sweep_band_hz: tuple[float, float] | tuple[()] = ()
     sweep_s: float | None = None
     candidate_id: str = ""
@@ -100,7 +99,7 @@ class MeasureSpec:
     #: ``capture_schedule.prepare_plan_captures`` sets it (ADR-0365, ADR-0403).
     level_probe: bool = False
     #: The level each branch of a ``candidate_branches`` take plays alone at, in
-    #: ``branch_target_ids`` order, in dBFS; ``level_ladder_dbfs`` plays their sum.
+    #: ``branch_target_ids`` order, in dBFS; ``level_dbfs`` plays their sum.
     #: Only the executor sets it, from the branches' probes (ADR-0407).
     branch_levels_dbfs: tuple[float, ...] = ()
     #: What this take's graph keeps on each output for its dynamic bass boost, dB, by
@@ -114,10 +113,9 @@ class MeasureSpec:
 
     def __post_init__(self) -> None:
         if self.stimulus is not None:
-            solo = bool(solo_target(self))
-            validated_stimulus(self.stimulus, one_driver=solo)
-            if not solo and self.graph_scope != "candidate":
-                raise ValueError("a planned stimulus plays on the candidate graph or on one driver alone")
+            validated_stimulus(self.stimulus)
+            if not solo_target(self):
+                raise ValueError("a planned stimulus plays on one driver alone")
         if self.graph_scope not in GRAPH_SCOPES:
             raise ValueError(f"graph_scope must be one of {GRAPH_SCOPES}")
         if self.graph_scope in CANDIDATE_SCOPES and not self.candidate_id.strip():
@@ -242,7 +240,7 @@ def branch_probes(spec: MeasureSpec) -> tuple[MeasureSpec, ...]:
     band_hz = spec.sweep_band_hz or (MIN_DRIVER_TEST_FREQUENCY_HZ, MAX_DRIVER_TEST_FREQUENCY_HZ)
     return tuple(replace(spec, kind=MEASURE_KIND_CANDIDATE, graph_scope=GRAPH_SCOPE_DRIVERS, candidate_id="",
                          branch_target_ids=(target,), sweep_band_hz=band_hz, sweep_s=None, cleared_layers=(),
-                         scope_gains_db=None, level_ladder_dbfs=())
+                         scope_gains_db=None, level_dbfs=None)
                  for target in spec.branch_target_ids)
 
 

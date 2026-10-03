@@ -117,18 +117,12 @@ def _alone_gains_db(excitation: SessionExcitation, spec: Any) -> dict[str, float
             for target, level in zip(spec.branch_target_ids, spec.branch_levels_dbfs)}
 
 
-def compose_summed_program(excitation: SessionExcitation, spec: Any, stimulus_dbfs: float | None = None, *,
-                           safety_profile: Mapping[str, Any], role_targets: Mapping[str, str]) -> ExcitationProgram:
+def compose_summed_program(excitation: SessionExcitation, spec: Any,
+                           stimulus_dbfs: float | None = None) -> ExcitationProgram:
     # The sum plays under every driver's reserved cap, so admission refuses none of it (ADR-0408).
     excitation = replace(excitation, summed_sweep_band_hz=spec.sweep_band_hz or None,
                          caps_dbfs=_reserved_caps(excitation, spec))
-    backoff = _stimulus_backoff_db(spec, stimulus_dbfs)
-    if spec.stimulus is not None:
-        from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
-
-        return build_bass_program(excitation, spec.stimulus, safety_profile=safety_profile, role_targets=role_targets,
-                                  extra_backoff_db=backoff, courtesy_prelude=spec.courtesy_prelude)
-    return excitation.verify_program(extra_backoff_db=backoff, sweep_s=spec.sweep_s,
+    return excitation.verify_program(extra_backoff_db=_stimulus_backoff_db(spec, stimulus_dbfs), sweep_s=spec.sweep_s,
                                      courtesy_prelude=spec.courtesy_prelude)
 
 
@@ -232,20 +226,13 @@ def compose_level_probe(excitation: SessionExcitation, spec: Any) -> ExcitationP
     )
 
 
-def compose_summed_probe(excitation: SessionExcitation, spec: Any, *, safety_profile: Mapping[str, Any],
-                         role_targets: Mapping[str, str]) -> ExcitationProgram:
+def compose_summed_probe(excitation: SessionExcitation, spec: Any) -> ExcitationProgram:
     """A driverless summed take's level probe: the same bursts, of the band its take sweeps, up to the
     summed gain its take plays at when no level is asked (ADR-0403)."""
-    backoff = _scope_backoff_db(spec)
-    if spec.stimulus is not None:
-        from ..bass_stimulus import bass_band_hz  # lazy: keeps jasper.web numpy-free
-
-        band = bass_band_hz(excitation, spec.stimulus, safety_profile=safety_profile, role_targets=role_targets)
-    else:
-        band = spec.sweep_band_hz or measurement_band_hz(excitation.roles)
     return build_summed_level_probe_program(
-        _probe_gains(excitation.session_volume_db, excitation._summed_gain(backoff)),
-        sweep_band_hz=band, gap_s=NEAR_FIELD_SILENCE_S, downstream_gain_db=excitation.session_volume_db,
+        _probe_gains(excitation.session_volume_db, excitation._summed_gain(_scope_backoff_db(spec))),
+        sweep_band_hz=spec.sweep_band_hz or measurement_band_hz(excitation.roles), gap_s=NEAR_FIELD_SILENCE_S,
+        downstream_gain_db=excitation.session_volume_db,
     )
 
 
@@ -391,13 +378,11 @@ class SessionExcitation:
 
 
 def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Mapping[str, float] | None,
-                     stimulus_dbfs: float | None = None, *, safety_profile: Mapping[str, Any],
-                     role_targets: Mapping[str, str]) -> ExcitationProgram:
+                     stimulus_dbfs: float | None = None) -> ExcitationProgram:
     if spec.level_probe and stimulus_dbfs is None and spec.graph_scope != "candidate_branches":
         # A take that finds its level plays its probe until a level is asked; a branch take
         # plays its branches' own probes first (branch_probes; ADR-0365, ADR-0403).
-        return (compose_level_probe(excitation, spec) if solo_target(spec) else
-                compose_summed_probe(excitation, spec, safety_profile=safety_profile, role_targets=role_targets))
+        return compose_level_probe(excitation, spec) if solo_target(spec) else compose_summed_probe(excitation, spec)
     if solo_target(spec):
         return compose_target_program(excitation, spec, stimulus_dbfs)
     if spec.program_phase == PHASE_CHECK:
@@ -416,8 +401,7 @@ def program_for_spec(spec: Any, excitation: SessionExcitation, gain_plan_db: Map
             delta = stimulus_dbfs - max(gains.values())
             gains = {role: gain + delta for role, gain in gains.items()}
         return excitation.measure_program(gains, courtesy_prelude=spec.courtesy_prelude)
-    program = compose_summed_program(excitation, spec, stimulus_dbfs,
-                                     safety_profile=safety_profile, role_targets=role_targets)
+    program = compose_summed_program(excitation, spec, stimulus_dbfs)
     if spec.graph_scope == "candidate_branches":
         program = build_branch_program(program, branch_channels_for(spec), _alone_gains_db(excitation, spec))
     return program
@@ -433,5 +417,4 @@ def predictive_program_for_spec(context: Any) -> Callable[..., ExcitationProgram
     # A take's gain never changes its segment count; preview can precede the CHECK level solve.
     excitation = excitation_from_context(context)
     return partial(program_for_spec, excitation=excitation,
-                   gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles},
-                   safety_profile=context.safety_profile, role_targets=context.role_targets)
+                   gain_plan_db={r.role: BASE_STIMULUS_PEAK_DBFS for r in excitation.roles})

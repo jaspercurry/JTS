@@ -62,7 +62,6 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
     from .plan_run import prepare_plan_captures, preview_schedule  # lazy: measurement planning
     from .arm_walk import ARM_DISCOVERY_REUSE_S, mover_present  # lazy: measurement planning
     from .preflight import mover_unavailable_issue  # lazy: measurement planning
-    from .run_levels import ladder_captures  # lazy: measurement planning
     from .run_request import RunRequest, resolve_plan  # lazy: measurement planning
 
     from .commissioning_coordinator import load_commissioning_view  # lazy: setup is read only when choosing a default
@@ -82,10 +81,10 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
         choice: dict[str, Any] = {"id": plan_id, "label": plan_id, "default": plan_id == default_id,
                                   "poses": walked.mic_move_count, "captures": walked.capture_count}
         if choice["id"] == default_id:
-            # Posted as the request: the door's preflight states a ladder's rungs (#5737).
+            # Posted as the request, which the door resolves (#5737).
             door = run_door(plan)
             try:
-                request, levels = resolve_plan(RunRequest.from_mapping(door["body"]["request"]), targets=lambda: targets)
+                request = resolve_plan(RunRequest.from_mapping(door["body"]["request"]), targets=lambda: targets)
                 context = resolve_conductor_context(status)
             except LateralWalkRefused as exc:
                 choice.update(code=exc.reason, lines=[refusal_copy_for(exc.reason)[0]])
@@ -97,7 +96,7 @@ def round_choices(status: Mapping[str, Any], selected_id: str = "") -> list[dict
             else:
                 if mover_present(request.mover, reuse_s=ARM_DISCOVERY_REUSE_S):
                     captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
-                    facts = preview_schedule(request, ladder_captures(request, levels, captures), context)
+                    facts = preview_schedule(request, captures, context)
                     choice.update(lines=round_lines(facts), action={"id": "run_program", "label": "Start measurement", **door})
                 else:
                     issue = mover_unavailable_issue(request.program)

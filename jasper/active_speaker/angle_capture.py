@@ -221,9 +221,9 @@ class AngleStop:
             raise CrossoverV2FlowError(str(exc)) from None
         if self.stimulus is not None:
             try:
-                if not self.pose.driver and self.regime != REGIME_SUMMED:
-                    raise ValueError(f"a {self.regime} stop plays a stimulus only on the driver its pose names")
-                validated_stimulus(self.stimulus, one_driver=bool(self.pose.driver))
+                if not self.pose.driver:
+                    raise ValueError("a stop plays a stimulus only on the driver its pose names")
+                validated_stimulus(self.stimulus)
             except ValueError as exc:
                 raise LateralWalkRefused(WALK_STIMULUS_NOT_ACCEPTED, str(exc)) from None
 
@@ -240,11 +240,10 @@ class AngleStop:
         driver's pose always levels itself (ADR-0365), and so does a branch
         take at any spot, whose branches each play alone; any other driverless
         stop only when it plays the summed sweep, whose probe summed admission
-        reads, and no bass stimulus, whose ladder is a deliberate series
-        (ADR-0403)."""
+        reads (ADR-0403)."""
         if self.regime == REGIME_BRANCHES and not self.pose.driver:
             return SPOT_LEVEL
-        if self.pose.driver or (self.regime == REGIME_SUMMED and self.stimulus is None):
+        if self.pose.driver or self.regime == REGIME_SUMMED:
             return pose_level(self.pose)
         return None
 
@@ -259,8 +258,8 @@ def take_level(stop: AngleStop, *, scope: str) -> PoseLevel | None:
     """The level rule of a take of ``stop`` on graph ``scope``: its stop's own
     (:attr:`AngleStop.level`), else, for a summed take on a candidate graph, its
     pose's run level, since a probe reads only the graph it plays (ADR-0408,
-    ADR-0423). A bass stimulus's ladder keeps its run's fader (ADR-0403 §4)."""
-    if stop.level is None and scope == TEMPLATE_SWEEP_SCOPE and stop.stimulus is None:
+    ADR-0423)."""
+    if stop.level is None and scope == TEMPLATE_SWEEP_SCOPE:
         return run_level(stop.pose.kind)
     return stop.level
 
@@ -271,8 +270,8 @@ def level_sets(stops: Sequence[AngleStop], scopes: Sequence[str]) -> tuple[int |
     §2). A driver's takes share a level within their placement (ADR-0361). A
     driverless summed spot closer than the mark shares one with the next spots at
     its kind and distance -- its repeats and lateral poses -- found by the set's
-    first take (ADR-0403), and so does each candidate graph's summed take but a
-    bass ladder's at any other spot (ADR-0408, ADR-0423); a branch take of one
+    first take (ADR-0403), and so does each candidate graph's summed take at
+    any other spot (ADR-0408, ADR-0423); a branch take of one
     pair shares one only within its placement, since each placement probes what
     it plays (ADR-0407). A summed set is one candidate graph there (its candidate
     and ``played_layers``), levelled by that graph's own first take; a branch
@@ -343,7 +342,6 @@ class AngleCaptureRequest:
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
     level_source: str = ""
-    levels: tuple[float, ...] | None = None
     repeats: int = 1
     retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
@@ -391,21 +389,9 @@ class AngleCaptureRequest:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "level must be a LevelPolicy")
         if not self.level_source:
             object.__setattr__(self, "level_source", "operator" if self.level.level_db is not None
-                               or self.levels is not None else "program_default")
+                               else "program_default")
         if self.level_source not in LEVEL_SOURCES:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
-        if self.levels is not None:
-            if not isinstance(self.levels, (tuple, list)) or not self.levels or None in self.levels:
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, LADDER_STEPS_DETAIL)
-            # LevelPolicy owns the fader range check for each requested level.
-            for value in self.levels:
-                replace(self.level, level_db=value)
-            levels = tuple(float(value) for value in self.levels)
-            if len(set(levels)) != len(levels):
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, LADDER_STEPS_DETAIL)
-            if len(levels) == 1:
-                object.__setattr__(self, "level", replace(self.level, level_db=levels[0]))
-            object.__setattr__(self, "levels", levels if len(levels) > 1 else None)
         for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -413,7 +399,7 @@ class AngleCaptureRequest:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            **{key: value for key, value in asdict(self).items() if key != "levels" or value is not None},
+            **asdict(self),
             "level": self.level.to_dict(),
             "stops": [
                 {**_stated(stop, ("regime", "purpose")), "candidate_id": candidate_identity(stop.candidate_id),
@@ -670,11 +656,6 @@ WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 
 #: The composed session would need more capture blob indexes than exist.
 WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-
-#: A ladder's levels are steps, not faders: the loudest plays at the level the first rung's probe finds
-#: (ADR-0403 §4).
-LADDER_STEPS_DETAIL = ("levels are distinct steps in dB: the loudest plays at the level the first rung's probe "
-                       "finds, and each other one as far under it as it is under the loudest")
 
 WALK_REFUSAL_REASONS = frozenset({
     REASON_WALK_MOVER_MISMATCH,

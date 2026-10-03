@@ -26,8 +26,7 @@ from typing import Any, Callable, Mapping
 from jasper.active_speaker.angle_capture import LateralWalkRefused
 from jasper.active_speaker.arm_walk import mover_present
 from jasper.active_speaker.measurement_programs import near_field_drivers
-from jasper.active_speaker.preflight import PreflightIssue
-from jasper.active_speaker.run_levels import LevelLadder, ladder_captures, preflight_levels, prepare_level_captures
+from jasper.active_speaker.preflight import PreflightIssue, preflight
 from jasper.active_speaker.run_request import RunRequest, resolve_plan, run_envelope
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
 from jasper.active_speaker.crossover_v2.capture_plan import (
@@ -185,21 +184,19 @@ def prepare_v2_session(
         refusal = PreflightIssue.from_code(exc.code, str(exc))
         raise CrossoverV2Refused(refusal.detail, code=refusal.code, next_action=refusal.next_action) from exc
     try:
-        request, levels = resolve_plan(source, targets=lambda: near_field_drivers(context.topology))
+        request = resolve_plan(source, targets=lambda: near_field_drivers(context.topology))
     except (ValueError, CrossoverV2FlowError) as exc:
         raise _refused(exc) from exc
     # An arm plan plays only on the operator's word that the arm's path is clear.
     facts = preflight_live.read_preflight_facts(request, context=context,
                                                 mover_available=mover_present(request.mover),
                                                 rig_clear_attested=raw.get("attest_rig_clear") is True)
-    report = preflight_levels(request, facts, levels)
+    report = preflight(request, facts)
     issue = next((issue for issue in report.issues if issue.blocking), None)
     if issue is not None:
         raise CrossoverV2Refused(issue.evidence or issue.detail, code=issue.code, next_action=issue.next_action)
     request = report.plan
-    captures = (prepare_level_captures if request.levels else prepare_plan_captures)(
-        request, roles_bands=context.roles_bands,
-    )
+    captures = prepare_plan_captures(request, roles_bands=context.roles_bands)
     try:
         protection_sections = confirmed_protection_sections(
             context.safety_profile, context.role_targets
@@ -218,12 +215,10 @@ def prepare_v2_session(
     signals = RunSignals()
     position_gate = PositionGate(mover=request.mover)
     capture_session_id = "wired-" + secrets.token_hex(8)
-    schedule = preview_schedule(request, ladder_captures(request, levels, captures), context)
+    schedule = preview_schedule(request, captures, context)
     spec = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        measurements_per_pose=schedule["measurements_per_pose"],
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
-        safety_profile=context.safety_profile, role_targets=context.role_targets,
         excitation=excitation_from_context(context),
         acknowledgement_binding=acknowledgement_binding,
         retries_per_pose=request.retries_per_pose,
@@ -260,7 +255,7 @@ def prepare_v2_session(
             roles=context.roles_bands,
             protection_sections_by_role=protection_sections,
             provenance=capture_provenance,
-            program_for_spec=lambda spec, gain: compose_plan_program(conductor, spec, gain, context=context),
+            program_for_spec=lambda spec, gain: compose_plan_program(conductor, spec, gain),
         )
         seams = bind_v2_stage_seams(
             evidence_store=evidence_store, refs=refs, publish_check=publish_check,
@@ -286,12 +281,11 @@ def prepare_v2_session(
         manifest = RunManifest(session_id, v2evidence._record_store(evidence_store, session_id),
                                incumbent=incumbent_fingerprints(load_applied_baseline_profile_state()))
         from jasper.web import correction_crossover_v2 as host  # lazy: bind this host's seams
-        tuning, analyze, assessor, execute = bind_run_door(
+        tuning, analyze, assessor = bind_run_door(
             host=host, device=device, evidence_store=evidence_store,
             manifest=manifest, production=production_play, conductor=conductor, refs=refs, provenance=capture_provenance,
             ceiling_s=ceiling_s, camilla_factory=camilla_factory, context=context,
             ceiling_db_spl=report.spl_ceiling_db_spl, margin_db=report.rung_admission.get("run_margin_db", 0.0),
-            ladder=report if isinstance(report, LevelLadder) else None,
         )
         nonlocal held
         source_run = _build_wired_run(
@@ -301,7 +295,7 @@ def prepare_v2_session(
             position_gate=position_gate,
             evidence_refs=refs,
             ceiling_s=ceiling_s,
-            manifest=manifest, analyze=analyze, assessor=assessor, execute=execute,
+            manifest=manifest, analyze=analyze, assessor=assessor,
             request=request, captures=captures,
         )
         held = v2evidence._HeldSession(tuning=tuning, run=source_run)
