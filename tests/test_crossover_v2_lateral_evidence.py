@@ -74,7 +74,6 @@ def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     plan = capture_plan.build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding="b" * 24,
-        retries_per_pose=0,
     ).capture_plan
     (entry,) = plan.entries
     assert entry.kind_label == PHASE_LATERAL

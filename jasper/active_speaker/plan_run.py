@@ -276,7 +276,6 @@ async def run_plan(
         "poses": list({stop.pose.place: _pose(stop) for stop in request.stops}.values()),
         "candidates": list(request.candidates or ("base",)),
         "mover": request.mover, "level": asdict(request.level), "repeats": request.repeats,
-        "retries_per_pose": request.retries_per_pose,
     }
     manifest.planned = [_planned_row(index * request.repeats + repeat, repeat, stop)
                         for index, stop in enumerate(request.stops) for repeat in range(1, request.repeats + 1)]
@@ -334,9 +333,8 @@ async def run_plan(
                                     "title": resolved_stop.prompt.headline, "body": resolved_stop.prompt.detail,
                                     **position_screen_keys(resolved_stop.prompt), **screens.get(index + 1, {})})
             work.append(_Work(played_spec, stop, pose_index, config, len(expanded_rows), entry, rule, level_set))
-    return await _run(work, session=session, door=door, level=level,
-                      manifest=manifest, analyze=analyze, gate=gate,
-                      aborts=aborts, signals=signals or RunSignals(), retries=request.retries_per_pose,
+    return await _run(work, session=session, door=door, level=level, manifest=manifest, analyze=analyze, gate=gate,
+                      aborts=aborts, signals=signals or RunSignals(),
                       clock=clock, gain_ceiling_db=gain_ceiling_db, admit=admit, assessor=assessor, measure=measure)
 
 
@@ -370,7 +368,7 @@ async def _run(
     work: Sequence[_Work], *, session: TuningSession | None, manifest: RunManifest, analyze: Analyze,
     door: RunDoor | None = None, level: float | None = None,
     gate: PositionGate | None, aborts: Mapping[type[BaseException], str], signals: RunSignals,
-    retries: int, clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
+    clock: Callable[[], float], gain_ceiling_db: Mapping[str, float] | None,
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
@@ -441,7 +439,7 @@ async def _run(
     admit = admit or default_admit
     manifest.specs = {item.stop["index"]: item.spec for item in work}
     aborting: tuple[type[BaseException], ...] = (*_OWN_CODE, *aborts, CaptureStopped, asyncio.CancelledError)
-    ledgers = {item.pose_index: SlotAttempts(retries_per_pose=retries) for item in work}
+    ledgers = {item.pose_index: SlotAttempts() for item in work}
     attempts = [0] * len(work)
     offset, grant_epoch = 0, 0
     retry: TakeVerdict | None = None
@@ -522,7 +520,7 @@ async def _run(
                         gate.abandon_hold()
                 elif work[offset].pose_level is not None:
                     # A pose that levels itself starts over with its retries, so its redo is free (ADR-0361).
-                    ledgers[pose] = SlotAttempts(retries_per_pose=retries)
+                    ledgers[pose] = SlotAttempts()
             if offset == probe_start and probe_at is not None:
                 offset = probe_at
             if offset in unlevelled:

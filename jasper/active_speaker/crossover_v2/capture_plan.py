@@ -42,6 +42,7 @@ from ..measurement_programs import (
     POSE_KIND_BEARING, POSE_KIND_BEHIND, POSE_KIND_CLOSE, POSE_KIND_SEAT, Pose,
 )
 from ..round_copy import millimetres
+from .admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .contracts import (
     POSITION_AXIS_HORIZONTAL,
     CrossoverV2FlowError,
@@ -76,7 +77,7 @@ def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None, excitation: SessionExcitation | None = None,
-    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
+    acknowledgement_binding: str, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
@@ -104,7 +105,8 @@ def build_inline_session_spec(
             screen={"title": prompt.headline, "body": prompt.detail,
                     **position_screen_keys(prompt), **batches.get(index, {})},
         ))
-    attempts = len(entries) + sum(1 for _ in groupby(prompt.pose.place for prompt in prompts)) * retries_per_pose
+    placements = sum(1 for _ in groupby(prompt.pose.place for prompt in prompts))
+    attempts = len(entries) + placements * MAX_EXTRA_ATTEMPTS_PER_POSITION
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
     plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,

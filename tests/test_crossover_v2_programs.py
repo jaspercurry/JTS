@@ -492,7 +492,7 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
 
     plan = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
-        roles_bands=roles, fc_hz=excitation.fc_hz, acknowledgement_binding="a" * 32, retries_per_pose=0,
+        roles_bands=roles, fc_hz=excitation.fc_hz, acknowledgement_binding="a" * 32,
     ).capture_plan
     assert plan.entries[0].duration_ms >= (
         _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS)

@@ -31,7 +31,6 @@ from jasper.audio_measurement.program import RoleBand
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
 from .movers import MOVER_ARM, MOVER_HUMAN, MOVER_CONFIRMED, MOVERS
 from .fader_hold import EMERGENCY_MEASUREMENT_VOLUME_DB
-from .crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from .crossover_v2.contracts import (
     MEASURE_KIND_CANDIDATE,
     MEASURE_KIND_VERIFY,
@@ -347,7 +346,6 @@ class AngleCaptureRequest:
     level: LevelPolicy = LevelPolicy()
     level_source: str = ""
     repeats: int = 1
-    retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -396,10 +394,8 @@ class AngleCaptureRequest:
                                else "program_default")
         if self.level_source not in LEVEL_SOURCES:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
-        for name, minimum in (("repeats", 1), ("retries_per_pose", 0)):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-                raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"{name} must be an integer >= {minimum}")
+        if isinstance(self.repeats, bool) or not isinstance(self.repeats, int) or self.repeats < 1:
+            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "repeats must be an integer >= 1")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -536,7 +532,6 @@ def request_for_preset(
     level: LevelPolicy = LevelPolicy(),
     level_source: str = "",
     repeats: int = 1,
-    retries_per_pose: int = MAX_EXTRA_ATTEMPTS_PER_POSITION,
     targets: Sequence[str] = (),
     driver: str = "",
 ) -> AngleCaptureRequest:
@@ -570,7 +565,7 @@ def request_for_preset(
         mover=mover,
         candidates=candidates,
         level=level, level_source=level_source,
-        repeats=repeats, retries_per_pose=retries_per_pose,
+        repeats=repeats,
         program=preset.preset,
         layout=preset.layout,
     )

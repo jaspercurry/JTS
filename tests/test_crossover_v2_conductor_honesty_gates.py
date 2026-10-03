@@ -15,7 +15,7 @@ from jasper.audio_measurement.program_analysis.model import (
     ALIGNMENT_DELAY_EXCEEDS_SEARCH_WINDOW,
     SegmentLocation,
 )
-from jasper.active_speaker.crossover_v2.admission import SlotAttempts
+from jasper.active_speaker.crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION, SlotAttempts
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginRefused
 from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 from tests.crossover_v2_fixtures import (
@@ -27,12 +27,12 @@ from tests.crossover_v2_fixtures import (
 )
 
 
-@pytest.mark.parametrize("charge,retries,refused", [
-    ("operator", 1, None), ("speaker", 0, None), ("operator", 0, "retries_spent"),
+@pytest.mark.parametrize("charge,spent,refused", [
+    ("operator", 0, None), ("speaker", 0, None), ("operator", MAX_EXTRA_ATTEMPTS_PER_POSITION, "retries_spent"),
 ])
-def test_executor_admission_uses_only_the_runs_pose_ledger(charge, retries, refused):
+def test_executor_admission_uses_only_the_runs_pose_ledger(charge, spent, refused):
     conductor = _conductor(FakeSeams())
-    ledger = SlotAttempts(charge=charge, retries_per_pose=retries)
+    ledger = SlotAttempts(charge=charge, by_speaker=spent)
     conductor.authorize_begin(1, 1, executor_ledger=ledger)
     assert ledger.admitted == 1
     if refused:
@@ -43,7 +43,7 @@ def test_executor_admission_uses_only_the_runs_pose_ledger(charge, retries, refu
     else:
         conductor.authorize_begin(1, 2, executor_ledger=ledger)
     assert ledger.by_household == (1 if charge == "operator" and not refused else 0)
-    assert ledger.by_speaker == (1 if charge == "speaker" and not refused else 0)
+    assert ledger.by_speaker == spent + (1 if charge == "speaker" and not refused else 0)
     assert ledger.admitted == (1 if refused else 2)
     assert conductor._slot_attempts == {}
 

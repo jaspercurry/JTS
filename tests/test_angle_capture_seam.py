@@ -574,8 +574,7 @@ def _candidate_batch_plan(request):
     return capture_plan.build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id)
          for c in captures if c.spec.program_phase == PHASE_LATERAL],
-        roles_bands=_ROLES_BANDS, fc_hz=_FC_HZ,
-        acknowledgement_binding="candidate-batch-test", retries_per_pose=0,
+        roles_bands=_ROLES_BANDS, fc_hz=_FC_HZ, acknowledgement_binding="candidate-batch-test",
     ).capture_plan
 
 
@@ -897,14 +896,14 @@ def test_each_summed_stop_gets_a_spec_at_its_own_pose_and_a_per_driver_stop_none
 def test_request_document_and_capture_schedule(repeats, candidates):
     request = ac.request_for_preset(
         mp.run_preset("room", "room_quick"), mover=ac.MOVER_ARM, candidates=candidates, repeats=repeats,
-        retries_per_pose=2, level=ac.LevelPolicy(level_db=-25),
+        level=ac.LevelPolicy(level_db=-25),
     )
     doc = request.to_dict()
     assert doc["candidates"] == list(candidates)
     assert [stop["candidate_id"] for stop in doc["stops"]] == list(candidates or ("base",)) * 3
     assert doc["level"] == {"level_db": -25}
     assert doc["level_source"] == "operator"
-    assert (doc["repeats"], doc["retries_per_pose"]) == (repeats, 2)
+    assert doc["repeats"] == repeats
     specs = ac.stop_specs(request, baseline_id="banked-base",
                           prompts=[s.prompt for s in ac.resolve_request(request)])
     assert {spec.kind for spec in specs if spec.candidate_id == "banked-base"} == {MEASURE_KIND_VERIFY}
@@ -964,10 +963,7 @@ def test_invalid_level_policy_refuses_at_construction(level_db):
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
-@pytest.mark.parametrize("fields", [
-    *[{"repeats": v} for v in (0, -1, True, 1.5)],
-    *[{"retries_per_pose": v} for v in (-1, True, 1.5)],
-])
+@pytest.mark.parametrize("fields", [{"repeats": v} for v in (0, -1, True, 1.5)])
 def test_invalid_walk_fields_refuse_by_name(fields):
     with pytest.raises(ac.LateralWalkRefused) as refused:
         replace(_stops_at([0], regimes=(ac.REGIME_SUMMED,)), **fields)

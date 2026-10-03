@@ -1050,6 +1050,5 @@ def _inline_spec():
     captures = prepare_plan_captures(request, roles_bands=_roles())
     return build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        roles_bands=_roles(), fc_hz=FC_HZ,
-        acknowledgement_binding="b" * 24, retries_per_pose=0,
+        roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding="b" * 24,
     )

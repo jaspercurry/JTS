@@ -1268,7 +1268,7 @@ def test_a_one_driver_take_is_composed_from_its_own_target_and_admitted(tmp_path
     plan = build_inline_session_spec(
         [(spec, CloudPositionPrompt("close", pose=Pose(0, 0)), "")], roles_bands=context.roles_bands,
         fc_hz=context.fc_hz,
-        excitation=excitation, acknowledgement_binding="a" * 32, retries_per_pose=0,
+        excitation=excitation, acknowledgement_binding="a" * 32,
     ).capture_plan
     assert plan.entries[0].duration_ms >= max(map(_program_duration_ms, (program, probe))) + CAPTURE_ENTRY_MARGIN_MS
 

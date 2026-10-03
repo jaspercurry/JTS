@@ -1206,8 +1206,7 @@ def test_inline_and_verify_specs_carry_the_default_calibration_hint(
     spec = build_inline_session_spec(
         [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK),
           CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0)), "base")],
-        roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding=_BINDING,
-        retries_per_pose=0, **kwargs,
+        roles_bands=_roles(), fc_hz=FC_HZ, acknowledgement_binding=_BINDING, **kwargs,
     )
     wire = spec.to_dict()
     if with_calibration:

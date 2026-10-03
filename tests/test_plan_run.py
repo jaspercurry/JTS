@@ -263,18 +263,16 @@ def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, ok
     assert result.status == "complete"
 
 
-@pytest.mark.parametrize("charge,budget,extras", [
-    ("speaker", 0, 2), ("speaker", 3, 2), ("operator", 0, 0), ("operator", 3, 2),
-])
-def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charge, budget, extras):
+@pytest.mark.parametrize("charge", ["speaker", "operator"])
+def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charge):
     """A placement plays at most two takes after its first, of any charge (ADR-0422)."""
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(False,
         REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge))
     gate = AnsweredGate()
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=budget), gate=gate))
+    result, fakes = asyncio.run(_run_gated(_walk([0]), gate=gate))
     assert result.status == "partial"
-    assert len(fakes.banked) == 1 + extras
-    assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else extras)
+    assert len(fakes.banked) == 3
+    assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else 2)
     assert gate.progress[-1]["budget"]["left"] == 0
     assert result.reason == ""
     assert result.not_measured[0]["reason"] == REASON_DRIFT_BASELINES_DISAGREE
@@ -421,19 +419,18 @@ def test_progress_and_manifest_are_published_during_the_run():
     assert result.records.snapshots[-1]["status"] == "complete"
 
 
-@pytest.mark.parametrize(("stage", "action", "budget", "retried"), [
-    ("restore", "stop", 1, False), ("restore", "accept", 1, False),
-    ("restore", "retake_same", 1, True), ("restore", "retake_louder", 1, True),
-    ("restore", "retake_quieter", 1, True), ("restore", "retake_same", 0, False),
-    ("ready", "stop", 1, False),
+@pytest.mark.parametrize(("stage", "action", "retried"), [
+    ("restore", "stop", False), ("restore", "accept", False),
+    ("restore", "retake_same", True), ("restore", "retake_louder", True),
+    ("restore", "retake_quieter", True), ("ready", "stop", False),
 ])
-def test_incomplete_take_obeys_verdict_and_accounts_for_remaining_stops(monkeypatch, stage, action, budget, retried):
+def test_incomplete_take_obeys_verdict_and_accounts_for_remaining_stops(monkeypatch, stage, action, retried):
     verdicts = iter([TakeVerdict(False, REASON_CLIPPED, next=action, charge="operator",
                                next_gain_db=-15 if action == "retake_louder" else -24),
                      TakeVerdict(True), TakeVerdict(True)])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     seams = FakeSeams(play=FakePlay(script=[(stage, REASON_CLIPPED)]))
-    result, _ = asyncio.run(_run_gated(replace(_walk([0, 20]), retries_per_pose=budget), seams=seams))
+    result, _ = asyncio.run(_run_gated(_walk([0, 20]), seams=seams))
     assert result.status == ("complete" if retried else "partial")
     assert seams.play.bearings == ([0, 0, 20] if retried else [0])
     assert result.takes[0]["quality"]["status"] == TAKE_INCOMPLETE
@@ -574,11 +571,11 @@ def test_retake_while_next_pose_waits_restarts_the_displayed_pose(monkeypatch):
 
 
 def test_operator_retries_are_pooled_across_configs(monkeypatch):
-    verdicts = iter([TakeVerdict(False, REASON_CLIPPED, next="retake_same", charge="operator"),
-                     TakeVerdict(True), TakeVerdict(False, REASON_CLIPPED, next="retake_same", charge="operator")])
+    clipped = TakeVerdict(False, REASON_CLIPPED, next="retake_same", charge="operator")
+    verdicts = iter([clipped, TakeVerdict(True), clipped, clipped])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0], ("fp-a", "fp-b")), retries_per_pose=1)))
-    assert len(fakes.banked) == 3
+    result, fakes = asyncio.run(_run_gated(_walk([0], ("fp-a", "fp-b"))))
+    assert len(fakes.banked) == 4
     assert result.status == "partial"
 
 
@@ -596,7 +593,7 @@ def test_a_take_banks_the_verdict_and_level_the_run_judged(case, status, faults)
         if case == "analysis_error":
             raise ValueError("bad capture")
         return replace(_analysis(record), discontinuity_samples=1024 if case == "refused" and next(calls) == 1 else 0)
-    result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=0), analyze=analyze))
+    result, fakes = asyncio.run(_run_gated(_walk([0]), analyze=analyze))
     records = {record["take_id"]: record for record in fakes.banked}
     assert (result.status, [row.get("fault") for row in result.takes]) == (status, faults)
     assert set(records) == {row["take_id"] for row in result.takes}
@@ -1768,15 +1765,14 @@ def test_a_redo_before_the_run_probe_places_the_microphone_for_the_probe_again(m
     assert plays[0]["spec"].level_probe and windows == [0.0, -9.0] and result.status == "complete"
 
 
-@pytest.mark.parametrize("retries", [0, MAX_EXTRA_ATTEMPTS_PER_POSITION])
-def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retries):
+def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round():
     """Each redo asks for the microphone again and starts the pose over at its
     probe, with its retries, so redos past the pose's budget never end the
-    round, even one with no retries; the page is told which plays are the
-    probe, and a pose's takes play at the level its probe solved (ADR-0365)."""
+    round; the page is told which plays are the probe, and a pose's takes play
+    at the level its probe solved (ADR-0365)."""
     request = ac.request_for_preset(Preset("nearfield/each", tuple(
         Pose(0, 0, repeats=repeats, kind="close", distance_m=mm / 1000, driver="woofer")
-        for mm, repeats in ((15, 1), (30, 2))), purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries)
+        for mm, repeats in ((15, 1), (30, 2))), purposes=("reference",), stimulus=NEAR_FIELD))
     redos = MAX_EXTRA_ATTEMPTS_PER_POSITION + 1
     # The operator presses Redo during each of the first probes, then lets each pose land.
     result, fakes, selected, gate = _run_levelled(request, (66.0,) * (redos + 1) + (80.0, 66.0, 80.0, 80.0),
@@ -1790,8 +1786,8 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
     assert list(steps.values()) == ["probe"] * (redos + 1) + ["levelled", "probe", "levelled", "levelled"]
 
 
-@pytest.mark.parametrize("repeats,retries,redo_first,left", [(2, 0, True, 0), (2, 0, False, 0), (6, 2, False, 2)])
-def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats, retries, redo_first, left):
+@pytest.mark.parametrize("repeats,redo_first", [(2, True), (2, False), (6, False)])
+def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats, redo_first):
     """A redo during a pose's last take plays the pose again from its start, and
     each take it plays again is free (#5722): a driver's pose starts over with its
     retries (ADR-0361). The earlier takes stay banked, but neither kept nor the
@@ -1800,7 +1796,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
     monkeypatch.setattr(plan_run, "POSITION_HOLD_POLL_S", 0)
     request = ac.request_for_preset(Preset("nearfield/each", (
         Pose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
-        purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries)
+        purposes=("reference",), stimulus=NEAR_FIELD))
     placement = (66.0, *(80.0,) * repeats)
 
     result, _, selected, gate = _run_levelled(request, placement * 2, redo_at=(0,) if redo_first else (repeats + 1,))
@@ -1809,19 +1805,19 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
     assert [index for index, _ in gate.grants] == [1] * 2
     assert selected == [False] * (len(selected) - repeats) + [True] * repeats
     final = gate.progress[-1]
-    assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (retries, left, 0)
+    assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (2, 2, 0)
 
 
-@pytest.mark.parametrize(("retries", "readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
-    (2, (70.0, 70.0, 73.0, 70.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4, 5}, [], 1),
-    (2, (70.0,) * 4 + (73.0,) * 2, (), {4, 5}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 1),
-    (0, (70.0, 70.0, 73.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
-    (2, (70.0, 70.0, 73.0) + (75.0,) * 5, (3,), {2}, {3, 4, 5, 6, 7}, [], 1),
-    (0, (70.0,) * 5, (5,), set(), set(), [REASON_RETRIES_SPENT] * 5, 0),
+@pytest.mark.parametrize(("readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
+    ((70.0, 70.0, 73.0, 70.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4, 5}, [], 1),
+    ((70.0,) * 4 + (73.0,) * 2, (), {4, 5}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 1),
+    ((70.0,) * 12 + (73.0, 70.0, 70.0), (5, 10), {12}, {10, 11, 13, 14}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
+    ((70.0, 70.0, 73.0) + (75.0,) * 5, (3,), {2}, {3, 4, 5, 6, 7}, [], 1),
+    ((70.0,) * 15, (5, 10, 15), set(), set(), [REASON_RETRIES_SPENT] * 5, 0),
 ], ids=["a timing repeat drifts once", "a MEASURE repeat drifts twice to one reading", "no retry left", "a redo of a drifted take",
         "a redo its placement cannot pay for"])
 def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap(
-        retries, readings, redo_at, drifted, kept, unmeasured, left):
+        readings, redo_at, drifted, kept, unmeasured, left):
     """A take at its run's fader never levels itself: a repeat more than SAME_POSE_DRIFT_DB
     off its placement's kept takes is retaken at that level, each retake one of the
     placement's two extra takes (ADR-0422), and banks the verdict and level it was judged
@@ -1829,7 +1825,7 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
     A redo spends one, the takes it plays again none, and its new placement's level is
     no drift (#5722)."""
     request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
-                                     program="speaker/mark", repeats=2, retries_per_pose=retries)
+                                     program="speaker/mark", repeats=2)
 
     result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
 
@@ -2191,8 +2187,7 @@ def test_a_take_plays_previews_and_prices_the_sweeps_its_preset_or_pose_states(s
                    if s.kind == "sweep"] for index in swept]
         bound = build_inline_session_spec(
             [(c.spec, c.resolved(plan).prompt, c.stop.candidate_id) for c in captures], roles_bands=roles,
-            fc_hz=2500, excitation=excitation_from_context(context), acknowledgement_binding="a" * 32,
-            retries_per_pose=0)
+            fc_hz=2500, excitation=excitation_from_context(context), acknowledgement_binding="a" * 32)
         sized = [bound.capture_plan.entries[index].duration_ms for index in swept]
         facts = plan_run.preview_schedule(plan, captures, context)
         previewed = [(r["role"], r["repeats"]) for pose in facts["pose_sweeps"] for r in pose if r["kind"] == "sweep"]

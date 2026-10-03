@@ -221,7 +221,6 @@ def prepare_v2_session(
         roles_bands=context.roles_bands, fc_hz=context.fc_hz,
         excitation=excitation_from_context(context),
         acknowledgement_binding=acknowledgement_binding,
-        retries_per_pose=request.retries_per_pose,
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
     )
     evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
