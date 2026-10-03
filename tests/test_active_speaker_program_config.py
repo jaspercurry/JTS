@@ -7,7 +7,7 @@
 The v2 crossover conductor plays one 2-channel program WAV through a static
 CamillaDSP graph that routes program capture ch0 -> woofer output path and ch1 ->
 tweeter output path (design §5.4). These tests pin: role-routed mixing, the
-APPLIED_RESPONSE filter set on the physical output channels, the 0 dB ceiling,
+protected-neutral filter set on the physical output channels, the 0 dB ceiling,
 the build-time protective-floor gate, and the build-and-prove return contract —
 including the adversarial pre-split-HP shape that ``tweeter_guard_present`` must
 reject even where ``output_highpass_protected`` alone would false-PASS.
@@ -72,17 +72,11 @@ def _confirmed_protection():
     )
 
 
-def _low_fc_preset() -> ActiveSpeakerPreset:
-    """A 2-way preset whose tweeter crosses too low for the protective floor."""
-    builder = _two_way_preset("mono")
-    builder["crossover_regions"][0]["fc_hz"] = 300  # < TWEETER_PROTECTIVE_HP floor
-    return ActiveSpeakerPreset.from_mapping(builder)
-
-
 def test_program_config_routes_each_channel_to_its_driver_output():
     preset = _preset("mono")
     out = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
     )
     parsed = yaml_lib.safe_load(out)
 
@@ -97,26 +91,6 @@ def test_program_config_routes_each_channel_to_its_driver_output():
     }
     # ch0 -> woofer output 0, ch1 -> tweeter output 1 (role-routed, not side-routed).
     assert routing == {0: [0], 1: [1]}
-
-
-def test_program_config_carries_target_crossover_not_bringup_hp():
-    preset = _preset("mono")
-    out = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
-    )
-    parsed = yaml_lib.safe_load(out)
-
-    # APPLIED_RESPONSE: the extra bring-up protective HP is dropped; the tweeter
-    # is protected by its TARGET crossover high-pass, on the OUTPUT channel.
-    assert "as_tweeter_protective_hp" not in parsed["filters"]
-    hp = parsed["filters"]["as_tweeter_woofer_tweeter_hp"]["parameters"]
-    assert hp == {"type": "LinkwitzRileyHighpass", "freq": 1600.0, "order": 4}
-    # Program headroom is the commissioning headroom (0 dB) so the effective-peak
-    # ledger is main_volume + program peak with no hidden graph attenuation.
-    assert parsed["filters"]["active_startup_headroom"]["parameters"]["gain"] in (
-        0.0,
-        -0.0,
-    )
 
 
 def test_protected_neutral_program_config_contains_only_declared_safety_shaping():
@@ -172,12 +146,8 @@ def test_protected_neutral_origin_excludes_other_and_mutated_graphs():
         preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
         protection_sections_by_role=_confirmed_protection(),
     ))
-    legacy = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
-    )
     applied = emit_active_speaker_baseline_config(preset, playback_device=ACTIVE_PCM)
-    assert (protected_neutral_program_origin(legacy),
-            protected_neutral_program_origin(applied)) == (None, None)
+    assert protected_neutral_program_origin(applied) is None
     partial = yaml_lib.safe_load(yaml_lib.safe_dump(neutral))
     partial["filters"].pop("as_tweeter_program_protection_0")
     assert protected_neutral_program_origin(partial) is False
@@ -185,29 +155,11 @@ def test_protected_neutral_origin_excludes_other_and_mutated_graphs():
     assert protected_neutral_program_origin(neutral) is False
 
 
-def test_program_config_passes_all_graph_safety_proofs():
-    preset = _preset("mono")
-    out = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
-    )
-    view = view_from_emitted_text(out)
-    tweeter = {1}
-
-    assert unprotected_tweeter_outputs(view, tweeter_channels=tweeter) == ()
-    assert output_highpass_protected(view, channel=1, allowed_channels=tweeter)
-    assert tweeter_guard_present(
-        view,
-        channels=tweeter,
-        hp_name="as_tweeter_woofer_tweeter_hp",
-        limiter_name=_driver_limiter_name("tweeter"),
-        limiter_clip_ceiling_db=-12.0,
-    )
-
-
 def test_program_config_stereo_routes_both_woofers_and_both_tweeters():
     preset = _preset("stereo")  # outputs 0,2 woofer; 1,3 tweeter
     out = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_confirmed_protection(),
     )
     parsed = yaml_lib.safe_load(out)
     routing = {
@@ -218,93 +170,6 @@ def test_program_config_stereo_routes_both_woofers_and_both_tweeters():
     assert routing == {0: 0, 1: 1, 2: 0, 3: 1}
     view = view_from_emitted_text(out)
     assert unprotected_tweeter_outputs(view, tweeter_channels={1, 3}) == ()
-
-
-def test_program_config_refuses_tweeter_hp_below_protective_floor():
-    # Explicit floor above the 1600 Hz crossover -> build-time refusal.
-    with pytest.raises(ActiveSpeakerConfigError, match="below the declared protective"):
-        emit_active_speaker_program_config(
-            _preset("mono"),
-            role_channels=ROLE_CHANNELS,
-            playback_device=ACTIVE_PCM,
-            protective_hp_min_corner_hz=2000.0,
-        )
-    # A preset that natively crosses the tweeter at 300 Hz -> refused at default floor.
-    with pytest.raises(ActiveSpeakerConfigError, match="below the declared protective"):
-        emit_active_speaker_program_config(
-            _low_fc_preset(),
-            role_channels=ROLE_CHANNELS,
-            playback_device=ACTIVE_PCM,
-        )
-
-
-def test_program_config_discloses_a_shallow_tweeter_crossover_never_refuses_it(
-    caplog,
-):
-    """The 2026-08-23 owner ruling, at the gate that would otherwise have moved
-    the nanny one stage later.
-
-    This branch — the one taken when the caller omits
-    ``protection_sections_by_role`` — is the VERIFY stage's call shape
-    (``correction_crossover_v2.py`` builds ``bind_production_play`` twice and
-    only the MEASURE one supplies that mapping). Until #2897 it refused a
-    tweeter crossover at ``order * 6 < 24`` against a hardcoded figure no
-    datasheet contains, so an order-2 pin admitted at the topology gate was
-    measured, applied, and THEN refused here. The corner refusal above is
-    unchanged — that one names a damage mechanism; this one is a code floor and
-    so discloses.
-    """
-    raw = _two_way_preset("mono")
-    raw["crossover_regions"][0]["order"] = 2
-    raw["crossover_regions"][0]["fc_hz"] = 2400
-    order_2 = ActiveSpeakerPreset.from_mapping(raw)
-
-    with caplog.at_level(logging.WARNING):
-        out = emit_active_speaker_program_config(
-            order_2, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
-        )
-
-    # Emitted, and the graph is still a real one the tweeter is protected in.
-    view = view_from_emitted_text(out)
-    assert unprotected_tweeter_outputs(view, tweeter_channels={1}) == ()
-    # …and the shortfall reached the journal instead of the caller.
-    (fields,) = event_field_maps(
-        caplog, "active_speaker.program_emit_gate",
-        result="tweeter_hp_slope_below_commissioning_floor",
-    )
-    assert fields["slope_db_per_octave"] == "12"
-    assert fields["commissioning_floor_db_per_octave"] == "24"
-    # …and no "blocked_*" result fired for this preset — the shallow slope
-    # only disclosed, it never refused (this function's whole reason to
-    # exist per the docstring above; "blocked_tweeter_hp_below_floor" is the
-    # one this same function could wrongly emit if the corner gate above it
-    # regressed onto the slope path).
-    blocked_results = {
-        fields["result"]
-        for fields in event_field_maps(caplog, "active_speaker.program_emit_gate")
-        if fields["result"].startswith("blocked_")
-    }
-    assert not blocked_results, blocked_results
-
-
-def test_program_config_still_refuses_a_crossover_below_the_declared_corner():
-    """The half that survives, asserted beside the half that did not.
-
-    De-nannying the slope did not widen the corner: an order-2 crossover BELOW
-    the declared protective floor is still refused, so "shallower is disclosed"
-    can never be read as "anything is emitted".
-    """
-    raw = _two_way_preset("mono")
-    raw["crossover_regions"][0]["order"] = 2
-    raw["crossover_regions"][0]["fc_hz"] = 2400
-    order_2 = ActiveSpeakerPreset.from_mapping(raw)
-    with pytest.raises(ActiveSpeakerConfigError, match="below the declared protective"):
-        emit_active_speaker_program_config(
-            order_2,
-            role_channels=ROLE_CHANNELS,
-            playback_device=ACTIVE_PCM,
-            protective_hp_min_corner_hz=3000.0,
-        )
 
 
 @pytest.mark.parametrize(
@@ -328,19 +193,15 @@ def test_program_config_still_refuses_a_crossover_below_the_declared_corner():
 def test_protected_neutral_emit_refuses_unsafe_tweeter_protection(
     sections, match, caplog,
 ):
-    """The neutral path's tweeter floor gate — its SOLE slope-floor rail.
-
-    REPLACES ``_assert_tweeter_crossover_hp_satisfies_floor`` (pinned above) as
-    the proof between a confirmed-profile value and a compression driver. §4.1
-    wants the same rails; the panel found this one had zero tests.
-    """
+    """The program graph's tweeter floor gate — its SOLE slope-floor rail, the
+    proof between a confirmed-profile value and a compression driver."""
     with caplog.at_level(logging.ERROR):
         with pytest.raises(ActiveSpeakerConfigError, match=match):
             emit_active_speaker_program_config(
                 _preset("mono"), role_channels=ROLE_CHANNELS,
                 playback_device=ACTIVE_PCM, protection_sections_by_role=sections,
             )
-    # …and the floor refusal reaches the journal, as its predecessor's does.
+    # …and the floor refusal reaches the journal.
     blocked = event_field_maps(
         caplog, "active_speaker.program_emit_gate",
         result="blocked_tweeter_protection_below_floor",
@@ -360,14 +221,16 @@ def test_program_config_refuses_local_subwoofer_preset():
     preset = ActiveSpeakerPreset.from_mapping(builder)
     with pytest.raises(ActiveSpeakerConfigError, match="local subwoofer"):
         emit_active_speaker_program_config(
-            preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+            preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_confirmed_protection(),
         )
 
 
 def test_program_config_refuses_outputd_playback_lane():
     with pytest.raises(ActiveSpeakerConfigError):
         emit_active_speaker_program_config(
-            _preset("mono"), role_channels=ROLE_CHANNELS, playback_device="jasper_out"
+            _preset("mono"), role_channels=ROLE_CHANNELS, playback_device="jasper_out",
+            protection_sections_by_role=_confirmed_protection(),
         )
 
 
@@ -381,6 +244,7 @@ def test_program_config_refuses_a_three_way_preset():
             preset,
             role_channels={"woofer": 0, "mid": 1, "tweeter": 2},
             playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_confirmed_protection(),
         )
 
 
@@ -464,4 +328,6 @@ def test_build_and_prove_refuses_pre_split_hp_graph():
         + _PRESPLIT_PIPELINE
     )
     with pytest.raises(ActiveSpeakerConfigError, match="provably high-pass"):
-        _assert_program_graph_proven(doctored, preset, min_corner_hz=400.0)
+        _assert_program_graph_proven(
+            doctored, preset, min_corner_hz=400.0, tweeter_hp_name=_TWEETER_HP,
+        )

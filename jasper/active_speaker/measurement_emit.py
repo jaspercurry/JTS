@@ -210,9 +210,7 @@ def compile_tuning_graph(
     prove_candidate_config(candidate, candidate_text)
     if scope == "candidate_branches":
         mixers = yaml.safe_load(candidate_text)["mixers"]
-        mixers.update(yaml.safe_load(camilla_yaml._emit_role_routed_mixer(
-            candidate.source_preset, branches, apply_region_polarity=False,
-        )))
+        mixers.update(yaml.safe_load(camilla_yaml._emit_role_routed_mixer(candidate.source_preset, branches)))
         return _with_mixers(candidate_text, mixers)
     return candidate_text
 
@@ -262,7 +260,7 @@ def emit_measurement_graph(
         profile.preset,
         role_channels=dict(profile.role_channels),
         playback_device=profile.playback_device,
-        protection_sections_by_role=profile.protection_sections_by_role,
+        protection_sections_by_role=profile.protection_sections_by_role or {},
         **devices.emit_kwargs(),
         parked_target_ids=profile.parked_target_ids,
     )

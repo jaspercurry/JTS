@@ -35,6 +35,7 @@ from .transport_camilla_fixtures import (
     RETIRED_ALOOP_PLAYBACK_DEVICE,
 )
 from jasper.active_speaker import camilla_yaml as active_camilla_yaml
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.camilla_yaml.devices import (
     FORBIDDEN_ACTIVE_PLAYBACK_TOKENS,
     _assert_ring_playback_width,
@@ -1462,6 +1463,7 @@ def _emitter_required_kwargs(emit):
 
     extras = {
         "role_channels": {"woofer": 0, "tweeter": 1},
+        "protection_sections_by_role": sections_by_role(_mono_two_way_preset().crossover_regions),
         "program_channel": "mono",
         "corrections": {
             "woofer": {"gain_db": 0.0, "delay_ms": 0.0},
@@ -1912,11 +1914,13 @@ def _crossover_v2_program_site(
     )
 
     emitted: list[str] = []
+    preset = _mono_two_way_preset()
     profile = MeasurementGraphProfile(
-        preset=_mono_two_way_preset(),
+        preset=preset,
         topology=topology,
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device=playback_device,
+        protection_sections_by_role=sections_by_role(preset.crossover_regions),
     )
 
     def call_site():
@@ -1992,10 +1996,12 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     assert aloop["playback_device"] == ACTIVE_OUTPUTD_PLAYBACK_DEVICE
     assert aloop["capture_device"] == DEFAULT_CAPTURE_DEVICE
     assert aloop["capture_format"] == DEFAULT_CAPTURE_FORMAT
+    preset = _mono_two_way_preset()
     assert aloop_graph == active_camilla_yaml.emit_active_speaker_program_config(
-        _mono_two_way_preset(),
+        preset,
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device=ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
+        protection_sections_by_role=sections_by_role(preset.crossover_regions),
     )
 
 

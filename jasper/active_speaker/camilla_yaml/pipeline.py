@@ -412,8 +412,6 @@ def program_channel_count(role_channels: Mapping[str, int]) -> int:
 def _emit_role_routed_mixer(
     preset: ActiveSpeakerPreset,
     role_channels: dict[str, int],
-    *,
-    apply_region_polarity: bool = True,
 ) -> str:
     """Emit the program graph's role-routed split mixer.
 
@@ -434,22 +432,15 @@ def _emit_role_routed_mixer(
     a ``split_active_Nway`` name. Ecosystem vocabulary, not a routing claim: the
     ROUTING stays role-routed.
     """
-    region_polarity = role_polarity(preset)
-    polarity = (
-        region_polarity
-        if apply_region_polarity
-        else {role: False for role in region_polarity}
-    )
     outputs = sorted(preset.channel_map.outputs, key=lambda item: item.index)
     output_count = _output_count(preset)
     channels_in = program_channel_count(role_channels)
     mapping: list[tuple[int, list[tuple[int, float, bool]]]] = []
     for output in outputs:
-        role = output.driver_role
         channel = role_channels.get(
-            measurement_target_id(role, output.output_variant)
+            measurement_target_id(output.driver_role, output.output_variant)
         )
-        mapping.append((output.index, [] if channel is None else [(channel, 0.0, polarity[role])]))
+        mapping.append((output.index, [] if channel is None else [(channel, 0.0, False)]))
     labels = [output.label for output in outputs]
     return emit_mixer(
         f"split_active_{preset.way_count}way",
