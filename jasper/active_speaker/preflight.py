@@ -163,8 +163,8 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     fader may play: the largest bass lift against the graph the probe plays and,
     for a rear woofer the probe's graph mutes and a later take plays, the coherent
     sum of the woofers sharing its band (ADR-0403 §4, ADR-0370). Empty when no
-    take plays at the run's fader. Clearing the applied room layer adds nothing:
-    only a bass run's takes clear it, its probe among them (ADR-0413 §3)."""
+    take plays at the run's fader. Clearing the room layer adds nothing: of the
+    takes at a fader only a bass run's clear it, its probe too (ADR-0413 §3)."""
     takes = [(scope, levelled) for scope, levelled, _ in run_takes(captures)]
     probed = run_probe_index(takes)
     if probed is None:
