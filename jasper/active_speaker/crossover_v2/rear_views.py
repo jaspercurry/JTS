@@ -6,10 +6,11 @@
 
 A SUMMED batch plays the incumbent tune and one to three candidates at the
 same microphone positions, each graph at its own level (ADR-0423). Its
-reference is a candidate with its rear muted, else the base, which is the
-rear-off reference when it plays no rear stage (ADR-0436). This module selects
-those takes, freezes the batch's comparison band and per-position reference
-curve ONCE, and hands :mod:`jasper.audio_measurement.seat_figures` the arrays.
+reference is a rear-off candidate, one whose rear section is empty or muted,
+else the base, which is rear off when it plays no rear stage (ADR-0436). This
+module selects those takes, freezes the batch's comparison band and
+per-position reference curve ONCE, and hands
+:mod:`jasper.audio_measurement.seat_figures` the arrays.
 
 A PAIR batch plays ONE candidate, its parent with the rear calibration, bass
 and room cleared so the two woofers are raw (ADR-0386, ADR-0436), and banks
@@ -466,9 +467,9 @@ def rear_document(
     coverage_hz = [swept_hz[0], min(ceiling.ceiling_hz, swept_hz[1])]
     captured = sorted({key for poses in batch.values() for key in poses})
 
-    # A base with no rear stage plays its rear output muted (ADR-0436).
+    # A set that plays no rear stage plays its rear output muted (ADR-0436).
     muted = sorted(name for name, (section, reason) in sections.items()
-                   if section.get("rear_muted") is True or (name == incumbent_id and not section and not reason))
+                   if not reason and (not section or section.get("rear_muted") is True))
     reference_id = next((name for name in muted if name != incumbent_id), incumbent_id)
     reference_muted = reference_id in muted
     zeros: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -526,7 +527,7 @@ def rear_document(
         candidates.append({
             "candidate_id": name, "set_id": (sets.get(name) or {}).get("set_id"),
             "role": ROLE_INCUMBENT if name == incumbent_id
-                    else ROLE_REAR_MUTED if section.get("rear_muted") is True else ROLE_VARIANT,
+                    else ROLE_REAR_MUTED if name in muted else ROLE_VARIANT,
             "changed": changed, "change_family": section_change_family(changed),
             "section_reason": section_reason,
             "level_db": _shared([basis.get("level_db") for basis in bases[name]]),

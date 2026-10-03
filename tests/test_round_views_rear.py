@@ -155,14 +155,20 @@ _CURVES = {
 }
 
 
+#: A candidate composed with ``"rear_calibration": null``: it plays no rear stage.
+_CLEARED = "cleared-fingerprint"
+
+
 @pytest.fixture
 def banked_candidates(monkeypatch):
     """The candidate bank, which answers a fingerprint with its rear section."""
+    banked = {**_SECTIONS, _CLEARED: {}}
+
     def find(fingerprint, *, root=None):
-        if fingerprint not in _SECTIONS:
+        if fingerprint not in banked:
             raise CandidateBankRefusal("not_found", fingerprint)
         return SimpleNamespace(candidate=SimpleNamespace(
-            rear_calibration=_SECTIONS[fingerprint], analysis={}))
+            rear_calibration=banked[fingerprint], analysis={}))
 
     monkeypatch.setattr(rear_views, "find_banked_candidate", find)
 
@@ -902,20 +908,30 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
                for row in entry["candidates"])
 
 
-def test_a_base_that_plays_no_rear_stage_is_the_rear_off_reference(tmp_path, banked_candidates):
-    """On a first build the base plays no rear stage, so its rear output is muted: it is the
-    rear-off reference, and each candidate's late energy and front guard read against it
-    (ADR-0436). A base that plays a rear stage stays the incumbent reference (above)."""
-    root = rear_round(tmp_path, candidates=(BASE_CANDIDATE, _VARIANT), repeats=1)
-    _round_environment(root, applied=None)
+@pytest.mark.parametrize("applied,candidates,reference", [
+    (None, (BASE_CANDIDATE, _VARIANT), BASE_CANDIDATE),
+    (None, (BASE_CANDIDATE, _CLEARED, _VARIANT), _CLEARED),
+    (_SECTIONS[BASE_CANDIDATE], (BASE_CANDIDATE, _CLEARED, _VARIANT), _CLEARED),
+], ids=["a base with no rear stage", "a cleared candidate over a rear-off base", "a cleared candidate over a rear base"])
+def test_a_set_that_plays_no_rear_stage_is_the_rear_off_reference(
+    tmp_path, banked_candidates, applied, candidates, reference,
+):
+    """A set whose rear section is empty plays its rear output muted, as a muted section does: on
+    a first build the base, and a candidate composed with "rear_calibration": null. A rear-off
+    candidate is the reference before the base, and the other candidates' late energy and front
+    guard read against it (ADR-0436). A base that plays a rear stage, with no rear-off candidate,
+    stays the incumbent reference (above)."""
+    root = rear_round(tmp_path, candidates=candidates, repeats=1, curves={**_CURVES, _CLEARED: _CURVES[_MUTED]})
+    _round_environment(root, applied=applied)
 
     entry, = packet_of(root)[0]["rear"]
 
-    assert entry["comparison"]["reference"] == {"candidate_id": BASE_CANDIDATE, "kind": "rear_muted",
-                                                "set_id": BASE_CANDIDATE}
+    assert entry["comparison"]["reference"] == {"candidate_id": reference, "kind": "rear_muted", "set_id": reference}
+    assert {row["candidate_id"]: row["role"] for row in entry["candidates"]} == {
+        BASE_CANDIDATE: "incumbent", _VARIANT: "variant", **({_CLEARED: "rear_muted"} if _CLEARED in candidates else {})}
     variant, = (row for row in entry["candidates"] if row["candidate_id"] == _VARIANT)
     for row in variant["positions"].values():
-        assert (row["late_energy"]["reason"], row["late_energy"]["early_late_change_db"]) == ("", pytest.approx(0.0))
+        assert row["late_energy"]["reason"] == "" and row["late_energy"]["early_late_change_db"] is not None
         assert row["front_guard"]
 
 
