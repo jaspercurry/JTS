@@ -832,7 +832,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     checks = iter([False, check_passes])
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
-    request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),), repeats=repeats,
+    request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),) * repeats,
                                   level=LevelPolicy(level_db=-20), program="speaker/mark")
     captures = plan_run.prepare_plan_captures(request)
     conductor = _conductor(flow, index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)})
@@ -859,7 +859,7 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     # Each CHECK reads the fixture's one peak, so a second refusal ends the run (ADR-0428).
     expected = [("check", a, a - 1) for a in range(1, 3)]
     if check_passes:
-        expected += [(phase, 1, 1) for phase in ["timing"] * repeats + ["measure"] * repeats]
+        expected += [(phase, 1, 1) for phase in ["timing"] + ["measure"] * repeats]
     assert [(e["phase"], int(e["attempt"]), int(e["extra_used"])) for e in events] == expected
     assert len(programs) == manifest.takes_measured == len(expected)
     assert fakes.graph.restores == 1

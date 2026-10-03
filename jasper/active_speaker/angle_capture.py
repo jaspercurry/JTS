@@ -188,8 +188,8 @@ class AngleStop:
     targets a ``branches`` stop excites
     (:data:`~.measurement_programs.BRANCH_PAIRS`). A pose that names its
     driver plays that one target alone (ADR-0366). A stop is one take of its
-    pose, so its pose states no take count; the request's ``repeats`` repeats
-    every stop. ``sweeps_per_take`` is how many sweeps each driver plays in
+    pose, so its pose states no take count; a pose's repeats are duplicate
+    stops. ``sweeps_per_take`` is how many sweeps each driver plays in
     that take: its pose's, else its preset's (:func:`request_for_preset`,
     ADR-0434).
     """
@@ -219,7 +219,7 @@ class AngleStop:
             if self.pose.driver and self.candidate_id:
                 raise ValueError("a driver's pose plays the neutral drivers graph; it measures no candidate")
             if self.pose.repeats != 1:
-                raise ValueError("a stop is one take of its pose; the request's repeats repeat it")
+                raise ValueError("a stop is one take of its pose; its repeats are duplicate stops")
         except ValueError as exc:
             raise CrossoverV2FlowError(str(exc)) from None
         if self.stimulus is not None:
@@ -345,7 +345,6 @@ class AngleCaptureRequest:
     candidates: tuple[str, ...] = ()
     level: LevelPolicy = LevelPolicy()
     level_source: str = ""
-    repeats: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -394,8 +393,6 @@ class AngleCaptureRequest:
                                else "program_default")
         if self.level_source not in LEVEL_SOURCES:
             raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, f"level_source must be one of {LEVEL_SOURCES}")
-        if isinstance(self.repeats, bool) or not isinstance(self.repeats, int) or self.repeats < 1:
-            raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "repeats must be an integer >= 1")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -516,7 +513,7 @@ def stop_specs(
             stimulus=stop.stimulus,
             cleared_layers=played_layers(stop),
         ))
-    return tuple(spec for spec in placed for _ in range(request.repeats))
+    return tuple(placed)
 
 
 # --------------------------------------------------------------------------- #
@@ -531,7 +528,6 @@ def request_for_preset(
     mover: str = MOVER_HUMAN,
     level: LevelPolicy = LevelPolicy(),
     level_source: str = "",
-    repeats: int = 1,
     targets: Sequence[str] = (),
     driver: str = "",
 ) -> AngleCaptureRequest:
@@ -565,7 +561,6 @@ def request_for_preset(
         mover=mover,
         candidates=candidates,
         level=level, level_source=level_source,
-        repeats=repeats,
         program=preset.preset,
         layout=preset.layout,
     )

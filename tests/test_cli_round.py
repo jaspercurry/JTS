@@ -688,7 +688,6 @@ def test_run_repeats_replace_each_pose_count(preflight_ready, bank_trial, door, 
     code, body = _run(argv, opener, monkeypatch, capsys)
     assert code == 0
     plan = _posted_plan(opener)
-    assert plan.repeats == 1
     assert Counter(stop.pose.place for stop in plan.stops) == {
         pose.place: pose.repeats if repeats is None else repeats for pose in selected.poses
     }
@@ -1162,7 +1161,7 @@ def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, c
     (_, priced, _), page = previewed[0][0], previewed[0][1]
     request = resolve_plan(RunRequest.from_mapping(body["request"]), targets=lambda: near_field_drivers(topology))
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
-    assert [(capture.stop, capture.repeat) for capture in priced] == [(capture.stop, capture.repeat) for capture in captures]
+    assert [capture.stop for capture in priced] == [capture.stop for capture in captures]
     one = preview(request, captures, context)
     assert page["measurements_per_pose"] == one["measurements_per_pose"]
     assert page["estimated_seconds"] == pytest.approx(one["estimated_seconds"])

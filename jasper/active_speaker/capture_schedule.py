@@ -21,21 +21,18 @@ from .measurement_programs import BASE_CANDIDATE, REGIME_PER_DRIVER, REGIME_SUMM
 class PlanCapture:
     stop: AngleStop
     spec: MeasureSpec
-    repeat: int = 1
 
     def resolved(self, request: AngleCaptureRequest) -> ResolvedStop:
         return resolve_request(replace(request, stops=(self.stop,),
-            candidates=(self.stop.candidate_id or BASE_CANDIDATE,), repeats=1))[0]
+            candidates=(self.stop.candidate_id or BASE_CANDIDATE,)))[0]
 
 
 def prepare_plan_captures(
     request: AngleCaptureRequest, *, roles_bands: Sequence[RoleBand] = (),
 ) -> tuple[PlanCapture, ...]:
     """Derive preparation and requested captures together (ADR-0297)."""
-    resolved = resolve_request(request)
-    placed = stop_specs(request,
-                        prompts=tuple(stop.prompt for stop in resolved), baseline_id=BASE_CANDIDATE,
-                        roles_bands=roles_bands)
+    prompts = tuple(stop.prompt for stop in resolve_request(request))
+    placed = stop_specs(request, prompts=prompts, baseline_id=BASE_CANDIDATE, roles_bands=roles_bands)
     captures: list[PlanCapture] = []
     # CHECK plays every driver; a stop naming its driver plays that one alone and needs none (ADR-0366).
     if any(stop.regime == REGIME_PER_DRIVER and not stop.pose.driver for stop in request.stops):
@@ -45,25 +42,24 @@ def prepare_plan_captures(
         ))
     if request.takes_timing:
         base_request = replace(request, stops=(AngleStop(Pose(0, 0), REGIME_SUMMED, purpose=PURPOSE_SPEAKER),),
-                               candidates=(), repeats=1)
+                               candidates=())
         base_spec, = stop_specs(base_request,
                                 prompts=(resolve_request(base_request)[0].prompt,), baseline_id=BASE_CANDIDATE,
                                 roles_bands=roles_bands)
         assert base_spec is not None
-        captures.extend(PlanCapture(base_request.stops[0], replace(
+        captures.append(PlanCapture(base_request.stops[0], replace(
             base_spec, graph_scope="timing", program_phase=PHASE_TIMING,
-        ), repeat) for repeat in range(1, request.repeats + 1))
-    for offset, spec in enumerate(placed):
-        stop = request.stops[offset // request.repeats]
+        )))
+    for stop, prompt, spec in zip(request.stops, prompts, placed):
         if spec is None:
             spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(stop.pose.azimuth_deg,),
                                vertical_deg=stop.pose.elevation_deg, stimulus=stop.stimulus,
-                               pose_prompts=(resolved[offset // request.repeats].prompt.text,),
+                               pose_prompts=(prompt.text,),
                                branch_target_ids=(stop.pose.driver,) if stop.pose.driver else (),
                                sweeps_per_take=stop.sweeps_per_take)
         captures.append(PlanCapture(stop, replace(spec, program_phase=(
             PHASE_MEASURE if stop.regime == REGIME_PER_DRIVER and not stop.pose.driver else PHASE_LATERAL
-        )), offset % request.repeats + 1))
+        ))))
     # A driver's takes, and the first take of each close driverless set, branch set or candidate
     # graph's summed set, find their level (ADR-0365, ADR-0403, ADR-0423).
     starts = level_sets([capture.stop for capture in captures], [capture.spec.graph_scope for capture in captures])
