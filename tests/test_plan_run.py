@@ -2537,7 +2537,8 @@ def test_the_preview_times_every_play_whole_and_announces_the_run_once():
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     compose = predictive_program_for_spec(context)
     first, *rest = (capture.spec for capture in captures)
-    plays = [compose(replace(first, level_probe=True)), compose(replace(first, courtesy_prelude=True)), *map(compose, rest)]
+    plays = [compose(replace(first, level_probe=True)), compose(replace(first, level_probe=False, courtesy_prelude=True)),
+             *map(compose, rest)]
 
     facts = plan_run.preview_schedule(request, captures, context)
 
