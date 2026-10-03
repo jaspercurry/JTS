@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 from jasper.active_speaker import bundles
-from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity
+from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity, layer_fingerprints
 from jasper.active_speaker.commissioning_coordinator import next_program_action
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import parse_utc_iso
@@ -18,11 +18,13 @@ from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_purpose
 
 
-def _bank_packet(directory, identity, program, **fields):
+def _bank_packet(directory, identity, program, *, sets=({"takes": [{"selected": True}]},), **fields):
+    """A banked packet whose sets played the applied ``identity``'s layers, unless a set names its own."""
     (directory / "bundle" / directory.name).mkdir(parents=True)
     (directory / "packet.json").write_text(json.dumps({
-        "applied": identity, "preset": program, "result": "partial", "sets": [{"takes": [{"selected": True}]}],
-        **fields,
+        "applied": identity, "preset": program, "result": "partial",
+        "sets": [{"set_id": f"set-{index}", "layer_fingerprints": identity.get("layer_fingerprints") or {}, **group}
+                 for index, group in enumerate(sets)], **fields,
     }))
 
 
@@ -59,8 +61,8 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     wanted = RUNNABLE_PROGRAMS if wanted is None else wanted
     hits = {**hits, **({"room": max(hits.values())} if has_room and hits and "room" in wanted else {})}
     assert found == {name: {"round_dir": str(root / f"{index:02}"),
-                            "started_at": (root / f"{index:02}").stat().st_mtime,
-                            "round_id": f"{index:02}", "status": "partial", "stale": False, "stale_by": [],
+                            "started_at": (root / f"{index:02}").stat().st_mtime, "round_id": f"{index:02}",
+                            "set_id": "set-0", "status": "partial", "stale": False, "stale_by": [],
                             "banked_at": (root / f"{index:02}").stat().st_mtime,
                             **({"alignment_verdict": alignment, "next_action": next_action}
                                if name == "speaker" else {})}
@@ -105,6 +107,32 @@ def test_a_round_goes_stale_only_when_a_layer_under_it_changes(tmp_path, monkeyp
     found = latest_banked_rounds(applied_identity(after), programs=(program,), include_stale=True)[program]
 
     assert (found["stale"], found["stale_by"]) == (bool(stale_by), stale_by)
+
+
+@pytest.mark.parametrize("applied,current_set,action", [
+    ((), "base", ("copy_prompt", "rear", "round_available")),
+    (("rear",), "seed", ("copy_prompt", "room", "round_available")),
+    (("rear", "room"), "seed", (None, None, "complete")),
+], ids=["nothing-applied-since", "seed-applied", "room-applied-without-a-trial"])
+def test_a_trial_round_is_judged_by_the_set_whose_layers_still_play(tmp_path, monkeypatch, applied, current_set, action):
+    """A cardioid seat trial plays the applied tune and the rear seed, every take with bass and room off.
+    Until an apply its base set is current; once the seed is applied its seed set is, so the round stays
+    the in-room base, and a later room apply with no trial leaves it so (ADR-0437)."""
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    takes = [{"selected": True, "cleared_layers": ["bass_extension", "room_correction"]}] * 3
+    tune = _applied_anchor(layers=("speaker",))
+    _bank_packet(tmp_path / "campaigns" / "trial", applied_identity(tune), "rear/seat", room=[{}], bass=[{}], sets=[
+        {"set_id": "base", "takes": takes},
+        {"set_id": "seed", "layer_fingerprints": layer_fingerprints(_applied_anchor(layers=("speaker", "rear"))),
+         "takes": takes}])
+    profile = _applied_anchor(layers=("speaker", *applied))
+
+    rounds = latest_banked_rounds(applied_identity(profile), include_stale=True)
+    found = next_program_action(profile, rounds, programs=RUNNABLE_PROGRAMS)
+
+    assert {name: (row["set_id"], row["stale"]) for name, row in rounds.items()} == dict.fromkeys(
+        ("rear", "room", "bass"), (current_set, False))
+    assert (found["id"], found["program"], found["reason_code"]) == action
 
 
 @pytest.mark.parametrize("timestamp_source", ["provenance", "finalized_at", "started_at", "session"])

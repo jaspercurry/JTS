@@ -304,35 +304,42 @@ def packet_purposes(packet: Mapping[str, Any]) -> tuple[str, ...]:
 _LAYER_OWNERS = ((BASE_LAYER, PURPOSE_SPEAKER), *((row.candidate_fields[0].name, row.purpose) for row in PROGRAM_ROWS))
 
 
-def _stale_by(packet: Mapping[str, Any], identity: Mapping[str, Any], purpose: str) -> list[str]:
-    """The programs whose applied layer changed under a round of ``purpose`` since it was banked. A layer
-    above its program, or one every kept take played cleared, does not count; a purpose outside the
-    stack plays no applied layer (ADR-0420)."""
-    under = RUNNABLE_PROGRAMS[:RUNNABLE_PROGRAMS.index(purpose) + 1] if purpose in RUNNABLE_PROGRAMS else ()
-    banked = (packet.get("applied") or {}).get("layer_fingerprints") or {}
-    current = identity.get("layer_fingerprints") or {}
+def _stale_by(group: Mapping[str, Any], current: Mapping[str, Any], under: tuple[str, ...]) -> list[str]:
+    """The programs ``under`` whose applied layer changed since set ``group`` played it. A layer each of
+    the set's kept takes played cleared does not count (ADR-0420, ADR-0437)."""
     cleared = set(CANDIDATE_LAYERS).intersection(*(
-        take.get("cleared_layers") or () for group in packet.get("sets") or ()
-        for take in group.get("takes") or () if take.get("selected")))
-    return list(dict.fromkeys(owner for layer, owner in _LAYER_OWNERS if owner in under
-                              and layer not in cleared and banked.get(layer) != current.get(layer)))
+        take.get("cleared_layers") or () for take in group["takes"] if take.get("selected")))
+    return list(dict.fromkeys(owner for layer, owner in _LAYER_OWNERS if owner in under and layer not in cleared
+                              and group["layer_fingerprints"].get(layer) != current.get(layer)))
+
+
+def _current_set(packet: Mapping[str, Any], identity: Mapping[str, Any], purpose: str) -> tuple[str | None, list[str]]:
+    """The set a round of ``purpose`` is judged by, with the programs whose layer changed under it: of the sets
+    that kept a take and name the layers they played, the newest current one (the last the packet lists),
+    else the newest. A layer above the program does not count, and a purpose outside the stack plays none.
+    A round whose sets name no layers is stale by every program at or under its own (ADR-0437)."""
+    under = RUNNABLE_PROGRAMS[:RUNNABLE_PROGRAMS.index(purpose) + 1] if purpose in RUNNABLE_PROGRAMS else ()
+    current = identity.get("layer_fingerprints") or {}
+    judged = [(group["set_id"], _stale_by(group, current, under)) for group in reversed(packet.get("sets") or ())
+              if "layer_fingerprints" in group and any(take.get("selected") for take in group["takes"])]
+    return next((row for row in judged if not row[1]), judged[0] if judged else (None, list(under)))
 
 
 def latest_banked_rounds(
     identity: Mapping[str, Any], session_dir: Path | None = None, *, limit: int = 32,
     programs: tuple[str, ...] = RUNNABLE_PROGRAMS, include_stale: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Latest packet per program within a bounded window, by default only a current one; ``stale_by``
-    names the programs whose layer changed under a stale one (:func:`_stale_by`)."""
+    """Latest packet per program within a bounded window, by default only a current one; ``set_id`` names the
+    set it is judged by, and ``stale_by`` the programs whose layer changed under a stale one (:func:`_current_set`)."""
     found: dict[str, dict[str, Any]] = {}
     for directory, packet, banked_at in banked_rounds(session_dir, limit=limit):
         for name in (name for name in packet_purposes(packet) if name in programs):
-            stale_by = _stale_by(packet, identity, name)
+            set_id, stale_by = _current_set(packet, identity, name)
             prior = found.get(name)
             if (include_stale or not stale_by) and (prior is None or (banked_at, str(directory)) >
                                                     (prior["started_at"], prior["round_dir"])):
                 found[name] = {"round_dir": str(directory), "started_at": banked_at, "round_id": directory.name,
-                               "banked_at": banked_at, "status": packet.get("result"),
+                               "set_id": set_id, "banked_at": banked_at, "status": packet.get("result"),
                                "stale": bool(stale_by), "stale_by": stale_by,
                                **({"alignment_verdict": packet.get("alignment_verdict"),
                                    "next_action": packet.get("next_action")} if name == PURPOSE_SPEAKER else {})}

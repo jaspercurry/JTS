@@ -683,7 +683,7 @@ def test_bare_status_reports_applied_banked_and_next(tmp_path, monkeypatch, caps
     names = ["driver" if name == "speaker" else name for name in ("speaker", "room", "bass", "rear") if name in layers]
     assert payload["applied"]["summary"] == "applied layers: " + (", ".join(names) or "none")
     assert payload["applied"]["candidate_fingerprint"] == "saved-speaker"
-    assert payload["last_banked"] == {name: {"round_id": name, "round_dir": recent[name]["round_dir"],
+    assert payload["last_banked"] == {name: {"round_id": name, "set_id": "set-0", "round_dir": recent[name]["round_dir"],
                                             "banked_at": recent[name]["started_at"], "status": "partial",
                                             "stale": stale, "stale_by": recent[name]["stale_by"]}
                                       if name in rounds else None for name in programs}

@@ -614,7 +614,7 @@ def status_document(
         "reading_order": [{key: value for key, value in entry.items() if key != "name"}
                           for entry in reading_order()],
         "last_banked": {name: {key: banked[name][key]
-                               for key in ("round_id", "round_dir", "banked_at", "status", "stale", "stale_by")}
+                               for key in ("round_id", "set_id", "round_dir", "banked_at", "status", "stale", "stale_by")}
                         if name in banked else None for name in programs},
         "next": {"program": None if action["reason_code"] == "complete" else action["program"],
                  "reason_code": action["reason_code"]},

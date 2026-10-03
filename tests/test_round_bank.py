@@ -59,8 +59,11 @@ from jasper.active_speaker.round_bank import (
     bank_round,
 )
 
+from jasper.active_speaker.baseline_record import recomposition_snapshot_for
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
+from tests.active_speaker_fixtures import mono_output_topology
 from tests.crossover_v2_banked_round import bank_measure_round, bank_seat_round
-from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.test_active_speaker_measured_crossover_candidate import _candidate, _room_correction
 from tests.test_crossover_v2_driver_prescription import _draft
 
 
@@ -728,6 +731,34 @@ def test_the_bank_tags_every_series_and_draws_the_kept_takes(tmp_path, monkeypat
     assert drawn and all(curves[selector]["selected"] for selector in drawn)
     listed = [line for line in (banked.path / INDEX_FILENAME).read_text().splitlines() if line.startswith("series ")]
     assert listed and not any(f"take {refused};" in line or line.endswith(f"take {refused}") for line in listed)
+
+
+def test_each_view_set_banks_the_layers_it_played(tmp_path):
+    """A trial's base set banks the applied tune's layers, and a candidate's set the layers an apply of that
+    candidate records over it; a set no view reads names none (ADR-0437)."""
+    session, state = _live_session(tmp_path)
+    applied = _candidate()
+    seed = replace(_candidate(room_correction=_room_correction()), analysis={"measurement_status": "unmeasured"})
+    publish_authored_candidate(seed, root=tmp_path / "bank")
+    declaration = MeasurementGraphProfile(applied.source_preset, mono_output_topology(), {}, "null")
+
+    def record(candidate):
+        return {"kind": bp.BASELINE_PROFILE_KIND, "artifact_schema_version": bp.SCHEMA_VERSION, "status": "applied",
+                "recomposition_snapshot": recomposition_snapshot_for(candidate, declaration=declaration, design_draft={})}
+
+    write_manifest(session, program="room", groups=[
+        {"set_id": set_id, "base": candidate == "base", "capture_basis": {"candidate_id": candidate, **basis},
+         "takes": [{"take_id": set_id, "curves": [], "selected": True, "pose": {"kind": "seat"}}]}
+        for set_id, candidate, basis in (("timing", "base", {"graph_scope": "timing"}), ("base", "base", {}),
+                                         ("seed", seed.fingerprint, {}))])
+    paths = _ssot(tmp_path, present=True)
+    paths["applied_profile_path"].write_text(json.dumps(record(applied)))
+
+    banked = bank_round(session, campaign_root=tmp_path / "bank", state_path=state, **paths)
+
+    sets = json.loads((banked.path / "packet.json").read_text())["sets"]
+    assert {row["set_id"]: row.get("layer_fingerprints") for row in sets} == {
+        "timing": None, "base": layer_fingerprints(record(applied)), "seed": layer_fingerprints(record(seed))}
 
 
 @pytest.mark.parametrize("window,level,ripple,expected", [
