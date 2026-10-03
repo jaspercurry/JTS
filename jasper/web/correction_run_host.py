@@ -7,7 +7,6 @@ from __future__ import annotations
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 from dataclasses import replace
-from functools import partial
 import asyncio
 import logging
 from pathlib import Path
@@ -23,7 +22,7 @@ from jasper.active_speaker.crossover_v2.summed_alignment import timing_prior
 from jasper.active_speaker.crossover_v2.take_impulses import IMPULSES_KEY, write_take_impulses
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore
 from jasper.active_speaker.measurement_programs import SPOT_LEVEL, gate_exemption
-from jasper.active_speaker.plan_run import RunDoor, after_grading
+from jasper.active_speaker.plan_run import RunDoor
 from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.household_mic import resolved_household_sensitivity
 from jasper.audio_measurement.measurement_geometry import load_declared_geometry
@@ -170,7 +169,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                           reads_timing=conductor.reads_timing(index))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
         if verdict is None and phase == PHASE_MEASURE and any(key.startswith("next_gain_db.") for key in assessed.evidence):
-            after_grading(partial(conductor.rearm_measure_after_transient, assessed))
+            conductor.rearm_measure_after_transient(assessed)
         return assessed
 
     return analyze, assessor

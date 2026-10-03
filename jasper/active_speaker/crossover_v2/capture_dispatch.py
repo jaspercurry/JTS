@@ -270,8 +270,6 @@ def _assess_recording(
         "anchor_pair_runner_up_presence": anchor.pair_runner_up_presence if anchor else None,
         "anchor_witnesses_tried": anchor.witnesses_tried if anchor else None,
         "anchor_corroborated": anchor.corroborated if anchor else None,
-        "anchor_shift_ms": anchor.shift_ms if anchor else None,
-        "anchor_witness_residual_ms": anchor.witness_residual_ms if anchor else None,
         "epsilon_ppm": drift.epsilon_ppm if drift else None,
         "max_residual_samples": drift.max_residual_samples if drift else None,
         "schedule_residual_ms_worst": schedule_residual_ms,
@@ -284,8 +282,6 @@ def _assess_recording(
     }
     evidence.update({key: value if isinstance(value, bool) else float(value)
                      for key, value in figures.items() if value is not None})
-    if anchor is not None and anchor.anchor is not None:
-        evidence.update(anchor=anchor.anchor, anchor_witness=anchor.witness or "")
     responses = (*analysis.driver_responses, *((analysis.summed_response,) if analysis.summed_response else ()))
     capabilities = {
         "magnitude": bool(responses),
