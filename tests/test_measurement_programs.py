@@ -272,21 +272,34 @@ def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_pres
         ["left:full_range", "right:full_range"], [])
 
 
+@pytest.mark.parametrize("room_round", [None, {"round_dir": _ROUND_DIR, "set_id": "seat-set"}],
+                         ids=["no-room-set", "a-room-set"])
 @pytest.mark.parametrize("round_dir", [None, _ROUND_DIR])
 @pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
-def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round_dir):
+def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round_dir, room_round):
     """Where tuning stands, what the agent can ask and what a document may write (#5928 TB6), each
-    a call its tool's own parser accepts; the contract evaluates its bounds on the latest round."""
-    parsers = {module.PROG: module.build_parser() for module in (crossover_prescriber, round_views)}
-    prompt = th.build_tuning_handoff_prompt({"latest_round_dir": round_dir}, program)
+    a call its tool's own parser accepts; the contract evaluates its bounds on the latest round. When the
+    next-program pointer names a room round and set, the room prompt's contract, judge and compose calls
+    name them, it trials the candidate, and it runs no new round (ADR-0437)."""
+    parsers = {module.PROG: module.build_parser() for module in (crossover_prescriber, round_views, round_cli)}
+    prompt = th.build_tuning_handoff_prompt({"latest_round_dir": round_dir, "room_round": room_round}, program)
+    design = room_round if program == mp.PURPOSE_ROOM else None
     calls = []
-    for command in th.pointer_commands(program, round_dir):
-        assert command in prompt
-        _sudo, path, *argv = shlex.split(command)
-        args = vars(parsers[Path(path).name].parse_args(argv))
-        calls.append((Path(path).name, args["command"], args.get("program") or args.get("section"), args.get("round")))
-    assert calls == [(crossover_prescriber.PROG, "status", None, None), (round_views.PROG, "catalog", program, None),
-                     (crossover_prescriber.PROG, "contract", program, round_dir)]
+    for line in prompt.splitlines():
+        label, _, command = line.partition(": ")
+        if label in ("Where tuning stands", "What you can ask", "What a document may write", "Preview", "Bank", "Trial", "Run"):
+            _sudo, path, *argv = shlex.split(command)
+            args = vars(parsers[Path(path).name].parse_args(argv))
+            calls.append((Path(path).name, args["command"], args.get("program") or args.get("section"),
+                          args.get("round"), args.get("set")))
+    on = (design["round_dir"], design["set_id"]) if design else (round_dir, None)
+    assert [call for call in calls if call[0] != round_cli.PROG] == [
+        *(((crossover_prescriber.PROG, "judge", None, *on), (crossover_prescriber.PROG, "compose", None, *on))
+          if design else ()),
+        (crossover_prescriber.PROG, "status", None, None, None), (round_views.PROG, "catalog", program, None, None),
+        (crossover_prescriber.PROG, "contract", program, *on)]
+    if program == mp.PURPOSE_ROOM:
+        assert [call[1] for call in calls if call[0] == round_cli.PROG] == ["trial" if design else "run"]
 
 
 def test_run_help_names_every_registry_pose_set(capsys):
