@@ -24,7 +24,9 @@ from jasper.active_speaker.crossover_v2 import blend_prescription as blend
 from jasper.active_speaker.crossover_v2 import driver_prescription as driver
 from jasper.active_speaker.crossover_v2 import room_prescription as room
 from jasper.active_speaker.crossover_v2 import topology_prescription as topology
-from jasper.active_speaker.crossover_v2.evidence_packet import DERIVED_VIEWS, EVIDENCE_KEY, build_crossover_evidence_packet
+from jasper.active_speaker.crossover_v2.evidence_packet import (
+    DERIVED_VIEWS, EVIDENCE_KEY, build_crossover_evidence_packet, contract_currency,
+)
 from jasper.active_speaker.crossover_v2.corner_admissibility import (
     FC_REJECT_ABOVE_LOWER_DRIVER_BAND, FC_REJECT_BELOW_DECLARED_FLOOR,
     fc_rejection_scenarios,
@@ -792,14 +794,23 @@ def test_contract_cli_rear_shares_rooms_top_level_shape(capsys, monkeypatch):
         "rear_woofer_spacing_mm", "cabinet_back_wall_m", "cabinet_depth_m", "toe_in_degrees"]})
 
 
-def test_contract_cli_computes_the_rear_seed_from_the_rounds_declarations_and_pair_take(tmp_path, capsys):
-    """The seed reads the round's banked declarations and levels the rear woofer by its pair view (ADR-0425)."""
+@pytest.mark.parametrize("manual_settings", [REAR_SEED_DRAFT["manual_settings"], {}], ids=["declared", "undeclared"])
+def test_a_pair_rounds_packet_and_contract_carry_one_rear_seed(tmp_path, capsys, manual_settings):
+    """The seed reads the round's banked declarations and levels the rear woofer by its pair view; the bank's
+    per-set limits and stored contract digest carry the seed ``contract --round`` shows (ADR-0425)."""
     root = pair_round(tmp_path)
-    packet_of(root)
-    (root / DESIGN_DRAFT_FILENAME).write_text(json.dumps({"topology": _rear_pair("mono")[1].to_dict(), **REAR_SEED_DRAFT}))
+    (root / DESIGN_DRAFT_FILENAME).write_text(json.dumps(
+        {"topology": _rear_pair("mono")[1].to_dict(), "manual_settings": manual_settings}))
+    packet, _views = packet_of(root)
     assert cli.main(["contract", "--round", str(root), "--section", "rear"]) == 0
-    seed = rear_cal.read_rear_calibration(json.loads(capsys.readouterr().out)["sections"]["rear"]["seed"],
-                                          sample_rate=DEFAULT_SAMPLE_RATE)
-    assert seed["conditions"] == {"trim_db": -_PAIR_LEVEL_GAP_DB, "level_gap_db": _PAIR_LEVEL_GAP_DB,
-                                  "pair_round": root.name}
-    assert seed["geometry"]["cabinet_back_wall_m"] == _CABINET["cabinet_back_wall_m"]
+    rear = json.loads(capsys.readouterr().out)["sections"]["rear"]
+    if manual_settings:
+        seed = rear_cal.read_rear_calibration(rear["seed"], sample_rate=DEFAULT_SAMPLE_RATE)
+        assert seed["conditions"] == {"trim_db": -_PAIR_LEVEL_GAP_DB, "level_gap_db": _PAIR_LEVEL_GAP_DB}
+        assert seed["geometry"]["cabinet_back_wall_m"] == _CABINET["cabinet_back_wall_m"]
+    else:
+        assert rear["seed"] == unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": ["rear_woofer_spacing_mm"]})
+    assert packet["limits"] and all(
+        json.loads(json.dumps(limits["seed"])) == rear["seed"] for limits in packet["limits"].values())
+    assert packet[EVIDENCE_KEY]["contracts"]["rear"] == contract_digests({"rear": rear})["rear"]
+    assert contract_currency(round_inputs(root))["contract_current"] is True

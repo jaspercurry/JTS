@@ -154,7 +154,7 @@ def test_the_seed_is_a_supercardioid_from_the_declared_geometry(spacing_mm, back
     that branch is inverted and its delay plus its low-pass make 0.6 x spacing / c at the band centre; the bass
     branch hands over in phase at the band's foot. The seed passes the validator and plays audible."""
     draft = {"manual_settings": {"rear_woofer_spacing_mm": spacing_mm}}
-    seed = read_rear_calibration(rear_seed(48000, draft=draft, geometry=_geometry(back_m, depth_m, toe_deg), packet={}),
+    seed = read_rear_calibration(rear_seed(48000, draft=draft, geometry=_geometry(back_m, depth_m, toe_deg), views=()),
                                  sample_rate=48000)
     facts = rear_operating_facts(seed)
     assert facts["band_hz"] == pytest.approx(band_hz, abs=0.01)
@@ -169,7 +169,7 @@ def test_the_seed_is_a_supercardioid_from_the_declared_geometry(spacing_mm, back
     assert -(phase[2] - phase[0]) / (2 * np.pi * (grid[2] - grid[0])) * 1e3 == pytest.approx(net_delay_ms, abs=0.001)
     assert seed["common_delay_ms"] == max(0.0, -cancellation["delay_ms"])
     assert seed["geometry"]["cabinet_back_wall_m"] == back_m
-    assert seed["conditions"] == {"trim_db": 0.0, "level_gap_db": None, "pair_round": None}
+    assert seed["conditions"] == {"trim_db": 0.0, "level_gap_db": None}
 
 
 def _band(centre_hz: float, gap_db: float) -> dict:
@@ -180,14 +180,14 @@ def _band(centre_hz: float, gap_db: float) -> dict:
 def test_the_seed_levels_the_rear_woofer_by_the_pair_takes_gap_at_the_mark(gap_db, trim_db):
     """One flat trim on both rear branches, read from the mark's third octaves inside the band;
     a band below it and the pose behind the cabinet are not read."""
-    packet = {"round_id": "pair-round", "rear": [{"pair": {"positions": {
+    views = [{"pair": {"positions": {
         "az+0.00_el+0.00_d+1.00": {"bands": [_band(hz, gap_db) for hz in (125.0, 160.0, 200.0)] + [_band(63.0, 9.0)]},
         "behind_az+0.00_el+0.00_d+0.10": {"bands": [_band(160.0, -12.0)]},
-    }}}]}
-    seed = rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, packet=packet)
+    }}}]
+    seed = rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, views=views)
     assert [item["parameters"]["gain"] for branch in ("bass", "cancellation")
             for item in seed["rear"][branch]["filters"] if item["parameters"]["type"] == "Lowshelf"] == [trim_db] * 2
-    assert seed["conditions"] == {"trim_db": trim_db, "level_gap_db": gap_db, "pair_round": "pair-round"}
+    assert seed["conditions"] == {"trim_db": trim_db, "level_gap_db": gap_db}
     assert read_rear_calibration(seed, sample_rate=48000)
 
 
@@ -197,5 +197,5 @@ def test_the_seed_levels_the_rear_woofer_by_the_pair_takes_gap_at_the_mark(gap_d
     (REAR_SEED_DRAFT, _geometry(depth_m=None, toe_deg=None), ["cabinet_depth_m", "toe_in_degrees"]),
 ])
 def test_the_seed_names_each_missing_declaration_instead_of_a_default(draft, geometry, missing):
-    assert rear_seed(48000, draft=draft, geometry=geometry, packet={}) == unavailable(
+    assert rear_seed(48000, draft=draft, geometry=geometry, views=()) == unavailable(
         REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})

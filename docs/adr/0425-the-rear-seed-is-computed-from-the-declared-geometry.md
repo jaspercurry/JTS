@@ -25,18 +25,20 @@
   3. **Bass branch.** In phase, with a 4th-order Linkwitz-Riley low-pass at `c/(6D)`: ADR-0325's
      complementary hand-over.
   4. **Trim.** One flat trim on both rear branches, a Lowshelf at 16 kHz (`rear_calibration.flat_shelf`,
-     the boost form of ADR-0327): minus the rear-minus-front level that the round's banked pair view
-     reads at the mark over the band's third octaves, with a +6 dB cap. With no pair view in the round,
-     the trim is 0 dB, and the seed's `conditions` say so (`pair_round: null`).
+     the boost form of ADR-0327): minus the rear-minus-front level that the round's pair view reads at
+     the mark over the band's third octaves, with a +6 dB cap. With no pair view in the round, the trim
+     is 0 dB, and the seed's `conditions` say so (`level_gap_db: null`).
   5. **Missing declarations.** With `d`, the back gap, the depth or the toe-in undeclared, no seed is
      computed. The contract's `seed` is then the gap `rear_seed_geometry_undeclared`, which names each
      missing declaration. No default geometry is used.
   6. **The seed ships unmuted.** It is a design from this speaker's own declarations, and every document
      still goes judge → compose → trial → apply. A muted seed previews nothing. The same section with
      `rear_muted: true` stays the muted reference.
-  7. **Where.** `jasper/active_speaker/rear_seed.py` computes it. `contract --round <round> --section rear`
-     reads that round's banked draft, geometry and pair view. A contract with no round reads no
-     declaration, so its seed is the gap.
+  7. **Where.** `jasper/active_speaker/rear_seed.py` computes it from the round's contract sources: its
+     banked draft, its declared geometry and its rear views (the bank's copy, or the view file while the
+     bank writes the packet). So `contract --round <round> --section rear`, the packet's per-set limits
+     and its stored contract digest carry one seed. A contract with no round reads no declaration, so
+     its seed is the gap.
 - **Consequences:**
   - Kept: the one-clock pair take (ADR-0386), the superposition preview (ADR-0325), the chain gain
     ≤ 0 dB and +6 dB per filter (ADR-0326, ADR-0327), the front guard and the topology gate. The seed is
@@ -48,8 +50,6 @@
   - At a wall, the trim includes both woofers' wall reflections and their path difference to the mark;
     a pair take away from walls reads the gap cleanest.
   - The prompt's `--vary rear_calibration.rear_muted=false` step goes.
-  - The packet's contract digests and per-set limits are built from sources that carry no geometry, so
-    their seed is the gap; the contract command carries the computed seed.
   - Rejected: making the branch's phase exact at the wall notch. In a one-wall image model at a 2 m seat
     it moved a hole to the hand-over and left the seat rougher than this rule, which also matches the
     pattern ratio measured on jts3 (playbook, Rear).

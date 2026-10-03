@@ -38,10 +38,10 @@ ASSUMPTIONS = (
 
 
 def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredGeometry | None,
-              packet: Mapping[str, Any]) -> dict[str, Any]:
+              views: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """The rear stage's starting document, or the gap that names each declaration it lacks.
 
-    ``packet`` is the round's banked packet; its rear pair view levels the rear woofer to the front.
+    ``views`` are the round's rear views; a pair view's reading at the mark levels the rear woofer to the front.
     """
     spacing_m = declared_driver_spacing_m(draft, "rear_woofer_spacing_mm")
     declared = {"rear_woofer_spacing_mm": spacing_m, **{name: getattr(geometry, name, None) for name in PLACEMENT_FIELDS}}
@@ -55,7 +55,7 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
     lowpass = combo("ButterworthLowpass", round(speed / (4.0 * spacing_m), 4), LOWPASS_ORDER)
     centre_hz = math.sqrt(handover_hz * lowpass["parameters"]["freq"])
     delay_ms = round(SUPERCARDIOID_RATIO * spacing_m / speed * 1e3 - _group_delay_ms(lowpass, centre_hz), 4)
-    trim_db, level = _trim(packet, (handover_hz, lowpass["parameters"]["freq"]))
+    trim_db, gap_db = _trim(views, (handover_hz, lowpass["parameters"]["freq"]))
     return {
         "kind": KIND, "schema": 1, "case": "electrical_dsp", "sample_rate_hz": sample_rate,
         "phase_convention": PHASE_CONVENTION,
@@ -63,7 +63,7 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
                      "details": {"rear_woofer_spacing_m": spacing_m, "cabinet_depth_m": geometry.cabinet_depth_m,
                                  "toe_in_degrees": geometry.toe_in_degrees}},
         "reference": {"quantity": "electrical_filter_transfer", "units": "linear output/input", "level": None},
-        "conditions": {"trim_db": trim_db, **level},
+        "conditions": {"trim_db": trim_db, "level_gap_db": gap_db},
         "valid_band_hz": None,
         "assumptions": list(ASSUMPTIONS),
         "included_stages": {"front": [], "rear": []},
@@ -86,18 +86,14 @@ def _group_delay_ms(filter_: Mapping[str, Any], freq_hz: float) -> float:
     return group_delay_ms(camilla_filter_response([filter_], grid), grid, freq_hz)
 
 
-def _trim(packet: Mapping[str, Any], band_hz: Sequence[float]) -> tuple[float, dict[str, Any]]:
+def _trim(views: Sequence[Mapping[str, Any]], band_hz: Sequence[float]) -> tuple[float, float | None]:
     """Minus the rear-minus-front level the round's pair take read at the mark over the band's
-    third octaves, within the boost cap; 0 dB when the round banked no pair view."""
-    pairs = [view["pair"] for view in packet.get("rear") or () if view.get("pair")]
-    if not pairs:
-        return 0.0, {"level_gap_db": None, "pair_round": None}
-    rows = [row for pair in pairs for key, position in pair["positions"].items() if key.startswith(ON_AXIS_KEY_PREFIX)
-            for row in position["bands"] if band_hz[0] <= math.sqrt(row["band_hz"][0] * row["band_hz"][1]) <= band_hz[1]]
-    level: dict[str, Any] = {"level_gap_db": None, "pair_round": packet.get("round_id")}
+    third octaves, within the boost cap, and that level; 0 dB and ``None`` when it read none."""
+    rows = [row for view in views for key, position in ((view.get("pair") or {}).get("positions") or {}).items()
+            if key.startswith(ON_AXIS_KEY_PREFIX) for row in position["bands"]
+            if band_hz[0] <= math.sqrt(row["band_hz"][0] * row["band_hz"][1]) <= band_hz[1]]
     if not rows:
-        return 0.0, level
+        return 0.0, None
     gap_db = round(power_mean_db(np.array([row["rear_db"] for row in rows]))
                    - power_mean_db(np.array([row["front_db"] for row in rows])), 4)
-    level["level_gap_db"] = gap_db
-    return round(min(-gap_db, MAX_CHAIN_BOOST_DB), 4), level
+    return round(min(-gap_db, MAX_CHAIN_BOOST_DB), 4), gap_db

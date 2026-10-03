@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import fields
 from copy import deepcopy
 from types import SimpleNamespace
@@ -543,7 +543,8 @@ def _rear_calibration_schema() -> dict[str, Any]:
     return _object(properties, list(properties))
 
 
-def _rear(draft: Mapping[str, Any], geometry: DeclaredGeometry | None, packet: Mapping[str, Any]) -> dict[str, Any]:
+def _rear(draft: Mapping[str, Any], geometry: DeclaredGeometry | None,
+          views: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Electrical branches only; see ADR-0318, ADR-0322, ADR-0324, ADR-0327 and ADR-0425."""
     return {
         "document_section": _REAR_SECTION,
@@ -551,7 +552,7 @@ def _rear(draft: Mapping[str, Any], geometry: DeclaredGeometry | None, packet: M
         "mode": "branches",
         "schema": _rear_calibration_schema(),
         # At the rate the door binds a rear section to, so it is admitted as written.
-        "seed": rear_seed(DEFAULT_SAMPLE_RATE, draft=draft, geometry=geometry, packet=packet),
+        "seed": rear_seed(DEFAULT_SAMPLE_RATE, draft=draft, geometry=geometry, views=views),
         "bounds": {
             "freq_hz_upper_bound_rule": (
                 "every filter's freq must stay strictly below the document's own "
@@ -607,14 +608,14 @@ def prescription_contracts(*, programs: Collection[str] = SECTIONS, draft: Mappi
                            bass_evidence: Mapping[str, Any] | None = None,
                            applied_profile: Mapping[str, Any] | None = None,
                            manifest: Mapping[str, Any] | None = None,
+                           rear_views: Sequence[Mapping[str, Any]] | None = None,
                            declared_geometry: DeclaredGeometry | None = None) -> dict[str, Any]:
     candidate = candidate or {}
     preset = _preset(candidate, applied_profile or {})
-    # ``bass_evidence`` is the round's banked packet: the rear seed's trim reads its pair view.
     return {name: (_speaker(draft or {}, preset, candidate, manifest or {}) if name == "speaker" else
                    _room(room_median or {}, room_persistence or {}, room_ceiling or {}, preset) if name == "room" else
                    _bass(bass_evidence or {}) if name == "bass" else
-                   _rear(draft or {}, declared_geometry, bass_evidence or {})) for name in SECTIONS if name in programs}
+                   _rear(draft or {}, declared_geometry, rear_views or ())) for name in SECTIONS if name in programs}
 
 
 _SNR_NOT_AN_UNCERTAINTY: dict[str, str] = {'<role>_snr_db': "the worst per-band signal-to-noise ratio over the bands that decide this DRIVER role's MAGNITUDE claims — its level and its overlap-band trim. A ratio is not a spread about a reading: it BOUNDS the random error a level measured in that band can carry, and it does not shrink as captures are added, because it is a property of the capture conditions rather than of how many times they were repeated", '<role>_snr_verdict': "the policy's own answer about the figure above, in jasper.audio_measurement.snr_policy's per-band rank — a REFUSAL vocabulary that ships a shortfall in dB, deliberately not the quality_model trust labels it resembles. The words are not spelled here: they have an owner, and a copy that agrees today is still a copy. A verdict, not a quantity: there is nothing here to be uncertain by", '<role>_snr_band': 'which band produced the worst reading above. A label, not a quantity', '<role>_alignment_snr_db': "the same worst-band ratio over the bands that decide this DRIVER role's ALIGNMENT claims — polarity and delay — which need far more SNR because a null of depth D cannot be measured with less than roughly D + 10 dB. Published apart from the magnitude figure rather than pooled with it: the two answer different questions under different floors, and one number would let a capture that is fine for a trim read as fine for a null depth", '<role>_alignment_snr_verdict': "the same policy's answer about the alignment figure, under the alignment floor rather than the magnitude one — which is why one capture can legitimately carry a passing magnitude verdict and a refusing alignment one at the same time. A verdict, not a quantity", '<role>_alignment_snr_band': 'which band produced the worst alignment reading. A label, not a quantity', '<role>_pilot_snr_db': "the quiet-pilot in-band SNR. Null when no usable ambient window was captured. Pilot roles include 'summed'. A ratio, not a spread", 'pilot_ambient': 'whether usable ambient evidence is present or unavailable; unavailable is not low SNR. A label', 'pilot_snr_ok': "whether every pilot cleared its SNR floor; null means no pilots or no usable ambient, never a pass. A verdict, not a spread", 'gain_plan_snr_floor_ok': 'the room-quality gate: whether the ambient report cleared the floor the target capture level needs. False also when that report was missing or unreadable, so it is a gate outcome rather than a measurement, and never a spread'}

@@ -40,7 +40,7 @@ REAR_SEED_GEOMETRY = DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, 
 
 def rear_seed_document(**overrides) -> dict:
     """That cabinet's rear seed before any pair take, the document rear tests start from."""
-    return {**rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, packet={}), **overrides}
+    return {**rear_seed(48000, draft=REAR_SEED_DRAFT, geometry=REAR_SEED_GEOMETRY, views=()), **overrides}
 
 
 def full_band_rear_document(bass: dict, cancellation: dict) -> dict:
