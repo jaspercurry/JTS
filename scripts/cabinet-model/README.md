@@ -101,8 +101,9 @@ Levels are predict.py's: per unit front drive, 0 dB = the front woofer alone, on
   (`nf_front_run:1-4`). CAD case `system-24mm-compound`, run `full-q4` (its 40–1000 Hz points).
 - Results: front fc 84 Hz, Qtc 1.02; rear fc 89 Hz, Qtc 1.09, fitted over 25–300 Hz on the
   FFT's linear grid, which puts most of its points at the top of the band. `bass-alignment` fits
-  a banked curve's log-spaced grid, which reads the same data as about 83.5 Hz, Qtc 0.95 (front)
-  and 88 Hz, Qtc 1.00 (rear). The rear woofer plays 6–7 dB below
+  a banked curve's log-spaced grid; before ADR-0419 limited it to bins over the 20 dB SNR floor,
+  it read the same data as about 83.5 Hz, Qtc 0.95 (front) and 88 Hz, Qtc 1.00 (rear). These
+  captures bank no per-band SNR, so the new fit cannot read them. The rear woofer plays 6–7 dB below
   the front at the same drive (cause not found yet). Gate 1 2.8e-4. Gate 2: model −2.29 / −2.42 dB,
   measured −2.37 / −2.27 dB.
 - The old tune (candidate `0a03d90d…`, graph `3a5840073709`): front minus behind peaks +14.1 dB
