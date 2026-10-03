@@ -604,10 +604,6 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
     ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 74.0), 40.0, 76.0, "retake_louder", -31.0, None),
     # A stop in the first burst leaves only it to solve from.
     ((-52.0,), (81.0,), 40.0, 76.0, "retake_quieter", -54.0, None),
-    # A room within 10 dB of the highest burst is never solved from.
-    ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 65.0, None, "fix_and_retake", None, None),
-    # A probe that read no burst it holds is never kept.
-    ((-52.0, -46.0), (), 40.0, 76.0, "fix_and_retake", None, None),
     # A ceiling under the solved gain is said before any take.
     ((-52.0, -46.0, -40.0), (58.0, 64.0, 70.0), 40.0, None, "retake_louder", -31.0, 9.0),
 ])
@@ -622,9 +618,34 @@ def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, fl
     verdict = cd.assess(_analysis(stimulus_levels=levels), phase="measure", program=program, spl=spl, pose_level=SPOT_LEVEL)
     assert (verdict.next, verdict.next_gain_db) == (next_, gain)
     assert verdict.evidence.get("level_shortfall_db") == shortfall
-    # A probe that solved a gain is the take's own level step, no fault, and its next play is free;
-    # one that read nothing it trusts is a real refusal.
-    assert (verdict.fault, verdict.charge) == ((None, "replay") if gain is not None else ("snr_floor", "operator"))
+    # A probe that solved a gain is the take's own level step: no fault, and its next play is free.
+    assert (verdict.fault, verdict.charge) == (None, "replay")
+
+
+@pytest.mark.parametrize("stopped_at,heard,fault,next_,charge", [
+    # The SPL watch did not stop it, so it played to its ceiling: the run stops.
+    (None, (58.0, 64.0, 70.0), "level_unreachable", "stop", "none"),
+    (None, None, "level_unreachable", "stop", "none"),
+    # The watch stopped it, so the room was loud: it asks for the microphone again.
+    (76.0, (), "snr_floor", "fix_and_retake", "operator"),
+    (76.0, None, "locate_failed", "fix_and_retake", "operator"),
+])
+def test_a_probe_with_no_reading_it_trusts_stops_the_run_only_at_its_ceiling(stopped_at, heard, fault, next_,
+                                                                              charge):
+    """A probe that reads nothing it trusts over a 65 dB room, or locates no burst
+    (``heard`` is None), stops the run once it played every burst up to its take's
+    ceiling (ADR-0365, ADR-0422)."""
+    gains = (-52.0, -46.0, -40.0)
+    program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20, 2000)), gains,
+                                        sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
+    analysis = ProgramAnalysis(
+        phase="measure", stimulus_id="probe",
+        locations=tuple(_loc(f"level_probe_{index}", confidence=0.05 if heard is None else 0.9) for index in range(3)),
+        stimulus_levels=tuple(LevelReading(g, spl - 106.0, 65.0 - 106.0) for g, spl in zip(gains, heard or ())))
+    spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, **({"stopped_at_db_spl": stopped_at} if stopped_at else {})}
+    verdict = cd.assess(analysis, phase="measure", program=program, spl=spl, pose_level=SPOT_LEVEL)
+    assert (verdict.ok, verdict.fault, verdict.next, verdict.charge, verdict.next_gain_db) == (
+        False, fault, next_, charge, None)
 
 
 # jts3's seat probe at one spot (#6113): each burst reads its gain + 113.2 dB SPL over a

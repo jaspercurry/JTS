@@ -177,7 +177,8 @@ def assess(
     # not hear is judged, never levelled blind; one its ceiling held under the peak it
     # asked for is kept too quiet, since a louder retake would replay it (ADR-0361). A
     # level probe is never kept: with no reading it trusts, it asks for the microphone
-    # again (ADR-0365).
+    # again (ADR-0365), unless its SPL watch did not stop it: it then played every burst up
+    # to its take's ceiling, so no more level is available and the run stops (ADR-0422).
     capped = (level is not None and level.gap_db > 0 and level_asked_dbfs is not None
               and level.peak_dbfs < level_asked_dbfs)
     if prior_verdict is None and _stimulus_locate_ok(analysis):
@@ -194,6 +195,9 @@ def assess(
             verdict = replace(verdict, fault=reasons.REASON_MEASUREMENT_OUTPUT_MUTED,
                               next="stop", charge="none", next_gain_db=None,
                               evidence={**verdict.evidence, **output_volume})
+    if (probe and verdict.fault in (reasons.REASON_SNR_FLOOR, reasons.REASON_LOCATE_FAILED)
+            and (kwargs.get("spl") or {}).get("stopped_at_db_spl") is None):
+        verdict = replace(verdict, fault="level_unreachable", next="stop", charge="none")
     verdict = replace(verdict, screens=[] if verdict.fault == reasons.REASON_MEASUREMENT_OUTPUT_MUTED
                       else pilot_screens(analysis, program=program))
     if level is not None:

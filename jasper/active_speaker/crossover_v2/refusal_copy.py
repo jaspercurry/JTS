@@ -1210,6 +1210,8 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         "measurement_door_volume_not_open": "The speaker could not confirm the measurement volume.",
         "wired_capture_failed": "The microphone could not complete the recording.",
         "program_not_composed": "The speaker could not prepare the test signal.",
+        "level_unreachable": "Even at its loudest allowed level, the speaker did not rise clearly above the room. "
+                             "Check the driver's wiring and its amp, or quiet the room, then start over.",
     }.items()},
     REASON_APPLY_FAILED: _retriable_reason(
         REASON_APPLY_FAILED, TEMPLATE_FIX_AND_RETRY, 1,
