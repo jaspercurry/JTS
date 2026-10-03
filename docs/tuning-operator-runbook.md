@@ -15,12 +15,14 @@ First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` withou
 changed since its bank, and a kept take played that layer; `stale_by` names the programs whose layer
 changed ([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)). A preference
 EQ save stales nothing. Only a current round is offered to copy.
-With all applicable layers applied, `next` is `{"program": null, "reason_code": "complete"}`, unless
-room's latest round went stale through a layer under room: then `next` is room with `upstream_changed`.
+Bass is an option inside the in-room program, so `next` never asks for it. With every other applicable
+layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless room's latest round went
+stale through the speaker or rear layer: then `next` is room with `upstream_changed`
+([ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md)).
 Otherwise `next` uses applied layers; `never_measured` means no profile is applied.
 `next_commands` lists commands; add a round path for its evidence and its `catalog` call.
 
-Run the tuning programs in order: speaker → rear → bass → room (skip rear if there is no rear driver).
+Run the tuning programs in order: speaker → rear → room (skip rear if there is no rear driver); room designs the optional bass boost with the room correction.
 Graph layer order is not program order: a composed graph stacks speaker → room → bass ([ADR-0303](adr/0303-a-trial-plays-the-candidate-as-composed.md)), and the row order in [`measurement_programs.py`](../jasper/active_speaker/measurement_programs.py) owns program order.
 Re-run room after any upstream change, even when round history is unavailable.
 The rear program's hand loop of record is the [Seat trial](tuning-playbook.md#seat):

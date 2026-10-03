@@ -148,7 +148,7 @@ _PROGRAM_SECTIONS = (
     TuningProgram(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 4, envelope=(*_VERSIONED, "rationale")),),
         (CandidateField("room_correction", dict),), (REGIME_SUMMED,), 1,
-        "Room correction", "Adjust the sound at your listening position.", "Measure the room", "room",
+        "In-room tuning", "Adjust the sound at your listening position, with an optional bass boost.", "Measure the room", "room",
         run_headline="JTS is measuring the sound at each listening spot, to see what the room does to it. Follow the step below.",
         trial=_IN_ROOM_TRIALS, preview=(1, "room", ("bass", "room")), base_clears=("room_correction", "bass_extension"),
     ),
@@ -163,6 +163,9 @@ PURPOSES = tuple(name for _, name in sorted(
 ))
 #: Tuning order.
 RUNNABLE_PROGRAMS = tuple(row.purpose for row in _PROGRAM_SECTIONS)
+#: Bass is an option inside the in-room program: no speaker needs its layer, and a bass change is
+#: not one under room (ADR-0429).
+IN_ROOM_OPTIONS = (PURPOSE_BASS,)
 PROGRAM_DETAILS = {row.purpose: {"title": row.title, "description": row.description} for row in _PROGRAM_SECTIONS}
 PROGRAM_ENTRIES = tuple({"id": name, **PROGRAM_DETAILS[name]} for name in RUNNABLE_PROGRAMS)
 #: The capture modes the runner supports per purpose. A rear comparison reads each woofer solo as well as their sum, so it is the one non-speaker purpose a :data:`REGIME_BRANCHES` take may carry (issue #5330).

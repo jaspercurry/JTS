@@ -3,10 +3,11 @@
 - **Date:** 2026-10-03
 - **Status:** Accepted: owner decision 1 on [#6227](https://github.com/jaspercurry/JTS/issues/6227)
   (2026-10-02), step A2. Supersedes in part
-  [ADR-0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) §3 and
-  [ADR-0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) §1,
-  and restates the premise of [ADR-0413](0413-one-resolver-the-door-resolves-every-run-request.md)
-  §3, each quoted below. Rewrites the bass and room bullets of
+  [ADR-0260](0260-poses-are-flexible-and-categorized-and-bass-extension-has-no-nearfield-rung.md) §3,
+  [ADR-0370](0370-each-run-purpose-declares-what-it-plays-and-a-bass-run-plays-with-room-off.md) §1 and
+  [ADR-0420](0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md) §5, and restates the
+  premise of [ADR-0413](0413-one-resolver-the-door-resolves-every-run-request.md) §3, each quoted
+  below. Rewrites the bass and room bullets of
   [the measurement-loop doctrine](../measurement-loop-doctrine.md) §1a as one in-room bullet.
 
 ## Context
@@ -27,6 +28,8 @@ Before this ADR:
 - `jasper-round trial` sent every document with a bass section, `"bass": {}` included, to the bass
   row's trial: the 24-take `bass/axis` ladder (finding F12 of the
   [2026-10-02 measurement audit](../audits/2026-10-02-measurement-program.md)).
+- The next-program pointer asked for a bass layer before room, and pointed at room again after a
+  bass apply, so a joint apply asked for a second in-room round.
 
 The full-band sweep already banks what the bass view reads: `bass_evidence` banks `analysis.bass`,
 H2/H3 included, for every take whose program has a summed `sweep_verify` segment. One pass, not the
@@ -50,6 +53,13 @@ ladder's three averaged passes, costs about 4.8 dB of SNR.
    document each trial on the in-room round. `trial_preset` reads the rows, and it stays the one
    owner of that routing. The bass row keeps its section and its contract; only its trial and its
    first plan move.
+4. **Bass is an option inside the in-room program.** The next-program pointer never asks for a
+   bass layer: after speaker, and rear on a cardioid build, room is next until a room layer is
+   applied, and then tuning is complete, with or without bass. A bass change is not one under room:
+   room is next again (`upstream_changed`) only when its latest round went stale through the
+   speaker or the rear layer, so a joint or a bass apply needs no second in-room round.
+   `IN_ROOM_OPTIONS` in the program registry names bass once; the pointer and the copied prompt's
+   program order read it. The room program's title is "In-room tuning".
 
 ### What this supersedes
 
@@ -71,6 +81,11 @@ ladder's three averaged passes, costs about 4.8 dB of SNR.
   layer too. The conclusion stays: each candidate graph's set probes its own graph
   ([ADR-0423](0423-each-candidate-graphs-summed-set-levels-itself-at-every-spot.md)), so of the
   takes at a run's fader only a bass run's clear the room layer, and its probe clears it too.
+- ADR-0420 §5, lines 35–36: room is next again when its latest round "went stale through a layer
+  under room (speaker, rear or bass)"; and its consequence at line 44: "Room is next after a later
+  bass, rear or speaker apply." Only a speaker or a rear change does this now. ADR-0420's
+  per-layer staleness stands: a room round still reads stale after a bass change, unless every
+  kept take played bass cleared.
 
 The composition order does not change. [ADR-0303](0303-a-trial-plays-the-candidate-as-composed.md)
 already replaced the order of
