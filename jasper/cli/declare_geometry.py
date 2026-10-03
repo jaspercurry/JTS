@@ -99,10 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="jasper-declare-geometry",
         description=(
             "Declare measurement rig geometry: speaker/mic heights, distance "
-            "and optional ceiling, so entanglement_floor_hz has a provenance-"
-            "labeled, non-measured source on rigs where the measured "
-            "reflection finder structurally never fires (issue #3502); and "
-            "optional cabinet-back and side-wall distances for jasper-round-views room."
+            "and the optional ceiling, cabinet-back and side-wall distances, so "
+            "entanglement_floor_hz has a provenance-labeled, non-measured source "
+            "on rigs where the measured reflection finder structurally never "
+            "fires (issue #3502, ADR-0427); the wall distances also feed "
+            "jasper-round-views room."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
