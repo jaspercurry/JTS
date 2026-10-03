@@ -283,4 +283,4 @@ or Schroeder estimate is derived.
 ## 12. Bass
 
 The [Bass runbook](tuning-operator-runbook.md#bass) is the operator entry point.
-`0304-the-bass-level-axis-is-fixed-level-windows.md` establishes its level axis.
+`0431-the-bass-level-ladder-is-retired.md` retires its level ladder: the in-room round measures bass.

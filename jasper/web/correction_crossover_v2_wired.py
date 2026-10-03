@@ -125,7 +125,6 @@ def build_v2_wired_run_and_consume(
     door: plan_run.RunDoor, manifest: Any, request: Any, captures: Any, analyze: Any, assessor: Any,
     position_gate: Any = None, evidence_refs: Mapping[str, Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
-    execute: Callable[..., Any] | None = None,
 ) -> Callable[[Any], Awaitable[Any]]:
     async def run(pi_session: Any) -> None:
 
@@ -159,7 +158,7 @@ def build_v2_wired_run_and_consume(
         result = None
         try:
             try:
-                result = await (execute or plan_run.run_plan)(
+                result = await plan_run.run_plan(
                     request, door=door, manifest=manifest, analyze=analyze, assessor=assessor,
                     gate=position_gate, captures=captures,
                     signals=signals, admit=admit, aborts={},

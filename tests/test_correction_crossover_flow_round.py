@@ -55,9 +55,9 @@ def test_choices_use_registry_and_engine_counts(monkeypatch):
 
 
 @pytest.mark.parametrize(("selected", "arm", "code", "asks", "reads"), [
-    ("bass/axis@bass_axis", False, REASON_WALK_MOVER_UNAVAILABLE, False, 1),
-    ("bass/axis@bass_axis", True, None, True, 1),
-    ("bass/axis", False, None, False, 0),
+    ("room/seat@room_quick", False, REASON_WALK_MOVER_UNAVAILABLE, False, 1),
+    ("room/seat@room_quick", True, None, True, 1),
+    ("room/seat", False, None, False, 0),
 ], ids=["no arm", "arm", "a person walks it"])
 def test_an_arm_plan_reads_its_arm_and_asks_before_it_starts(monkeypatch, selected, arm, code, asks, reads):
     """The plan answer reads the arm the way the CLI does, for an arm plan only, and
@@ -82,7 +82,7 @@ def test_an_arm_plan_reads_its_arm_and_asks_before_it_starts(monkeypatch, select
     assert len(discoveries) == reads
     if code:
         assert (choice["code"], choice["evidence"], choice["next_action"], "action" in choice) == (
-            code, {"layouts_without_arm": ["seat_express", "seat_cloud"]}, REASON_REGISTRY[code].next_action, False)
+            code, {"layouts_without_arm": ["seat_express", "seat_cloud", "seat_cube"]}, REASON_REGISTRY[code].next_action, False)
         assert choice["lines"]
     else:
         start = choice["action"]

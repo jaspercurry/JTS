@@ -14,7 +14,6 @@ from .measurement_programs import (
     programs_for_topology, run_preset,
 )
 from .plan_run import prepare_plan_captures, preview_schedule
-from .run_levels import LEVEL_OFFSETS_DB
 from .run_request import RunRequest, resolve_plan
 
 
@@ -25,16 +24,15 @@ def preset_catalog(context: Any) -> list[dict[str, Any]]:
         "preset": row.preset, "purposes": list(row.purposes), "description": row.description,
         "use_when": row.use_when, "regime": row.regime, "branch_pair": row.branch_pair,
         "cleared_layers": list(cleared_layers(row.purpose, base=True, regime=row.regime)),
-        "stimulus": dict(row.stimulus) if row.stimulus else None,
-        "level_ladder_db": list(LEVEL_OFFSETS_DB) if row.levels else None, "layout": row.layout,
+        "stimulus": dict(row.stimulus) if row.stimulus else None, "layout": row.layout,
         "layouts": [_layout(row.preset, name, programs, targets, context) for name in row.layouts],
     } for row in map(preset, available_presets())]
 
 
 def _layout(preset_id: str, name: str, programs: Collection[str], targets: tuple[str, ...],
             context: Any) -> dict[str, Any]:
-    """A layout's poses, the outputs its driver poses play here, and one level's captures
-    and seconds as the page previews them; or the code a run of it refuses with here."""
+    """A layout's poses, the outputs its driver poses play here, and its captures and
+    seconds as the page previews them; or the code a run of it refuses with here."""
     named, plan = named_layout(name), run_preset(preset_id, name)
     entry = {"layout": name, "description": named.description, "use_when": named.use_when, "mover": named.mover,
              "poses": [{key: value for key, value in asdict(pose).items() if value not in (None, "")}
@@ -45,7 +43,7 @@ def _layout(preset_id: str, name: str, programs: Collection[str], targets: tuple
     if not offered_here(plan, programs=programs, targets=targets):
         return {**entry, "refused": REASON_MEASUREMENT_PROGRAM_NOT_OFFERED}
     try:
-        planned, _ = resolve_plan(RunRequest(program=preset_id, layout=name), targets=lambda: targets)
+        planned = resolve_plan(RunRequest(program=preset_id, layout=name), targets=lambda: targets)
     except LateralWalkRefused as exc:
         return {**entry, "refused": exc.reason}
     facts = preview_schedule(planned, prepare_plan_captures(planned, roles_bands=context.roles_bands), context)

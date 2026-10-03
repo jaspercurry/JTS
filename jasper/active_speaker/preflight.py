@@ -37,8 +37,9 @@ from .measured_crossover_candidate import (
 from .movers import MOVER_ARM
 from .measurement_programs import (
     BASE_CANDIDATE, BRANCH_PAIR_FRONT_REAR, PURPOSE_REAR, UnknownPresetError,
-    candidate_identity, layouts_without_arm, run_purposes,
+    candidate_identity, layouts_without_arm, mic_moves, run_purposes,
 )
+from .plan_run import preview_schedule
 from .profile import DRIVER_ROLES_BY_WAY
 
 if TYPE_CHECKING:
@@ -127,7 +128,6 @@ class PreflightReport:
     spl_ceiling_db_spl: float | None
     rung_admission: Mapping[str, Any] = field(default_factory=dict)
     driver_caps: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
-    #: The whole run's ``captures``, ``mic_moves`` and ``seconds`` (``run_levels.preflight_levels``).
     price: Mapping[str, int] = field(default_factory=dict)
 
     @property
@@ -197,10 +197,8 @@ def run_margins(captures: Sequence[PlanCapture], facts: PreflightFacts,
     return {"lift_bound_db": lift, "rear_sum_db": summed, "run_margin_db": lift + summed}
 
 
-def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: bool = True) -> PreflightReport:
-    """Whether ``plan`` may run here, its schedule, and its run's margins.
-    A run that ``finds_fader`` with a probe (its door states driver caps) is
-    refused when a take at its fader would play before that probe (ADR-0403 §4)."""
+def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightReport:
+    """Whether ``plan`` may run here, its schedule, its run's margins and, read with a context, its price."""
     issues = list(facts.issues)
     # Remove when measurement owns an explicit household-authorized unmute.
     if facts.output_volume.get("muted") is True:
@@ -316,7 +314,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
     preparable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
                                      for stop in plan.stops)
     prepared = prepare_plan_captures(plan, roles_bands=facts.roles_bands) if preparable else ()
-    if finds_fader and unprobed_take_at_fader(run_takes(prepared)):
+    if unprobed_take_at_fader(run_takes(prepared)):
         admission.update(status="blocked")
         add(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
     elif preparable and bass_extensions:
@@ -325,4 +323,6 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts, *, finds_fader: 
         except (TypeError, ValueError) as exc:
             admission.update(status="blocked")
             add(WALK_LEVEL_POLICY_INVALID, str(exc))
-    return PreflightReport(plan, tuple(issues), schedule, ceiling, admission, facts.driver_caps)
+    return PreflightReport(plan, tuple(issues), schedule, ceiling, admission, facts.driver_caps, {
+        "captures": len(prepared), "seconds": round(preview_schedule(plan, prepared, facts.context)["estimated_seconds"]),
+        "mic_moves": mic_moves(capture.stop.pose for capture in prepared)} if facts.context is not None and prepared else {})

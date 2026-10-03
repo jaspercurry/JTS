@@ -82,8 +82,6 @@ def test_latest_banked_rounds_matches_identity_and_bounds_reads(monkeypatch, tmp
     ("rear/express", (), "rear_calibration", ["rear"]),
     ("rear/pair", ("rear_calibration",), "rear_calibration", []),
     ("rear/express", (), "bass_extension", []),
-    ("bass/axis", ("room_correction",), "bass_extension", ["bass"]),
-    ("bass/axis", ("room_correction",), "room_correction", []),
     ("room/seat", (), "rear_calibration", ["rear"]),
     ("room/seat", (), "bass_extension", ["bass"]),
     ("room/seat", (), "room_correction", ["room"]),

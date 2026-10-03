@@ -1179,6 +1179,5 @@ def test_a_near_field_round_moves_no_tuning_reader(tmp_path):
 
     assert views == []
     assert packet["fits"] == packet["series"] == packet["room"] == packet["bass"] == packet["rear"] == []
-    assert "bass_table" not in packet
     assert readers() == before
     assert before[0]["rear"]["round_id"] == before[1]["round_id"] == pair.name

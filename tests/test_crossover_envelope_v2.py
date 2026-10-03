@@ -286,7 +286,7 @@ def _live_headline(program: str | None) -> str:
     return build_crossover_envelope_v2(_status({**LIVE, "run": run}))["verdict_text"]
 
 
-@pytest.mark.parametrize("row", PROGRAM_ROWS, ids=lambda row: row.purpose)
+@pytest.mark.parametrize("row", [row for row in PROGRAM_ROWS if row.run_headline], ids=lambda row: row.purpose)
 def test_a_runs_headline_is_the_run_programs_own(row):
     assert _live_headline(preset(row.purpose).preset) == row.run_headline
 

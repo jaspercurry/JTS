@@ -42,7 +42,7 @@ def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[st
              if segment.get("kind") in {KIND_SWEEP, KIND_SUMMED_SWEEP}
              and (role is None or (segment.get("role") or "summed") == role)]
     if gains:
-        # The composer can cap the requested rung; report the emitted sweep gain.
+        # The composer can cap the requested level; report the emitted sweep gain.
         basis["stimulus_dbfs"] = max(gains)
     if record.get("program") and is_level_probe(ExcitationProgram.from_dict(record["program"])):
         basis["level_probe"] = True

@@ -46,9 +46,6 @@ REFUSE_COMPARE_RATES_DIFFER = "compare_sample_rates_differ"
 REFUSE_PREVIEW_UNREADABLE = "compare_preview_unreadable"
 #: A take left to find its own side A that has no comparand (ADR-0391).
 REFUSE_COMPARE_NO_COMPARAND = "compare_no_comparand"
-#: A bass take's comparand whose round filed no bass view for it: the rule
-#: matches place, drivers and graph scope, not the program (ADR-0391 §1).
-REFUSE_BASS_COMPARAND_VIEW_NOT_FILED = "bass_comparand_view_not_filed"
 #: The spacing of the Schroeder curves a decay artifact carries.
 SCHROEDER_STEP_MS = 1.0
 

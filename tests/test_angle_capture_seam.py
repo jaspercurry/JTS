@@ -956,20 +956,6 @@ def test_a_rear_pair_plays_its_parent_with_the_rear_stage_cleared(preset, candid
         ("candidate_branches", parent, ("rear_calibration",) if row.purpose == mp.PURPOSE_REAR else ())}
 
 
-@pytest.mark.parametrize("levels", [None, (-10.0,), (-10.0, -20.0)])
-def test_request_levels_and_single_level_bytes(levels):
-    program = mp.preset("room")
-    scalar = ac.request_for_preset(program, candidates=("base", "room-fp"), level=ac.LevelPolicy(level_db=-10.0))
-    request = replace(scalar, levels=levels, level=ac.LevelPolicy(level_db=-10.0 if levels is None else None))
-    document = json.dumps(request.to_dict()).encode()
-    assert request.stops == scalar.stops
-    if levels is None or len(levels) == 1:
-        assert document == json.dumps(scalar.to_dict()).encode()
-        assert "levels" not in request.to_dict()
-    else:
-        assert json.loads(document)["levels"] == list(levels)
-
-
 @pytest.mark.parametrize("level_db", [math.nan, math.inf, -math.inf, True, "-20", 1, -60, -1000])
 def test_invalid_level_policy_refuses_at_construction(level_db):
     with pytest.raises(ac.LateralWalkRefused) as refused:
@@ -980,7 +966,6 @@ def test_invalid_level_policy_refuses_at_construction(level_db):
 @pytest.mark.parametrize("fields", [
     *[{"repeats": v} for v in (0, -1, True, 1.5)],
     *[{"retries_per_pose": v} for v in (-1, True, 1.5)],
-    *[{"levels": v} for v in ((), (-10, -10), (1,), (float("nan"),), (None,), "-10")],
 ])
 def test_invalid_walk_fields_refuse_by_name(fields):
     with pytest.raises(ac.LateralWalkRefused) as refused:
@@ -991,7 +976,6 @@ def test_invalid_walk_fields_refuse_by_name(fields):
 @pytest.mark.parametrize("program,layout,mover,reason", [
     ("room", "room_quick", ac.MOVER_ARM, None),
     ("room", "room_quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
-    ("bass", "room_quick", ac.MOVER_HUMAN, ac.REASON_WALK_MOVER_MISMATCH),
     ("room", "seat_cloud", ac.MOVER_HUMAN, None),
     ("room", "seat_cloud", ac.MOVER_ARM, ac.WALK_OVER_MOVER_ENVELOPE),
 ])
@@ -1027,19 +1011,18 @@ def test_a_stop_is_one_take_of_its_pose():
         ac.AngleStop(mp.Pose(0, 0, repeats=3), ac.REGIME_PER_DRIVER, purpose="speaker")
 
 
-_NEAR_FIELD = mp.preset("nearfield/each").stimulus
+_NEAR_FIELD, _CEILING = mp.preset("nearfield/each").stimulus, {"ceiling_hz": 1100.0}
 
 
 @pytest.mark.parametrize("regime,driver,stimulus", [
-    (mp.REGIME_SUMMED, "woofer", mp.preset("bass/axis").stimulus), (mp.REGIME_SUMMED, "", _NEAR_FIELD),
+    (mp.REGIME_SUMMED, "woofer", _CEILING), (mp.REGIME_SUMMED, "", _NEAR_FIELD),
     (mp.REGIME_SUMMED, "woofer", {**_NEAR_FIELD, "gap_s": 3.0}),
-    (mp.REGIME_PER_DRIVER, "", mp.preset("bass/axis").stimulus)],
+    (mp.REGIME_PER_DRIVER, "", _CEILING)],
     ids=["ceiling-on-one-driver", "band-on-the-candidate-graph", "gap-past-the-standby-bound", "ceiling-on-each-driver"])
 def test_a_stop_whose_stimulus_cannot_play_refuses_by_name(regime, driver, stimulus):
-    """A plan's stimulus is judged before anything composes it (#5737): a
-    ceiling row plays on the candidate graph, a band row on one driver alone,
-    with silences the analysis and the amplifier both keep, and a per-driver
-    stop that names no driver plays neither."""
+    """A plan's stimulus is judged before anything composes it (#5737): a band
+    row plays on one driver alone, with silences the analysis and the amplifier
+    both keep, and no stimulus row plays on the candidate graph (ADR-0431)."""
     with pytest.raises(ac.LateralWalkRefused) as refused:
         ac.AngleStop(mp.Pose(0, 0, driver=driver), regime, purpose="speaker", stimulus=stimulus)
     assert refused.value.reason == ac.WALK_STIMULUS_NOT_ACCEPTED

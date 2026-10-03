@@ -4,8 +4,6 @@
 """Bind banked captures to the program analyzer and legacy preparation effects."""
 from __future__ import annotations
 
-from jasper.active_speaker.program_failure import classify_program_failure
-
 from jasper.web import correction_crossover_v2_volume as v2volume
 
 from dataclasses import replace
@@ -16,10 +14,6 @@ from pathlib import Path
 from typing import Any
 
 from jasper.active_speaker.crossover_v2.programs import program_for_spec, predictive_program_for_spec
-from jasper.active_speaker.run_levels import LevelLadder, LevelRun, prepare_level_captures, run_levels
-from jasper.active_speaker.round_copy import take_counts
-from jasper.active_speaker.round_packet import RoundPacket
-from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.crossover_v2.door import isolation_hold
 from jasper.active_speaker.crossover_v2.capture_provenance import (
     analysis_blocks, enrich_capture_record, take_distance_m, take_trusted_bands,
@@ -38,7 +32,7 @@ from jasper.platform.log_event import log_event
 
 from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE, PHASE_TIMING
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict, exception_detail
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_INTERNAL_ERROR, TakeVerdict, PhaseVerdict
 from jasper.audio_measurement.program import ExcitationProgram
 
 logger = logging.getLogger(__name__)
@@ -65,8 +59,7 @@ def _kept_impulses(records: Any, take_id: str, analysis: Any, answer: Any) -> di
 
 def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence: Any,
                        provenance: Any = None,
-                       check_target_capture_dbfs: float | None = None,
-                       capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[Any, Any]:
+                       check_target_capture_dbfs: float | None = None, context: Any = None) -> tuple[Any, Any]:
     answers: dict[str, tuple[Any, Any]] = {}
     roles = tuple(band.role for band in conductor.roles_bands)
     diameters = context.radiating_diameter_mm_by_target if context is not None else {}
@@ -74,8 +67,7 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     answer: Any = None
 
     def index_of(record: Any) -> int:
-        index = record.get("capture_index", record["index"])
-        return capture_indexes[index - 1] if capture_indexes else index
+        return record.get("capture_index", record["index"])
 
     def declared_room(record: Any) -> tuple[float | None, dict[str, dict[str, Any]] | None]:
         """The take's first bounce in the declared room, which bounds its gate
@@ -181,10 +173,9 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
     return analyze, assessor
 
 
-def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None, *, context: Any) -> Any:
+def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None) -> Any:
     gains = conductor.gain_plan_db if spec.graph_scope == "drivers" and spec.program_phase != PHASE_CHECK else None
-    program = program_for_spec(spec, conductor.excitation, gains, stimulus_dbfs,
-                               safety_profile=context.safety_profile, role_targets=context.role_targets)
+    program = program_for_spec(spec, conductor.excitation, gains, stimulus_dbfs)
     conductor.set_program(spec.program_phase, program)
     return program
 
@@ -192,11 +183,8 @@ def compose_plan_program(conductor: Any, spec: Any, stimulus_dbfs: float | None,
 def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
                   manifest: Any, production: Any, conductor: Any, refs: Any,
                   ceiling_s: float, ceiling_db_spl: float | None,
-                  camilla_factory: Any, provenance: Any = None,
-                  ladder: LevelLadder | None = None, finds_fader: bool = True, margin_db: float = 0.0,
-                  capture_indexes: tuple[int, ...] = (), context: Any = None) -> tuple[RunDoor, Any, Any, Any]:
-    if ladder is not None:
-        ceiling_s *= len(ladder.admissible)
+                  camilla_factory: Any, provenance: Any = None, margin_db: float = 0.0,
+                  context: Any = None) -> tuple[RunDoor, Any, Any]:
     sensitivity = resolved_household_sensitivity(device)
     check_target = None
     if sensitivity is not None:
@@ -208,8 +196,7 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
     records = CapturedRecordStore(manifest, None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest,
                                           evidence=refs, provenance=provenance,
-                                          check_target_capture_dbfs=check_target, capture_indexes=capture_indexes,
-                                          context=context)
+                                          check_target_capture_dbfs=check_target, context=context)
 
     def build(door: Any, allocate_take_id: Any) -> TuningSession:
         capture = host._wired_stimulus_capture(device, evidence_store, spl_monitor=door.spl_monitor)
@@ -228,49 +215,8 @@ def bind_run_door(*, host: Any, device: Any, evidence_store: Any,
         build, sensitivity, device, ceiling_db_spl,
         program_for_spec=predictive_program_for_spec(context) if context else None, margin_db=margin_db,
     )
-    if ladder is None or ladder.plan.levels is None:
-        door.caps_dbfs = conductor.caps_dbfs if finds_fader else None
-        return door, analyze, assessor, None
-
-    async def execute(request: Any, *, gate: Any, signals: Any, captures: Any, **_kwargs: Any) -> Any:
-        packet = RoundPacket(manifest, ladder.to_dict())
-        bound: LevelRun | None = None
-
-        def prepare(plan: Any) -> LevelRun:
-            nonlocal bound
-            child = RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet,
-                                incumbent=manifest.incumbent)
-            selected = prepare_level_captures(plan, roles_bands=conductor.roles_bands)
-            child_door, child_analyze, child_assessor, _ = bind_run_door(
-                host=host, device=device, evidence_store=evidence_store, manifest=child,
-                production=production, conductor=conductor, refs=refs,
-                ceiling_s=ceiling_s, ceiling_db_spl=ceiling_db_spl, camilla_factory=camilla_factory,
-                provenance=provenance, finds_fader=plan.level.level_db is None, margin_db=margin_db, context=context,
-                capture_indexes=tuple(captures.index(capture) + 1 for capture in selected),
-            )
-            bound = LevelRun(child, child_door, child_analyze, child_assessor, selected)
-            return bound
-
-        try:
-            results = await run_levels(ladder, hold=door.hold, prepare=prepare, gate=gate, signals=signals,
-                                       aborts={}, save_ladder=packet.update_schedule)
-            if signals.stop.is_set() or signals.complete.is_set():
-                manifest.reason = signals.stop_reason if signals.stop.is_set() else "complete_requested"
-                manifest.failed_roles = results[-1].failed_roles if results else ()
-            return replace(results[-1], reason=packet.to_dict()["reason"]) if results and not manifest.reason else manifest
-        except BaseException as exc:  # noqa: BLE001 - preserve the partial packet before host failure publication
-            classified = classify_program_failure(exc)
-            manifest.reason = (classified[0] if classified else getattr(exc, "code", None)) or REASON_INTERNAL_ERROR
-            manifest.detail = exception_detail(exc)
-            raise
-        finally:
-            door.isolation = bound.door.isolation if bound else None
-            await packet.finish()
-            summary = packet.to_dict()
-            gate.publish({key: summary[key] for key in ("status", "reason", "level", "runs", "honoured")} |
-                         take_counts(summary) | {"manifest": manifest.path})
-
-    return door, analyze, assessor, execute
+    door.caps_dbfs = conductor.caps_dbfs
+    return door, analyze, assessor
 
 
 async def publish_round_packet(bundle: Path, gate: Any) -> None:

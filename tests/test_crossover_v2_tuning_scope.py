@@ -293,9 +293,8 @@ def test_saved_tune_composes_with_its_declared_driver_protection(tuning_profile)
 @pytest.mark.parametrize("purpose", mp.PURPOSES)
 def test_program_baselines_play_every_applied_layer_their_purpose_keeps(tuning_profile, purpose):
     """A program's base is the applied candidate, and its take plays every
-    applied layer but those its purpose clears: a bass or an in-room base plays
-    room and bass off, a bass trial room off, an in-room trial as composed
-    (ADR-0370, ADR-0429)."""
+    applied layer but those its purpose clears: an in-room base plays room and
+    bass off, an in-room trial as composed (ADR-0429, ADR-0431)."""
     saved = _saved_tuning(tuning_profile)
     snapshot = saved["recomposition_snapshot"]
     snapshot["room_correction"] = _room_correction()
@@ -313,10 +312,8 @@ def test_program_baselines_play_every_applied_layer_their_purpose_keeps(tuning_p
     text = compile_tuning_graph(tuning_profile, candidate=candidate, cleared_layers=spec.cleared_layers)
     assert spec.candidate_id == candidate.fingerprint
     assert candidate.role_attenuations_db == {role: entry["gain_db"] for role, entry in snapshot["corrections"].items()}
-    off = purpose in (mp.PURPOSE_BASS, mp.PURPOSE_ROOM)
-    assert (spec.cleared_layers, trial.cleared_layers) == (
-        ("room_correction", "bass_extension") if off else (),
-        ("room_correction",) if purpose == mp.PURPOSE_BASS else ())
+    off = purpose == mp.PURPOSE_ROOM
+    assert (spec.cleared_layers, trial.cleared_layers) == (("room_correction", "bass_extension") if off else (), ())
     assert extract_room_peqs_from_config_text(text) == ([] if off else list(candidate_room_peqs(candidate)))
     played = deepcopy(saved)
     if off:

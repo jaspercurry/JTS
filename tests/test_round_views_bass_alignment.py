@@ -83,17 +83,17 @@ def _bass_take(take_id: str, magnitude_db: list[float], noisy_below_hz: float = 
 
 
 def bass_round(root: Path, magnitude_db: list[float], noisy_below_hz: float = 0.0) -> Path:
-    return _bundle(root, "bass/axis", [_bass_take("b0", magnitude_db, noisy_below_hz)], {"role": "summed"})
+    return _bundle(root, "bass", [_bass_take("b0", magnitude_db, noisy_below_hz)], {"role": "summed"})
 
 
-def ladder_round(root: Path, magnitude_db: list[float], rungs: int = 4) -> Path:
-    """A bass round whose every level rung is a set of its own, each holding one take: ``b0``, ``b1``, ..."""
-    bundle = root / "sessions" / "bass-ladder"
+def many_set_round(root: Path, magnitude_db: list[float], sets: int = 4) -> Path:
+    """A bass round of several sets, each holding one take: ``b0``, ``b1``, ..."""
+    bundle = root / "sessions" / "bass-sets"
     bundle.mkdir(parents=True)
     (bundle / "info.json").write_text(json.dumps({"session_id": bundle.name}))
-    write_manifest(bundle, program="bass/axis", groups=[
-        {"set_id": f"rung-{rung}", "capture_basis": {"role": "summed"}, "takes": [_bass_take(f"b{rung}", magnitude_db)]}
-        for rung in range(rungs)])
+    write_manifest(bundle, program="bass", groups=[
+        {"set_id": f"set-{index}", "capture_basis": {"role": "summed"}, "takes": [_bass_take(f"b{index}", magnitude_db)]}
+        for index in range(sets)])
     return bundle
 
 
@@ -179,23 +179,23 @@ def test_a_bass_takes_catalog_call_fits_its_curve_as_played_and_files_where_the_
     assert (answer["subject"]["set_id"], answer["out"]) == ("bass", call["out"])
 
 
-def test_a_take_of_a_ladder_round_names_its_set(tmp_path, monkeypatch, capsys):
-    """Each rung is its own set, and a take id belongs to one of them, so naming the
-    take is enough; the answer says which set it read."""
+def test_a_take_of_a_many_set_round_names_its_set(tmp_path, monkeypatch, capsys):
+    """A take id belongs to one set, so naming the take is enough; the answer
+    says which set it read."""
     monkeypatch.chdir(tmp_path)
-    bundle = ladder_round(tmp_path, (80.0 + _box_db(55.0, 0.8)).tolist())
+    bundle = many_set_round(tmp_path, (80.0 + _box_db(55.0, 0.8)).tolist())
 
     assert round_views.main(["bass-alignment", str(bundle), "--take", "b2"]) == round_views.EXIT_OK
 
     answer = json.loads(capsys.readouterr().out)
-    assert (answer["subject"]["set_id"], answer["subject"]["take_ids"]) == ("rung-2", ["b2"])
+    assert (answer["subject"]["set_id"], answer["subject"]["take_ids"]) == ("set-2", ["b2"])
 
 
-@pytest.mark.parametrize("argv", [["--take", "b2", "--set", "rung-1"], ["--take", "no-such-take"]],
+@pytest.mark.parametrize("argv", [["--take", "b2", "--set", "set-1"], ["--take", "no-such-take"]],
                          ids=["a set that is not the take's", "a take no set holds"])
 def test_a_take_that_no_named_set_holds_refuses_by_name(tmp_path, monkeypatch, capsys, argv):
     monkeypatch.chdir(tmp_path)
-    bundle = ladder_round(tmp_path, (80.0 + _box_db(55.0, 0.8)).tolist())
+    bundle = many_set_round(tmp_path, (80.0 + _box_db(55.0, 0.8)).tolist())
 
     assert round_views.main(["bass-alignment", str(bundle), *argv]) == round_views.EXIT_REFUSED
 

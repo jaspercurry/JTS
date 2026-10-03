@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 from itertools import groupby
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
@@ -75,28 +75,18 @@ def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
 
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
-    roles_bands: Sequence[RoleBand], fc_hz: float | None,
-    safety_profile: Mapping[str, Any] | None = None, role_targets: Mapping[str, str] | None = None,
-    excitation: SessionExcitation | None = None,
-    acknowledgement_binding: str, retries_per_pose: int,
-    measurements_per_pose: Sequence[int] | None = None, **spec_kwargs: Any,
+    roles_bands: Sequence[RoleBand], fc_hz: float | None, excitation: SessionExcitation | None = None,
+    acknowledgement_binding: str, retries_per_pose: int, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
-                                 [candidate_id for _, _, candidate_id in captures], measurements_per_pose)
+                                 [candidate_id for _, _, candidate_id in captures])
     entries = []
     for index, (spec, prompt) in enumerate(zip(announce_run([spec for spec, _, _ in captures]), prompts), 1):
         phase, prelude = spec.program_phase, spec.courtesy_prelude
         if solo_target(spec):
             assert excitation is not None
             program = compose_target_program(excitation, spec)  # never played; duration only
-        elif spec.stimulus is not None:
-            from ..bass_stimulus import build_bass_program  # lazy: keeps jasper.web numpy-free
-
-            program = build_bass_program(
-                SessionExcitation(tuple(roles_bands), {}, 0.0, fc_hz, {}), spec.stimulus,  # never played; duration only
-                safety_profile=safety_profile or {}, role_targets=role_targets or {}, courtesy_prelude=prelude,
-            )
         elif phase == PHASE_CHECK:
             program = build_check_program(roles_bands, courtesy_prelude=prelude)
         elif phase == PHASE_MEASURE:
@@ -423,28 +413,25 @@ POSITION_BATCH_CONFIG_KEY = "position_batch_config"
 
 def pose_batch_screens(
     indexes: Sequence[int], prompts: Sequence[CloudPositionPrompt],
-    candidate_ids: Sequence[str], measurements_per_pose: Sequence[int] | None = None,
+    candidate_ids: Sequence[str],
 ) -> dict[int, dict[str, str]]:
     """Capture index -> the batch identity every capture of one POSE declares.
 
     Consecutive prompts at one ``place`` are one batch: the gate grants the
     batch's first capture and carries that grant to the rest
     (:meth:`~.position_gate.PositionGate.gate`), so the microphone moves once
-    per pose however many configs play there. A batch's size is how many
-    measurements the run plays at its pose: ``measurements_per_pose``, from the
-    run's schedule (``plan_run.schedule_facts``), else the prompts' own count; a
-    level ladder plays more at a pose than one rung's prompts list.
+    per pose however many configs play there.
     """
     if len(candidate_ids) != len(indexes) or any(not isinstance(cid, str) for cid in candidate_ids):
         raise CrossoverV2FlowError("candidate ids must name every lateral capture")
     if not indexes:
         return {}
     screens = {}
-    for pose, (_place, group) in enumerate(groupby(
+    for _pose, group in groupby(
         enumerate(prompts), key=lambda row: row[1].pose.place,
-    )):
+    ):
         offsets = [offset for offset, _prompt in group]
-        size = len(offsets) if measurements_per_pose is None else measurements_per_pose[pose]
+        size = len(offsets)
         for ordinal, offset in enumerate(offsets, 1):
             screens[indexes[offset]] = {
                 "candidate_id": candidate_ids[offset],

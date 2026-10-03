@@ -23,8 +23,7 @@ the round's evidence; the room contract of a round that banked none answers
 named, the room contract answers `set_required` and lists the sets in
 `detail.sets`. In `status` and `judge`, `packet_contracts.contract_current` is
 false when the contracts served now differ from the ones the bank stored.
-Artifact paths remain as fallbacks for failed views. A
-joined bass ladder adds `bass_table`. Read `alignment` per pair. After the
+Artifact paths remain as fallbacks for failed views. Read `alignment` per pair. After the
 timing block, read each fit's `verdict` and `crossover_band_spread`,
 each filter's `position_variance`, and the per-pose null ceiling in
 `verdicts`. Then read role gate lines and retake `fault` values. A missing
@@ -250,9 +249,8 @@ Bass is level-dependent. A result at one level establishes only that level.
 ADR-0304 records why the level axis matters
 (`0304-the-bass-level-axis-is-fixed-level-windows.md`). Its in-run scheduling
 decision was superseded by `0311-a-run-plays-at-one-session-level.md`.
-The current ladder joins runs at distinct fixed levels. Keep the same pose
-and compatible capture conditions across them. Let the engine run the ladder;
-interpret its completed evidence together.
+The in-room round reads bass at the one level its seat set finds; the level
+ladder is retired (`0431-the-bass-level-ladder-is-retired.md`).
 
 Read each `packet["bass"]` entry's `set_id` and `takes`. Each take has
 `diagnostics`, `bands` with `estimated_snr_db` and
@@ -284,9 +282,6 @@ Its answer reaches the speaker only as a prescription document that you judge
 and trial like any other. Until the model's far-field check passes (#5926),
 use it as a starting point, not as proof (ADR-0353).
 
-Overshoot above the corner in the per-band `realized_boost_db`
-(`bass_table.tables[].levels[]`), beyond repeat spread, means too much boost
-for the box.
 Put `delta_highpass_hz` below the target: 15 Hz under a 22 Hz target adds
 about 1 dB near 80 Hz, and a corner nearer the target trades a little
 extension for less drive below 20 Hz.
@@ -322,24 +317,11 @@ them apart, switch the power off and measure between the "−" terminals of two
 channels: open means bridged, 0 Ω means single-ended. A new amp or supply
 changes only this number
 ([`docs/examples/bass_prescription_example.json`](examples/bass_prescription_example.json)
-is jts3's tune B, bridged). Then run the bass ladder. It should show the full
-boost up to the knee, with the owner limiter idle at normal levels.
-
-`prescribed_boost_db` minus `realized_boost_db` is the drive evidence.
-`compression_db` includes compressor and driver action in the boost band.
-H2/H3 show `harmonics_flat`, `harmonics_rose` with band and delta, or `unknown`.
-Compare with repeat spread, or a 1 dB evidence floor with one repeat.
-This is not a hearing threshold.
-Read `snr_margin_db` and `repeat_spread_db`; `position_spread_db` is reserved.
-The harmonic knee across levels is the measured headroom edge; a knee above the top rung is extrapolated and the headroom row says so.
+is jts3's tune B, bridged). Then trial the document on the in-room round.
 
 The bass boost spends no program headroom; it reserves its own lift
 (`contract.bass.shared_headroom`;
 `0385-the-program-charge-is-the-emitted-graphs-peak-with-one-margin.md`).
-
-The reach at each level is the corner; the drive evidence is prescribed minus
-realized; the headroom evidence is the harmonics; nothing is graded against a
-fixed band. Keep `qualified_from_hz` and null fields. Harmonics give no hardware limit.
 
 ## Rear
 

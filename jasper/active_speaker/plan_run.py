@@ -66,7 +66,7 @@ _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
 #: branches in phase read at most 6 dB over the louder one alone (ADR-0403 §3).
 BRANCH_SUM_MARGIN_DB = 6.0
 #: A graded take's host effects (a rearm, an acceptance), held while its capture
-#: plays so that no later rung is composed from them (ADR-0383).
+#: plays so that no later stimulus of it is composed from them (ADR-0383).
 _held_effects: ContextVar[list[Callable[[], None]] | None] = ContextVar("held_effects", default=None)
 
 
@@ -175,7 +175,8 @@ def _relevelled(spec: MeasureSpec, played: ExcitationProgram, probes: Sequence[f
     peak played under what it asked, held at its ceiling."""
     alone = {segment.role: segment.gain_db for segment in played.stimulus_segments() if segment.kind == KIND_SWEEP}
     plays = [*(alone[target] for target in spec.branch_target_ids), played.segment("sweep_verify").gain_db]
-    asked = [*spec.branch_levels_dbfs, spec.level_ladder_dbfs[0]]
+    assert spec.level_dbfs is not None
+    asked = [*spec.branch_levels_dbfs, spec.level_dbfs]
     loudest = max(range(len(plays)), key=plays.__getitem__)
     shift = peak_db - plays[loudest]
     if shift > 0.0:
@@ -184,7 +185,7 @@ def _relevelled(spec: MeasureSpec, played: ExcitationProgram, probes: Sequence[f
         moved = [play if held else min(play + shift, top) for play, top in zip(plays, tops)]
     else:
         moved = [play + shift for play in plays]
-    return replace(spec, level_ladder_dbfs=(moved[-1],), branch_levels_dbfs=tuple(moved[:-1]))
+    return replace(spec, level_dbfs=moved[-1], branch_levels_dbfs=tuple(moved[:-1]))
 
 
 def _landed_db_spl(verdict: TakeVerdict, rule: PoseLevel, probe: ExcitationProgram) -> float:
@@ -297,7 +298,6 @@ async def run_plan(
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
-    announce: bool = True,
 ) -> RunManifest:
     from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
@@ -339,8 +339,7 @@ async def run_plan(
     finds = door is not None and bool(door.caps_dbfs)
     if (level is None and not finds) or (door is None and (session is None or level != session.measurement_level_db)):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a level or a probe to find one")
-    if announce:
-        specs = announce_run(specs)
+    specs = announce_run(specs)
     manifest.level = {"run": {"level_db": level, "level_source": request.level_source}}
     expanded = []
     planned: list[dict[str, Any]] = []
@@ -446,7 +445,7 @@ async def _run(
                                             # its own reading (ADR-0403 §3).
                                             pose_level=None if spec.graph_scope == "candidate_branches"
                                             else item.pose_level,
-                                            level_asked_dbfs=next(iter(spec.level_ladder_dbfs), None))
+                                            level_asked_dbfs=spec.level_dbfs)
             if program is not None and is_level_probe(program):
                 log_event(logger, "active_speaker.level_probe", fields={
                     "pose": item.pose_index + 1, "driver": solo_target(spec) or None,
@@ -519,10 +518,9 @@ async def _run(
         probes, found = branch_probes(work[offset].spec), branch_levels.get(offset, [])
         if len(found) < len(probes):
             return None
-        solved = [*playing[offset].level_ladder_dbfs, *((min(found) - BRANCH_SUM_MARGIN_DB,) if probes else ()),
-                  *((pending.next_gain_db,) if pending.next in _LEVEL_RETAKES and pending.next_gain_db is not None
-                    else ())]
-        return min(solved, default=None)
+        solved = [playing[offset].level_dbfs, min(found) - BRANCH_SUM_MARGIN_DB if probes else None,
+                  pending.next_gain_db if pending.next in _LEVEL_RETAKES else None]
+        return min((level for level in solved if level is not None), default=None)
 
     moved: set[int] = set()
     verdict: TakeVerdict | None = None
@@ -592,7 +590,7 @@ async def _run(
                                         # Each branch alone carries the last level solved for it too (ADR-0407).
                                         pending = relevelled.get(offset, playing[offset]).branch_levels_dbfs
                                         playing[index] = replace(
-                                            work[index].spec, level_ladder_dbfs=(found,), branch_levels_dbfs=tuple(
+                                            work[index].spec, level_dbfs=found, branch_levels_dbfs=tuple(
                                                 map(min, playing[offset].branch_levels_dbfs, pending)))
                         relevelled.pop(offset, None)
                         retry = None
@@ -601,8 +599,6 @@ async def _run(
                         continue
                     manifest.reason = retry.fault or REASON_RETRIES_SPENT
                     break
-                # A run with no gate is a ladder's rung: its ladder holds the placement, so the
-                # take plays again where it is (#6113).
                 if retry.next == "fix_and_retake":
                     if probe_at is not None and session is not None:
                         # The fader sits at the probe fader only while the probe plays (ADR-0403 §4).
@@ -622,7 +618,7 @@ async def _run(
                         manifest.reason = retry.fault or "retry_gain_missing"
                         break
                     playing[offset] = (relevelled.pop(offset) if offset in relevelled
-                                       else replace(playing[offset], level_ladder_dbfs=(retry.next_gain_db,)))
+                                       else replace(playing[offset], level_dbfs=retry.next_gain_db))
                 if retry.charge == "replay":
                     # A level probe's next play is the take, not a retake (ADR-0365).
                     retry = None
@@ -637,7 +633,7 @@ async def _run(
                                **({"retake_reason": reason} if reason else {}),
                                **({"level_raise_dbfs": retry.next_gain_db} if retry.next == "retake_louder" else {}))
             if item.pose_level is not None:
-                notices["level_step"] = "levelled" if spec.level_ladder_dbfs else "probe"
+                notices["level_step"] = "levelled" if spec.level_dbfs is not None else "probe"
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
@@ -772,7 +768,7 @@ async def _run(
                         played = ExcitationProgram.from_dict(next(
                             record["program"] for record, _ in records if record.get("program")))
                         relevelled[offset] = _relevelled(spec, played, set_probes[item.level_set], verdict.next_gain_db)
-                        retry = replace(verdict, next_gain_db=relevelled[offset].level_ladder_dbfs[0])
+                        retry = replace(verdict, next_gain_db=relevelled[offset].level_dbfs)
                     continue
                 retry = None
                 retry_was_measured = False
@@ -784,7 +780,7 @@ async def _run(
                     # The rest of this take's set plays at the level it landed (ADR-0361, ADR-0403).
                     for index in range(offset + 1, len(work)):
                         if work[index].level_set == item.level_set:
-                            playing[index] = replace(work[index].spec, level_ladder_dbfs=spec.level_ladder_dbfs,
+                            playing[index] = replace(work[index].spec, level_dbfs=spec.level_dbfs,
                                                      branch_levels_dbfs=spec.branch_levels_dbfs)
                             unlevelled.discard(index)
                 if signals.retake.is_set():

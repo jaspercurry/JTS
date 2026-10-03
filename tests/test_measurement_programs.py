@@ -114,8 +114,6 @@ def test_program_table_projections(site):
     ("room/seat", "room_quick", 3, 3, 3),
     ("rear/seat", "seat_express", 3, 3, 3),
     ("rear/pair", "speaker_mark", 1, 1, 2),
-    ("bass/axis", "seat_express", 3, 3, 3),
-    ("bass/axis", "bass_axis", 1, 1, 1),
     ("drivers/each", "drivers_each", 2, 1, 2),
 ])
 def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures: int) -> None:
@@ -175,7 +173,6 @@ def test_a_branch_preset_is_a_speaker_run_that_keeps_its_pair(preset, pair):
 
 @pytest.mark.parametrize("preset,layout,mover", [
     ("room/seat", "room_quick", "arm"),
-    ("bass/axis", "room_quick", "arm"),
     ("rear/seat", "seat_express", "human"),
     ("room/seat", "seat_express", "human"),
     ("rear/pair", "speaker_mark", None),
@@ -186,7 +183,7 @@ def test_a_layout_runs_under_its_preset_with_its_own_mover(preset, layout, mover
     assert (row.purposes, row.regime, row.branch_pair) == (default.purposes, default.regime, default.branch_pair)
 
 
-@pytest.mark.parametrize("preset,layout", [("speaker", "seat_cloud"), ("rear/express", "speaker_mark"), ("room", "bass_axis")])
+@pytest.mark.parametrize("preset,layout", [("speaker", "seat_cloud"), ("rear/express", "speaker_mark"), ("room", "speaker_mark")])
 def test_a_layout_its_preset_does_not_offer_refuses_by_name(preset, layout):
     with pytest.raises(mp.LayoutNotOfferedError) as excinfo:
         mp.run_preset(preset, layout)
@@ -323,7 +320,7 @@ def test_available_presets_is_the_sorted_registry() -> None:
     choices = mp.available_presets()
 
     assert choices == (
-        "bass/axis", "branches/express", "drivers/each", "front_rear/express", "nearfield/each", "rear/express",
+        "branches/express", "drivers/each", "front_rear/express", "nearfield/each", "rear/express",
         "rear/pair", "rear/seat", "room/seat", "speaker/mark", "tournament/express",
     )
     rows = [mp.preset(preset_id) for preset_id in choices]
@@ -493,13 +490,12 @@ def test_a_programs_first_plan_serves_it_at_a_layout_its_preset_offers(program) 
         assert first == mp.preset(program)
 
 
-def test_a_bass_run_starts_at_the_seat_by_hand_and_the_arm_layouts_stay_selectable() -> None:
-    """No box has an arm, so the bass default is the seat; the arm's layouts still pin the arm."""
-    default = mp.run_preset("bass")
-
-    assert (default.preset, default.layout, default.mover) == ("bass/axis", "seat_express", "human")
-    assert {layout: mp.run_preset("bass", layout).mover for layout in ("bass_axis", "room_quick")} == {
-        "bass_axis": "arm", "room_quick": "arm"}
+def test_a_bare_bass_names_no_preset() -> None:
+    """Bass has no preset of its own: the in-room round measures it, so a bass run refuses as an
+    unknown preset that names the presets there are (ADR-0429, ADR-0431)."""
+    with pytest.raises(mp.UnknownPresetError) as excinfo:
+        mp.run_preset("bass")
+    assert (excinfo.value.preset, excinfo.value.choices) == ("bass", mp.available_presets())
 
 
 def test_the_rear_program_starts_with_the_pair_model_at_the_mark() -> None:
@@ -511,7 +507,7 @@ def test_the_rear_program_starts_with_the_pair_model_at_the_mark() -> None:
     assert mp.preset("rear").preset == "rear/express"
 
 
-@pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM), ("bass", mp.PURPOSE_BASS)])
+@pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM)])
 def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> None:
     cloud = mp.run_preset(program, "seat_cloud")
     quick = mp.run_preset(program, "room_quick")
@@ -647,8 +643,6 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
 
 
 @pytest.mark.parametrize("purpose,base,regime,cleared", [
-    (mp.PURPOSE_BASS, True, mp.REGIME_SUMMED, ("room_correction", "bass_extension")),
-    (mp.PURPOSE_BASS, False, mp.REGIME_SUMMED, ("room_correction",)),
     (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, ("rear_calibration",)),
     (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, ("rear_calibration",)),
     (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
@@ -657,10 +651,9 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     (None, True, mp.REGIME_SUMMED, ()),
 ])
 def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, regime, cleared) -> None:
-    """A bass take plays the applied speaker layer with room off, and its base
-    plays bass off too; the in-room base plays bass and room off; a rear pair
-    take plays its parent with the rear stage off; every other take plays its
-    layers as composed (ADR-0370, ADR-0386, ADR-0429)."""
+    """The in-room base plays bass and room off; a rear pair take plays its
+    parent with the rear stage off; every other take plays its layers as
+    composed (ADR-0370, ADR-0386, ADR-0429)."""
     assert mp.cleared_layers(purpose, base=base, regime=regime) == cleared
 
 
@@ -734,7 +727,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
     pose = config["layouts"]["seat_express"]["poses"][0]  # type: ignore[index]
     pose.update({"headline": "Measure the main seat", "detail": "Hold the mic at ear height."})
 
-    loaded = mp._load_presets(_write_config(tmp_path, config))[0]["bass/axis"].poses[0]
+    loaded = mp._load_presets(_write_config(tmp_path, config))[0]["room/seat"].poses[0]
     assert (loaded.headline, loaded.detail) == (
         "Measure the main seat", "Hold the mic at ear height.",
     )
@@ -744,7 +737,7 @@ def test_config_can_supply_future_prompt_text(tmp_path: Path) -> None:
                                     "mover", "offers_unknown", "offers_without_default",
                                     "branch_pair", "branch_pair_regime", "purposes_missing", "purposes_unknown",
                                     "purposes_none", "purposes_regime", "purposes_not_list", "purposes_duplicate",
-                                    "purposes_not_text", "driver_purposes", "driver_purposes_reversed", "levels",
+                                    "purposes_not_text", "driver_purposes", "driver_purposes_reversed",
                                     "preset_description", "layout_use_when", "layout_list", "timing_take"])
 def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
     config = _bundled_config()
@@ -767,8 +760,6 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         }[broken])
         if broken == "purposes_regime":
             config["presets"][0]["regime"] = "branches"
-    elif broken == "levels":
-        config["presets"][0]["levels"] = "-28,-18"
     elif broken == "offers_unknown":
         config["presets"][0]["layouts"].append("no_such_layout")  # type: ignore[index]
     elif broken == "offers_without_default":
@@ -796,12 +787,6 @@ def test_malformed_config_is_rejected(tmp_path: Path, broken: str) -> None:
         mp._load_presets(_write_config(tmp_path, config))
 
 
-@pytest.mark.parametrize("layout", ["bass_axis", "seat_cloud", "room_quick", "seat_express"])
-def test_a_bass_run_keeps_its_stimulus_and_ladder_on_any_layout(layout):
-    run = mp.run_preset("bass", layout)
-    assert (run.stimulus, run.levels) == (mp.preset("bass").stimulus, "auto")
-
-
 @pytest.mark.parametrize("stimuli,reference", [
     ([], "bass"), ({"bass": []}, "bass"), ({"bass": {"band_hz": [20, 1100]}}, "bass"),
     ({"bass": {"ceiling_hz": 1100}}, "missing"), ({"bass": {"ceiling_hz": True}}, "bass"),
@@ -817,6 +802,6 @@ def test_a_bass_run_keeps_its_stimulus_and_ladder_on_any_layout(layout):
 def test_invalid_registry_stimulus_is_a_value_error(tmp_path, stimuli, reference):
     config = _bundled_config()
     config["stimuli"] = {**config["stimuli"], **stimuli} if isinstance(stimuli, dict) else stimuli
-    next(row for row in config["presets"] if row["preset"] == "bass/axis")["stimulus"] = reference
+    next(row for row in config["presets"] if row["preset"] == "nearfield/each")["stimulus"] = reference
     with pytest.raises(ValueError):
         mp._load_presets(_write_config(tmp_path, config))

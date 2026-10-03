@@ -95,17 +95,6 @@ HOUSEHOLD_DB = -14.0
 CAPS = {"woofer": 0.0, "tweeter": -65.0}
 
 
-def plan_context() -> SimpleNamespace:
-    targets = {role: f"fp-{role}" for role in CAPS}
-    return SimpleNamespace(
-        safety_profile={"targets": [
-            {"target_fingerprint": fingerprint, "role": role}
-            for role, fingerprint in targets.items()
-        ]},
-        role_targets=targets,
-    )
-
-
 def _roles() -> list[RoleBand]:
     return [
         RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
@@ -463,8 +452,7 @@ def _phase_program(conductor, phase, spec=None):
         summed = phase not in (PHASE_CHECK, PHASE_MEASURE, journey.PHASE_LATERAL)
         spec = MeasureSpec(kind="baseline", scope_gains_db={},
                            **({"graph_scope": "timing", "candidate_id": "base"} if summed else {}))
-    return compose_plan_program(conductor, replace(spec, program_phase=phase), None,
-                                context=SimpleNamespace(safety_profile={}, role_targets={}))
+    return compose_plan_program(conductor, replace(spec, program_phase=phase), None)
 
 
 def _run_phase(conductor, index, attempt, result=None):
@@ -1045,11 +1033,11 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
     real_bind = v2host.bind_run_door
     monkeypatch.setattr(v2host, "bind_v2_engine_seams", lambda **kwargs: fakes.seams())
     def bind(**kwargs):
-        binding, analyze, assessor, execute = real_bind(**kwargs)
+        binding, analyze, assessor = real_bind(**kwargs)
         monitor = WiredSplMonitor(binding.sensitivity, binding.ceiling_db_spl, 0)
         door = OpenMeasurementDoor(fakes.graph, fakes.volume, None, SESSION_VOLUME_DB, "graph", monitor)
         captured["tuning"] = binding.build_session(door, kwargs["manifest"].allocate_take_id)
-        return binding, analyze, assessor, execute
+        return binding, analyze, assessor
     monkeypatch.setattr(v2host, "bind_run_door", bind)
     captured["conductor"], _state = _stage_1(monkeypatch)
     return captured

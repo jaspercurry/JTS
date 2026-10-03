@@ -117,7 +117,7 @@ def _outcome(speaker, selected, candidates, mover=None):
     for capture in captures:
         spec, stage = capture.spec, 'compose'
         try:
-            program = compose_plan_program(speaker.conductor, spec, None, context=speaker)
+            program = compose_plan_program(speaker.conductor, spec, None)
             stage = 'graph'
             branches = branch_channels_for(spec) if spec.graph_scope == 'candidate_branches' else {}
             key = (spec.graph_scope, tuple(sorted(branches.items())))

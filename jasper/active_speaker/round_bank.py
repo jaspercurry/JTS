@@ -358,19 +358,13 @@ def bank_round(
 def finish_round(bundle: Path) -> tuple[BankedRound | None, Exception | None]:
     from .crossover_v2.refusal_copy import exception_detail  # lazy: banking-only measurement imports
     from .crossover_v2.round_inputs import round_artifact_dir  # lazy: banking-only evidence imports
-    from .round_packet import finish_bass_packet  # lazy: packet imports this banker
     from .run_manifest import RUN_MANIFEST_FILENAME  # lazy: banking-only evidence imports
     from .round_bookkeeping import run_bookkeeping  # lazy: banking-only view analysis
-    from .bass_table_inputs import join_bass_rounds  # lazy: banking-only bass analysis
 
     try:
         # Browser completion and a concurrent CLI wait must serialize the whole packet write.
         with advisory_file_lock(bundle / ".round-packet.lock"):
-            banked = bank_round(bundle, view_runner=run_bookkeeping)
-            manifest = banked.provenance.get("manifest")
-            if manifest and Path(manifest).is_file():
-                finish_bass_packet(banked.path, Path(manifest), join_levels=join_bass_rounds)
-            return banked, None
+            return bank_round(bundle, view_runner=run_bookkeeping), None
     except (OSError, ValueError, RoundBankError, EvidenceUnavailable) as exc:
         detail = exception_detail(exc)
         log_event(logging.getLogger(__name__), "active_speaker.round_packet_save_failed", level=logging.ERROR, detail=detail)

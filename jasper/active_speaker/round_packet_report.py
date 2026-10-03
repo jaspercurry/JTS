@@ -13,7 +13,6 @@ from typing import Any, Mapping, Sequence
 from jasper.audio_measurement.gating import f_trusted_floor_hz
 from jasper.platform.json_fields import finite_float
 
-from .bass_table_report import bass_table_markdown, bass_table_rows
 from .crossover_v2.round_frequency_view import position_label
 from .crossover_v2.round_inputs import PACKET_FILENAME
 from .measurement_programs import POSE_KIND_BEHIND, POSE_KIND_CLOSE
@@ -206,8 +205,6 @@ def packet_index(packet: Mapping[str, Any], target: Path, manifest: Mapping[str,
                        f"over {lo:g}–{hi:g} Hz" + (f" ({row['reason']})" if row["reason"] else ""))
         lines.append(f"null ceiling {_pose_token(row['pose'])}: {summary}; capture_graph {json.dumps(row['capture_graph'])}; "
                      f"takes {', '.join(row['take_ids'])}")
-    if bass_rows := bass_table_rows(packet.get("bass_table", {})):
-        lines.append(bass_table_markdown(bass_rows))
     if rear_entries := packet.get("rear"):
         lines.append("\n".join(rear_lines(rear_entries)))
     lines += ["## Artifacts", f"{json.dumps(packet['artifacts'], separators=(',', ':'))}; packet: {PACKET_FILENAME}",

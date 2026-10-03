@@ -436,8 +436,6 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "no_common_frequency_support": "The candidate and incumbent room medians share no frequency range.",
     },
     ("name_comparand", "Name the take or forecast to compare with"): {
-        "bass_comparand_view_not_filed": "The take the comparand rule found has no filed bass view: it is not a bass "
-                                         "take, or its round filed none.",
         "compare_no_common_band": "The two sides share no band above the window's trusted floor.",
         "compare_no_comparand": "This round has no base take at this take's place, and no earlier banked take "
                                 "matches its place, drivers and graph scope.",
@@ -491,11 +489,8 @@ _EVIDENCE_COPY: dict[tuple[str, ...], dict[str, str]] = {
         "composition_saved_tune_unrepresentable": "The saved driver corrections cannot be rebuilt as a candidate.",
         "gate_sweep_mixed_graphs": "The takes played more than one candidate or graph, so their windows cannot compare.",
     },
-    ("match_bass_capture", "Measure both graphs at the same pose and settings"): {
-        "capture_context_changed": "The two bass takes were captured under different conditions.",
-    },
     ("measure_bass", "Measure a bass round"): {
-        "bass_evidence_unavailable": "The round banked no bass reading or bass level for this prescription.",
+        "bass_evidence_unavailable": "The round banked no bass reading for this prescription.",
     },
     ("register_mic_calibration", "Register microphone calibration"): {
         "mic_calibration_file_unreadable": "The calibration file cannot be read, is too large, or holds no calibration curve.",
@@ -720,50 +715,6 @@ _STORE_COPY: dict[str, str] = {
 # The §5.10 table, as data. The envelope and the session both read it, so
 # copy and budget never drift between the verdict and its screen.
 REASON_REGISTRY: dict[str, ReasonSpec] = {
-    "bass_fit_capture_context_changed": ReasonSpec(
-        "bass_fit_capture_context_changed", TEMPLATE_HARD_STOP, 0, "The paired bass captures used different conditions.",
-        own_action={"id": "match_bass_capture", "label": "Measure both graphs at the same pose and settings", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_reference_band_unavailable": ReasonSpec(
-        "bass_fit_reference_band_unavailable", TEMPLATE_HARD_STOP, 0, "The bass sweep does not cover the reference band.",
-        own_action={"id": "measure_bass_reference", "label": "Measure a sweep that covers the reference band", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_requires_room_baseline_and_exact_candidate": ReasonSpec(
-        "bass_fit_requires_room_baseline_and_exact_candidate", TEMPLATE_HARD_STOP, 0, "The bass pair does not contain the required graphs.",
-        own_action={"id": "select_bass_pair", "label": "Select the room baseline and the measured bass candidate", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_inputs_missing": ReasonSpec(
-        "bass_fit_inputs_missing", TEMPLATE_HARD_STOP, 0, "No bass pairs are available for this fit.",
-        own_action={"id": "select_bass_run", "label": "Select a run with baseline and candidate takes", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_pose_missing": ReasonSpec(
-        "bass_fit_pose_missing", TEMPLATE_HARD_STOP, 0, "The bass capture has no recorded pose.",
-        own_action={"id": "measure_bass_pose", "label": "Measure with a recorded microphone pose", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_table_window_gain_missing": ReasonSpec(
-        "bass_table_window_gain_missing", TEMPLATE_HARD_STOP, 0, "The bass capture lacks a complete resolved window gain.",
-        own_action={"id": "measure_bass_level", "label": "Record Main and program identity on each take", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_table_capture_integrity_failed": ReasonSpec(
-        "bass_table_capture_integrity_failed", TEMPLATE_HARD_STOP, 0, "A bass capture failed its integrity check.",
-        own_action={"id": "repeat_bass_capture", "label": "Repeat the failed capture", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_table_capture_context_changed": ReasonSpec(
-        "bass_table_capture_context_changed", TEMPLATE_HARD_STOP, 0, "The bass levels were captured under different conditions.",
-        own_action={"id": "match_bass_levels", "label": "Measure all levels with the same stimulus and setup", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_pairs_unavailable": ReasonSpec(
-        "bass_fit_pairs_unavailable", TEMPLATE_HARD_STOP, 0, "The run has no unique baseline pair for each candidate take.",
-        own_action={"id": "complete_bass_pairs", "label": "Measure baseline and candidates at matching levels and poses", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_candidate_unreadable": ReasonSpec(
-        "bass_fit_candidate_unreadable", TEMPLATE_HARD_STOP, 0, "The measured bass candidate descriptor is unavailable.",
-        own_action={"id": "select_bass_candidate", "label": "Supply the candidate artifact named by the run", "href": "/sound/speaker/crossover/"},
-    ),
-    "bass_fit_run_mismatch": ReasonSpec(
-        "bass_fit_run_mismatch", TEMPLATE_HARD_STOP, 0, "The selected run does not match this manifest.",
-        own_action={"id": "select_bass_run", "label": "Select the run recorded in this manifest", "href": "/sound/speaker/crossover/"},
-    ),
     # See ADR-0371
     "room_not_banked": ReasonSpec(
         "room_not_banked", TEMPLATE_HARD_STOP, 0, "This round banked no room measurement for this set.",

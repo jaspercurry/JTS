@@ -115,7 +115,7 @@ class StimulusOutcome:
     """One stimulus: where it played, at what level, and what came of it.
 
     The unit ``measure`` reports in, because the unit it works in is one
-    stimulus: a walk of three positions across two ladder rungs is six of these.
+    stimulus: a walk of three positions is three of these.
     Said in the caller's own words — a bearing, a level, a record id, a reason
     code; the stage vocabulary (``ready`` … ``restore``) is engine-internal and
     does not appear here.
@@ -149,8 +149,8 @@ UNPROVEN_LEVEL = "unproven_level"
 class MeasureOutcome:
     """What one ``measure`` produced, one entry per stimulus.
 
-    ``stimuli`` is the whole answer, in the order the spec named: every position
-    crossed with every ladder rung. ``record_ids`` is the derived view over it —
+    ``stimuli`` is the whole answer, one per position, in the order the spec
+    named. ``record_ids`` is the derived view over it —
     the ids actually banked — never a second list to keep in step.
 
     ``record_ids`` is shorter than ``stimuli`` whenever a stimulus banked
@@ -199,7 +199,7 @@ class TuningSession:
     #: The one level every stimulus plays at, and the one the volume claim is
     #: taken for. Ruling S8's recipe turns on it being ONE: *"same drive
     #: voltage across every per-driver measurement; no gain is touched between
-    #: them."* A level ladder moves the stimulus, never this.
+    #: them."* A take's own level moves the stimulus, never this.
     measurement_level_db: float
     allocate_take_id: Callable[[], str]
 
@@ -303,7 +303,7 @@ class TuningSession:
     # ------------------------------------------------------------------- verbs
 
     async def measure(self, spec: MeasureSpec) -> MeasureOutcome:
-        """Measure what the spec asks for: every position, at every rung.
+        """Measure what the spec asks for: every position, at its level.
 
         One verb for all three kinds. The order is fixed and each step is
         somebody's invariant:
@@ -313,13 +313,12 @@ class TuningSession:
            each one** (the idempotent ``install`` IS the health check),
            because between two stimuli another DSP writer may have replaced it.
            The record's ``graph_fingerprint`` is that prove's answer. The unit is
-           position × ladder rung: a ladder moves the stimulus level, never the
-           claim.
+           one position.
         2. **The level is proven per stimulus** (ADR-0231 §4). A claim can be preempted
            between two positions of one walk, so a single proof taken before the
            walk would stamp an unverified level into every record after it. An
            unproven fader refuses to BANK that stimulus and nothing else — the
-           stimulus still plays, the next rung is still attempted, and the entry
+           stimulus still plays, the next position is still attempted, and the entry
            says :data:`UNPROVEN_LEVEL`.
         3. **Bank what played.** A transaction that never completed ``play`` has
            no evidence, and banking a record for it would be the dishonest kind
@@ -327,17 +326,10 @@ class TuningSession:
         """
         self._require_open()
         prompts = spec.pose_prompts
-        rungs: tuple[float | None, ...] = spec.level_ladder_dbfs or (None,)
-
         stimuli: list[StimulusOutcome] = []
         for index, bearing in enumerate(self._bearings(spec)):
             prompt = prompts[index] if index < len(prompts) else ""
-            for stimulus_dbfs in rungs:
-                stimulus = await self._one_stimulus(
-                    spec, bearing, prompt, stimulus_dbfs,
-                )
-                stimuli.append(stimulus)
-
+            stimuli.append(await self._one_stimulus(spec, bearing, prompt, spec.level_dbfs))
         return MeasureOutcome(spec=spec, stimuli=tuple(stimuli))
 
     # --------------------------------------------------------------- internals
@@ -555,8 +547,8 @@ class TuningSession:
         The index reads six of these — run, kind, position, candidate,
         timestamp, path — and the store supplies the last two, since only it
         knows where it put the record and when. The rest are what a reader needs
-        to tell two captures of the same position apart: which ladder rung,
-        which graph, at what proven level.
+        to tell two captures of the same position apart: which graph, at what
+        proven level.
 
         ``baseline_record_id`` rides as ``""``: pairing a capture with its
         comparand is the tuning tools' read over the bank (ADR-0198), and the

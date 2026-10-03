@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jasper.active_speaker.bass_table_report import bass_table_rows
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ
 from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.bass_extension.dynamic import (
@@ -27,12 +26,9 @@ def _bound(evidence: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def bass_evidence_summary(evidence: Mapping[str, Any]) -> dict[str, Any]:
-    bound = _bound(evidence)
-    table = bound.get("bass_table") or {}
-    levels = bass_table_rows(table)
-    reason = table.get("reason", evidence.get("code"))
-    detail = {"levels": levels, **({"reason": reason} if reason is not None else {})}
-    if bound.get("bass") or levels:
+    reason = evidence.get("code")
+    detail = {"reason": reason} if reason is not None else {}
+    if _bound(evidence).get("bass"):
         return {"status": "available", "detail": detail}
     return unavailable(BASS_EVIDENCE_UNAVAILABLE, detail)
 

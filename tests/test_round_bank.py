@@ -305,11 +305,11 @@ def test_banking_hard_links_the_bundle_and_copies_where_a_link_is_refused(tmp_pa
             assert (copy.stat().st_ino == source.stat().st_ino) is (fallback is None)
 
 
-@pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("bass-compare", "inputs_required")])
+@pytest.mark.parametrize("view,reason", [("unregistered-view", "verb_not_registered"), ("compare", "inputs_required")])
 def test_bookkeeping_unavailable_does_not_fail_the_bank(tmp_path, monkeypatch, view, reason):
     session, state = _live_session(tmp_path)
     artifacts, _ = round_artifact_dir(session)
-    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"preset": "bass/axis", "run_id": session.name}))
+    (artifacts / RUN_MANIFEST_FILENAME).write_text(json.dumps({"preset": "room/seat", "run_id": session.name}))
     monkeypatch.setattr(round_view_artifacts, "bookkeeping_views", lambda program, **kwargs: ((view, False, False),))
     banked = bank_round(session, campaign_root=tmp_path / "campaigns", state_path=state, view_runner=run_bookkeeping)
     assert banked.provenance["views"] == [{"view": view, "status": "unavailable", "reason": reason}]
@@ -561,10 +561,9 @@ def test_packet_keeps_program_analysis_views_limits_and_series_stats(tmp_path, r
 
 
 @pytest.mark.parametrize("probe", [False, True], ids=["", "probed"])
-def test_a_one_set_bass_round_is_re_run_and_compared_where_the_bank_filed_its_view(tmp_path, request, capsys, probe):
+def test_a_one_set_bass_round_is_re_run_where_the_bank_filed_its_view(tmp_path, request, capsys, probe):
     """A round of one view set, with or without its run probe's set beside it, is banked with its bass view
-    under no set name. The set names it all the same: a re-run files there, with --set and without it, and
-    bass-compare reads it."""
+    under no set name. The set names it all the same: a re-run files there, with --set and without it."""
     source, _, _, bank = request.getfixturevalue("summed_capture_bundle")
     asyncio.run(bank("baseline", measurement_purpose="bass"))
     write_manifest(source, program="bass", probe=probe)
@@ -577,9 +576,6 @@ def test_a_one_set_bass_round_is_re_run_and_compared_where_the_bank_filed_its_vi
     for flags in ([], ["--set", set_id]):
         assert round_views_main(["bass", str(banked.path), *flags]) == 0
         assert Path(json.loads(capsys.readouterr().out)["out"]) == filed
-    assert round_views_main(["bass-compare", str(banked.path), str(banked.path), "--before-set", set_id,
-                             "--after-set", set_id, "--change", "diagnostic"]) == 0
-    assert json.loads(capsys.readouterr().out)["subject"]["rounds"][0]["set_id"] == set_id
 
 
 @pytest.mark.parametrize("stored_evidence", [True, False, "old-schema"], ids=["stored", "not-stored", "old-schema"])

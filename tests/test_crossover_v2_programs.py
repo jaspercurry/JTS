@@ -146,8 +146,7 @@ def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, s
     spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, scope_gains_db=None,
                        candidate_id="trial" if scope != "drivers" else "", courtesy_prelude=announced,
                        branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
-    program = programs.program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, stimulus,
-                                        safety_profile={}, role_targets={})
+    program = programs.program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, stimulus)
     assert program.stimulus_id == expected
 
 
@@ -204,8 +203,7 @@ def test_scope_gains_correct_blind_levels_and_preserve_the_measured_plan(headroo
     spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
                        candidate_id="trial" if scope != "drivers" else "")
     def compose(gain):
-        return programs.program_for_spec(replace(spec, scope_gains_db=gain), excitation, GAIN_PLAN_DB,
-                                         safety_profile={}, role_targets={})
+        return programs.program_for_spec(replace(spec, scope_gains_db=gain), excitation, GAIN_PLAN_DB)
     unchanged, lowered = compose({}), compose(gain)
     assert compose(quieter).stimulus_id == unchanged.stimulus_id
     if phase == "measure":
@@ -224,7 +222,7 @@ def test_a_summed_retake_plays_the_peak_it_asks_for(asked_db, played_db):
 
     def summed_peak(stimulus_dbfs=None):
         program = programs.program_for_spec(spec, _excitation({"woofer": 0.0, "tweeter": 0.0}), GAIN_PLAN_DB,
-                                            stimulus_dbfs, safety_profile={}, role_targets={})
+                                            stimulus_dbfs)
         peak, = {segment.gain_db for segment in program.segments if segment.kind == KIND_SUMMED_SWEEP}
         return peak
 
@@ -248,8 +246,7 @@ def test_only_the_prelude_moved_under_an_unannounced_take(phase, scope, announce
     def composed(courtesy_prelude: bool) -> str:
         spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
                            candidate_id="" if scope == "drivers" else "trial", courtesy_prelude=courtesy_prelude)
-        return program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, safety_profile={},
-                                role_targets={}).stimulus_id
+        return program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB).stimulus_id
 
     assert (composed(False), composed(True)) == (GOLDEN_UNANNOUNCED[phase], GOLDEN_DEEP_CAP[announced])
 
@@ -342,8 +339,7 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
 def test_measure_before_the_gain_solve_refuses_rather_than_guessing():
     """No program is composed at a guessed level."""
     with pytest.raises(ValueError):
-        program_for_spec(MeasureSpec(kind="baseline", program_phase=journey.PHASE_MEASURE), _excitation(CAPS), None,
-                         safety_profile={}, role_targets={})
+        program_for_spec(MeasureSpec(kind="baseline", program_phase=journey.PHASE_MEASURE), _excitation(CAPS), None)
 
 
 # 3. the courtesy-prelude rule (#1677)
@@ -361,8 +357,7 @@ def _has_prelude(program) -> bool:
     ("lateral", "drivers", {"branch_target_ids": ("woofer",)}),
     ("lateral", "candidate", {}),
     ("lateral", "candidate_branches", {"branch_target_ids": ("woofer", "tweeter")}),
-    ("lateral", "candidate", {"stimulus": preset("bass/axis").stimulus}),
-], ids=["check", "timing", "measure", "driver_pose", "summed_pose", "branch_pose", "bass_pose"])
+], ids=["check", "timing", "measure", "driver_pose", "summed_pose", "branch_pose"])
 def test_a_take_plays_the_prelude_only_when_it_announces_its_run(phase, scope, take, announced):
     """Every composer plays the courtesy prelude on the take that announces its
     run and on no other, and the level probe that take plays first never does
@@ -378,8 +373,7 @@ def test_a_take_plays_the_prelude_only_when_it_announces_its_run(phase, scope, t
     probed = replace(spec, level_probe=True)
 
     def compose(spec, stimulus_dbfs=None):
-        return program_for_spec(spec, excitation, GAIN_PLAN_DB, stimulus_dbfs, safety_profile=safety,
-                                role_targets=targets)
+        return program_for_spec(spec, excitation, GAIN_PLAN_DB, stimulus_dbfs)
 
     probe = compose(next(iter(branch_probes(probed)), probed))
 
@@ -422,13 +416,11 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
 
 
 @pytest.mark.parametrize(("purpose", "poses"), [
-    ("speaker", "speaker_mark"), ("room", "room_quick"), ("room", "seat_cloud"), ("bass", "room_quick"),
-    ("bass", "seat_cloud"),
+    ("speaker", "speaker_mark"), ("room", "room_quick"), ("room", "seat_cloud"),
 ])
 def test_prepared_summed_captures_name_no_band_of_their_purpose(purpose, poses):
     """A summed stop names no band for its purpose: a speaker or room take
-    sweeps the audio band the resolved driver bands give (ADR-0328), and a
-    bass take plays its stimulus (ADR-0400)."""
+    sweeps the audio band the resolved driver bands give (ADR-0328)."""
     layout = run_preset(purpose, poses)
     request = request_for_preset(layout, mover=layout.mover or "human")
     _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000,
@@ -439,16 +431,15 @@ def test_prepared_summed_captures_name_no_band_of_their_purpose(purpose, poses):
     captures = prepare_plan_captures(request, roles_bands=roles)
     excitation = replace(_excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0}), roles=roles)
     host = SimpleNamespace(excitation=excitation, set_program=lambda *args: None)
-    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     for capture in captures:
         spec = capture.spec
         if spec.graph_scope == "drivers":
             continue
-        program = compose_plan_program(host, spec, None, context=context)
+        program = compose_plan_program(host, spec, None)
         sweeps = [s for s in program.stimulus_segments() if s.kind == "summed_sweep"]
         stop_purpose = capture.stop.purpose or purpose
-        expected = {"speaker": (20, 20000), "room": (20, 20000), "bass": (30, 1100)}[stop_purpose]
-        assert len(sweeps) == (3 if purpose == "bass" else 1)
+        expected = {"speaker": (20, 20000), "room": (20, 20000)}[stop_purpose]
+        assert len(sweeps) == 1
         assert all((sweep.f1_hz, sweep.f2_hz) == expected for sweep in sweeps)
         assert spec.sweep_band_hz == ()
 
@@ -483,10 +474,9 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
                 if capture.spec.graph_scope == "candidate_branches"]
     assert captures
     assert captures[0].spec.branch_target_ids == tuple(take)
-    context = SimpleNamespace(safety_profile=safety, role_targets=targets)
     program = compose_plan_program(
         SimpleNamespace(excitation=excitation, gain_plan_db=None, set_program=lambda *args: None),
-        captures[0].spec, None, context=context)
+        captures[0].spec, None)
     assert program.channels == 2
     assert {s.role for s in program.stimulus_segments() if s.role} == set(take)
 
@@ -500,8 +490,7 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
 
     plan = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
-        roles_bands=roles, fc_hz=excitation.fc_hz, safety_profile=safety,
-        role_targets=targets, acknowledgement_binding="a" * 32, retries_per_pose=0,
+        roles_bands=roles, fc_hz=excitation.fc_hz, acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
     assert plan.entries[0].duration_ms >= (
         _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS)
@@ -581,7 +570,7 @@ def test_a_near_field_take_plays_its_declared_stimulus(stimulus):
     request = request_for_preset(replace(preset("nearfield/each"), stimulus=stimulus), targets=targets)
     edges = (max(band.lower_hz, stimulus["band_hz"][0]), min(band.upper_hz, stimulus["band_hz"][1]))
     for capture in prepare_plan_captures(request):
-        program = program_for_spec(capture.spec, excitation, None, 100.0, safety_profile={}, role_targets={})
+        program = program_for_spec(capture.spec, excitation, None, 100.0)
         rate, sounds, sweeps = program.sample_rate_hz, program.stimulus_segments(), _sweeps(program)
         between = program.segments[program.segments.index(sounds[0]):program.segments.index(sounds[-1])]
         assert {(s.role, s.f1_hz, s.f2_hz) for s in sounds} == {(capture.spec.branch_target_ids[0], *edges)}
@@ -591,18 +580,18 @@ def test_a_near_field_take_plays_its_declared_stimulus(stimulus):
             round(stimulus["gap_s"] * rate), round(stimulus["gap_s"] / 2 * rate)}
 
 
-BASS = preset("bass/axis").stimulus
+CEILING = {"ceiling_hz": 1100.0}
 
 
 @pytest.mark.parametrize("scope,ids,stimulus,accepted", [
-    ("drivers", ("woofer:rear",), NEAR_FIELD, True), ("candidate", (), BASS, True),
-    ("drivers", ("woofer:rear",), BASS, False), ("candidate", (), NEAR_FIELD, False),
-    ("drivers", (), NEAR_FIELD, False), ("candidate_branches", ("woofer", "tweeter"), BASS, False),
-    ("timing", (), BASS, False)])
-def test_a_declared_stimulus_plays_on_one_driver_or_the_candidate_graph(scope, ids, stimulus, accepted):
-    """A band stimulus plays on one driver alone and a ceiling stimulus on the
-    candidate graph; a take that plays two drivers has no composer for either,
-    so its spec refuses one rather than play without it (#5737)."""
+    ("drivers", ("woofer:rear",), NEAR_FIELD, True), ("candidate", (), CEILING, False),
+    ("drivers", ("woofer:rear",), CEILING, False), ("candidate", (), NEAR_FIELD, False),
+    ("drivers", (), NEAR_FIELD, False), ("candidate_branches", ("woofer", "tweeter"), CEILING, False),
+    ("timing", (), CEILING, False)])
+def test_a_declared_stimulus_plays_on_one_driver_alone(scope, ids, stimulus, accepted):
+    """A band stimulus plays on one driver alone; no stimulus plays on a summed
+    graph (ADR-0431), so a spec that plays two drivers refuses one rather than
+    play without it (#5737)."""
     def make():
         return MeasureSpec(kind="baseline", graph_scope=scope, branch_target_ids=ids, stimulus=stimulus,
                            candidate_id="" if scope == "drivers" else "trial")
@@ -637,7 +626,7 @@ def test_a_driver_poses_first_play_is_its_level_probe(cap_dbfs, scope_gains_db, 
     the driver's own."""
     excitation, spec = _near_field_rear(cap_dbfs, stimulus)
     spec = replace(spec, scope_gains_db=scope_gains_db)
-    probe = program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
+    probe = program_for_spec(spec, excitation, None)
     take = compose_target_program(excitation, spec, 100.0)
     ceiling, = {s.gain_db for s in _sweeps(take)}
     gains = [s.gain_db for s in _sweeps(probe)]
@@ -658,9 +647,8 @@ def test_a_close_driverless_take_probes_its_own_summed_sweep(scope_gains_db):
     excitation = _excitation({"woofer": 0.0, "tweeter": 0.0}, {"woofer": 4.0, "tweeter": 4.0})
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="trial", program_phase="lateral",
                        scope_gains_db=scope_gains_db, level_probe=True)
-    probe = program_for_spec(spec, excitation, GAIN_PLAN_DB, safety_profile={}, role_targets={})
-    sweep = program_for_spec(spec, excitation, GAIN_PLAN_DB, 0.0, safety_profile={},
-                             role_targets={}).segment("sweep_verify")
+    probe = program_for_spec(spec, excitation, GAIN_PLAN_DB)
+    sweep = program_for_spec(spec, excitation, GAIN_PLAN_DB, 0.0).segment("sweep_verify")
     bursts = probe.stimulus_segments()
     gains = [burst.gain_db for burst in bursts]
 
@@ -691,7 +679,7 @@ def test_a_branch_plays_alone_at_its_own_level_and_its_sum_at_the_takes(caps, re
     take = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id="trial", program_phase="verify",
                        branch_target_ids=targets, branch_levels_dbfs=levels, bass_reserve_db=reserve)
 
-    program = program_for_spec(take, excitation, None, -37.0, safety_profile={}, role_targets={})
+    program = program_for_spec(take, excitation, None, -37.0)
 
     gains = {segment.segment_id: (segment.gain_db, segment.effective_peak_dbfs)
              for segment in program.stimulus_segments()}
@@ -734,7 +722,7 @@ def test_a_branch_take_finds_its_level_from_a_drivers_probe_of_each_branch(take_
                        level_probe=True)
 
     probes = branch_probes(take)
-    programs = [program_for_spec(spec, excitation, None, safety_profile={}, role_targets={})
+    programs = [program_for_spec(spec, excitation, None)
                 for spec in (*probes, take)]
 
     assert [(p.graph_scope, p.branch_target_ids, p.candidate_id, p.cleared_layers) for p in probes] == [
@@ -840,8 +828,7 @@ def test_no_take_plays_above_its_ceiling_at_any_level_asked(fader_db):
             measure = played.graph_scope == "drivers" and played.program_phase != journey.PHASE_CHECK and not target
             # A blind take keeps its fixed cut; one whose graph is known plays at the ceiling itself.
             for spec, asked in product((played, replace(played, scope_gains_db={})), asked_levels):
-                program = program_for_spec(spec, excitation, GAIN_PLAN_DB, asked,
-                                           safety_profile=safety, role_targets=targets)
+                program = program_for_spec(spec, excitation, GAIN_PLAN_DB, asked)
                 blind = spec.scope_gains_db is None and spec.program_phase == journey.PHASE_CHECK
                 for segment in program.stimulus_segments():
                     cap_db = caps[target or segment.role] if target or measure else min(caps.values())

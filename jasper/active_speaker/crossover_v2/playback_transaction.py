@@ -128,8 +128,8 @@ class PlaybackTransaction(Protocol):
     bearing in :class:`~.spatial.PositionGeometry`'s frame, ``None`` where the
     pose commands none; ``prompt`` is what the mover was told, ``""`` where none
     was issued. ``level_db`` is the session's one declared fader level;
-    ``stimulus_dbfs`` is this rung's stimulus level, ``None`` for the program's
-    own — a ladder moves the stimulus and never the claim (See ADR-0228 #6).
+    ``stimulus_dbfs`` is the take's stimulus level, ``None`` for the program's
+    own — it moves the stimulus and never the claim (See ADR-0228 #6).
 
     Never raises for a measurement problem: an exception here would strand the
     session and lose the restore. An exception remains correct for a programming

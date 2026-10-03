@@ -86,8 +86,8 @@ class TuningProgram:
     description: str
     measure_label: str
     applied_name: str
-    #: What the measurement page's headline says while a walk of this program plays.
-    run_headline: str
+    #: What the measurement page's headline says while a walk of this program plays; none when no preset plays it.
+    run_headline: str | None
     #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
     trial: tuple[tuple[str, str], ...]
     #: The ``(preset, layout)`` the measure page offers first, where the program's first measurement is not
@@ -96,10 +96,9 @@ class TuningProgram:
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
-    #: Applied layers every take of this purpose plays cleared, the further layers
-    #: its base plays cleared, and whether its branches take also clears the
-    #: purpose's own layer (doctrine §1a; ADR-0370, ADR-0386, ADR-0429).
-    clears: tuple[str, ...] = ()
+    #: Applied layers the base of this purpose plays cleared, and whether its
+    #: branches take also clears the purpose's own layer (doctrine §1a; ADR-0370,
+    #: ADR-0386, ADR-0429).
     base_clears: tuple[str, ...] = ()
     branches_clear_own: bool = False
 
@@ -140,10 +139,8 @@ _PROGRAM_SECTIONS = (
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 3),),
         (CandidateField("bass_extension", dict),), (REGIME_SUMMED,), 2,
         "Bass extension", "Extend low bass within the driver's limits.", "Measure bass", "bass",
-        run_headline=("JTS is playing a bass sweep at each spot, in steps from loud to quiet, to see how far the bass "
-                      "can extend within the driver's limits. Follow the step below."),
+        run_headline=None,
         trial=_IN_ROOM_TRIALS, start=_IN_ROOM_TRIALS[0], graph_evidence=True,
-        clears=("room_correction",), base_clears=("bass_extension",),
     ),
     TuningProgram(
         PURPOSE_ROOM, (PrescriptionSection("room", "jts_room_prescription", 4, 4, envelope=(*_VERSIONED, "rationale")),),
@@ -202,7 +199,7 @@ def cleared_layers(purpose: str | None, *, base: bool, regime: str) -> tuple[str
     if row is None:
         return ()
     own = (row.candidate_fields[0].name,) if regime == REGIME_BRANCHES and row.branches_clear_own else ()
-    return row.clears + (row.base_clears if base else ()) + own
+    return (row.base_clears if base else ()) + own
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
@@ -243,7 +240,7 @@ def validated_capture_purpose(purpose: str | None, regime: str) -> str:
 
 def validated_pose_driver(pose: Pose, *, regime: str, purpose: str) -> None:
     """A pose of any purpose but bass may name the one driver it plays alone,
-    at any kind and distance (ADR-0366 §1); the bass tables read the whole
+    at any kind and distance (ADR-0366 §1); the bass view reads the whole
     speaker (ADR-0360, ADR-0260 §3). A pose within that driver's near-field
     distance is reference evidence, which no tuning reader admits (ADR-0360
     §2), until #5926 session C's far-field check proves the near-field model.
@@ -271,33 +268,28 @@ def validated_purposes(purposes: Sequence[str], regime: str, poses: Collection[P
     return purposes
 
 
-#: A summed take's stimulus row (bass_stimulus reads its ceiling), and a
-#: one-driver take's (ADR-0360 §4).
-_SUMMED_STIMULUS = frozenset({"ceiling_hz"})
+#: A one-driver take's stimulus row (ADR-0360 §4).
 _ONE_DRIVER_STIMULUS = frozenset({"band_hz", "sweep_s", "gap_s"})
 
 
-def validated_stimulus(stimulus: Any, *, one_driver: bool | None = None) -> Mapping[str, Any]:
+def validated_stimulus(stimulus: Any) -> Mapping[str, Any]:
     """A declared stimulus, one check for the plan loader, a plan's stop and a
-    spec. A ``ceiling_hz`` row plays summed on the candidate graph; a
-    ``band_hz``, ``sweep_s`` and ``gap_s`` row plays on one driver alone, and
-    the silence before each of its sweeps, ``gap_s``, keeps the analysis's
-    pre-guard and stays under the amplifier's standby bound. ``one_driver``
-    names what plays it; ``None`` checks the row alone. Raises ``ValueError``."""
-    if not isinstance(stimulus, Mapping) or set(stimulus) not in (_SUMMED_STIMULUS, _ONE_DRIVER_STIMULUS):
-        raise ValueError("a stimulus states only ceiling_hz, or band_hz, sweep_s and gap_s")
-    band = stimulus.get("band_hz", ())
-    if "band_hz" in stimulus and not (isinstance(band, (list, tuple)) and len(band) == 2):
+    spec: a ``band_hz``, ``sweep_s`` and ``gap_s`` row, which plays on one
+    driver alone, and the silence before each of its sweeps, ``gap_s``, keeps
+    the analysis's pre-guard and stays under the amplifier's standby bound.
+    Raises ``ValueError``."""
+    if not isinstance(stimulus, Mapping) or set(stimulus) != _ONE_DRIVER_STIMULUS:
+        raise ValueError("a stimulus states band_hz, sweep_s and gap_s")
+    band = stimulus["band_hz"]
+    if not (isinstance(band, (list, tuple)) and len(band) == 2):
         raise ValueError("a stimulus band_hz is two edges")
-    values = [*band, *(value for key, value in stimulus.items() if key != "band_hz")]
+    values = [*band, stimulus["sweep_s"], stimulus["gap_s"]]
     if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v < math.inf for v in values) or (
-            band and band[0] >= band[1]):
+            band[0] >= band[1]):
         raise ValueError("stimulus values are positive and finite, band_hz ascending")
-    gap = stimulus.get("gap_s")
-    if gap is not None and not DECONV_PRE_GUARD_S <= gap <= NEAR_FIELD_SILENCE_S:
+    gap = stimulus["gap_s"]
+    if not DECONV_PRE_GUARD_S <= gap <= NEAR_FIELD_SILENCE_S:
         raise ValueError(f"a stimulus gap_s is {DECONV_PRE_GUARD_S:g} to {NEAR_FIELD_SILENCE_S:g} s, got {gap!r}")
-    if one_driver is not None and one_driver != (gap is not None):
-        raise ValueError("a band stimulus plays on one driver alone, a ceiling stimulus on the candidate graph")
     return stimulus
 
 
@@ -465,7 +457,6 @@ class Preset:
     regime: str = REGIME_PER_DRIVER
     mover: str | None = None
     layout: str = ""
-    levels: str | None = None
     stimulus: Mapping[str, Any] | None = None
     branch_pair: str = BRANCH_PAIR_DRIVERS
     #: The named layouts this preset offers; ``layout`` is the one these poses are,
@@ -618,7 +609,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError(f"preset {index} must be an object")
-        unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "levels", "stimulus",
+        unknown = set(row) - {"preset", "layout", "layouts", "purposes", "regime", "stimulus",
                               "branch_pair", "description", "use_when", "timing_take"}
         if unknown:
             raise ValueError(f"preset {index} has unknown fields: {sorted(unknown)}")
@@ -641,9 +632,6 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
                 raise ValueError(f"preset {preset_id} names unknown stimulus {stimulus!r}")
         if preset_id in presets:
             raise ValueError(f"measurement plan repeats preset {preset_id}")
-        levels = row.get("levels")
-        if levels not in (None, "auto"):
-            raise ValueError(f"preset {preset_id} levels must be 'auto', got {levels!r}")
         if not isinstance(purposes, list):
             raise ValueError(f"preset {preset_id} purposes must be a list")
         presets[preset_id] = Preset(
@@ -652,7 +640,7 @@ def _load_presets(path: str | Path | None = None) -> tuple[Mapping[str, Preset],
             purposes=tuple(_text(value, f"preset {preset_id} purpose") for value in purposes),
             regime=row.get("regime", REGIME_PER_DRIVER),
             mover=layouts[layout].mover,
-            layout=layout, layouts=tuple(offered), levels=levels,
+            layout=layout, layouts=tuple(offered),
             stimulus=stimuli[stimulus] if stimulus is not None else None,
             branch_pair=row.get("branch_pair", BRANCH_PAIR_DRIVERS),
             description=_text(row.get("description"), f"preset {preset_id} description"),

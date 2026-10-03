@@ -137,7 +137,7 @@ class StimulusCaptureError(RuntimeError):
 
 
 class StimulusCaptureStopped(StimulusCaptureError):
-    """A capture stop ends the measurement session, including later ladder rungs."""
+    """A capture stop ends the measurement session."""
 
     def __init__(self, code: str, detail: str, playback: PlaybackObservation) -> None:
         super().__init__(detail)

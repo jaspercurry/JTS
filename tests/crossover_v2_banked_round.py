@@ -56,8 +56,6 @@ from jasper.active_speaker.capture_provenance import CaptureProvenance, CaptureP
 from jasper.active_speaker.crossover_v2.wired_stimulus import CapturedRecordStore, place_wired_answer
 from jasper.active_speaker.run_manifest import RunManifest
 from jasper.active_speaker.plan_run import PlanCapture, run_plan
-from jasper.active_speaker.round_packet import RoundPacket
-from jasper.active_speaker.run_levels import LevelRun, prepare_level_captures, run_levels
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.refusal_copy import TakeVerdict
 from jasper.web.correction_crossover_v2_evidence import bind_production_analyze
@@ -308,12 +306,12 @@ class TakeClaim:
     one record shape. Every field defaults empty because an unstated field is an
     honest fact about the capture, never a refusal to bank it.
 
-    ``level_db`` is the PROVEN fader level and ``stimulus_dbfs`` is the ladder
-    rung the stimulus played at — two quantities on purpose, since a ladder
+    ``level_db`` is the PROVEN fader level and ``stimulus_dbfs`` is the level
+    the stimulus played at — two quantities on purpose, since a take's level
     moves the stimulus and never the claim. ``level_db`` is optional here where
     an engine-banked record's is not: the flow's retention sites hold no volume
     claim, so ``None`` says exactly that rather than inviting an invented
-    number. ``stimulus_dbfs`` is ``None`` when no ladder was asked for.
+    number. ``stimulus_dbfs`` is ``None`` when the take asked for no level.
 
     ``wav_path`` is the record → capture pointer, bundle-relative, and is NOT
     derivable from ``take_id`` (``bundles.capture_artifact_relpath`` appends a
@@ -844,13 +842,10 @@ def _reopen(round_dir: Path) -> BankedRecordStore:
 
 
 def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, analysis_error=None, pose=None,
-                       analysis_fields=None, recording=None, request=None, planned=None,
-                       ladder=None, door=None, gate=None):
+                       analysis_fields=None, recording=None, request=None, planned=None):
     """One take through the engine and the capture host: ``planned``, one of
     ``request``'s captures, or else a candidate take at the stop ``pose`` names.
-    With a ``ladder``, ``request`` plays each rung as the web host does, one
-    child manifest per rung on ``door(manifest, seams, records)`` behind
-    ``gate``, and every rung's take comes back in order. ``recording`` is int32
+    ``recording`` is int32
     samples the host analyses for real at the stop's own lateral pose, as a walk
     plays it; without one the take records 32 zeros under a stand-in analysis,
     which reads no bass or distortion evidence from them."""
@@ -905,11 +900,7 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
         conductor._seams = replace(conductor._seams, analyze=bind_production_analyze(meta=refs))
         seams = TwinSeams(play=FakePlay(wav_path=answer.wav_path))
 
-        def assessor(*_args, program=None, pose_level=None, **_kwargs):
-            # A ladder's first rung probes for its level and lands 6 dB under its probe (ADR-0403 §4).
-            if pose_level is not None and ladder is not None:
-                return TakeVerdict(False, next="retake_quieter",
-                                   next_gain_db=max(segment.gain_db for segment in program.stimulus_segments()) - 6.0)
+        def assessor(*_args, **_kwargs):
             return TakeVerdict(True)
 
         def bound(run):
@@ -918,29 +909,13 @@ def bank_executor_take(root, monkeypatch, *, program=None, raw_record=None, anal
             return SimpleNamespace(bank=lambda record: records.bank({**record, **raw_record})), analyze
 
         async def bank():
-            runs = [manifest]
-            if ladder is None:
-                records, analyze = bound(manifest)
-                async with open_session(replace(seams, records=records), session_id=manifest.run_id,
-                                        allocate_take_id=manifest.allocate_take_id) as (session, _):
-                    await run_plan(request, session=session, manifest=manifest, analyze=analyze,
-                                   captures=(PlanCapture(stop, spec),), assessor=assessor,
-                                   aborts={Exception: "internal_error"})
-            else:
-                packet, runs = RoundPacket(manifest, ladder.to_dict()), []
-
-                def prepare(plan):
-                    runs.append(RunManifest(f"{manifest.run_id}-level-{len(packet.runs) + 1}", packet))
-                    records, analyze = bound(runs[-1])
-                    rung = door(runs[-1], seams, records)
-                    rung.caps_dbfs = conductor.caps_dbfs if plan.level.level_db is None else None
-                    return LevelRun(runs[-1], rung, analyze, assessor,
-                                    prepare_level_captures(plan, roles_bands=conductor.roles_bands))
-                await run_levels(ladder, hold=door(manifest, seams, None).hold, prepare=prepare, gate=gate,
-                                 aborts={Exception: "internal_error"}, save_ladder=packet.update_schedule)
-                await packet.finish()
-            assert {run.status for run in runs} == {"partial" if analysis_error is not None else "complete"}
-            takes = tuple(json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
-                          for run in runs for _, record_id in run.pending_records)
-            return takes if ladder is not None else takes[0]
+            records, analyze = bound(manifest)
+            async with open_session(replace(seams, records=records), session_id=manifest.run_id,
+                                    allocate_take_id=manifest.allocate_take_id) as (session, _):
+                await run_plan(request, session=session, manifest=manifest, analyze=analyze,
+                               captures=(PlanCapture(stop, spec),), assessor=assessor,
+                               aborts={Exception: "internal_error"})
+            assert manifest.status == ("partial" if analysis_error is not None else "complete")
+            _, record_id = manifest.pending_records[0]
+            return json.loads((store.bundle_dir / EVIDENCE_ROOT / "artifacts" / record_id).read_text())
         return asyncio.run(bank())
