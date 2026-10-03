@@ -199,7 +199,7 @@ class CrossoverV2Session:
             sweep_duration_limits_s=self._sweep_duration_limits_s,
             target_bands=target_bands or {},
         )
-        self._check_program = self._excitation.check_program()
+        self._check_program: ExcitationProgram | None = None
         # Per-SLOT attempt bookkeeping: the phase, or ``phase:index`` for a
         # lateral pose. ONE meter per slot.
         self._slot_attempts: dict[str, SlotAttempts] = {}

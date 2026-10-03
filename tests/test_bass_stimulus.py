@@ -18,7 +18,9 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import assess
 from jasper.active_speaker.crossover_v2.capture_provenance import analysis_blocks
 from jasper.active_speaker.crossover_v2.programs import SessionExcitation, program_for_spec
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.crossover_v2.capture_plan import CAPTURE_ENTRY_MARGIN_MS, build_inline_session_spec
+from jasper.active_speaker.crossover_v2.capture_plan import (
+    CAPTURE_ENTRY_MARGIN_MS, announce_run, build_inline_session_spec,
+)
 from jasper.active_speaker.excitation_safety_plan import resolve_driver_excitation_ceilings
 from jasper.active_speaker.measurement_analysis import BankedMeasurement
 from jasper.active_speaker.measurement_bass import BASS_BANDS_HZ, bass_evidence, bass_take
@@ -64,7 +66,7 @@ def bass_fixture():
 def _bass(fixture, **kwargs):
     _, safety, targets, excitation = fixture
     return build_bass_program(excitation, preset("bass").stimulus,
-                              safety_profile=safety, role_targets=targets, **kwargs)
+                              safety_profile=safety, role_targets=targets, courtesy_prelude=True, **kwargs)
 
 
 @pytest.mark.parametrize("floor", [20, 30])
@@ -90,7 +92,7 @@ def test_bass_without_a_lowest_main_target_is_refused(bass_fixture, roles):
                                                    for i, role in enumerate(roles)))
     with pytest.raises(BassStimulusRefused) as exc:
         build_bass_program(excitation, preset("bass").stimulus,
-                           safety_profile=bass_fixture[1], role_targets={})
+                           safety_profile=bass_fixture[1], role_targets={}, courtesy_prelude=False)
     assert exc.value.code == "bass_stimulus_targets_missing"
 
 
@@ -160,16 +162,17 @@ def test_bass_capture_program_agrees_across_surfaces(bass_fixture):
     request = request_for_preset(row, mover=row.mover, candidates=("trial",))
     capture, = prepare_plan_captures(request)
     context = SimpleNamespace(safety_profile=safety, role_targets=targets)
+    # The run's only take announces it (ADR-0417).
     played = compose_plan_program(SimpleNamespace(excitation=excitation, set_program=lambda *args: None),
-                                  capture.spec, None, context=context)
-    assert round(played.total_samples / played.sample_rate_hz * 1000) == 20199
+                                  announce_run([capture.spec])[0], None, context=context)
+    assert round(played.total_samples / played.sample_rate_hz * 1000) == 23799
     plan = build_inline_session_spec(
         [(capture.spec, capture.resolved(request).prompt, "trial")],
         roles_bands=excitation.roles, fc_hz=excitation.fc_hz, safety_profile=safety, role_targets=targets,
         acknowledgement_binding="a" * 32, retries_per_pose=0,
     ).capture_plan
     assert plan.capture_target == 1
-    assert plan.entries[0].duration_ms == 20199 + CAPTURE_ENTRY_MARGIN_MS
+    assert plan.entries[0].duration_ms == 23799 + CAPTURE_ENTRY_MARGIN_MS
 
 
 @pytest.mark.parametrize("floor", [20, 30])
@@ -232,9 +235,9 @@ def test_bass_admission_keeps_jts3_role_caps(bass_fixture, tmp_path, fault, refu
     preset = ActiveSpeakerPreset.from_mapping(applied["recomposition_snapshot"]["preset"])
     graph = compile_tuning_graph(MeasurementGraphProfile(preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM),
                                  candidate=candidate_from_applied_profile(topology, applied))
-    programs = [excitation.verify_program(), _bass((topology, safety, targets, excitation))]
+    programs = [excitation.verify_program(courtesy_prelude=True), _bass((topology, safety, targets, excitation))]
     if fault == "duration":
-        programs[-1] = replace(excitation, summed_sweep_band_hz=(20, 1100), sweep_duration_limits_s={}).verify_program(sweep_s=5)
+        programs[-1] = replace(excitation, summed_sweep_band_hz=(20, 1100), sweep_duration_limits_s={}).verify_program(courtesy_prelude=True, sweep_s=5)
     for index, stimulus in enumerate(programs):
         wav = tmp_path / f"program-{index}.wav"
         write_program_wav(wav, stimulus)
@@ -410,7 +413,7 @@ def test_single_sweep_analysis_is_byte_identical(bass_fixture, monkeypatch, prog
 ])
 def test_verify_repeat_content_is_disclosed_and_discontinuities_are_checked(bass_fixture, passes, fault, check, status):
     excitation = replace(bass_fixture[3], summed_sweep_band_hz=(20, 1100))
-    bass = repeat_summed_program(excitation.verify_program(), passes=passes, quiet_samples=96000, cooldown_s=2)
+    bass = repeat_summed_program(excitation.verify_program(courtesy_prelude=True), passes=passes, quiet_samples=96000, cooldown_s=2)
     rate, delay = bass.sample_rate_hz, 800
     pcm = render_program_pcm(bass)[:, 0].astype(np.float64) * 0.1
     raw = np.pad(pcm, (delay, rate))

@@ -1287,7 +1287,7 @@ def test_summed_takes_keep_the_session_backoff_with_a_check_gain_plan(gain_plan)
     conductor = _conductor(FakeSeams(), gain_plan_db=gain_plan)
     spec = MeasureSpec(kind="baseline", graph_scope="candidate", candidate_id="fp-a", program_phase="verify")
     program = compose_plan_program(conductor, spec, None, context=plan_context())
-    expected = conductor._excitation.verify_program().segment("sweep_verify").gain_db
+    expected = conductor._excitation.verify_program(courtesy_prelude=True).segment("sweep_verify").gain_db
     assert program.segment("sweep_verify").gain_db == pytest.approx(expected)
     windowed = compose_plan_program(conductor, spec, -60.0, context=plan_context())
     assert windowed.segment("sweep_verify").gain_db == pytest.approx(-60.0)

@@ -36,7 +36,7 @@ from .angle_capture import (
 from .capture_schedule import PlanCapture, prepare_plan_captures as prepare_plan_captures, run_probe_index
 from .crossover_v2.admission import SlotAttempts
 from .crossover_v2.capture_dispatch import assess, level_drift_verdict
-from .crossover_v2.capture_plan import pose_batch_screens, position_geometry, position_screen_keys
+from .crossover_v2.capture_plan import announce_run, pose_batch_screens, position_geometry, position_screen_keys
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK
@@ -301,6 +301,7 @@ async def run_plan(
     admit: Callable[[int, int, Any, SlotAttempts], None] | None = None,
     assessor: Callable[..., TakeVerdict] | None = None,
     measure: Callable[[TuningSession, MeasureSpec], Awaitable[Any]] | None = None,
+    announce: bool = True,
 ) -> RunManifest:
     from .candidate_parts import baseline_candidate_id  # lazy: baseline composition loads DSP analysis
 
@@ -342,6 +343,8 @@ async def run_plan(
     finds = door is not None and bool(door.caps_dbfs)
     if (level is None and not finds) or (door is None and (session is None or level != session.measurement_level_db)):
         raise LateralWalkRefused(WALK_LEVEL_POLICY_INVALID, "The plan needs a level or a probe to find one")
+    if announce:
+        specs = announce_run(specs)
     manifest.level = {"run": {"level_db": level, "level_source": request.level_source}}
     expanded = []
     planned: list[dict[str, Any]] = []

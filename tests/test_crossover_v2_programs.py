@@ -14,8 +14,8 @@ order a reviewer should read them:
    ``stimulus_id`` hashes the schedule and every segment's gain but not the
    session fader (#5012); a change that moves one recomputes it by composing
    this fixture and says why.
-2. **The courtesy-prelude rule** (#1677) — the prelude announces a SESSION,
-   not a capture, so it rides only the phases that open one.  Pinned against
+2. **The courtesy-prelude rule** (#1677, ADR-0417) — the prelude announces a
+   run, not a capture, so it rides only the take that opens one.  Pinned against
    the goldens in both directions: restoring the prelude reproduces the
    shipped id byte for byte, which is what makes "only the prelude moved" a
    measurement rather than a claim.
@@ -49,11 +49,9 @@ from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.plan_run import prepare_plan_captures
 from jasper.active_speaker.crossover_v2 import programs
 from jasper.active_speaker.crossover_v2.programs import (
-    COURTESY_PRELUDE_PHASES,
     SessionExcitation,
     back_off_gain,
     compose_target_program,
-    courtesy_prelude_for_phase,
     program_for_spec,
 )
 from jasper.active_speaker import graph_safety as gs
@@ -96,21 +94,21 @@ GAIN_PLAN_DB = {"woofer": -32.0, "tweeter": -38.0}
 #: composing this fixture and says why.
 #:
 #: ``measure`` is not what MEASURE ships (it no longer opens on the prelude):
-#: :func:`test_only_the_prelude_moved_under_the_shipped_measure_program` puts the
+#: :func:`test_only_the_prelude_moved_under_an_unannounced_take` puts the
 #: prelude back and asserts THIS literal returns.
 GOLDEN_DEEP_CAP = {
     "measure": "f46c38df6d18b72dff4e628019086475eae182675bd36b498120f4814cc244e6",
     "verify": "eafd6bd16424baed64f5b0a613e226509e4fd9a45e8de9978c91f4f7d73e7d25",
 }
 
-#: What the phases the courtesy prelude no longer announces ship TODAY, at the
-#: same fixture and the same gains as :data:`GOLDEN_DEEP_CAP`. Read off the
-#: composers after the trim; the pin that makes them meaningful is not this
-#: literal but the round trip below, which shows each one becomes its
-#: ``GOLDEN_DEEP_CAP`` twin the moment the prelude is put back.
+#: What the phases the courtesy prelude does not announce ship TODAY, at the
+#: same fixture and the same gains as :data:`GOLDEN_DEEP_CAP`. The pin that
+#: makes them meaningful is not this literal but the round trip below, which
+#: shows each one becomes its ``GOLDEN_DEEP_CAP`` twin the moment the prelude is
+#: put back.
 GOLDEN_UNANNOUNCED = {
     "measure": "f3f924538a85f2d191c085f36600ed4bacb3c427f3ab786e13ff4bfc65c68808",
-    "cloud": "7bbc3b2c8062ae850a2b169296b0af03ce28a2dfd3b18405f2c1ff25d5e9d570",
+    "lateral": "7bbc3b2c8062ae850a2b169296b0af03ce28a2dfd3b18405f2c1ff25d5e9d570",
 }
 
 
@@ -133,20 +131,20 @@ def _excitation(
 def test_the_verify_program_is_the_one_that_shipped():
     ex = _excitation(CAPS)
 
-    assert ex.verify_program().stimulus_id == GOLDEN_DEEP_CAP["verify"]
+    assert ex.verify_program(courtesy_prelude=True).stimulus_id == GOLDEN_DEEP_CAP["verify"]
 
 
-@pytest.mark.parametrize("phase,scope,stimulus,expected", [
-    ("check", "drivers", None, "94f11dfeb764451eaf0a844b362b35645f0bda8758d78f5307126d1969e37140"),
-    ("check", "drivers", -30.0, "94f11dfeb764451eaf0a844b362b35645f0bda8758d78f5307126d1969e37140"),
-    ("check", "drivers", -60.0, "5910bb4eaab0311a5bbf88b64a24682da01cc6270fe3994b0552748d3a22de8f"),
-    ("measure", "drivers", None, GOLDEN_UNANNOUNCED["measure"]),
-    ("verify", "timing", None, GOLDEN_DEEP_CAP["verify"]),
-    ("verify", "candidate_branches", None, "1a8a0f18d2748f345a50422466c567431c478a3f73c39580e577a494d6985816"),
+@pytest.mark.parametrize("phase,scope,stimulus,announced,expected", [
+    ("check", "drivers", None, True, "94f11dfeb764451eaf0a844b362b35645f0bda8758d78f5307126d1969e37140"),
+    ("check", "drivers", -30.0, True, "94f11dfeb764451eaf0a844b362b35645f0bda8758d78f5307126d1969e37140"),
+    ("check", "drivers", -60.0, True, "5910bb4eaab0311a5bbf88b64a24682da01cc6270fe3994b0552748d3a22de8f"),
+    ("measure", "drivers", None, False, GOLDEN_UNANNOUNCED["measure"]),
+    ("verify", "timing", None, True, GOLDEN_DEEP_CAP["verify"]),
+    ("verify", "candidate_branches", None, True, "1a8a0f18d2748f345a50422466c567431c478a3f73c39580e577a494d6985816"),
 ])
-def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, expected):
+def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, scope, stimulus, announced, expected):
     spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, scope_gains_db=None,
-                       candidate_id="trial" if scope != "drivers" else "",
+                       candidate_id="trial" if scope != "drivers" else "", courtesy_prelude=announced,
                        branch_target_ids=("woofer", "tweeter") if scope == "candidate_branches" else ())
     program = programs.program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, stimulus,
                                         safety_profile={}, role_targets={})
@@ -157,8 +155,8 @@ def test_without_a_level_reference_programs_keep_their_shipped_identity(phase, s
 @pytest.mark.parametrize("extra_backoff_db", [-3.0, 0.0, 6.0])
 def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db):
     ex = _excitation(caps)
-    check = ex.check_program(extra_backoff_db=extra_backoff_db)
-    verify = ex.verify_program()
+    check = ex.check_program(courtesy_prelude=True, extra_backoff_db=extra_backoff_db)
+    verify = ex.verify_program(courtesy_prelude=True)
     summed = {
         segment.segment_id.rsplit("_", 1)[-1]: segment.gain_db
         for segment in verify.stimulus_segments()
@@ -172,7 +170,7 @@ def test_check_pilots_do_not_exceed_the_summed_pilot_pair(caps, extra_backoff_db
     )
     assert all(
         segment.gain_db == pytest.approx(
-            ex.check_program().segment(segment.segment_id).gain_db - max(0.0, extra_backoff_db))
+            ex.check_program(courtesy_prelude=True).segment(segment.segment_id).gain_db - max(0.0, extra_backoff_db))
         for segment in check.stimulus_segments() if segment.kind == "pilot"
     )
 
@@ -234,32 +232,26 @@ def test_a_summed_retake_plays_the_peak_it_asks_for(asked_db, played_db):
     assert summed_peak(first + asked_db) == pytest.approx(first + played_db)
 
 
-def test_only_the_prelude_moved_under_the_shipped_measure_program(monkeypatch):
-    """MEASURE ships a new id, and putting the prelude back gives the old one.
+@pytest.mark.parametrize("phase,scope,announced", [
+    (journey.PHASE_MEASURE, "drivers", "measure"),
+    (journey.PHASE_LATERAL, "candidate", "verify"),
+], ids=["measure", "summed_pose"])
+def test_only_the_prelude_moved_under_an_unannounced_take(phase, scope, announced):
+    """An unannounced take ships its own id, and announcing it gives the
+    announced one: MEASURE's old id, and a summed pose VERIFY's.
 
-    The trim's whole scope claim, measured. Restoring MEASURE to the announced
-    set must reproduce ``GOLDEN_DEEP_CAP["measure"]`` byte for byte — a
-    SHA-256 over the entire schedule including every segment's gain — so no
-    frequency, duration, or level moved with the prelude.
+    The rule's whole scope claim, measured. Announcing the take must reproduce
+    the ``GOLDEN_DEEP_CAP`` id byte for byte — a SHA-256 over the entire
+    schedule including every segment's gain — so no frequency, duration, or
+    level moved with the prelude.
     """
-    ex = _excitation(CAPS)
+    def composed(courtesy_prelude: bool) -> str:
+        spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
+                           candidate_id="" if scope == "drivers" else "trial", courtesy_prelude=courtesy_prelude)
+        return program_for_spec(spec, _excitation(CAPS), GAIN_PLAN_DB, safety_profile={},
+                                role_targets={}).stimulus_id
 
-    assert ex.measure_program(GAIN_PLAN_DB).stimulus_id == GOLDEN_UNANNOUNCED["measure"]
-
-    monkeypatch.setattr(
-        programs, "COURTESY_PRELUDE_PHASES",
-        frozenset(COURTESY_PRELUDE_PHASES | {journey.PHASE_MEASURE}),
-    )
-
-    assert ex.measure_program(GAIN_PLAN_DB).stimulus_id == GOLDEN_DEEP_CAP["measure"]
-
-
-def test_a_position_plays_the_verify_sweep_with_the_prelude_taken_off():
-    """The unannounced summed sweep is VERIFY's at the same clamp: it differs
-    from VERIFY's program in the prelude and in nothing else — not in the
-    min-cap clamp that is their only level guard.
-    """
-    assert _excitation(CAPS).verify_program(courtesy_prelude=False).stimulus_id == GOLDEN_UNANNOUNCED["cloud"]
+    assert (composed(False), composed(True)) == (GOLDEN_UNANNOUNCED[phase], GOLDEN_DEEP_CAP[announced])
 
 
 def test_the_summed_sweep_is_clamped_to_the_most_restrictive_cap():
@@ -272,7 +264,7 @@ def test_the_summed_sweep_is_clamped_to_the_most_restrictive_cap():
     ``−65 − (−20) − 0.01`` = −45.01 dBFS, and every level in the program —
     sweep and both pilots — must sit at or under it.
     """
-    program = _excitation(CAPS).verify_program()
+    program = _excitation(CAPS).verify_program(courtesy_prelude=True)
     gains = [seg.gain_db for seg in program.segments if seg.gain_db]
 
     assert max(gains) == pytest.approx(-45.01)
@@ -328,8 +320,8 @@ def test_the_backoff_is_swallowed_when_the_cap_already_binds():
     ex = _excitation(CAPS)
 
     assert (
-        ex.verify_program(extra_backoff_db=3.0).stimulus_id
-        == ex.verify_program().stimulus_id
+        ex.verify_program(courtesy_prelude=True, extra_backoff_db=3.0).stimulus_id
+        == ex.verify_program(courtesy_prelude=True).stimulus_id
     )
 
 
@@ -338,12 +330,12 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
     ex = _excitation({"woofer": 0.0, "tweeter": 0.0})
 
     assert (
-        ex.verify_program(extra_backoff_db=3.0).stimulus_id
-        != ex.verify_program().stimulus_id
+        ex.verify_program(courtesy_prelude=True, extra_backoff_db=3.0).stimulus_id
+        != ex.verify_program(courtesy_prelude=True).stimulus_id
     )
     assert (
-        ex.measure_program(GAIN_PLAN_DB, extra_backoff_db=3.0).stimulus_id
-        != ex.measure_program(GAIN_PLAN_DB).stimulus_id
+        ex.measure_program(GAIN_PLAN_DB, courtesy_prelude=False, extra_backoff_db=3.0).stimulus_id
+        != ex.measure_program(GAIN_PLAN_DB, courtesy_prelude=False).stimulus_id
     )
 
 
@@ -361,29 +353,37 @@ def _has_prelude(program) -> bool:
     return any(seg.kind == KIND_COURTESY_TONE for seg in program.segments)
 
 
-@pytest.mark.parametrize("phase,scope,take,announced", [
-    ("check", "drivers", {}, True),
-    ("verify", "timing", {}, True),
-    ("timing", "timing", {}, True),
-    ("measure", "drivers", {}, False),
-    ("lateral", "drivers", {"branch_target_ids": ("woofer",)}, False),
-    ("lateral", "candidate", {"stimulus": preset("bass/axis").stimulus}, False),
-], ids=["check", "verify", "timing", "measure", "driver_pose", "bass_pose"])
-def test_which_takes_the_production_composer_announces(phase, scope, take, announced):
-    """The production composer gives CHECK, VERIFY and the timing take the
-    courtesy prelude (#1677), and MEASURE, a driver's pose and a bass pose none."""
+@pytest.mark.parametrize("announced", [True, False])
+@pytest.mark.parametrize("phase,scope,take", [
+    ("check", "drivers", {}),
+    ("timing", "timing", {}),
+    ("measure", "drivers", {}),
+    ("lateral", "drivers", {"branch_target_ids": ("woofer",)}),
+    ("lateral", "candidate", {}),
+    ("lateral", "candidate_branches", {"branch_target_ids": ("woofer", "tweeter")}),
+    ("lateral", "candidate", {"stimulus": preset("bass/axis").stimulus}),
+], ids=["check", "timing", "measure", "driver_pose", "summed_pose", "branch_pose", "bass_pose"])
+def test_a_take_plays_the_prelude_only_when_it_announces_its_run(phase, scope, take, announced):
+    """Every composer plays the courtesy prelude on the take that announces its
+    run and on no other, and the level probe that take plays first never does
+    (#1677, ADR-0417)."""
     _, safety, targets = _profile_and_targets(woofer_floor=30, woofer_upper=4000, max_sweep_duration_s=4)
     roles = tuple(RoleBand(role, channel, resolve_driver_excitation_ceilings(
         safety, fingerprint, program_admission=True)[0])
         for channel, (role, fingerprint) in enumerate(targets.items()))
     excitation = replace(_excitation(CAPS, {"woofer": 4.0, "tweeter": 4.0}), roles=roles,
                          target_bands={rb.role: rb.band for rb in roles})
-    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope,
+    spec = MeasureSpec(kind="baseline", program_phase=phase, graph_scope=scope, courtesy_prelude=announced,
                        candidate_id="" if scope == "drivers" else "trial", **take)
+    probed = replace(spec, level_probe=True)
 
-    program = program_for_spec(spec, excitation, GAIN_PLAN_DB, -30.0, safety_profile=safety, role_targets=targets)
+    def compose(spec, stimulus_dbfs=None):
+        return program_for_spec(spec, excitation, GAIN_PLAN_DB, stimulus_dbfs, safety_profile=safety,
+                                role_targets=targets)
 
-    assert (_has_prelude(program), courtesy_prelude_for_phase(phase)) == (announced, announced)
+    probe = compose(next(iter(branch_probes(probed)), probed))
+
+    assert (_has_prelude(compose(spec, -30.0)), is_level_probe(probe), _has_prelude(probe)) == (announced, True, False)
 
 
 # 4. the bundle is frozen, so a subset cannot drift
@@ -411,7 +411,7 @@ def test_summed_sweep_fits_the_tightest_role_duration(limit, band, requested_s):
         sweep_duration_limits_s={"woofer": 4.0, "tweeter": limit},
     )
     excitation = replace(excitation, summed_sweep_band_hz=band)
-    verify = excitation.verify_program(sweep_s=requested_s)
+    verify = excitation.verify_program(courtesy_prelude=True, sweep_s=requested_s)
     for program in (verify, excitation.verify_program(courtesy_prelude=False)):
         sweeps = [segment for segment in program.stimulus_segments() if segment.kind == "summed_sweep"]
         assert len(sweeps) == 1
@@ -457,8 +457,7 @@ def test_prepared_summed_captures_name_no_band_of_their_purpose(purpose, poses):
 def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
     """The PRODUCTION composer, not the builder. ``compose_plan_program`` is what
     ``bind_production_play`` plays, and the same session's admission has to
-    accept what it composed. The capture window is sized independently and must
-    never end before the program it records.
+    accept what it composed. Its plan entry's budget covers the program.
 
     The registry row decides WHICH two targets sound: ``front_rear`` excites the
     two woofers and leaves the tweeter alone, and it reaches the composer and the
@@ -510,7 +509,7 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     excitation = replace(_excitation(CAPS), summed_sweep_band_hz=(20.0, 20000.0))
-    program = excitation.measure_program(GAIN_PLAN_DB)
+    program = excitation.measure_program(GAIN_PLAN_DB, courtesy_prelude=False)
     assert {
         s.role: (s.f1_hz, s.f2_hz) for s in program.stimulus_segments() if s.kind == "sweep"
     } == {rb.role: (rb.band.lower_hz, rb.band.upper_hz) for rb in excitation.roles}

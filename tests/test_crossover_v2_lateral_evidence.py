@@ -80,7 +80,9 @@ def test_inline_summed_lateral_entries_budget_the_requested_sweep(purpose):
     assert entry.kind_label == PHASE_LATERAL
     # No purpose names a summed sweep's band (ADR-0400).
     assert captures[0].spec.sweep_band_hz == ()
-    program = build_verify_program(FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()))
+    # The plan's only take opens its run, so its entry budgets the prelude (ADR-0417).
+    program = build_verify_program(FC_HZ, measurement_band_hz=programs.measurement_band_hz(_roles()),
+                                   courtesy_prelude=True)
     assert entry.duration_ms == capture_plan._program_duration_ms(program) + capture_plan.CAPTURE_ENTRY_MARGIN_MS
     assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
 

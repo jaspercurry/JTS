@@ -31,7 +31,7 @@ from jasper.active_speaker.bundles import (
 )
 from jasper.audio_measurement.bundles import read_artifact_manifest
 from jasper.active_speaker.profile import ramp_bound_db_spl
-from jasper.audio_measurement.program import ExcitationProgram, is_level_probe
+from jasper.audio_measurement.program import ExcitationProgram, is_level_probe, take_stimulus_id
 from jasper.audio_measurement.wired_capture import (
     WIRED_POST_ROLL_S, WIRED_PRE_PLAY_ALLOWANCE_S, WiredCaptureAnswer,
     WiredCaptureError, WiredMicDevice, WiredSplCeilingExceeded, WiredSplMonitor,
@@ -290,7 +290,7 @@ class CapturedRecordStore:
                 if value := getattr(answer, attr, None):
                     payload[key] = value
             payload.update(wav_path=answer.wav_path, wav_sha256=answer.wav_sha256, wav_bytes=len(answer.wav))
-        payload["stimulus_id"] = (payload.get("program") or {}).get("stimulus_id")
+        payload["stimulus_id"] = take_stimulus_id(payload["program"]) if payload.get("program") else None
         record_id = await self.inner.bank(payload)
         if self.after_bank:
             await asyncio.to_thread(self.after_bank, payload, record_id)

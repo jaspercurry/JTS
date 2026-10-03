@@ -651,6 +651,28 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
     assert {poses[t["take_id"]] for t in groups[0]["takes"]} == ({0, 20} if split else {0, 10, 20})
 
 
+def test_a_run_given_its_level_announces_its_first_take_only():
+    """A run that does not find its fader still announces itself, once (ADR-0417)."""
+    result, fakes = asyncio.run(_run_gated(replace(_walk([0, 20]), repeats=2)))
+    assert result.status == "complete"
+    assert [call["spec"].courtesy_prelude for call in fakes.play.calls] == [True, False, False, False]
+
+
+def test_the_take_that_announces_a_run_stays_in_its_set():
+    """Only a run's first take plays the courtesy prelude. It measures the same
+    stimulus as the takes after it, so it shares their sets (ADR-0417)."""
+    manifest = RunManifest("run", _Store(FakeSeams().records))
+    roles = [RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))]
+    async def append():
+        for index, degrees in enumerate([0, 10, 20], 1):
+            manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
+            program = build_measure_program({"woofer": -18.0, "tweeter": -24.0}, roles, courtesy_prelude=index == 1)
+            await manifest.append({"take_id": manifest.allocate_take_id(), "level_db": -20.0, "program": program.to_dict()},
+                                  f"record-{index}", TakeVerdict(True), complete=True, level_observation={})
+    asyncio.run(append())
+    assert [len(group["takes"]) for group in manifest.to_dict()["sets"]] == [3, 3]
+
+
 def test_manifest_names_emitted_role_levels():
     manifest = RunManifest("run", _Store(FakeSeams().records))
     manifest.begin({"index": 1, "repeat": 1, "pose": {"azimuth_deg": 0}}, attempt=1, pose_index=0)
@@ -2193,7 +2215,8 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     """A ladder holds the room once and finishes each pose. Its first rung
     probes and finds its level, and each rung plays its step under it at every
     pose (ADR-0403 §4). A rung's retake plays again in place, up to its pose's
-    retries, with no new placement (#6113)."""
+    retries, with no new placement (#6113). Only the first rung's first take,
+    with its probe, announces the run (ADR-0417)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
     request = _walk([0, 20], candidates=("base",))
@@ -2227,6 +2250,8 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     assert [(call["position_deg"], call["level_db"]) for call in fakes.play.calls] == [
         (0, 0.0), *(rung for rung, status in zip(rungs, statuses) for _ in range(1 + replays * (status == "partial")))]
     assert fakes.play.calls[0]["spec"].level_probe
+    assert {(call["position_deg"], call["level_db"]) for call in fakes.play.calls
+            if call["spec"].courtesy_prelude} == {(0, 0.0), (0, _LADDER_FOUND_DB)}
     assert len(gate.grants) == (1 if partial == "stop" else 2)
     assert sum(result.mic_moves for result in results) == len(gate.grants)
     assert all(result.finalized for result in results)

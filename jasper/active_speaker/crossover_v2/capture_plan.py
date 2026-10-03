@@ -53,7 +53,6 @@ from .journey import (
 from .programs import (
     SessionExcitation,
     compose_target_program,
-    courtesy_prelude_for_phase,
     measurement_band_hz,
 )
 from .measure_spec import MeasureSpec, branch_channels_for, solo_target
@@ -68,6 +67,12 @@ from .refusal_copy import CrossoverV2Refused
 logger = logging.getLogger(__name__)
 
 
+def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
+    """A run announces itself once: its first take carries the courtesy prelude,
+    after the level probe that may open it (#1677, ADR-0417)."""
+    return tuple(replace(spec, courtesy_prelude=index == 0) for index, spec in enumerate(specs))
+
+
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
     roles_bands: Sequence[RoleBand], fc_hz: float | None,
@@ -80,8 +85,8 @@ def build_inline_session_spec(
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
                                  [candidate_id for _, _, candidate_id in captures], measurements_per_pose)
     entries = []
-    for index, (spec, prompt, _) in enumerate(captures, 1):
-        phase = spec.program_phase
+    for index, (spec, prompt) in enumerate(zip(announce_run([spec for spec, _, _ in captures]), prompts), 1):
+        phase, prelude = spec.program_phase, spec.courtesy_prelude
         if solo_target(spec):
             assert excitation is not None
             program = compose_target_program(excitation, spec)  # never played; duration only
@@ -90,17 +95,17 @@ def build_inline_session_spec(
 
             program = build_bass_program(
                 SessionExcitation(tuple(roles_bands), {}, 0.0, fc_hz, {}), spec.stimulus,  # never played; duration only
-                safety_profile=safety_profile or {}, role_targets=role_targets or {},
-                courtesy_prelude=courtesy_prelude_for_phase(spec.program_phase),
+                safety_profile=safety_profile or {}, role_targets=role_targets or {}, courtesy_prelude=prelude,
             )
         elif phase == PHASE_CHECK:
-            program = build_check_program(roles_bands, courtesy_prelude=True)
+            program = build_check_program(roles_bands, courtesy_prelude=prelude)
         elif phase == PHASE_MEASURE:
-            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands)
+            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands,
+                                            courtesy_prelude=prelude)
         else:
             program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
                                            sweep_band_hz=spec.sweep_band_hz or None,
-                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S)
+                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S, courtesy_prelude=prelude)
         if spec.graph_scope == "candidate_branches":
             program = build_branch_program(program, branch_channels_for(spec))
         entries.append(CapturePlanEntry(

@@ -144,6 +144,7 @@ COURTESY_TONE_BEEP_DURATION_S = 0.12
 COURTESY_TONE_BEEP_GAP_S = 0.12
 COURTESY_TONE_TRAILING_SILENCE_S = 3.0  # "~3 s to go quiet" (owner spec).
 COURTESY_TONE_MARGIN_DB = 6.0
+COURTESY_GAP_SEGMENT_ID = "courtesy_gap"
 # Longest gap between the last beep and the first audible content; pinned by tests.
 COURTESY_MAX_BEEP_TO_STIMULUS_GAP_S = (
     COURTESY_TONE_TRAILING_SILENCE_S + PILOT_AMBIENT_WINDOW_S
@@ -387,13 +388,42 @@ def _canonical_segment(seg: ProgramSegment) -> dict[str, Any]:
     return {key: value for key, value in seg.to_dict().items() if key != "effective_peak_dbfs"}
 
 
+def _unannounced(program: Mapping[str, Any]) -> Mapping[str, Any]:
+    """A program document as it plays without the courtesy prelude that
+    announces its run: the segments after the prelude start where it did."""
+    segments = program.get("segments") or ()
+    prelude = [s for s in segments if s["kind"] == KIND_COURTESY_TONE or s["segment_id"] == COURTESY_GAP_SEGMENT_ID]
+    if not prelude:
+        return program
+    at = min(s["start_sample"] for s in prelude)
+    length = max(s["start_sample"] + s["n_samples"] for s in prelude) - at
+    return {**program, "total_samples": program["total_samples"] - length,
+            "segments": [{**s, "start_sample": s["start_sample"] - length} if s["start_sample"] > at else s
+                         for s in segments if s not in prelude]}
+
+
+def take_stimulus_id(program: Mapping[str, Any]) -> str | None:
+    """The ``stimulus_id`` of the stimulus a take measures: its program's, less
+    the courtesy prelude, so the take that announces a run keys and compares
+    with the run's other takes (ADR-0417). A document of an older schema names
+    none."""
+    if "stimulus_id" not in program:
+        return None
+    stimulus = _unannounced(program)
+    if stimulus is program:
+        return str(program["stimulus_id"])
+    return _stimulus_id(stimulus["phase"], stimulus["sample_rate_hz"], stimulus["channels"],
+                        [ProgramSegment.from_dict(s) for s in stimulus["segments"]], stimulus["total_samples"])
+
+
 def stimulus_shape_id(program: Mapping[str, Any]) -> str:
-    """A program document's ``stimulus_id`` with no level in it: each segment
-    without its gain. Programs that differ only in how loud they play share it."""
+    """:func:`take_stimulus_id` with no level in it: each segment without its
+    gain. Takes that differ only in how loud they play share it."""
+    stimulus = _unannounced(program)
     return json_fingerprint({
-        **{key: program[key] for key in ("phase", "sample_rate_hz", "channels", "total_samples")},
+        **{key: stimulus[key] for key in ("phase", "sample_rate_hz", "channels", "total_samples")},
         "segments": [{key: value for key, value in segment.items() if key not in ("gain_db", "effective_peak_dbfs")}
-                     for segment in program["segments"]],
+                     for segment in stimulus["segments"]],
     })
 
 
@@ -693,7 +723,7 @@ def _insert_courtesy_prelude(
             effective_peak_dbfs=gain_db + downstream_gain_db,
         ))
     gap_n = _seconds_to_samples(COURTESY_TONE_TRAILING_SILENCE_S, PROGRAM_SAMPLE_RATE_HZ)
-    gap_seg = _silence("courtesy_gap", at + tone_n, gap_n)
+    gap_seg = _silence(COURTESY_GAP_SEGMENT_ID, at + tone_n, gap_n)
     prelude_n = tone_n + gap_n
     head = [seg for seg in segments if seg.start_sample < at]
     tail = [

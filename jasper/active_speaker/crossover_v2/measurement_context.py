@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from jasper.audio_measurement.program import stimulus_shape_id
+from jasper.audio_measurement.program import stimulus_shape_id, take_stimulus_id
 
 from ..measurement_programs import POSE_KIND_SEAT
 from .record_index import played_graph_fingerprint
@@ -34,8 +34,8 @@ def capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
         "capture_device": {k: device.get(k) for k in ("card", "usb_id", "model_key", "pcm", "channel_selected")} if device else None,
         "level_db": provenance.get("session_volume_db") if provenance.get("session_volume_db") is not None else record.get("level_db"),
         "stimulus_dbfs": record.get("stimulus_dbfs"),
-        "stimulus_id": record.get("stimulus_id", (record.get("program") or {}).get("stimulus_id")),
-        "stimulus_wav_sha256": stimulus.get("wav_sha256"),
+        "stimulus_id": record["stimulus_id"] if "stimulus_id" in record else (
+            take_stimulus_id(record["program"]) if record.get("program") else None),
         "stimulus_peak_dbfs": stimulus.get("peak_dbfs"),
     }
 
@@ -44,8 +44,7 @@ GRAPH_FIELDS = (
     "candidate_id", "submitted_graph_fingerprint", "graph_fingerprint", "graph_scope",
 )
 CAPTURE_FIELDS = (
-    "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_wav_sha256",
-    "stimulus_peak_dbfs", "stimulus_id",
+    "side", "capture_device", "level_db", "stimulus_dbfs", "stimulus_peak_dbfs", "stimulus_id",
 )
 #: What two takes must share when each is deconvolved against the stimulus it played:
 #: the stimulus's shape at one fader, never the level it played at (ADR-0408).

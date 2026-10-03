@@ -12,27 +12,21 @@ import yaml
 from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
-    PHASE_TIMING,
     PHASE_MEASURE,
-    PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.capture_plan import (
     CAPTURE_ENTRY_MARGIN_MS,
     _program_duration_ms,
 )
 from jasper.audio_measurement.program import (
-    KIND_COURTESY_TONE, BASE_STIMULUS_PEAK_DBFS,
+    BASE_STIMULUS_PEAK_DBFS,
     build_check_program, build_measure_program,
 )
 from tests.crossover_v2_fixtures import (
-    FakeSeams,
     SESSION_VOLUME_DB,
-    _conductor,
     _inline_spec,
     _dummy_program,
-    _phase_program,
     _roles,
-    _run_phase,
 )
 
 
@@ -63,32 +57,6 @@ def test_capture_plan_duration_matches_courtesy_prelude_program_exactly():
     assert entries[PHASE_CHECK].duration_ms - (
         _program_duration_ms(build_check_program(roles)) + CAPTURE_ENTRY_MARGIN_MS
     ) == pytest.approx(_courtesy_prelude_ms(), abs=1)
-
-
-
-def test_conductor_composed_programs_carry_the_prelude_where_the_rule_says():
-    """The REAL playback composition (not the nominal planning path above) obeys
-    the same ``courtesy_prelude_for_phase`` rule."""
-    fakes = FakeSeams()
-    c = _conductor(fakes)
-    check_tone_ids = {
-        s.segment_id for s in _phase_program(c, PHASE_CHECK).segments if s.kind == KIND_COURTESY_TONE
-    }
-    assert check_tone_ids == {"courtesy_tone_ch0", "courtesy_tone_ch1"}
-
-    _run_phase(c, 1, 1)
-    measure_prog = _phase_program(c, PHASE_MEASURE)
-    assert not [s for s in measure_prog.segments if s.kind == KIND_COURTESY_TONE]
-
-    verify_tone_ids = {
-        s.segment_id for s in _phase_program(c, PHASE_VERIFY).segments if s.kind == KIND_COURTESY_TONE
-    }
-    assert verify_tone_ids == {"courtesy_tone_ch0"}  # VERIFY is mono
-    assert verify_tone_ids == {
-        s.segment_id
-        for s in _phase_program(c, PHASE_TIMING).segments
-        if s.kind == KIND_COURTESY_TONE
-    }
 
 
 def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strictly(

@@ -762,7 +762,8 @@ async def test_level_reference_is_read_only_and_resolved_before_graph_install(tm
     read.return_value = read_draft.return_value = None
     composed = await compose(spec=MeasureSpec(kind="baseline", graph_scope="drivers", program_phase="check"),
                              level_db=-16.7)
-    for before, after in zip(excitation.check_program().stimulus_segments(), composed.program.stimulus_segments(), strict=True):
+    for before, after in zip(excitation.check_program(courtesy_prelude=False).stimulus_segments(),
+                             composed.program.stimulus_segments(), strict=True):
         assert after.gain_db == pytest.approx(before.gain_db - max(0, gains[before.role]))
     assert graph.level_reference_yaml == reference
     events = event_records(caplog, "active_speaker.level_reference")

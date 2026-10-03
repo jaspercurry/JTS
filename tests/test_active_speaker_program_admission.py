@@ -217,7 +217,7 @@ def test_way1_summed_full_band_is_admitted(tmp_path, scope, probe):
     program = (compose_summed_probe(excitation, MeasureSpec(kind="baseline", graph_scope="candidate",
                                                             candidate_id="way1", level_probe=True),
                                     safety_profile=safety, role_targets=targets)
-               if probe else excitation.verify_program())
+               if probe else excitation.verify_program(courtesy_prelude=True))
     wav = tmp_path / "way1.wav"
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
@@ -683,7 +683,7 @@ def test_summed_admission_proves_the_whole_graph_and_actual_audio(tmp_path, chan
         roles=tuple(_roles()), caps_dbfs={"woofer": 0.0, "tweeter": -65.0},
         session_volume_db=-20.0, fc_hz=2000, summed_sweep_band_hz=(20, 20000),
         sweep_duration_limits_s={} if change == "too_long" else {"woofer": 4, "tweeter": 4},
-    ).verify_program()
+    ).verify_program(courtesy_prelude=True)
     if change == "missing_hp":
         graph_yaml = graph_yaml.replace(
             "type: LinkwitzRileyHighpass\n      freq: 1600.0000",
@@ -814,7 +814,7 @@ def test_summed_scopes_preserve_declared_protection_before_admission(tmp_path, s
         session_volume_db=-20, fc_hz=2500,
         sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
         summed_sweep_band_hz=(20, 20000),
-    ).verify_program()
+    ).verify_program(courtesy_prelude=True)
     if scope == "candidate_branches":
         from jasper.audio_measurement.branch_program import build_branch_program
         program = build_branch_program(program, measurement.role_channels)
@@ -921,7 +921,7 @@ def test_summed_admission_proves_the_candidate_rear_stage(tmp_path, evidence_cha
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
         session_volume_db=-20, fc_hz=1600,
         sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).verify_program()
+    ).verify_program(courtesy_prelude=True)
     if scope == "candidate_branches":
         program = _rear_take_program(channels)
     wav = tmp_path / "rear.wav"
@@ -951,7 +951,7 @@ def test_a_take_is_admitted_only_against_the_layers_it_plays(tmp_path, evidence_
     program = SessionExcitation(
         roles=tuple(_roles()), caps_dbfs={"woofer": 0, "tweeter": -65},
         session_volume_db=-20, fc_hz=1600, sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
-    ).verify_program()
+    ).verify_program(courtesy_prelude=True)
     wav = tmp_path / "bass.wav"
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
@@ -1088,7 +1088,7 @@ def test_cardioid_composer_respects_the_rear_target_cap(tmp_path, monkeypatch):
         roles=context.roles_bands, caps_dbfs=context.driver_caps_dbfs,
         session_volume_db=probe_fader_db(context.driver_caps_dbfs), fc_hz=context.fc_hz,
         sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-    ).verify_program()
+    ).verify_program(courtesy_prelude=True)
     assert context.driver_caps_dbfs == {"woofer": -30, "tweeter": -30, "woofer:rear": -36}
     assert max(segment.effective_peak_dbfs for segment in program.stimulus_segments()) <= -36
     profile = MeasurementGraphProfile(
@@ -1336,7 +1336,7 @@ def test_summed_room_band_uses_resolved_floor_without_adding_highpass(tmp_path, 
         session_volume_db=-20, fc_hz=1600,
         sweep_duration_limits_s={"woofer": 4, "tweeter": 4},
         summed_sweep_band_hz=(low_hz, 20_000),
-    ).verify_program()
+    ).verify_program(courtesy_prelude=True)
     wav = tmp_path / "room.wav"
     write_program_wav(wav, program)
     admission = readmit_summed_program_from_wav(
@@ -1738,7 +1738,7 @@ def test_a_summed_take_that_feeds_its_muted_rear_still_refuses_and_names_it(tmp_
     it found muted, under its own incident and action."""
     topology, safety, context, profile, candidate = _fresh_cardioid(monkeypatch)
     graph = compile_tuning_graph(profile, candidate, scope="timing")
-    program = replace(excitation_from_context(context), session_volume_db=-30.0).verify_program()
+    program = replace(excitation_from_context(context), session_volume_db=-30.0).verify_program(courtesy_prelude=True)
     wav = tmp_path / "timing.wav"
     write_program_wav(wav, program)
 
