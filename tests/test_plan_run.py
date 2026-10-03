@@ -1313,11 +1313,12 @@ def test_each_graph_of_a_close_set_probes_once():
 
 
 @pytest.mark.parametrize(("purposes", "probes"), [(("room", "speaker"), [True, True]),
-                                                  (("rear", "speaker"), [True, False])])
+                                                  (("rear", "room"), [True, False])])
 def test_a_close_set_is_the_graph_its_takes_play(purposes, probes):
     """Two purposes at one close spot share a probe only when their takes play
-    one graph: an in-room take on the base plays its room and bass layers cleared,
-    a rear or speaker take plays none cleared (ADR-0406, ADR-0429)."""
+    one graph: an in-room take on the base and every rear take play the room and
+    bass layers cleared, a speaker take plays none cleared (ADR-0406, ADR-0429,
+    ADR-0436)."""
     pose = Pose(0, 0, kind="behind", distance_m=0.1)
     request = ac.AngleCaptureRequest(stops=tuple(ac.AngleStop(pose, ac.REGIME_SUMMED, purpose=purpose)
                                                  for purpose in purposes))
@@ -1683,7 +1684,7 @@ _JTS3_BASS = {"linkwitz_transform": {"source_hz": 112.8, "source_q": 1.23, "targ
 
 
 @pytest.mark.parametrize(("program", "layout", "lands_db"), [
-    ("speaker", "speaker_mark", 79.0), ("room", "seat_express", 73.0), ("rear", "rear_express", 79.0),
+    ("speaker", "speaker_mark", 79.0), ("room", "seat_express", 73.0), ("rear/express", "rear_express", 79.0),
     ("room", "room_quick", 79.0)],
     ids=["over a timing take", "at the seats", "at the mark's spots", "on the arm"])
 @pytest.mark.parametrize(("box", "over_db"), [
@@ -1847,7 +1848,7 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
     ("speaker", "baseline_express", True, 6), ("room", "seat_express", False, 3),
-    ("rear", "rear_express", False, 3),
+    ("rear/express", "rear_express", False, 3),
 ])
 def test_program_timing_take_and_placement_count(purpose, layout, entry, poses):
     request = ac.request_for_preset(run_preset(purpose, layout))
@@ -1867,7 +1868,7 @@ async def test_a_run_banks_its_preset_and_its_layout():
 
 @pytest.mark.parametrize("name,layout,banked", [
     ("speaker/mark", "speaker_mark", {("speaker", ("speaker",))}),
-    ("rear/seat", "seat_express", {("rear", ("rear", "room"))}),
+    ("rear/seat", "seat_express", {("rear", ("rear", "room", "bass"))}),
 ])
 async def test_a_take_banks_the_purposes_its_stop_names(name, layout, banked):
     """A preset names its purposes on each stop, and each take banks them (ADR-0336, ADR-0383)."""

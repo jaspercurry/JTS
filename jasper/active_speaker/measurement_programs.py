@@ -90,15 +90,16 @@ class TuningProgram:
     run_headline: str | None
     #: The ``(preset, layout)`` a trial of this program's documents may walk; the first is the default.
     trial: tuple[tuple[str, str], ...]
-    #: The ``(preset, layout)`` the measure page offers first, where the program's first measurement is not
-    #: its default preset's (the playbook's loop for it); none: the default preset at its default layout.
+    #: The ``(preset, layout)`` the measure page offers first for a program with no preset of its own
+    #: (ADR-0429); none: its default preset at its default layout.
     start: tuple[str, str] | None = None
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
-    #: Applied layers the base of this purpose plays cleared, and whether its
-    #: branches take also clears the purpose's own layer (doctrine §1a; ADR-0370,
-    #: ADR-0386, ADR-0429).
+    #: Applied layers every take of this purpose plays cleared, the further layers
+    #: its base plays cleared, and whether its branches take also clears the
+    #: purpose's own layer (doctrine §1a; ADR-0370, ADR-0386, ADR-0429, ADR-0436).
+    clears: tuple[str, ...] = ()
     base_clears: tuple[str, ...] = ()
     branches_clear_own: bool = False
 
@@ -128,12 +129,13 @@ _PROGRAM_SECTIONS = (
     TuningProgram(
         PURPOSE_REAR, (PrescriptionSection("rear_calibration", "jts_rear_calibration", 6, 5),),
         (CandidateField("rear_calibration", dict),), (REGIME_SUMMED, REGIME_BRANCHES), 4,
-        "Cardioid tuning", "Set the rear woofer to reduce sound behind the speaker.",
+        "Cardioid tuning", "Set the rear woofer to cut the wall bounce at your listening position.",
         "Measure the rear woofer", "rear",
-        run_headline="JTS is measuring how the rear woofer shapes the sound in front of and behind the speaker. Follow the step below.",
-        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")), start=("rear/pair", "speaker_mark"),
+        run_headline=("JTS is measuring the rear woofer, to cut the wall bounce at your listening position. "
+                      "Follow the step below."),
+        trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
-        branches_clear_own=True,
+        clears=("room_correction", "bass_extension"), branches_clear_own=True,
     ),
     TuningProgram(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 3),),
@@ -194,12 +196,12 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
 
 def cleared_layers(purpose: str | None, *, base: bool, regime: str) -> tuple[str, ...]:
     """The applied candidate layers a take of ``purpose`` in ``regime`` plays
-    cleared, on the run's base or on a candidate it names (ADR-0370, ADR-0429)."""
+    cleared, on the run's base or on a candidate it names (ADR-0370, ADR-0429, ADR-0436)."""
     row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
     if row is None:
         return ()
     own = (row.candidate_fields[0].name,) if regime == REGIME_BRANCHES and row.branches_clear_own else ()
-    return (row.base_clears if base else ()) + own
+    return row.clears + (row.base_clears if base else ()) + own
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
@@ -772,10 +774,14 @@ def trial_preset(
     sections: Collection[str], mover: str | None = None, layout: str | None = None,
 ) -> Preset | None:
     """The first program the document states of rear, bass, room, speaker (reverse document
-    order): its first trial preset that offers ``layout``, else its first trial layout
+    order) whose candidate takes play every layer it states, so a document with a bass or a
+    room section trials on the in-room round, never on a rear trial, which plays them off
+    (ADR-0436): its first trial preset that offers ``layout``, else its first trial layout
     ``mover`` can walk; ``None`` when it states none."""
-    row = next((row for row in reversed(PROGRAM_DOCUMENT_ORDER)
-                if any(section.name in sections for section in row.sections)), None)
+    stated = [row for row in reversed(PROGRAM_DOCUMENT_ORDER) if any(section.name in sections for section in row.sections)]
+    layers = {row.candidate_fields[0].name for row in stated}
+    row = next((row for row in stated
+                if not layers.intersection(cleared_layers(row.purpose, base=False, regime=REGIME_SUMMED))), None)
     if row is None:
         return None
     trials = [run_preset(trial, trial_layout) for trial, trial_layout in row.trial]

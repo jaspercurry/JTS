@@ -408,7 +408,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, capsys, purpose, b
     else:
         assert calls == [("room", row["set_id"], None) for row in groups] + [
             ("room-grade", row["set_id"], None) for row in trials if base] + [
-            ("bass", row["set_id"], None) for row in groups if purpose == "room"] + [
+            ("bass", row["set_id"], None) for row in groups] + [
             (view, None, None) for view in (("rear", "frequency") if purpose == "rear/seat" else ("frequency",))]
         assert [{key: row[key] for key in ("view", "set_id", "status", "incumbent_set_id", "reason") if key in row}
                 for row in banked.provenance["views"] if row["view"] == "room-grade"] == [
@@ -417,7 +417,7 @@ def test_bank_fans_out_views_with_the_base(tmp_path, request, capsys, purpose, b
                 {"status": "unavailable", "reason": "room_incumbent_set_unavailable"})} for row in trials]
     if purpose == "rear/seat":
         packet = json.loads((banked.path / "packet.json").read_text())
-        assert len(packet["room"]) == 2 and packet["rear"]
+        assert len(packet["room"]) == len(packet["bass"]) == 2 and packet["rear"]
         sets = {row["set_id"]: row["candidate_id"] for row in packet["sets"]}
         assert {sets[row["set_id"]] for row in packet["room"]} == {"base-graph", "trial-0"}
         for entry in packet["room"]:

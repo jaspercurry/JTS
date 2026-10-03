@@ -115,7 +115,7 @@ def test_program_table_projections(site):
     ("room/seat", "seat_express", 3, 3, 3),
     ("room/seat", "room_quick", 3, 3, 3),
     ("rear/seat", "seat_express", 3, 3, 3),
-    ("rear/pair", "speaker_mark", 1, 1, 2),
+    ("rear/pair", "tournament_express", 1, 1, 1),
     ("drivers/each", "drivers_each", 2, 1, 2),
 ])
 def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures: int) -> None:
@@ -129,10 +129,10 @@ def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures
 
 @pytest.mark.parametrize("preset_id", mp.available_presets())
 def test_a_preset_names_its_purposes_program_first_at_every_layout(preset_id):
-    """The seat trial serves rear and room, and the in-room round room and bass, from one set
-    of takes (ADR-0336, ADR-0383, ADR-0429)."""
+    """The seat trial serves rear, room and bass, and the in-room round room and bass, from one
+    set of takes (ADR-0336, ADR-0383, ADR-0429, ADR-0436)."""
     row = mp.preset(preset_id)
-    expected = {"rear/seat": ("rear", "room"), "room/seat": ("room", "bass")}.get(preset_id, (row.purpose,))
+    expected = {"rear/seat": ("rear", "room", "bass"), "room/seat": ("room", "bass")}.get(preset_id, (row.purpose,))
     assert (mp.run_purposes(preset_id), mp.run_purpose(preset_id)) == (expected, expected[0])
     assert {mp.run_preset(preset_id, layout).purposes for layout in row.layouts} == {expected}
 
@@ -482,16 +482,17 @@ def test_a_retired_preset_id_refuses_as_an_unknown_preset(retired: str) -> None:
 def test_a_program_name_resolves_to_its_first_preset() -> None:
     assert {name: mp.preset(name).preset for name in ("tournament", "branches", "room", "rear", "nearfield")} == {
         "tournament": "tournament/express", "branches": "branches/express", "room": "room/seat",
-        "rear": "rear/express", "nearfield": "nearfield/each"}
+        "rear": "rear/pair", "nearfield": "nearfield/each"}
 
 
 @pytest.mark.parametrize("program", mp.RUNNABLE_PROGRAMS)
 def test_a_programs_first_plan_serves_it_at_a_layout_its_preset_offers(program) -> None:
-    """Bass starts on the in-room round, which serves room and bass (ADR-0429)."""
+    """A program's first plan is its default preset, so the page, the CLI and the copied prompt
+    start one plan; bass, which has no preset, starts on the in-room round (ADR-0429, ADR-0436)."""
     first = mp.first_plan(program)
 
     assert program in first.purposes and first.layout in mp.preset(first.preset).layouts
-    if program not in (mp.PURPOSE_REAR, mp.PURPOSE_BASS):
+    if program != mp.PURPOSE_BASS:
         assert first == mp.preset(program)
 
 
@@ -503,13 +504,14 @@ def test_a_bare_bass_names_no_preset() -> None:
     assert (excinfo.value.preset, excinfo.value.choices) == ("bass", mp.available_presets())
 
 
-def test_the_rear_program_starts_with_the_pair_model_at_the_mark() -> None:
-    """The playbook's Seat loop banks the pair model first; the rear program's default preset
-    stays the summed one a trial of candidates walks."""
+def test_the_rear_program_starts_with_one_pair_take_at_the_mark() -> None:
+    """The cardioid default banks the pair model first: both woofers on one clock, at the mark,
+    once (ADR-0436)."""
     first = mp.first_plan("rear")
 
-    assert (first.preset, first.layout, first.regime) == ("rear/pair", "speaker_mark", mp.REGIME_BRANCHES)
-    assert mp.preset("rear").preset == "rear/express"
+    assert (first.preset, first.layout, first.regime, first.branch_pair, first.mover) == (
+        "rear/pair", "tournament_express", mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR, None)
+    assert first.poses == (mp.Pose(0, 0),)
 
 
 @pytest.mark.parametrize("program,purpose", [("room", mp.PURPOSE_ROOM)])
@@ -532,7 +534,7 @@ def test_room_and_bass_plans_share_poses_and_summed_regime(program, purpose) -> 
     ("rear_wide", [(0, 2), (-20, 1), (20, 1), (-45, 1), (45, 1)]),
 ])
 def test_rear_layouts_pin_no_mover_and_repeat_the_zero_pose(layout, poses) -> None:
-    row = mp.run_preset("rear", layout)
+    row = mp.run_preset("rear/express", layout)
 
     assert row.purpose == mp.PURPOSE_REAR and row.regime == mp.REGIME_SUMMED
     assert row.mover is None
@@ -647,31 +649,23 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     assert all(capture.spec.stimulus is None for capture in captures)
 
 
+_IN_ROOM = ("room_correction", "bass_extension")
+
+
 @pytest.mark.parametrize("purpose,base,regime,cleared", [
-    (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, ("rear_calibration",)),
-    (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, ("rear_calibration",)),
-    (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
-    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, ("room_correction", "bass_extension")),
+    (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, (*_IN_ROOM, "rear_calibration")),
+    (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, (*_IN_ROOM, "rear_calibration")),
+    (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, _IN_ROOM), (mp.PURPOSE_REAR, False, mp.REGIME_SUMMED, _IN_ROOM),
+    (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
+    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, _IN_ROOM),
     (mp.PURPOSE_ROOM, False, mp.REGIME_SUMMED, ()), (mp.PURPOSE_REFERENCE, True, mp.REGIME_SUMMED, ()),
     (None, True, mp.REGIME_SUMMED, ()),
 ])
 def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, regime, cleared) -> None:
-    """The in-room base plays bass and room off; a rear pair take plays its
-    parent with the rear stage off; every other take plays its layers as
-    composed (ADR-0370, ADR-0386, ADR-0429)."""
+    """The in-room base plays bass and room off; every rear take, base and candidate, plays bass
+    and room off, and a rear pair take its parent's rear stage off too; every other take plays its
+    layers as composed (ADR-0370, ADR-0386, ADR-0429, ADR-0436)."""
     assert mp.cleared_layers(purpose, base=base, regime=regime) == cleared
-
-
-def test_the_rear_pair_row_reuses_the_express_layout_and_the_proven_front_rear_pair() -> None:
-    """The pair take is the rear express geometry, played as two branches
-    (issue #5330). Naming it leaves the default rear size alone."""
-    row = mp.run_preset("rear/pair")
-
-    assert (row.purpose, row.regime, row.branch_pair) == (
-        mp.PURPOSE_REAR, mp.REGIME_BRANCHES, mp.BRANCH_PAIR_FRONT_REAR)
-    assert row.poses is mp.preset("rear/express").poses
-    assert row.mover is None
-    assert mp.preset("rear").preset == "rear/express"
 
 
 @pytest.mark.parametrize("preset,regime,pair", [
@@ -697,10 +691,9 @@ def test_a_behind_pose_states_its_own_distance_from_the_back_panel() -> None:
 
 
 def test_run_preset_resolves_rear_layouts_and_custom_bearings() -> None:
-    assert mp.run_preset("rear").preset == "rear/express"
-    wide = mp.run_preset("rear", "rear_wide")
+    wide = mp.run_preset("rear/express", "rear_wide")
     assert (wide.preset, wide.layout) == ("rear/express", "rear_wide")
-    custom = mp.run_preset("rear", poses="0,-45,45")
+    custom = mp.run_preset("rear/express", poses="0,-45,45")
     assert [(pose.azimuth_deg, pose.elevation_deg) for pose in custom.poses] == [(0, 0), (-45, 0), (45, 0)]
     assert (custom.preset, custom.layout, custom.purpose, custom.regime) == (
         "rear/express", mp.CUSTOM_LAYOUT, mp.PURPOSE_REAR, mp.REGIME_SUMMED)

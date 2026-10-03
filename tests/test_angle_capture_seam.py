@@ -534,7 +534,7 @@ def test_a_program_beyond_the_arms_reach_refuses_at_statement_time() -> None:
         (mp.preset("tournament/express"), ("fp-a", "fp-b")),
         (mp.run_preset("tournament", "tournament_full"), ("fp-a", "fp-b", "fp-c")),
         (mp.run_preset("speaker", "baseline_express"), ("fp-a", "fp-b")),
-        (mp.run_preset("rear", "rear_behind"), ("base", "fp-a", "muted")),
+        (mp.run_preset("rear/express", "rear_behind"), ("base", "fp-a", "muted")),
     ],
     ids=["no-cycle", "one-pose", "three-poses", "with-repeats", "rear-behind"],
 )
@@ -941,7 +941,8 @@ def test_only_a_branches_stop_may_name_a_branch_pair():
 ])
 def test_a_rear_pair_plays_its_parent_with_the_rear_stage_cleared(preset, candidates, parent):
     """A rear pair's parent is the applied base unless one saved candidate is
-    named; any other pair names one (ADR-0386)."""
+    named; any other pair names one (ADR-0386). A rear pair plays its parent with
+    the rear stage, bass and room cleared (ADR-0436)."""
     row = mp.run_preset(preset)
     if parent is None:
         with pytest.raises(ac.LateralWalkRefused) as refused:
@@ -951,8 +952,9 @@ def test_a_rear_pair_plays_its_parent_with_the_rear_stage_cleared(preset, candid
     request = ac.request_for_preset(row, candidates=candidates)
     specs = ac.stop_specs(request, baseline_id="applied", roles_bands=_ROLES_BANDS,
                           prompts=[stop.prompt for stop in ac.resolve_request(request)])
+    cleared = ("room_correction", "bass_extension", "rear_calibration") if row.purpose == mp.PURPOSE_REAR else ()
     assert {(spec.graph_scope, spec.candidate_id, spec.cleared_layers) for spec in specs} == {
-        ("candidate_branches", parent, ("rear_calibration",) if row.purpose == mp.PURPOSE_REAR else ())}
+        ("candidate_branches", parent, cleared)}
 
 
 @pytest.mark.parametrize("level_db", [math.nan, math.inf, -math.inf, True, "-20", 1, -60, -1000])
