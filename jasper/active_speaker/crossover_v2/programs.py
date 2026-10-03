@@ -32,6 +32,7 @@ from jasper.audio_measurement.excitation import NEAR_FIELD_SILENCE_S
 from jasper.audio_measurement.ramp import MAX_STEP_DB
 
 from jasper.audio_measurement.branch_program import build_branch_program
+from jasper.platform.speaker_layout import measurement_target_parts
 
 from .measure_spec import branch_channels_for, solo_target
 from .journey import PHASE_CHECK
@@ -84,9 +85,13 @@ def back_off_gain(gain_db: float, session_volume_db: float, cap_dbfs: float) -> 
 
 def _scope_backoff_db(spec: Any) -> float:
     """The dB a summed take plays under the seat-equivalent level: how far its
-    graph plays over the level anchor's, never negative."""
+    graph plays over the level anchor's, never negative. A branch take counts its
+    own targets, but not a rear woofer whose layer it clears: the anchor plays
+    that woofer through its rear stage, the take without it (ADR-0386)."""
+    counted = [target for target in spec.branch_target_ids if not (
+        "rear_calibration" in spec.cleared_layers and measurement_target_parts(target)[1] == "rear")]
     return max(0.0, max((gain for role, gain in (spec.scope_gains_db or {}).items()
-                         if not spec.branch_target_ids or role in spec.branch_target_ids), default=0.0))
+                         if not spec.branch_target_ids or role in counted), default=0.0))
 
 
 def _stimulus_backoff_db(spec: Any, stimulus_dbfs: float | None) -> float:
