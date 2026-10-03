@@ -14,6 +14,7 @@ from jasper.active_speaker import camilla_yaml as emit
 from jasper.active_speaker.camilla_yaml.gates import _assert_tweeter_outputs_protected
 from jasper.active_speaker import graph_safety as gs
 from jasper.active_speaker.graph_transfer import complex_channel_transfer
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.path_safety import staged_target_signature, topology_target_signature
 from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, SpeakerBaselineProfile
@@ -53,6 +54,12 @@ def _rear_pair(layout):
             "startup_muted": True, "identity_verified": False,
         })
     return ActiveSpeakerPreset.from_mapping(raw), OutputTopology.from_mapping(topology)
+
+
+_PROGRAM_KWARGS = {
+    "role_channels": {"woofer": 0, "tweeter": 1},
+    "protection_sections_by_role": sections_by_role(_rear_pair("mono")[0].crossover_regions),
+}
 
 
 @pytest.mark.parametrize("layout,width", [("mono", 3), ("stereo", 6)])
@@ -126,7 +133,7 @@ def test_target_evidence_does_not_transfer_between_variants():
     (emit.emit_active_speaker_commissioning_config, {"audible_outputs": None}),
     (emit.emit_active_speaker_baseline_config, {}),
     (emit.emit_active_speaker_baseline_config, {"bass_extension": _dynamic_bass_descriptor()}),
-    (emit.emit_active_speaker_program_config, {"role_channels": {"woofer": 0, "tweeter": 1}}),
+    (emit.emit_active_speaker_program_config, _PROGRAM_KWARGS),
 ])
 def test_every_emit_keeps_rear_muted_and_primary_filters_unchanged(layout, emitter, kwargs):
     preset, _ = _rear_pair(layout)
@@ -394,7 +401,7 @@ def test_a_rear_named_filter_smuggled_into_a_graph_without_a_rear_output_refuses
 @pytest.mark.parametrize("emitter,kwargs", [
     (emit.emit_active_speaker_startup_config, {}),
     (emit.emit_active_speaker_commissioning_config, {"audible_outputs": None}),
-    (emit.emit_active_speaker_program_config, {"role_channels": {"woofer": 0, "tweeter": 1}}),
+    (emit.emit_active_speaker_program_config, _PROGRAM_KWARGS),
 ])
 def test_undecorated_emitters_keep_the_emitter_drift_guard(emitter, kwargs):
     """The tweeter gate's text view REFUSES CamillaDSP's re-serialised dialect
@@ -432,7 +439,7 @@ def test_program_take_routes_by_physical_target_and_parks_the_rest(
     preset, _ = _rear_pair("mono")
     text = emit.emit_active_speaker_program_config(
         preset, role_channels=role_channels, playback_device="jts_ring_active_playback",
-        parked_target_ids=parked,
+        protection_sections_by_role=sections_by_role(preset.crossover_regions), parked_target_ids=parked,
     )
     payload = yaml.safe_load(text)
     view = gs.view_from_yaml_dict(payload)

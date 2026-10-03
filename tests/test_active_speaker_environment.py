@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from jasper.active_speaker.camilla_yaml.emit_program import emit_active_speaker_program_config
+from jasper.active_speaker.crossover_section import sections_by_role
 from jasper.active_speaker.profile import ActiveSpeakerPreset
 from jasper.active_speaker.environment import (
     classify_camilla_config_text,
@@ -234,6 +235,7 @@ def test_program_config_mixer_satisfies_active_split_ecosystem_contract() -> Non
         preset,
         role_channels={"woofer": 0, "tweeter": 1},
         playback_device="hw:CARD=DAC8x,DEV=0",
+        protection_sections_by_role=sections_by_role(preset.crossover_regions),
     )
 
     active = classify_camilla_config_text(text)

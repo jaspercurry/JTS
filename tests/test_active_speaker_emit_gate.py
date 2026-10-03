@@ -43,7 +43,8 @@ from jasper.active_speaker.camilla_yaml.emit_commissioning import (
 )
 from jasper.active_speaker.camilla_yaml.emit_program import emit_active_speaker_program_config
 from jasper.active_speaker.camilla_yaml.emit_startup import emit_active_speaker_startup_config
-from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset
+from jasper.active_speaker.crossover_section import sections_by_role
+from jasper.active_speaker.profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from jasper.active_speaker.camilla_yaml import decorate_dynamic_bass, emit_baseline, emit_program, pipeline
 import jasper.active_speaker.camilla_yaml as camilla_yaml
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
@@ -73,6 +74,13 @@ ACTIVE_PCM = "hw:CARD=DAC8x,DEV=0"
 def _preset(layout: str = "mono", way: int = 2) -> ActiveSpeakerPreset:
     raw = _two_way_preset(layout) if way == 2 else _three_way_preset(layout)
     return ActiveSpeakerPreset.from_mapping(raw)
+
+
+def _program_protection(preset: ActiveSpeakerPreset) -> dict:
+    """Program-graph protection for every declared role: its crossover sections."""
+    return {role: () for role in required_driver_roles(preset.way_count)} | sections_by_role(
+        preset.crossover_regions
+    )
 
 
 def _one_way_stereo_preset() -> ActiveSpeakerPreset:
@@ -501,7 +509,8 @@ def test_pipeline_reference_closure_errors_fails_closed_on_bad_shapes() -> None:
 def test_assert_pipeline_references_closed_passes_the_real_program_config() -> None:
     preset = _preset("mono", 2)
     yaml_text = emit_active_speaker_program_config(
-        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        preset, role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_program_protection(preset),
     )
     _assert_pipeline_references_closed(yaml_text, preset)  # must not raise
 
@@ -532,6 +541,7 @@ def test_build_and_prove_refuses_program_graph_with_dropped_mixer(monkeypatch) -
             _preset("mono", 2),
             role_channels=ROLE_CHANNELS,
             playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_program_protection(_preset("mono", 2)),
         )
 
 
@@ -560,7 +570,8 @@ def test_program_config_mixer_is_named_split_active_not_program_route() -> None:
     jasper.active_speaker.environment's _ACTIVE_SPLIT_RE ecosystem contract
     keys on it (see test_active_speaker_environment.py for that half)."""
     yaml_text = emit_active_speaker_program_config(
-        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_program_protection(_preset("mono", 2)),
     )
     assert "split_active_2way" in yaml_text
     assert "program_route_2way" not in yaml_text
@@ -586,7 +597,8 @@ def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None
     from jasper.dsp_control.dsp_apply import ValidationStatus, validate_camilla_config
 
     yaml_text = emit_active_speaker_program_config(
-        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM
+        _preset("mono", 2), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+        protection_sections_by_role=_program_protection(_preset("mono", 2)),
     )
     cfg_path = tmp_path / "program.yml"
     cfg_path.write_text(yaml_text)
@@ -619,7 +631,8 @@ _VOLUME_LIMIT_EMITTERS = [
     ),
     pytest.param(
         lambda **kw: emit_active_speaker_program_config(
-            _preset(), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM, **kw
+            _preset(), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_program_protection(_preset()), **kw
         ),
         id="program",
     ),
@@ -677,7 +690,7 @@ def test_a_program_take_may_park_a_role_only_by_naming_it(preset, role_channels,
     """
     emit = lambda: camilla_yaml.emit_active_speaker_program_config(
         preset, role_channels=role_channels, playback_device=ACTIVE_PCM,
-        parked_target_ids=parked,
+        protection_sections_by_role=_program_protection(preset), parked_target_ids=parked,
     )
     if capture_channels is None:
         with pytest.raises(ActiveSpeakerConfigError):

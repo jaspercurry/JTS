@@ -37,7 +37,6 @@ from .devices import (
 )
 from .document import _atomic_write_text, logger
 from .filters import (
-    APPLIED_RESPONSE_FILTER_MODE,
     COMMISSIONING_HEADROOM_DB,
     STARTUP_LIMITER_CLIP_LIMIT_DB,
     _emit_commissioning_filter_definitions,
@@ -45,7 +44,6 @@ from .filters import (
 from .gates import (
     PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE,
     _assert_program_graph_proven,
-    _assert_tweeter_crossover_hp_satisfies_floor,
     _assert_tweeter_outputs_protected,
     _validate_program_role_channels,
 )
@@ -141,7 +139,7 @@ def emit_active_speaker_program_config(
     *,
     role_channels: dict[str, int],
     playback_device: str,
-    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]] | None = None,
+    protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]],
     protective_hp_min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
     protective_hp_min_slope_db_per_octave: float = (
         PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE
@@ -162,14 +160,13 @@ def emit_active_speaker_program_config(
     ``role_channels`` maps each driver role to the program-WAV channel carrying
     its stimulus (ch0 → woofer, ch1 → tweeter). The graph routes each program
     channel to that driver's PHYSICAL output path through a role-routed mixer,
-    carries either the legacy target crossover or caller-supplied confirmed role
-    protection plus the per-driver limiter, keeps the software volume ceiling
-    non-positive, and stays static (no reload mid-program). The
-    protected-neutral shape omits configured crossover, delay, linearization,
-    bass, Room and preference filters.
+    carries the caller-supplied confirmed role protection plus the per-driver
+    limiter, keeps the software volume ceiling non-positive, and stays static
+    (no reload mid-program). It omits configured crossover, delay,
+    linearization, bass, Room and preference filters.
 
     Two fail-closed gates run before the graph can leave: a build-time proof
-    that the selected tweeter HP satisfies the declared floor, and
+    that the tweeter protection high-pass satisfies the program floor, and
     :func:`_assert_program_graph_proven` over the emitted text.
     """
 
@@ -207,40 +204,32 @@ def emit_active_speaker_program_config(
     )
 
     tweeter_hp_name = None
-    if protection_sections_by_role is None:
-        _assert_tweeter_crossover_hp_satisfies_floor(
-            preset,
-            min_corner_hz=protective_hp_min_corner_hz,
-            min_slope_db_per_octave=protective_hp_min_slope_db_per_octave,
-        )
-    else:
-        required_roles = set(required_driver_roles(preset.way_count))
-        if set(protection_sections_by_role) != required_roles:
-            raise ActiveSpeakerConfigError("program protection must cover every driver role")
-        # Asked of the role that DECLARES one: a 1-way main has no tweeter for
-        # a high-pass to protect, so the gate is absent, not waived
-        # (``_assert_program_graph_proven`` agrees from the emitted text).
-        if "tweeter" in required_roles:
-            tweeter_hps = [
-                (index, section)
-                for index, section in enumerate(protection_sections_by_role["tweeter"])
-                if section.highpass
-            ]
-            if len(tweeter_hps) != 1:
-                raise ActiveSpeakerConfigError("program graph requires one tweeter protection high-pass")
-            hp_index, hp_section = tweeter_hps[0]
-            if hp_section.fc_hz < protective_hp_min_corner_hz or (
-                hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
-            ):
-                # SOLE slope-floor enforcement on this path: it reaches the
-                # journal exactly as its predecessor's refusal does.
-                log_event(
-                    logger, "active_speaker.program_emit_gate", level=logging.ERROR,
-                    result="blocked_tweeter_protection_below_floor",
-                    preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
-                    order=hp_section.order)
-                raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
-            tweeter_hp_name = program_protection_name("tweeter", hp_index)
+    required_roles = set(required_driver_roles(preset.way_count))
+    if set(protection_sections_by_role) != required_roles:
+        raise ActiveSpeakerConfigError("program protection must cover every driver role")
+    # Asked of the role that DECLARES one: a 1-way main has no tweeter for
+    # a high-pass to protect, so the gate is absent, not waived
+    # (``_assert_program_graph_proven`` agrees from the emitted text).
+    if "tweeter" in required_roles:
+        tweeter_hps = [
+            (index, section)
+            for index, section in enumerate(protection_sections_by_role["tweeter"])
+            if section.highpass
+        ]
+        if len(tweeter_hps) != 1:
+            raise ActiveSpeakerConfigError("program graph requires one tweeter protection high-pass")
+        hp_index, hp_section = tweeter_hps[0]
+        if hp_section.fc_hz < protective_hp_min_corner_hz or (
+            hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
+        ):
+            # The program graph's sole slope-floor enforcement.
+            log_event(
+                logger, "active_speaker.program_emit_gate", level=logging.ERROR,
+                result="blocked_tweeter_protection_below_floor",
+                preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
+                order=hp_section.order)
+            raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
+        tweeter_hp_name = program_protection_name("tweeter", hp_index)
 
     output_count = _output_count(preset)
     # The ring's width is one of its declaring ends — refuse a shear here
@@ -252,10 +241,7 @@ def emit_active_speaker_program_config(
     # the effective-peak ledger the session-volume plan and admission share is
     # main_volume + program peak with no hidden graph attenuation.
     audible = frozenset(range(output_count))
-    filter_mode = (
-        APPLIED_RESPONSE_FILTER_MODE
-        if protection_sections_by_role is None else "protected_neutral"
-    )
+    filter_mode = "protected_neutral"
     filter_yaml = _emit_commissioning_filter_definitions(
         preset,
         startup_headroom_db=COMMISSIONING_HEADROOM_DB,
@@ -264,10 +250,7 @@ def emit_active_speaker_program_config(
         filter_mode=filter_mode,
         protection_sections_by_role=protection_sections_by_role,
     )
-    mixer_yaml = _emit_role_routed_mixer(
-        preset, role_channels,
-        apply_region_polarity=protection_sections_by_role is None,
-    )
+    mixer_yaml = _emit_role_routed_mixer(preset, role_channels)
     pipeline_yaml = _emit_commissioning_pipeline(
         preset,
         filter_mode=filter_mode,

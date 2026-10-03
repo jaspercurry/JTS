@@ -81,18 +81,12 @@ class ProgramHeadroomExhausted(ActiveSpeakerConfigError):
                          "binding": PROGRAM_HEADROOM_BINDING}
 
 
-def _emit_limiter_filter(
-    name: str,
-    *,
-    clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
-    soft_clip: bool = True,
-) -> list[str]:
-    soft_clip_s = "true" if soft_clip else "false"
+def _emit_limiter_filter(name: str, *, clip_limit_db: float) -> list[str]:
     return [
         f"  {name}:",
         "    type: Limiter",
         "    parameters:",
-        f"      soft_clip: {soft_clip_s}",
+        "      soft_clip: true",
         f"      clip_limit: {fmt(clip_limit_db)}",
     ]
 
@@ -168,7 +162,6 @@ def _emit_filter_definitions(
         lines.extend(_emit_limiter_filter(
             driver_limiter_name(role),
             clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
-            soft_clip=True,
         ))
     if preset.local_subwoofer is not None:
         lines.extend(_emit_sub_startup_definitions(preset.local_subwoofer.crossover_fc_hz))
@@ -537,7 +530,6 @@ def _emit_baseline_driver_definitions(
         lines.extend(_emit_limiter_filter(
             driver_baseline_limiter_name(role),
             clip_limit_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
-            soft_clip=True,
         ))
     # The local-sub lane definitions: LR4 low-pass (band-limit) + non-positive
     # baseline gain + soft-clip limiter (excursion), same protection a main gets.
@@ -579,7 +571,6 @@ def _emit_sub_startup_definitions(crossover_fc_hz: float) -> list[str]:
         *_emit_limiter_filter(
             sub_startup_limiter_name(),
             clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
-            soft_clip=True,
         ),
         *emit_gain_filter(sub_startup_mute_name(), STARTUP_MUTE_GAIN_DB, mute=True),
     ]
@@ -602,7 +593,6 @@ def _emit_sub_commissioning_definitions(crossover_fc_hz: float) -> list[str]:
         *_emit_limiter_filter(
             sub_startup_limiter_name(),
             clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
-            soft_clip=True,
         ),
     ]
 
@@ -626,7 +616,6 @@ def _emit_sub_baseline_definitions(crossover_fc_hz: float) -> list[str]:
         *_emit_limiter_filter(
             sub_baseline_limiter_name(),
             clip_limit_db=BASELINE_LIMITER_CLIP_LIMIT_DB,
-            soft_clip=True,
         ),
     ]
 
@@ -745,7 +734,6 @@ def _emit_commissioning_filter_definitions(
         lines.extend(_emit_limiter_filter(
             driver_limiter_name(role),
             clip_limit_db=STARTUP_LIMITER_CLIP_LIMIT_DB,
-            soft_clip=True,
         ))
     # The local-sub lane definitions (LR4 low-pass + soft-clip limiter): the sub
     # output is band-limited AND excursion-limited even in the commissioning

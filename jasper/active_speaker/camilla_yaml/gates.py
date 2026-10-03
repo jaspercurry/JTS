@@ -31,7 +31,7 @@ from ..graph_safety import (
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 from ..test_signal_plan import declared_protection_floor_hz, strictest_crossover_highpass_hz
 from .document import logger
-from .filters import STARTUP_LIMITER_CLIP_LIMIT_DB, crossover_highpass_for_role
+from .filters import STARTUP_LIMITER_CLIP_LIMIT_DB
 from .topology import _channels_for_role
 
 #: ``result=`` slug of the L0 emit gate's below-declared-floor refusal
@@ -209,12 +209,9 @@ def _assert_parked_outputs_muted(yaml_text: str, output_count: int) -> None:
 # mid-program). This graph
 # maps each program capture channel to its driver's PHYSICAL output path.
 
-# The slope this build COMMISSIONS a tweeter crossover high-pass at. A code
-# figure, not a declaration, so it may disclose a shallower crossover and may
-# prove a protective filter this build itself derived — it may NOT refuse a
-# crossover order a household pinned. See
-# ``_assert_tweeter_crossover_hp_satisfies_floor`` for which half of that gate
-# refuses and which logs.
+# The slope the program graph's tweeter protection high-pass must reach. A code
+# figure no datasheet contains, so it never refuses a crossover order a
+# household pinned (ADR-0227 §10).
 PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE = 24.0
 
 
@@ -288,73 +285,6 @@ def _validate_program_role_channels(
     return normalized
 
 
-def _assert_tweeter_crossover_hp_satisfies_floor(
-    preset: ActiveSpeakerPreset,
-    *,
-    min_corner_hz: float,
-    min_slope_db_per_octave: float,
-) -> None:
-    """Refuse a preset whose tweeter crossover HP crosses BELOW the declared floor.
-
-    In the program graph the tweeter is protected by its TARGET crossover
-    high-pass alone (the bring-up protective HP is dropped so the measured
-    branch is the applied crossover shoulder), so this build-time gate reads
-    that crossover from the preset before any YAML is emitted.
-
-    **The corner REFUSES; the slope only DISCLOSES.** ``min_corner_hz`` arrives
-    as :data:`~jasper.active_speaker.graph_safety.TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ`
-    — an absolute code floor, not this driver's declaration — and stays a
-    refusal because a crossover below it puts the low-frequency excursion hazard
-    band on a compression driver, a named damage mechanism
-    (docs/measurement-loop-doctrine.md §5). ``min_slope_db_per_octave`` arrives
-    as :data:`PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE`, a code figure no
-    datasheet contains, so refusing a household's pinned order against it would
-    be a nanny; the manufacturer's published condition is enforced at the pin,
-    where the declaration is readable. Here there is none to read, so the
-    shortfall is logged (``result=tweeter_hp_slope_below_commissioning_floor``)
-    and the graph is emitted.
-    """
-    for role in required_driver_roles(preset.way_count):
-        if role != "tweeter":
-            continue
-        crossover = crossover_highpass_for_role(preset, role)
-        if crossover is None:
-            raise ActiveSpeakerConfigError(
-                "program graph requires a tweeter crossover high-pass; the "
-                f"preset declares none for role {role!r}"
-            )
-        _name, fc_hz, order = crossover
-        if fc_hz < min_corner_hz:
-            log_event(
-                logger,
-                "active_speaker.program_emit_gate",
-                level=logging.ERROR,
-                result="blocked_tweeter_hp_below_floor",
-                preset_id=preset.preset_id,
-                fc_hz=f"{fc_hz:g}",
-                min_corner_hz=f"{min_corner_hz:g}",
-            )
-            raise ActiveSpeakerConfigError(
-                f"tweeter crossover high-pass corner {fc_hz:g} Hz is below the "
-                f"declared protective floor {min_corner_hz:g} Hz"
-            )
-        if order * 6.0 < min_slope_db_per_octave:
-            # Disclosed, never refused — see this function's docstring. WARNING
-            # rather than ERROR because nothing is blocked: the corner already
-            # cleared the declared floor and the manufacturer's published
-            # condition, if any, was applied at the pin.
-            log_event(
-                logger,
-                "active_speaker.program_emit_gate",
-                level=logging.WARNING,
-                result="tweeter_hp_slope_below_commissioning_floor",
-                preset_id=preset.preset_id,
-                order=order,
-                slope_db_per_octave=f"{order * 6.0:g}",
-                commissioning_floor_db_per_octave=f"{min_slope_db_per_octave:g}",
-            )
-
-
 def _assert_pipeline_references_closed(
     yaml_text: str, preset: ActiveSpeakerPreset
 ) -> None:
@@ -408,7 +338,7 @@ def _assert_program_graph_proven(
     preset: ActiveSpeakerPreset,
     *,
     min_corner_hz: float,
-    tweeter_hp_name: str | None = None,
+    tweeter_hp_name: str | None,
 ) -> None:
     """Build-and-prove the emitted program graph against graph_safety (fail-closed).
 
@@ -416,8 +346,8 @@ def _assert_program_graph_proven(
     EMITTED text — the same evidence a later readback would inspect. The program
     builder cannot return a graph whose pipeline points at an undefined
     mixer/filter name, nor one whose tweeter output is not high-pass protected
-    against the declared floor AND wrapped by its crossover high-pass +
-    soft-clip limiter in one post-mixer step. That pairing is what rejects a
+    against the declared floor AND wrapped by ``tweeter_hp_name`` + soft-clip
+    limiter in one post-mixer step. That pairing is what rejects a
     pre-split per-channel high-pass, which ``output_highpass_protected`` alone
     could false-PASS on the 2-way preset (program ch1 numerically coincides with
     tweeter output 1).
@@ -440,9 +370,6 @@ def _assert_program_graph_proven(
         )
         for channel in tweeter_channels
     )
-    if tweeter_hp_name is None:
-        crossover = crossover_highpass_for_role(preset, "tweeter")
-        tweeter_hp_name = crossover[0] if crossover is not None else None
     guard_ok = tweeter_hp_name is not None and tweeter_guard_present(
         view,
         channels=tweeter_set,

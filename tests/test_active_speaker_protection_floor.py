@@ -58,7 +58,6 @@ from jasper.active_speaker.calibration_level import calibration_level_payload
 from jasper.active_speaker.camilla_yaml import (
     emit_active_speaker_baseline_config,
     emit_active_speaker_commissioning_config,
-    emit_active_speaker_program_config,
     emit_active_speaker_startup_config,
 )
 from jasper.active_speaker.camilla_yaml.gates import (
@@ -839,7 +838,7 @@ def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose(
 ) -> None:
     """The scope boundary, pinned so a later widening has to argue with a test.
 
-    The gate deliberately does NOT run on the startup / commissioning / program
+    The gate deliberately does NOT run on the startup / commissioning
     emitters. Staging a below-floor graph is how the layer above it produces its
     actionable refusal: staging emits, publishes both facts onto the metadata,
     and the load gate refuses BY NAME with a remedy. Gating the emitter would
@@ -850,7 +849,7 @@ def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose(
     Exercised through ``_stage``, which really runs an ungated emitter
     (``emit_active_speaker_commissioning_config`` — staging's emitter, NOT the
     startup one, despite the artifact's name). The companion test below covers
-    the other two by calling them directly, because asserting a preset field
+    both by calling them directly, because asserting a preset field
     here would pass just as happily on a build that HAD widened the gate,
     making this documentation rather than a pin.
     """
@@ -869,15 +868,15 @@ def test_the_commissioning_flow_still_stages_a_below_floor_graph_on_purpose(
     assert staged["config"]["tweeter_protection_floor_hz"] == 5000.0
 
 
-@pytest.mark.parametrize("emitter", ["startup", "commissioning", "program"])
+@pytest.mark.parametrize("emitter", ["startup", "commissioning"])
 def test_the_ungated_emitters_still_emit_a_below_floor_graph(emitter: str) -> None:
     """The other half of the scope boundary — one case per ungated emitter.
 
     The test above reaches only the emitter STAGING happens to call. Widening
-    the gate to either of the other two would leave it green, so each is called
-    here directly with the same below-floor preset. All three must emit: the
-    startup-load gate owns the refusal for these graphs, and it can only judge
-    an artifact that was allowed to exist.
+    the gate to the other one would leave it green, so each is called here
+    directly with the same below-floor preset. Both must emit: the startup-load
+    gate owns the refusal for these graphs, and it can only judge an artifact
+    that was allowed to exist.
     """
 
     topology = mono_output_topology()
@@ -887,15 +886,9 @@ def test_the_ungated_emitters_still_emit_a_below_floor_graph(emitter: str) -> No
         text = emit_active_speaker_startup_config(
             preset, playback_device=ACTIVE_PCM,
         )
-    elif emitter == "commissioning":
+    else:
         text = emit_active_speaker_commissioning_config(
             preset, playback_device=ACTIVE_PCM,
-        )
-    else:
-        text = emit_active_speaker_program_config(
-            preset,
-            role_channels={"woofer": 0, "tweeter": 1},
-            playback_device=ACTIVE_PCM,
         )
 
     # Emitted, not refused -- and carrying the below-floor corner, so this
