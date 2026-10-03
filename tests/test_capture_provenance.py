@@ -517,7 +517,7 @@ def _drive_one_capture(
         capture_session_id="cap_provenance_probe",
         topology=object(), preset=object(), role_channels={"woofer": 0, "tweeter": 1},
         playback_device="hw:Test", safety_profile={}, role_targets={},
-        provenance=recorder, roles=(),
+        protection_sections_by_role={}, provenance=recorder, roles=(),
         program_for_spec=lambda spec, level: program,
     )
     spec = MeasureSpec(

@@ -33,6 +33,8 @@ from jasper.audio_measurement.program_analysis import (
     DriverResponse,
 )
 
+from tests.active_speaker_fixtures import empty_protection
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "crossover_v2_incident_20260810"
 ROLES = ("woofer", "tweeter")
 SESSION_ID = "cap_test_incident_20260810"
@@ -135,6 +137,7 @@ def _conductor() -> CrossoverV2Session:
         seams=seams,
         index_phase_map={1: "check", 2: "measure", 3: "verify"},
         driver_spacing_m=0.15,
+        measurement_protection_sections_by_role=empty_protection(_session_preset()),
     )
     # The incident's own CHECK solve, so the MEASURE program the fit reads
     # its sweep bounds from can be composed — the same state a session

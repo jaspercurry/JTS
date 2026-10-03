@@ -127,10 +127,7 @@ class CrossoverV2Session:
         target_bands: Mapping[str, Any] | None = None,
         driver_spacing_m: float | None = 0.0,
         timing_prior: str | None = None,
-        measurement_protection_sections_by_role: Mapping[
-            str, Sequence[CrossoverSection]
-        ]
-        | None = None,
+        measurement_protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]],
         lateral_prompts: Sequence[CloudPositionPrompt] = (),
         measure_specs_by_index: Mapping[int, MeasureSpec] | None = None,
     ) -> None:
@@ -150,12 +147,10 @@ class CrossoverV2Session:
         self._sweep_duration_limits_s = dict(driver_sweep_duration_limits_s or {})
         self._session_volume_db = float(session_volume_db)
         self._seams = seams
-        self._measurement_protection_sections_by_role = None
-        if measurement_protection_sections_by_role is not None:
-            self._measurement_protection_sections_by_role = {
-                str(role): tuple(sections)
-                for role, sections in measurement_protection_sections_by_role.items()
-            }
+        self._measurement_protection_sections_by_role = {
+            str(role): tuple(sections)
+            for role, sections in measurement_protection_sections_by_role.items()
+        }
         # ``None`` is undeclared spacing, never a default: disclose it rather than
         # silently folding it into the same 0.0 ``MeasurementGeometry.parallax_us``
         # already treats as "no correction".

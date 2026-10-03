@@ -130,7 +130,7 @@ def _capture_reference(bundle_dir: Path, row: Measurement, preset: Any) -> Summe
         output_channels=preset.channel_map.primary_index_by_role,
         unmodelled_channels={measurement_target_id(output.driver_role, output.output_variant): output.index
                              for output in preset.channel_map.variant_outputs},
-        configured_response_by_role=configured or {}, configured_polarity_by_role=polarity,
+        configured_response_by_role=configured, configured_polarity_by_role=polarity,
         band_hz=(max(1200.0, summed.validity_floor_hz or 0), 5000.0),
     )
     return replace(reference, graph_fingerprint=played_graph_fingerprint(record)) if reference else None

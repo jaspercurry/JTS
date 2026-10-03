@@ -88,7 +88,7 @@ from tests._camilla_readback_double import (
 )
 from tests._log_events import event_fields, event_records
 from tests.active_speaker_fixtures import (
-    driver_domain_graph, mono_output_topology, passive_stereo_output_topology,
+    empty_protection, driver_domain_graph, mono_output_topology, passive_stereo_output_topology,
     _topology, _full_range_stereo, _full_range_mono,
     _active_topology, _subwoofer_topology, _dual_apple_stereo,
 )
@@ -2019,7 +2019,7 @@ def test_passive_tuning_graph_keeps_the_active_proof(layout, scope, path, value,
     topology = (mono_output_topology(mode="full_range_passive") if layout == "mono"
                 else passive_stereo_output_topology())
     preset = resolve_capture_preset(topology)
-    profile = MeasurementGraphProfile(preset, topology, {"full_range": 0}, ACTIVE_PCM)
+    profile = MeasurementGraphProfile(preset, topology, {"full_range": 0}, ACTIVE_PCM, empty_protection(preset))
     candidate = MeasuredCrossoverCandidate(
         program_id="way1", analysis={"source": "prescribed"}, source_preset=preset,
         role_attenuations_db={"full_range": 0.0},

@@ -79,6 +79,7 @@ from jasper.audio_measurement.program_analysis.model import (
 from jasper.audio_measurement.program_analysis.verify_integrity import _verify_capture_integrity
 from jasper.web.correction_crossover_v2_wired import WiredCaptureAnswer
 
+from tests.active_speaker_fixtures import empty_protection
 from tests.test_active_speaker_profile import _two_way_preset
 from jasper.active_speaker.crossover_section import CrossoverSection, sections_by_role
 from jasper.active_speaker.branch_chain import crossover_response_db
@@ -395,6 +396,7 @@ def _conductor(
 ) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
     source_preset = kwargs.pop("source_preset", _preset())
+    kwargs.setdefault("measurement_protection_sections_by_role", empty_protection(source_preset))
     supplied_prior = "timing_prior" in kwargs
     if index_phase_map is None:
         index_phase_map = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: journey.PHASE_VERIFY}

@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_MIN_PAIRED_OCCURRENCES
 from jasper.active_speaker.crossover_v2.intervention import compose_sigma_db as _compose_sigma_db
 from jasper.active_speaker.crossover_v2.journey import (
@@ -73,6 +74,7 @@ def _profiled_conductor(*, woofer_peak: float, tweeter_peak: float):
         seams=FakeSeams().seams(),
         index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
         driver_spacing_m=0.15,
+        measurement_protection_sections_by_role=confirmed_protection_sections(profile, targets),
     )
     return c, topology, profile, targets, sv
 
@@ -257,6 +259,7 @@ def test_jts3_derived_hf_ceiling_drives_production_conductor_composition(tmp_pat
         seams=FakeSeams().seams(),
         index_phase_map={1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY},
         driver_spacing_m=0.15,
+        measurement_protection_sections_by_role=confirmed_protection_sections(profile, targets),
     )
     t_hi = _phase_program(c, PHASE_CHECK).segment("pilot_tweeter_hi")
     assert t_hi.effective_peak_dbfs == pytest.approx(-33.2 - GAIN_CAP_BACKOFF_DB)

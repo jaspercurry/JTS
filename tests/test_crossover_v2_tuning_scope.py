@@ -18,7 +18,7 @@ names would pin the test's spelling instead of the product's.
 
 from __future__ import annotations
 
-from tests.active_speaker_fixtures import compile_applied_fixture, isolated_candidate_bank as isolated_candidate_bank
+from tests.active_speaker_fixtures import compile_applied_fixture, empty_protection, isolated_candidate_bank as isolated_candidate_bank
 
 
 from copy import deepcopy
@@ -256,7 +256,7 @@ def tuning_profile():
     preset = replace(preset, crossover_regions=(region,))
     applied["recomposition_snapshot"]["preset"] = preset.to_dict()
     return MeasurementGraphProfile(
-        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM,
+        preset, topology, {"woofer": 0, "tweeter": 1}, ACTIVE_PCM, empty_protection(preset),
     )
 
 

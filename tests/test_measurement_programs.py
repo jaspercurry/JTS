@@ -67,7 +67,7 @@ def test_program_table_projections(site):
     composed = compose_candidate(BankedCandidate(candidate, "", "", Path("candidate.json")), base_profile={},
                                  sections={section.name: None for section in sections if section.reset})
     snapshot = baseline_record.recomposition_snapshot_for(candidate, design_draft={}, declaration=me.MeasurementGraphProfile(
-        candidate.source_preset, mono_output_topology(), {}, "null"))
+        candidate.source_preset, mono_output_topology(), {}, "null", {}))
     snapshot_header = {"schema_version", "domain", "topology_id", "topology_fingerprint", "preset", "corrections",
                        "driver_protection", "playback_device", "measured_candidate_fingerprint"}
     actual, expected = {

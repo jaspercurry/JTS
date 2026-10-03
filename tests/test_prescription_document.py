@@ -58,7 +58,7 @@ from jasper.active_speaker.round_packet import write_round_packet
 from tests.run_manifest_fixture import IN_ROOM_CLEARED, write_manifest
 from jasper.active_speaker.measured_crossover_candidate import MeasuredCrossoverAlignment, driver_corrections
 from jasper.cli import crossover_prescriber
-from tests.active_speaker_fixtures import mono_output_topology
+from tests.active_speaker_fixtures import empty_protection, mono_output_topology
 from tests.test_active_speaker_measured_crossover_candidate import (
     _acoustic_rear_document, _candidate, _rear_document, _room_correction,
 )
@@ -713,10 +713,8 @@ def test_bass_compose_uses_saved_layers_without_reviving_old_candidate(bank, sav
     assert child.room_correction == snapshot["room_correction"]
     assert child.analysis["measurement_status"] == "unmeasured"
     assert child.bass_extension == _bass_descriptor().payload()
-    profile = MeasurementGraphProfile(
-        ActiveSpeakerPreset.from_mapping(snapshot["preset"]), topology,
-        {"woofer": 0, "tweeter": 1}, "null",
-    )
+    preset = ActiveSpeakerPreset.from_mapping(snapshot["preset"])
+    profile = MeasurementGraphProfile(preset, topology, {"woofer": 0, "tweeter": 1}, "null", empty_protection(preset))
     baseline = yaml.safe_load(compile_tuning_graph(profile, candidate=candidate_from_applied_profile(topology, applied)))
     proposed = yaml.safe_load(compile_tuning_graph(profile, scope="candidate", candidate=child))
     assert validated_base_graph(proposed, child.bass_extension, (0,)) == baseline

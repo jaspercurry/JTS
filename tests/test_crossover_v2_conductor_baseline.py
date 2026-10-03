@@ -123,11 +123,6 @@ def test_measure_priors_compose_configured_path_from_ssots_and_freeze_input():
     assert required is not None and required.keys() == {"woofer", "tweeter"}
     for role, (lo, hi) in required.items():
         assert lo <= overlap[0] and hi >= overlap[1], role
-    legacy = _conductor(FakeSeams()).measure_priors()
-    assert legacy.measurement_protection_response_by_role is None
-    assert legacy.configured_crossover_response_by_role is None
-    assert legacy.configured_polarity_sign_by_role is None
-    assert legacy.candidate_required_band_hz_by_role is None
 
 
 def test_measure_program_gains_back_off_from_caps():
