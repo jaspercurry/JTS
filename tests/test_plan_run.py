@@ -25,7 +25,10 @@ from jasper.active_speaker.measurement_programs import (
     Pose, Preset, preset, run_preset,
 )
 from jasper.active_speaker.crossover_v2 import capture_dispatch
-from jasper.active_speaker.crossover_v2.programs import SessionExcitation, predictive_program_for_spec, program_for_spec
+from jasper.active_speaker.crossover_v2.capture_plan import build_inline_session_spec
+from jasper.active_speaker.crossover_v2.programs import (
+    SessionExcitation, excitation_from_context, predictive_program_for_spec, program_for_spec,
+)
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, round_inputs, with_records
 from jasper.active_speaker.crossover_v2.round_views.directivity import _pose as directivity_pose
@@ -2158,6 +2161,56 @@ def test_three_pose_preview_counts_preparation_and_timing(repeats, counts, timin
     assert facts["sweeps"] == sum(counts)
     timing_rows = [row for row in facts["pose_sweeps"][0] if row["kind"] == "summed_sweep"]
     assert [(row["repeat"], row["repeats"]) for row in timing_rows] == [(n, repeats) for n in range(1, repeats + 1)]
+
+
+@pytest.mark.parametrize("stated,played_at_one,repeats_at_one", [
+    ("preset", [["woofer", "tweeter"]] * 2, 2),
+    ("pose", [["woofer", "tweeter"]] * 2, 2),
+    ("driver_pose", [["woofer"], ["tweeter"]], 1),
+], ids=["preset", "pose", "driver_pose"])
+def test_a_take_plays_previews_and_prices_the_sweeps_its_preset_or_pose_states(stated, played_at_one, repeats_at_one):
+    """A preset row, or a pose of its layout, states how many sweeps each driver
+    plays in one take: each driver of a MEASURE take, or the one driver of a
+    driver's pose. The composer, the capture plan's sizing, the page's preview and
+    the dry run's price read that one count (ADR-0434)."""
+    roles = tuple(_roles())
+    context = SimpleNamespace(roles_bands=roles, driver_caps_dbfs={r.role: 0.0 for r in roles}, fc_hz=2500,
+                              driver_sweep_duration_limits_s={r.role: 6.0 for r in roles},
+                              driver_bands={r.role: r.band for r in roles}, safety_profile={}, role_targets={})
+    compose = predictive_program_for_spec(context)
+
+    def planned(row):
+        plan = ac.request_for_preset(row)
+        captures = plan_run.prepare_plan_captures(plan, roles_bands=roles)
+        swept = [index for index, c in enumerate(captures)
+                 if c.spec.graph_scope == "drivers" and c.spec.program_phase != "check"]
+        played = [[s.role for s in compose(replace(captures[index].spec, level_probe=False)).stimulus_segments()
+                   if s.kind == "sweep"] for index in swept]
+        bound = build_inline_session_spec(
+            [(c.spec, c.resolved(plan).prompt, c.stop.candidate_id) for c in captures], roles_bands=roles,
+            fc_hz=2500, excitation=excitation_from_context(context), acknowledgement_binding="a" * 32,
+            retries_per_pose=0)
+        sized = [bound.capture_plan.entries[index].duration_ms for index in swept]
+        facts = plan_run.preview_schedule(plan, captures, context)
+        previewed = [(r["role"], r["repeats"]) for pose in facts["pose_sweeps"] for r in pose if r["kind"] == "sweep"]
+        price = preflight(plan, ready_facts(plan, context=context, roles_bands=roles)).price
+        assert price == {"captures": len(captures), "mic_moves": 1, "seconds": round(facts["estimated_seconds"])}
+        return played, sized, previewed, price
+
+    # speaker/mark: CHECK, the timing take, then MEASURE twice at the mark;
+    # drivers/each: each driver alone at the mark.
+    default = run_preset("drivers/each" if stated == "driver_pose" else "speaker/mark")
+    one = {"preset": replace(default, sweeps_per_take=1),
+           "pose": run_preset("speaker/mark", poses=[
+               {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2, "sweeps_per_take": 1}]),
+           "driver_pose": replace(default, poses=tuple(replace(p, sweeps_per_take=1) for p in default.poses))}[stated]
+    (played, sized, previewed, price), (played_3, sized_3, previewed_3, price_3) = planned(one), planned(default)
+
+    assert (played, played_3) == (played_at_one, [take * 3 for take in played_at_one])
+    assert all(at_one < at_three for at_one, at_three in zip(sized, sized_3, strict=True))
+    assert previewed == [(role, repeats_at_one) for take in played for role in take]
+    assert previewed_3 == [(role, 3 * repeats_at_one) for take in played_3 for role in take]
+    assert price["captures"] == price_3["captures"] and price["seconds"] < price_3["seconds"]
 
 
 @pytest.mark.parametrize("muted", [False, True], ids=["over_limits", "output_muted"])

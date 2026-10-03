@@ -55,7 +55,7 @@ def _sweep_occurrence_index(segment_id: str) -> int:
 def _sweep_occurrences_by_role(
     locations: Sequence[SegmentLocation],
 ) -> dict[str, list[SegmentLocation]]:
-    """Group driver repeats by occurrence index and summed repeats by schedule."""
+    """Group driver repeats by occurrence index and summed sweeps by schedule."""
     by_role: dict[str, list[tuple[int, SegmentLocation]]] = {}
     for loc in locations:
         if loc.kind == KIND_SUMMED_SWEEP:
@@ -152,11 +152,10 @@ def estimate_drift(
     sample_rate: int,
     locations: Sequence[SegmentLocation],
 ) -> DriftEstimate:
-    kind = KIND_SWEEP if any(loc.kind == KIND_SWEEP for loc in locations) else KIND_SUMMED_SWEEP
-    stimulus_locs = [loc for loc in locations if loc.kind == kind]
+    stimulus_locs = [loc for loc in locations if loc.kind == KIND_SWEEP]
     occurrences_by_role = _sweep_occurrences_by_role(stimulus_locs)
-    primary = program.segment("sweep_w" if kind == KIND_SWEEP else "sweep_verify")
-    woofer_occurrences = occurrences_by_role.get(primary.role or "summed", [])
+    primary = program.segment("sweep_w")
+    woofer_occurrences = occurrences_by_role.get(primary.role or "", [])
     w1 = woofer_occurrences[0] if woofer_occurrences else None
     w2 = woofer_occurrences[-1] if len(woofer_occurrences) >= 2 else None
 
@@ -231,7 +230,7 @@ def estimate_drift(
             ("residual_desync", max_residual > GLITCH_RESIDUAL_SAMPLES),
             (GLITCH_INPUT_TIMELINE_SLIP, slip_rejects_capture(slip_fit)),
         )
-        if tripped and (kind == KIND_SWEEP or name == GLITCH_INPUT_TIMELINE_SLIP)
+        if tripped
     )
     glitch = bool(glitch_inputs)
 

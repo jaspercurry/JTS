@@ -1176,7 +1176,7 @@ def test_the_page_and_the_session_preview_the_takes_the_run_plays(monkeypatch, c
 
 
 _PRESET_KEYS = {"preset", "purposes", "description", "use_when", "regime", "branch_pair",
-                "cleared_layers", "stimulus", "layout", "layouts"}
+                "cleared_layers", "stimulus", "sweeps_per_take", "layout", "layouts"}
 _LAYOUT_KEYS = {"layout", "description", "use_when", "mover", "poses", "targets", "captures", "seconds", "refused"}
 
 

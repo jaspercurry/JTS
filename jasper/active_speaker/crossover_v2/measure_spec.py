@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass, fields, replace
 from typing import Any, Mapping, Sequence
 
+from jasper.audio_measurement.excitation import SWEEPS_PER_TAKE
 from jasper.platform.json_fields import finite_float
 from jasper.platform.speaker_layout import measurement_target_id
 
@@ -110,6 +111,9 @@ class MeasureSpec:
     #: Whether this take plays the courtesy prelude: its run's first take
     #: (:func:`~.capture_plan.announce_run`). A level probe never plays it (ADR-0417).
     courtesy_prelude: bool = False
+    #: How many sweeps each driver plays in this take, its stop's: MEASURE and a
+    #: driver's take read it; a summed or branch take plays its own shape (ADR-0434).
+    sweeps_per_take: int = SWEEPS_PER_TAKE
 
     def __post_init__(self) -> None:
         if self.stimulus is not None:

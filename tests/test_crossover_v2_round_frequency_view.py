@@ -31,7 +31,6 @@ from jasper.active_speaker.measurement_programs import POSE_KIND_BEARING, POSE_K
 from jasper.audio_measurement.household_mic import resolve_setup_calibration
 from jasper.audio_measurement.program import ExcitationProgram, build_verify_program, render_program_pcm
 from jasper.audio_measurement.program_analysis import MeasurementGeometry, analyze_program_capture
-from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.audio_measurement.wired_capture import WiredMicDevice, WiredRecording, decode_wav_to_mono
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.run_manifest_fixture import manifest_set, write_bundle_manifest, write_manifest
@@ -802,8 +801,8 @@ def _without_recordings(bundle: Path) -> None:
 
 
 _ROOM_PROGRAM = build_verify_program(2500, sweep_s=1.5, gain_db=-30, leading_pilot_gains_db=(-24, -14))
-_BASS_PROGRAM = repeat_summed_program(build_verify_program(2500, sweep_band_hz=(20, 1100), sweep_s=1.5, gain_db=-30),
-                                      passes=3, quiet_samples=96000, cooldown_s=2.0)
+_BASS_PROGRAM = build_verify_program(2500, sweep_band_hz=(20, 1100), sweep_s=1.5, gain_db=-30,
+                                     leading_pilot_gains_db=(-24, -14))
 
 
 @pytest.mark.parametrize("purpose,kind,program,gap", [

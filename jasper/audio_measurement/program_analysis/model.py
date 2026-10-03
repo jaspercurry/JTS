@@ -18,7 +18,6 @@ from jasper.audio_measurement.level import LevelReading
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 from jasper.audio_measurement.quality_model import DRIVER, TRUST_UNAVAILABLE
 from jasper.audio_measurement.recorded_impulse import RecordedImpulse
-from jasper.audio_measurement.repeated_sweep import SummedPassAlignment
 
 
 # ``__package__``, not ``__name__``: every submodule logs under the one
@@ -96,7 +95,7 @@ INTEGRITY_CHECK_FRAME_LEDGER = "frame_ledger"
 INTEGRITY_CHECK_SWEEP_HEARD = "summed_sweep_heard"
 INTEGRITY_CHECK_SWEEP_SCHEDULE = "summed_sweep_schedule"
 INTEGRITY_CHECK_CLIPPED_RUN = "clipped_run"
-# Repeat checks share the MEASURE bounds (DriftEstimate.glitch_inputs).
+# Repeat checks a VERIFY take records not evaluated: it plays one summed sweep.
 INTEGRITY_CHECK_REPEAT_EPSILON = "repeat_epsilon"
 INTEGRITY_CHECK_WITHIN_ROLE_DESYNC = "within_role_desync"
 INTEGRITY_CHECK_DISCONTINUITY_STEP = "discontinuity_step"
@@ -511,8 +510,6 @@ class CaptureIntegrity:
     # SIGNED: positive means the sweep arrived LATE (the insertion shape).
     schedule_residual_ms_worst: float | None = None
     clipped_segments: tuple[str, ...] = ()
-    pass_alignment: SummedPassAlignment | None = None
-    repeat_content: dict[str, Any] | None = None
 
     @property
     def failed(self) -> tuple[str, ...]:
@@ -551,8 +548,6 @@ class CaptureIntegrity:
             "locate_confidence_min": self.locate_confidence_min,
             "schedule_residual_ms_worst": self.schedule_residual_ms_worst,
             "clipped_segments": list(self.clipped_segments),
-            **(self.pass_alignment.to_dict() if self.pass_alignment is not None else {}),
-            **({"repeat_content": self.repeat_content} if self.repeat_content is not None else {}),
         }
 
 
@@ -883,12 +878,12 @@ class AnchorEvidence:
     presence: float | None = None
     confidence: float | None = None
     corroborated: bool | None = None
+    # Nothing sets these four (ADR-0434); they go with their reader,
+    # capture_dispatch.assess.
     anchor: str | None = None
     witness: str | None = None
-    # Capture time minus program time, in milliseconds.
     shift_ms: float | None = None
     witness_residual_ms: float | None = None
-    # Two-pilot arbitration only; the sweep-witness path has one hypothesis, so no runner-up.
     runner_up_presence: float | None = None
     runner_up_confidence: float | None = None
     witnesses_tried: int | None = None

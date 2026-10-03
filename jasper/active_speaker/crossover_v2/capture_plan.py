@@ -91,7 +91,7 @@ def build_inline_session_spec(
             program = build_check_program(roles_bands, courtesy_prelude=prelude)
         elif phase == PHASE_MEASURE:
             program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands,
-                                            courtesy_prelude=prelude)
+                                            repeat_count=spec.sweeps_per_take, courtesy_prelude=prelude)
         else:
             program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
                                            sweep_band_hz=spec.sweep_band_hz or None,

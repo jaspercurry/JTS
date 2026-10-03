@@ -10,7 +10,6 @@ import logging
 import sys
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from itertools import accumulate, groupby
 from collections import Counter
@@ -64,23 +63,12 @@ _ASSESSMENT_FAILURES = (ValueError, KeyError, OSError)
 #: dB a branch take's sum plays under the lower of its branches' levels: two
 #: branches in phase read at most 6 dB over the louder one alone (ADR-0403 §3).
 BRANCH_SUM_MARGIN_DB = 6.0
-#: A graded take's host effects (a rearm, an acceptance), held while its capture
-#: plays so that no later stimulus of it is composed from them (ADR-0383).
-_held_effects: ContextVar[list[Callable[[], None]] | None] = ContextVar("held_effects", default=None)
 
 
 def after_grading(effect: Callable[[], None]) -> None:
-    """Run ``effect`` now, or, inside a capture, before its next take is graded or once it has played."""
-    held = _held_effects.get()
-    if held is None:
-        effect()
-    else:
-        held.append(effect)
-
-
-def _release(held: list[Callable[[], None]]) -> None:
-    while held:
-        held.pop(0)()
+    """Run a graded take's host effect (a rearm) now: a capture plays one
+    stimulus, so nothing later in it is composed from the effect (ADR-0434)."""
+    effect()
 
 
 @dataclass
@@ -421,7 +409,6 @@ async def _run(
 
     def grade(item: _Work, spec: MeasureSpec, record: Mapping[str, Any], level_verdict: TakeVerdict) -> TakeVerdict:
         try:
-            _release(_held_effects.get() or [])
             analysis = analyze(record)
             program = ExcitationProgram.from_dict(record["program"]) if record.get("program") else None
             assessed = (assessor or assess)(analysis, phase=program.phase if program else spec.program_phase or "verify",
@@ -659,17 +646,12 @@ async def _run(
                                replay=_is_replay(attempt, ledger, spent))
                 # The bank judges each take before it writes the record (ADR-0383).
                 manifest.judge = partial(judge, item, spec)
-                held: list[Callable[[], None]] = []
                 token = playback_observer.set(partial(publish_sweeps, progress, gate, before) if gate else None)
-                holding = _held_effects.set(held)
                 try:
                     outcome = await measure(session, spec) if measure else await session.measure(spec)
                 finally:
                     playback_observer.reset(token)
-                    _held_effects.reset(holding)
                     manifest.judge = None
-                if held:
-                    await asyncio.to_thread(_release, held)
                 manifest.detail = next((s.detail for s in outcome.stimuli if s.detail), "")
                 verdict = None
                 records = attempt_records()

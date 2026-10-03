@@ -103,7 +103,6 @@ from jasper.audio_measurement.program import (
     segment_stimulus,
 )
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
-from jasper.audio_measurement.repeated_sweep import repeat_summed_program
 from jasper.active_speaker.crossover_v2 import capture_dispatch as cd
 from jasper.audio_measurement.program_analysis import locate as locate_mod
 from jasper.audio_measurement.program_analysis.model import (
@@ -114,7 +113,6 @@ from jasper.audio_measurement.program_analysis.model import (
     LOCATOR_RATE_HZ,
     SEGMENT_SEARCH_S,
     SWEEP_LOCATE_CONFIDENCE_FLOOR,
-    SWEEP_SCHEDULE_RESIDUAL_CEILING_MS,
 )
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_CHECK_SWEEP_HEARD,
@@ -1559,7 +1557,7 @@ def test_the_in_band_sweep_reading_counts_only_when_it_clears_the_floor(monkeypa
     readings = {"full": (101, full, 0.5), "banded": (102, banded, 0.6)}
     bands = []
 
-    def locate(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
+    def locate(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
         bands.append(band_hz)
         return readings["full" if band_hz is None else "banded"]
 
@@ -1627,52 +1625,6 @@ def test_measure_without_anchor_evidence_has_no_anchor_rung():
     assert screen.evidence["mic_meter_status"] == "unmeasured"
 
 
-@pytest.mark.parametrize("passes,displacement_ms,buried", [
-    (2, 0, False), (3, 0, False), (3, 0, True),
-    (2, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
-    (2, 2 * SEGMENT_SEARCH_S * 1000, False),
-    (3, -2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
-    (3, 2 * SWEEP_SCHEDULE_RESIDUAL_CEILING_MS, False),
-    (3, 2 * SEGMENT_SEARCH_S * 1000, False),
-])
-def test_repeated_summed_anchor_uses_sweep_spacing(passes, displacement_ms, buried):
-    program = _verify_program(with_pilots=False, sweep_band_hz=(20.0, 1100.0))
-    program = repeat_summed_program(program, passes=passes, quiet_samples=SR, cooldown_s=2)
-    capture = _pristine(program, noise=1e-6)
-    if displacement_ms or buried:
-        second = program.segment("sweep_verify_repeat_1")
-        start = GLOBAL_OFFSET + second.start_sample
-        stop = start + second.n_samples + program.segment("tail").n_samples
-        samples = capture[start:stop].copy()
-        capture[start:stop] = 0
-        shift = round(displacement_ms * SR / 1000)
-        if buried:
-            samples = np.random.default_rng(19).normal(0, 0.01, samples.size) + samples * 1e-6
-        capture[start + shift:stop + shift] = samples
-
-    analysis = analyze_program_capture(program, capture, SR)
-    verdict = cd.assess(analysis, phase="verify", program=program)
-    anchor = analysis.anchor
-    assert anchor.anchor == "sweep_verify"
-    assert anchor.witness == program.segment("sweep_verify_repeat_1").segment_id
-    assert anchor.shift_ms == pytest.approx((GLOBAL_OFFSET + 200) / SR * 1000, abs=0.5)
-    assert anchor.corroborated is (not displacement_ms and not buried)
-    assert anchor.ambiguous is bool(displacement_ms)
-    assert verdict.ok is (not displacement_ms and not buried)
-    assert verdict.fault == ("anchor_ambiguous" if displacement_ms else "anchor_too_quiet" if buried else None)
-    if buried:
-        assert anchor.confidence < SWEEP_LOCATE_CONFIDENCE_FLOOR
-        assert verdict.charge == "speaker"
-    assert verdict.evidence["anchor"] == anchor.anchor
-    assert verdict.evidence["anchor_witness"] == anchor.witness
-    assert verdict.evidence["anchor_shift_ms"] == anchor.shift_ms
-    assert verdict.evidence["anchor_witness_residual_ms"] == anchor.witness_residual_ms
-    assert verdict.evidence["anchor_presence"] == anchor.presence
-    assert verdict.evidence["anchor_confidence"] == anchor.confidence
-    if not buried:
-        assert anchor.witness_residual_ms == pytest.approx(displacement_ms, abs=0.5)
-
-
 # --------------------------------------------------------------------------- #
 # #5632 F2 -- a near-tie the anchor pair's own schedule clears
 #
@@ -1714,11 +1666,10 @@ def _script_witness(monkeypatch, program, capture, readings, witness_id):
     slots = dict(zip((offset + witness.start_sample,
                       offset + witness.start_sample - (hi.start_sample - lo.start_sample)), readings))
 
-    def scripted(capture, stim, scheduled, n, *, sample_rate, band_hz=None, search_samples=None):
+    def scripted(capture, stim, scheduled, n, *, sample_rate, band_hz=None):
         if band_hz is None and n == witness.n_samples and scheduled in slots:
             return (scheduled, *slots[scheduled])
-        return locate(capture, stim, scheduled, n, sample_rate=sample_rate,
-                      band_hz=band_hz, search_samples=search_samples)
+        return locate(capture, stim, scheduled, n, sample_rate=sample_rate, band_hz=band_hz)
 
     monkeypatch.setattr(locate_mod, "_locate_in_window", scripted)
 

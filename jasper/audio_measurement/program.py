@@ -29,6 +29,7 @@ from typing import Any, Mapping, Sequence
 
 from jasper.audio_measurement.excitation import (
     AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
+    SWEEPS_PER_TAKE,
 )
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
 from jasper.audio_measurement.sweep import (
@@ -85,11 +86,6 @@ LEVEL_PROBE_SEGMENT_PREFIX = "level_probe_"
 LEVEL_PROBE_BURST_S = 0.5
 #: Each next burst is at least this much longer, in whole cycles at the band's floor.
 LEVEL_PROBE_GROWTH_S = 0.125
-
-# Per-driver occurrences in MEASURE (#1668): N-1 bit-identical repeats feed
-# the drift/glitch estimator (§3.1); must stay under
-# CROSSOVER_CAPTURE_MAX_WAV_BYTES (5 MiB), pinned by a test.
-MEASURE_REPEAT_COUNT = 3
 
 # Unit-peak reference level the per-segment digital gain applies ON TOP of.
 BASE_STIMULUS_PEAK_DBFS = AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
@@ -821,7 +817,7 @@ def build_measure_program(
     gain_plan: Mapping[str, float],
     roles_bands: Sequence[RoleBand],
     *,
-    repeat_count: int = MEASURE_REPEAT_COUNT,
+    repeat_count: int = SWEEPS_PER_TAKE,
     sweep_durations: Mapping[str, float] | None = None,
     sweep_duration_limits_s: Mapping[str, float] | None = None,
     guard_s: float = DEFAULT_MEASURE_GUARD_S,

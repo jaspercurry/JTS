@@ -25,6 +25,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from jasper.platform.json_fields import finite_float
+from jasper.audio_measurement.excitation import SWEEPS_PER_TAKE
 from jasper.audio_measurement.program import RoleBand
 
 from .crossover_v2.refusal_copy import REASON_MEASUREMENT_CANDIDATE_REQUIRED, REASON_WALK_MOVER_MISMATCH
@@ -189,7 +190,9 @@ class AngleStop:
     (:data:`~.measurement_programs.BRANCH_PAIRS`). A pose that names its
     driver plays that one target alone (ADR-0366). A stop is one take of its
     pose, so its pose states no take count; the request's ``repeats`` repeats
-    every stop.
+    every stop. ``sweeps_per_take`` is how many sweeps each driver plays in
+    that take: its pose's, else its preset's (:func:`request_for_preset`,
+    ADR-0434).
     """
 
     pose: Pose
@@ -201,6 +204,7 @@ class AngleStop:
     purposes: tuple[str, ...] = ()
     stimulus: Mapping[str, Any] | None = None
     branch_pair: str = BRANCH_PAIR_DRIVERS
+    sweeps_per_take: int = SWEEPS_PER_TAKE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_id", candidate_identity(self.candidate_id, for_spec=True))
@@ -553,10 +557,11 @@ def request_for_preset(
     return AngleCaptureRequest(
         stops=tuple(
             AngleStop(
-                replace(pose, repeats=1),
+                replace(pose, repeats=1, sweeps_per_take=None),
                 REGIME_SUMMED if candidates and preset.regime == REGIME_PER_DRIVER else preset.regime,
                 candidate_id=candidate, purpose=preset.purpose, purposes=preset.purposes,
                 stimulus=preset.stimulus, branch_pair=preset.branch_pair,
+                sweeps_per_take=pose.sweeps_per_take or preset.sweeps_per_take,
             )
             for pose in plan_poses(preset, targets, driver)
             for _ in range(pose.repeats)

@@ -59,6 +59,7 @@ from jasper.active_speaker.branch_chain import confirmed_protection_sections
 from jasper.active_speaker.crossover_v2.measure_spec import branch_channels_for, branch_probes, solo_target
 from jasper.active_speaker.measurement_emit import MeasurementGraphProfile, emit_measurement_graph
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.excitation import SWEEPS_PER_TAKE
 from jasper.audio_measurement.program import (
     KIND_COURTESY_TONE,
     KIND_SUMMED_SWEEP,
@@ -331,8 +332,9 @@ def test_the_backoff_shows_through_when_the_cap_does_not_bind():
         != ex.verify_program(courtesy_prelude=True).stimulus_id
     )
     assert (
-        ex.measure_program(GAIN_PLAN_DB, courtesy_prelude=False, extra_backoff_db=3.0).stimulus_id
-        != ex.measure_program(GAIN_PLAN_DB, courtesy_prelude=False).stimulus_id
+        ex.measure_program(GAIN_PLAN_DB, courtesy_prelude=False, repeat_count=SWEEPS_PER_TAKE,
+                           extra_backoff_db=3.0).stimulus_id
+        != ex.measure_program(GAIN_PLAN_DB, courtesy_prelude=False, repeat_count=SWEEPS_PER_TAKE).stimulus_id
     )
 
 
@@ -498,7 +500,7 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():
     excitation = replace(_excitation(CAPS), summed_sweep_band_hz=(20.0, 20000.0))
-    program = excitation.measure_program(GAIN_PLAN_DB, courtesy_prelude=False)
+    program = excitation.measure_program(GAIN_PLAN_DB, courtesy_prelude=False, repeat_count=SWEEPS_PER_TAKE)
     assert {
         s.role: (s.f1_hz, s.f2_hz) for s in program.stimulus_segments() if s.kind == "sweep"
     } == {rb.role: (rb.band.lower_hz, rb.band.upper_hz) for rb in excitation.roles}
