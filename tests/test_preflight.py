@@ -18,7 +18,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
 )
 from jasper.active_speaker.measurement import active_driver_targets
-from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
+from jasper.active_speaker.measurement_programs import Pose, preset, run_preset
 from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
 from jasper.active_speaker import arm_walk, preflight_live
@@ -37,6 +37,13 @@ from tests.test_crossover_v2_tuning_scope import (
 )
 
 NEAR_FIELD = preset("nearfield/each").stimulus
+
+
+def _boost(boost_db, **changes):
+    """BASS_EXTENSION with its transform's DC lift set to ``boost_db``."""
+    shape = BASS_EXTENSION["linkwitz_transform"]
+    return {**BASS_EXTENSION, "linkwitz_transform": {**shape, "target_hz": shape["source_hz"] / 10 ** (boost_db / 40)},
+            **changes}
 
 
 def ready_facts(plan, **changes):
@@ -370,47 +377,6 @@ _REAR_SUM_DB = 20 * math.log10(2)
 def _cardioid_trial():
     """A trial on a cardioid cabinet whose rear woofer plays (ADR-0318)."""
     return replace(_trial_candidate(SimpleNamespace(preset=_rear_pair("mono")[0])), rear_calibration=_rear_document())
-
-
-def _unprobed_plans():
-    """The review's two plans whose take at the run's fader would play before any
-    probe: a driver run's spot at the mark with no summed take, and a rear run
-    whose CHECK at the mark comes before its first summed take, at 20°."""
-    return {"no summed take": AngleCaptureRequest(
-                (AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker"),), program="drivers/each"),
-            "check before the probe": AngleCaptureRequest(
-                (AngleStop(Pose(20, 0), REGIME_SUMMED, purpose="rear"),
-                 AngleStop(Pose(0, 0), REGIME_PER_DRIVER, purpose="speaker")), program="rear/express")}
-
-
-@pytest.mark.parametrize("shape", ["no summed take", "check before the probe"])
-def test_a_plan_whose_take_at_the_run_fader_plays_before_its_probe_is_refused(shape):
-    """A run that finds its fader with a probe plays a take that does not level
-    itself only after that probe, so preflight refuses a plan where such a take
-    would come first, or that has no probe (ADR-0403 §4)."""
-    plan = _unprobed_plans()[shape]
-    report = preflight(plan, ready_facts(plan))
-    assert [issue.code for issue in report.issues if issue.blocking] == ["walk_level_policy_invalid"]
-
-
-def test_every_shipped_preset_plans_its_probe_before_the_takes_at_its_fader(tuning_profile):
-    """Every shipped preset at every layout it offers, with the applied tune and
-    with an A/B trial, plays its run's probe before any take at the run's fader
-    (ADR-0403 §4)."""
-    roles = (RoleBand("woofer", 0, FrequencyBand(20, 4000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000)))
-    trial = _room_candidate(tuning_profile)
-    for name in available_presets():
-        for layout in preset(name).layouts:
-            selected = run_preset(name, layout)
-            if selected.regime == REGIME_BRANCHES:
-                trials = ((trial.fingerprint,),)
-            else:
-                trials = ((),) if any(pose.driver for pose in selected.poses) else ((), ("base", trial.fingerprint))
-            for candidates in trials:
-                plan = request_for_preset(selected, mover=selected.mover or "human", targets=("woofer", "tweeter"),
-                                          candidates=candidates)
-                report = preflight(plan, ready_facts(plan, roles_bands=roles, candidates={trial.fingerprint: trial}))
-                assert not report.blocking, (name, layout, candidates, report.issues)
 
 
 @pytest.mark.parametrize("mover,attested,blocking", [

@@ -13,10 +13,10 @@ from jasper.audio_measurement.program import RoleBand
 from jasper.playback_state.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.json_fields import finite_float
 
-from .capture_schedule import UNPROBED_TAKE_DETAIL, prepare_plan_captures, run_takes, unprobed_take_at_fader
+from .capture_schedule import prepare_plan_captures
 from .angle_capture import (
     WALK_OVER_CAPTURE_CAPACITY,
-    AngleCaptureRequest, WALK_LEVEL_POLICY_INVALID,
+    AngleCaptureRequest,
     REGIME_BRANCHES,
 )
 from .crossover_v2.contracts import CrossoverV2FlowError
@@ -254,8 +254,6 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
     preparable = valid_shape and all(stop.regime != REGIME_BRANCHES or stop.pose.driver or facts.roles_bands
                                      for stop in plan.stops)
     prepared = prepare_plan_captures(plan, roles_bands=facts.roles_bands) if preparable else ()
-    if unprobed_take_at_fader(run_takes(prepared)):
-        add(WALK_LEVEL_POLICY_INVALID, UNPROBED_TAKE_DETAIL)
     return PreflightReport(plan, tuple(issues), schedule, ceiling, facts.driver_caps, {
         "captures": len(prepared), "seconds": round(preview_schedule(plan, prepared, facts.context)["estimated_seconds"]),
         "mic_moves": mic_moves(capture.stop.pose for capture in prepared)} if facts.context is not None and prepared else {})

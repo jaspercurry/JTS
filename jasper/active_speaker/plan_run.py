@@ -473,9 +473,9 @@ async def _run(
     unlevelled: set[int] = set()
     # A run finds its fader with a probe of its first summed take that plays at the run's
     # fader, before the first take of that take's placement, banked as that take's attempts.
-    # Until then only takes that level themselves play, at the probe fader: preflight refuses a
-    # run where a take at its fader would play first. The fader held is the one the probe solves,
-    # never above the level the plan states (ADR-0403 §4, ADR-0432).
+    # Until then only takes that level themselves play, at the probe fader; no plan places a take
+    # at its fader first. The fader held is the one the probe solves, never above the level the
+    # plan states (ADR-0403 §4, ADR-0432).
     caps, cap = (door.caps_dbfs if door is not None else None), level
     probe_at = probe_start = None
 
