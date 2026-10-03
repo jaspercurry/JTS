@@ -231,11 +231,9 @@ def _interval_mask(
 def spatial_exclusion_limit(
     freqs_hz: np.ndarray, excluded_bands_hz: Sequence[tuple[float, float]],
 ) -> np.ndarray:
-    """Zero allowed depth on honesty-masked bins, the ceiling sentinel
-    elsewhere. ``excluded_bands_hz`` is the merged honesty mask (combiner's
-    power-vs-median screen union the identified-null registry) as
-    frequency intervals, since the two producers live on the combiner's
-    grid and this module on its own. See :func:`_interval_mask`.
+    """Zero allowed depth on excluded bins, the ceiling sentinel elsewhere.
+    ``excluded_bands_hz`` are the spans where features move with position
+    (ADR-0430). See :func:`_interval_mask`.
     """
     return np.where(
         _interval_mask(freqs_hz, excluded_bands_hz), 0.0, ENVELOPE_CEILING_SENTINEL_DB

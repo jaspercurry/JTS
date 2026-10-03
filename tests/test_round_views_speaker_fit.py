@@ -338,6 +338,47 @@ def test_baseline_design_poses_keep_both_angles_and_the_on_axis_take(speaker_rou
         np.testing.assert_allclose(response.magnitude_db, take["curves"][0]["magnitude_db"])
 
 
+def test_a_feature_that_moves_with_angle_stays_uncorrected(speaker_round):
+    """ADR-0430: from six positions, the span a null walks is not corrected; a fixed peak still is."""
+    root, record, program, *_ = speaker_round
+    inputs = round_inputs(root)
+    directory, _ = round_artifact_dir(inputs.session_dir)
+    response = replace(response_from_banked_curve(record["curves"][1])[0], repeat_responses=())
+    rows = []
+    # The walk stays inside the mark's boost bell (about ±0.24 octave), where the classifier tracks it.
+    for index, (azimuth, elevation, null_hz) in enumerate(
+        [(0, 0, 6000), (-20, 0, 5300), (20, 0, 6800), (0, -10, 5500), (0, 10, 6500), (-10, 0, 7000)],
+    ):
+        db = sum(gain * np.exp(-0.5 * (np.log2(response.freqs_hz / hz) / 0.1) ** 2) for gain, hz in ((-8, null_hz), (6, 9000)))
+        measured = replace(response, magnitude_db=db, complex_tf=10 ** (db / 20) + 0j, gating={**response.gating, "window_ms": 50.0})
+        analysis = ProgramAnalysis(phase="measure", stimulus_id=program.stimulus_id, locations=(),
+                                   driver_responses=(replace(measured, repeat_responses=(measured, measured)),))
+        curves = [c for c in record["curves"] if c["role"] != "tweeter"] + analysis_curve_records(analysis, program)
+        take = {**record, "curves": curves, "take_id": f"pose-{index}", "position_deg": azimuth, "vertical_deg": elevation}
+        path = directory / "positions" / f"{take['take_id']}.json"
+        path.write_text(json.dumps(take))
+        rows.append((str(path.relative_to(inputs.session_dir / "evidence/v1/artifacts")), take))
+    answers = {}
+    for count in (1, 5, 6):
+        group = manifest_set(rows[:count], set_id="tweeter")
+        group["capture_basis"].update(role="tweeter")
+        write_manifest(root, groups=[group])
+        answers[count] = speaker_fit(inputs, _joined(inputs), "tweeter", "pose-0")["linearization"]["tweeter"]
+    fits = {count: {k: v for k, v in answer["fit"].items() if k != "position_spread_db"} for count, answer in answers.items()}
+
+    def correction_db(fit, lo, hi):
+        filters = [LinearizationFilter(**one) for one in fit["filters"]]
+        return 20 * np.log10(np.abs(complex_correction_response(filters, np.geomspace(lo, hi, 50))))
+
+    assert fits[5] == fits[1] and answers[5]["boost_evidence"]["excluded_bands_hz"] == []
+    assert correction_db(fits[5], 5300, 7000).max() > 3
+    (lo, hi), = answers[6]["boost_evidence"]["excluded_bands_hz"]
+    assert (lo, hi) == pytest.approx((5300, 7000), rel=0.02)
+    assert not any(lo <= one["freq"] <= hi for one in fits[6]["filters"] if one["biquad_type"] == "Peaking")
+    assert correction_db(fits[6], lo, hi).max() < 0.5
+    assert any(abs(np.log2(one["freq"] / 9000)) < 0.1 and one["gain"] < -1 for one in fits[6]["filters"])
+
+
 @pytest.mark.parametrize("marks,pairs,spread", [(2, 1, 1), (4, 6, 3)])
 def test_current_round_packet_uses_mark_pairs(speaker_round, marks, pairs, spread):
     root, record, *_ = speaker_round
