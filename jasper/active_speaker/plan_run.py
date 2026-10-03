@@ -28,8 +28,9 @@ from jasper.audio_measurement.program_analysis import ProgramAnalysis
 from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S, WiredSplMonitor
 from jasper.runtime.measurement_window import MeasurementWindowError
 
+from ._common import MeasurementGraphRefused
 from .angle_capture import (
-    WALK_COMMISSIONING_STOP_UNSET, WALK_SPL_CALIBRATION_REQUIRED, WALK_STIMULUS_NOT_ACCEPTED, WALK_LEVEL_POLICY_INVALID,
+    WALK_COMMISSIONING_STOP_UNSET, WALK_SPL_CALIBRATION_REQUIRED, WALK_LEVEL_POLICY_INVALID,
     AngleCaptureRequest, LateralWalkRefused,
     level_sets, resolve_request, take_level,
 )
@@ -316,8 +317,8 @@ async def run_plan(
         try:
             baseline_id = (baseline_candidate_id()
                            if any(capture.spec.candidate_id == BASE_CANDIDATE for capture in captures) else "")
-        except ValueError as exc:
-            raise LateralWalkRefused(getattr(exc, "code", WALK_STIMULUS_NOT_ACCEPTED), str(exc)) from exc
+        except MeasurementGraphRefused as exc:
+            raise LateralWalkRefused(exc.code, str(exc)) from exc
     except LateralWalkRefused as exc:
         manifest.reason, manifest.detail, manifest.finalized = exc.reason, exc.detail, True
         await manifest.persist()
