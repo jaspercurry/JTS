@@ -725,13 +725,10 @@ def test_program_graph_startup_recovery_is_exact_and_fail_closed(
 
 
 def test_main_configures_root_logging_at_info(wizard_harness):
-    """``event=dsp.baseline_base_trim_banked`` (and every other INFO event this
-    process logs) needs a root handler at INFO, or Python's ``lastResort``
-    floors at WARNING and drops it silently — a trim could replace another
-    with nothing anywhere saying so. ``tests/test_cli_driver_trim.py`` pinned
-    this same dependency for the now-deleted ``jasper-driver-trim`` verb
-    (#3388); this process is the only one left that reaches the apply seam,
-    so it is the one that must configure it now.
+    """``event=correction.crossover_apply_succeeded`` (and every other INFO
+    event this process logs) needs a root handler at INFO, or Python's
+    ``lastResort`` floors at WARNING and drops it silently. This process is the
+    one that reaches the apply seam, so it is the one that must configure it.
 
     Unredacted by design: this file is a listed entry in
     ``tests/test_logging_setup.py``'s ``_ALLOWLIST``, which is why it hands

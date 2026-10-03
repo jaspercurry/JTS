@@ -47,7 +47,6 @@ def _source_payload(
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
-        # Banked driver trims must match the declaration they measured.
         "crossover_preview_fingerprint": crossover_preview_fingerprint(
             crossover_preview, design_draft
         ),

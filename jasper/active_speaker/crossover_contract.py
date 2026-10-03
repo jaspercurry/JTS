@@ -28,13 +28,6 @@ def measured_level_match_applied(snapshot: Mapping[str, Any]) -> bool:
     ANY role sourced ``measured`` is enough, deliberately: an operator pinning
     one driver does not un-measure the speaker, and the whole profile is still
     the product of a measured level match.
-
-    Extracted so the two consumers of this question cannot drift apart.
-    :func:`_snapshot_owner` below decides Layer-A ownership with it, and
-    ``driver_base_trim.bank_applied_base_trim`` decides whether an applied
-    profile still counts as measured evidence — those answers disagreeing is
-    how a mixed candidate came to CLEAR a bank the contract considered
-    automatic.
     """
 
     sources = {

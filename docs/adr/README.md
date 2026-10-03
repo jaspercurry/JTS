@@ -14,7 +14,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0101](0101-proven-once-disclose-on-change.md) | Proven once, disclose on change — validity-proof gates stop parking working systems | amended by 0185 |
 | [0199](0199-the-handoff-doc-corpus-is-deleted.md) | The HANDOFF doc corpus is deleted | accepted |
 | [0226](0226-constrained-hardware-doctrine-push-dont-pull-no-spawns-one-interpreter.md) | Constrained-hardware doctrine — push don't pull, no spawns, one interpreter | accepted |
-| [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | §9 amended by 0382 |
+| [0227](0227-owner-rulings-the-prose-pass-surfaced.md) | Owner rulings the tuning prose pass surfaced with no ADR home | §9 amended by 0382; §§7–8 superseded by 0418 |
 | [0228](0228-rulings-carried-out-of-refactor-tuning-on-its-retirement.md) | Rulings carried out of REFACTOR-TUNING-2026-08 on its retirement | amended by 0230, 0369; §7's `measure_spec.py` citation superseded by 0380 |
 | [0229](0229-the-bass-extension-plan-is-exempt-from-the-handoff-deletion.md) | The bass-extension plan is exempt from the HANDOFF deletion | superseded by 0304 |
 | [0231](0231-four-rulings-that-lived-only-in-code-comments.md) | Four rulings that lived only in code comments are recorded here, and one boundary note | §5 superseded by 0259 |
@@ -263,7 +263,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0208](0208-the-correction-observable-subtracts-the-cushion-decay-demand.md) | The correction observable subtracts the cushion-decay demand | superseded by 0275 |
 | [0209](0209-the-quieter-direction-relaxer-follows-the-claim-not-the-verdict-name.md) | The quieter-direction relaxer follows the claim, not the verdict name | accepted |
 | [0210](0210-polarity-has-two-frames-and-one-conversion-owner.md) | Polarity has two frames, and one conversion owner | accepted |
-| [0212](0212-way-1-reuses-the-existing-layers-it-does-not-fork-them.md) | Way-1 reuses the existing layers; it does not fork them | accepted |
+| [0212](0212-way-1-reuses-the-existing-layers-it-does-not-fork-them.md) | Way-1 reuses the existing layers; it does not fork them | base-trim refusal and journal line superseded by 0418 |
 | [0214](0214-a-raised-cushion-target-is-a-declared-window-not-a-measurement.md) | A raised cushion target is a declared window, not a measurement | amended by 0250, 0275, superseded by 0272 |
 | [0216](0216-curve-slots-are-fixed-so-a-quiet-save-takes-the-live-edit-path.md) | Curve slots are fixed, so a quiet save takes the live-edit path | accepted |
 | [0219](0219-a-durable-save-that-moves-only-a-trim-writes-in-place.md) | A durable save that moves only a trim writes in place | accepted |
@@ -392,4 +392,5 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0415](0415-the-verify-pilot-transfer-gate-is-gone.md) | The VERIFY pilot-transfer gate is gone: no take is refused as `verify_level_shift` or `verify_inconclusive`; the `pilot_transfer_prior` and `measure_gate_window_ms` branches of `capture_dispatch.py` and the two registry rows are deleted, and the evidence ADR-0182 quotes stays in that ADR | accepted |
 | [0416](0416-the-measurement-overlays-go.md) | The measurement overlays go: a `MeasureSpec` states no polarity flip, delay or level match, the session installs each take's graph with none and the program emitter takes none; a take's record drops the four keys that were always constant, and a delay or a polarity flip is measured as a candidate | accepted |
 | [0417](0417-the-courtesy-prelude-announces-each-run-once.md) | The courtesy prelude announces each run once: a run's first take plays it and a level probe never does, so a run that opens on a probe plays it on the take that follows; `capture_plan.announce_run` marks that take, the run that finds the fader applies it, and no phase list remains | accepted |
+| [0418](0418-the-measured-base-trim-record-goes.md) | The measured base-trim record goes: an apply no longer writes or clears a trim record; `driver_base_trim.py`, its path override and its event are deleted, the applied profile keeps its own trims, and a record file left on a speaker stays unread | accepted |
 | [0419](0419-the-bass-alignment-fit-reads-only-trusted-bins.md) | The bass alignment fit reads only trusted bins: a bin's band must clear the bass view's 20 dB SNR floor (`--take` from its bass reading, the near-field fit from its view's band rows), the curve and the model are smoothed alike at 1/3 octave, and a band left with fewer than three qualified bins refuses `coverage_short` | accepted |
