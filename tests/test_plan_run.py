@@ -1313,11 +1313,12 @@ def test_each_graph_of_a_close_set_probes_once():
 
 
 @pytest.mark.parametrize(("purposes", "probes"), [(("room", "speaker"), [True, True]),
-                                                  (("rear", "speaker"), [True, False])])
+                                                  (("rear", "room"), [True, False])])
 def test_a_close_set_is_the_graph_its_takes_play(purposes, probes):
     """Two purposes at one close spot share a probe only when their takes play
-    one graph: an in-room take on the base plays its room and bass layers cleared,
-    a rear or speaker take plays none cleared (ADR-0406, ADR-0429)."""
+    one graph: an in-room take on the base and every rear take play the room and
+    bass layers cleared, a speaker take plays none cleared (ADR-0406, ADR-0429,
+    ADR-0436)."""
     pose = Pose(0, 0, kind="behind", distance_m=0.1)
     request = ac.AngleCaptureRequest(stops=tuple(ac.AngleStop(pose, ac.REGIME_SUMMED, purpose=purpose)
                                                  for purpose in purposes))
@@ -1867,7 +1868,7 @@ async def test_a_run_banks_its_preset_and_its_layout():
 
 @pytest.mark.parametrize("name,layout,banked", [
     ("speaker/mark", "speaker_mark", {("speaker", ("speaker",))}),
-    ("rear/seat", "seat_express", {("rear", ("rear", "room"))}),
+    ("rear/seat", "seat_express", {("rear", ("rear", "room", "bass"))}),
 ])
 async def test_a_take_banks_the_purposes_its_stop_names(name, layout, banked):
     """A preset names its purposes on each stop, and each take banks them (ADR-0336, ADR-0383)."""

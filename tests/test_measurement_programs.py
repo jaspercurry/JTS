@@ -129,10 +129,10 @@ def test_shipped_rows(preset: str, layout: str, poses: int, moves: int, captures
 
 @pytest.mark.parametrize("preset_id", mp.available_presets())
 def test_a_preset_names_its_purposes_program_first_at_every_layout(preset_id):
-    """The seat trial serves rear and room, and the in-room round room and bass, from one set
-    of takes (ADR-0336, ADR-0383, ADR-0429)."""
+    """The seat trial serves rear, room and bass, and the in-room round room and bass, from one
+    set of takes (ADR-0336, ADR-0383, ADR-0429, ADR-0436)."""
     row = mp.preset(preset_id)
-    expected = {"rear/seat": ("rear", "room"), "room/seat": ("room", "bass")}.get(preset_id, (row.purpose,))
+    expected = {"rear/seat": ("rear", "room", "bass"), "room/seat": ("room", "bass")}.get(preset_id, (row.purpose,))
     assert (mp.run_purposes(preset_id), mp.run_purpose(preset_id)) == (expected, expected[0])
     assert {mp.run_preset(preset_id, layout).purposes for layout in row.layouts} == {expected}
 
@@ -647,18 +647,22 @@ def test_a_stop_naming_its_driver_skips_what_plays_every_driver(stops, expected)
     assert all(capture.spec.stimulus is None for capture in captures)
 
 
+_IN_ROOM = ("room_correction", "bass_extension")
+
+
 @pytest.mark.parametrize("purpose,base,regime,cleared", [
-    (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, ("rear_calibration",)),
-    (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, ("rear_calibration",)),
-    (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, ()), (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
-    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, ("room_correction", "bass_extension")),
+    (mp.PURPOSE_REAR, True, mp.REGIME_BRANCHES, (*_IN_ROOM, "rear_calibration")),
+    (mp.PURPOSE_REAR, False, mp.REGIME_BRANCHES, (*_IN_ROOM, "rear_calibration")),
+    (mp.PURPOSE_REAR, True, mp.REGIME_SUMMED, _IN_ROOM), (mp.PURPOSE_REAR, False, mp.REGIME_SUMMED, _IN_ROOM),
+    (mp.PURPOSE_SPEAKER, True, mp.REGIME_BRANCHES, ()),
+    (mp.PURPOSE_ROOM, True, mp.REGIME_SUMMED, _IN_ROOM),
     (mp.PURPOSE_ROOM, False, mp.REGIME_SUMMED, ()), (mp.PURPOSE_REFERENCE, True, mp.REGIME_SUMMED, ()),
     (None, True, mp.REGIME_SUMMED, ()),
 ])
 def test_a_purpose_row_declares_the_applied_layers_its_takes_clear(purpose, base, regime, cleared) -> None:
-    """The in-room base plays bass and room off; a rear pair take plays its
-    parent with the rear stage off; every other take plays its layers as
-    composed (ADR-0370, ADR-0386, ADR-0429)."""
+    """The in-room base plays bass and room off; every rear take, base and candidate, plays bass
+    and room off, and a rear pair take its parent's rear stage off too; every other take plays its
+    layers as composed (ADR-0370, ADR-0386, ADR-0429, ADR-0436)."""
     assert mp.cleared_layers(purpose, base=base, regime=regime) == cleared
 
 

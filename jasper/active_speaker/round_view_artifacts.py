@@ -192,7 +192,8 @@ ARTIFACT_BY_VIEW: dict[str, CatalogRow] = {
     "bass": CatalogRow("bass_view.json", TAKES_SET, programs=(PURPOSE_BASS,), bookkeeping=(PURPOSE_BASS,),
                        builder="round_bookkeeping.bass", packet="bass", schema=BASS_VIEW_SCHEMA,
         question="What are each bass take's response, quiet-window SNR and H2/H3?",
-        needs="one set of the in-room round: summed sweeps through a candidate graph at the seats (room/seat)",
+        needs="one set of the in-room round: summed sweeps through a candidate graph at the seats (room/seat, "
+              "or rear/seat on a cardioid build)",
         avoid="the response above the bass band; frequency reads the full band",
         answer_fields=("takes",)),
     "bass-alignment": CatalogRow("bass_alignment.json", programs=(PURPOSE_REFERENCE,), schema=_BASS_ALIGNMENT_SCHEMA,
@@ -248,8 +249,8 @@ CATALOG: dict[str, CatalogRow] = {
                                                  programs=_PREVIEW_PROGRAMS,
                                                  schema=ANSWER_SCHEMAS[f"{_PRESCRIBER} judge --preview"],
         question="What would a prescription document's sections do, predicted from a round without playing?",
-        needs="a document and its round: branches/express for driver, blend or topology, a room/seat set that played "
-              "no bass or room layer for bass and room, rear/pair for rear",
+        needs="a document and its round: branches/express for driver, blend or topology, a room/seat or rear/seat "
+              "set that played no bass or room layer for bass and room, rear/pair for rear",
         avoid="checking a document's gates; judge without --preview does that",
         answer_fields=("adopted", "banked", "compiled_stage", "preview", "program_charge_db", "section", "sections")),
     f"{_PRESCRIBER} judge --preview --vary": CatalogRow(

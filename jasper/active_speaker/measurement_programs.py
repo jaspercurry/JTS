@@ -96,9 +96,10 @@ class TuningProgram:
     preview: tuple[int, str, tuple[str, ...]] | None = None
     profile_fallback: bool = True
     graph_evidence: bool = False
-    #: Applied layers the base of this purpose plays cleared, and whether its
-    #: branches take also clears the purpose's own layer (doctrine §1a; ADR-0370,
-    #: ADR-0386, ADR-0429).
+    #: Applied layers every take of this purpose plays cleared, the further layers
+    #: its base plays cleared, and whether its branches take also clears the
+    #: purpose's own layer (doctrine §1a; ADR-0370, ADR-0386, ADR-0429, ADR-0436).
+    clears: tuple[str, ...] = ()
     base_clears: tuple[str, ...] = ()
     branches_clear_own: bool = False
 
@@ -133,7 +134,7 @@ _PROGRAM_SECTIONS = (
         run_headline="JTS is measuring how the rear woofer shapes the sound in front of and behind the speaker. Follow the step below.",
         trial=(("rear/seat", "seat_express"), ("rear/express", "rear_express")), start=("rear/pair", "speaker_mark"),
         preview=(0, "rear_calibration", ("rear_calibration",)), profile_fallback=False, graph_evidence=True,
-        branches_clear_own=True,
+        clears=("room_correction", "bass_extension"), branches_clear_own=True,
     ),
     TuningProgram(
         PURPOSE_BASS, (PrescriptionSection("bass", None, 5, 3),),
@@ -194,12 +195,12 @@ def programs_for_topology(topology: OutputTopology) -> tuple[str, ...]:
 
 def cleared_layers(purpose: str | None, *, base: bool, regime: str) -> tuple[str, ...]:
     """The applied candidate layers a take of ``purpose`` in ``regime`` plays
-    cleared, on the run's base or on a candidate it names (ADR-0370, ADR-0429)."""
+    cleared, on the run's base or on a candidate it names (ADR-0370, ADR-0429, ADR-0436)."""
     row = next((row for row in _PROGRAM_SECTIONS if row.purpose == purpose), None)
     if row is None:
         return ()
     own = (row.candidate_fields[0].name,) if regime == REGIME_BRANCHES and row.branches_clear_own else ()
-    return (row.base_clears if base else ()) + own
+    return row.clears + (row.base_clears if base else ()) + own
 
 
 def near_field_drivers(topology: OutputTopology) -> tuple[str, ...]:
