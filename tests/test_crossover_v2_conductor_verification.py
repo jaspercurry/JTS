@@ -47,13 +47,9 @@ def test_measure_priors_carry_the_ambient_report_check_measured():
 def test_measure_priors_carry_no_ambient_when_check_never_ran():
     """#1830, the other half: absence stays honest.
 
-    A conductor rehydrated past CHECK (accepted phases + the persisted gain
-    plan, which is what lets it compose a MEASURE program without re-running
-    CHECK) has no ambient of its own. The report is deliberately NOT persisted
-    alongside the gain plan: a noise floor is a claim about this room at this
-    mic position, and the §5.6 binding rule restarts any other session at
-    CHECK precisely because that position is unverifiable across sessions. So
-    the SNR verdict stays absent rather than being graded against a floor
+    A conductor that plays MEASURE with a gain plan but no CHECK of its own has
+    no ambient: a noise floor is a claim about this room at this mic position.
+    So the SNR verdict stays absent rather than being graded against a floor
     measured somewhere else.
     """
     fakes = FakeSeams()
