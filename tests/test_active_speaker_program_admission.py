@@ -1683,21 +1683,26 @@ async def test_a_fresh_cardioid_base_admits_every_take_with_its_muted_rear_parke
 
 
 _BASS_RESERVE_DB = dynamic_bass_gain_reserve_db(BASS_EXTENSION)
-#: A branch take on a fresh cardioid: its (woofer, tweeter) caps and fader, the level
-#: each branch asks alone and the sum asks, whether its candidate boosts the bass, and
-#: where each branch alone and the sum then play.
+_BASS = {"bass_extension": BASS_EXTENSION}
+#: A branch take on a cardioid: its (woofer, tweeter) caps and fader, the level each
+#: branch asks alone and the sum asks, the layers its candidate carries, and where
+#: each branch alone and the sum then play.
 ALONE_CEILINGS = {
     # The tweeter's tighter cap holds a crossover take's woofer alone.
-    "crossover, fixture caps": ("branches", (0.0, -65.0), -20.0, (-40.0, -50.0), -56.0, False, (-45.01, -50.0), -56.0),
-    "crossover, jts3-like caps": ("branches", (0.0, -25.0), 0.0, (-22.0, -40.0), -46.0, False, (-25.01, -40.0), -46.0),
+    "crossover, fixture caps": ("branches", (0.0, -65.0), -20.0, (-40.0, -50.0), -56.0, {}, (-45.01, -50.0), -56.0),
+    "crossover, jts3-like caps": ("branches", (0.0, -25.0), 0.0, (-22.0, -40.0), -46.0, {}, (-25.01, -40.0), -46.0),
     # The rear pair shares its limits: the tweeter it does not play holds neither branch.
-    "rear pair": ("rear_pair", (0.0, -65.0), -20.0, (-40.0, -30.0), -46.0, False, (-40.0, -30.0), -46.0),
+    "rear pair": ("rear_pair", (0.0, -65.0), -20.0, (-40.0, -30.0), -46.0, {}, (-40.0, -30.0), -46.0),
     # The bass boost the take's graph keeps on both woofers holds both (ADR-0359), and,
     # where no other cap holds it lower, the sum too (ADR-0408).
-    "rear pair, bass boost": ("rear_pair", (-20.0, -25.0), 0.0, (-12.0, -12.0), -46.0, True,
+    "rear pair, bass boost": ("rear_pair", (-20.0, -25.0), 0.0, (-12.0, -12.0), -46.0, _BASS,
                               (-20.01 - _BASS_RESERVE_DB,) * 2, -46.0),
-    "rear pair, bass boost, a high probe": ("rear_pair", (-20.0, -20.0), 0.0, (-12.0, -12.0), -18.0, True,
+    "rear pair, bass boost, a high probe": ("rear_pair", (-20.0, -20.0), 0.0, (-12.0, -12.0), -18.0, _BASS,
                                             (-20.01 - _BASS_RESERVE_DB,) * 2, -20.01 - _BASS_RESERVE_DB),
+    # A re-tune: the rear stage the take clears plays the rear woofer far under the
+    # raw rear the take plays, and holds neither branch under its probe (#6275).
+    "rear pair, rear tune applied": ("rear_pair", (0.0, -25.0), 0.0, (-28.0, -14.0), -34.0,
+                                     {"rear_calibration": _rear_document()}, (-28.0, -14.0), -34.0),
 }
 
 
@@ -1708,12 +1713,12 @@ async def test_each_branch_alone_plays_under_the_ceiling_admission_holds_its_tak
     branch alone at its own level, under the tightest cap of the take's two
     branches less the bass reserve each output keeps. Admission holds every
     channel of the take to that ceiling, so its sum plays under every driver's cap
-    less that reserve too (ADR-0408)."""
-    take, (woofer_cap, tweeter_cap), fader, levels, sum_dbfs, bass, alone, summed = ALONE_CEILINGS[case]
+    less that reserve too (ADR-0408). The rear stage a pair take clears holds
+    neither branch (ADR-0386)."""
+    take, (woofer_cap, tweeter_cap), fader, levels, sum_dbfs, layers, alone, summed = ALONE_CEILINGS[case]
     topology, safety, context, profile, candidate = _fresh_cardioid(
         monkeypatch, woofer_peak=woofer_cap, tweeter_peak=tweeter_cap)
-    if bass:
-        candidate = replace(candidate, bass_extension=BASS_EXTENSION)
+    candidate = replace(candidate, **layers)
     spec = replace(_fresh_take(FRESH_CARDIOID_TAKES[take][0], candidate.fingerprint), branch_levels_dbfs=levels)
     door = bind_measurement_graph(profile, camilla_factory=lambda: None, config_dir=tmp_path, candidate=candidate)
     door.select_scope(spec.graph_scope, spec.candidate_id, branch_channels_for(spec), spec.cleared_layers)
