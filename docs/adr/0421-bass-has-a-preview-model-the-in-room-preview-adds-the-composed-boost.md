@@ -53,6 +53,8 @@ trial follows, then apply.
   median measured with bass off. A room-only judge reads the median as banked, so on such a median its
   admission does not see the base's bass. An in-room document states both sections; restating the
   applied bass keeps it.
+- A room preview's `residual` now includes the composed bass, so `judge --preview` answers
+  `jts_prescription_preview/4` and its grid `jts_prescription_preview_grid/5` (ADR-0344 §4).
 - `contract --section room` evaluates `admit_boost` on the plain median: the contract cannot know the
   document's bass.
 - Bass now refuses before room when both are invalid. Candidate fingerprints do not move: they hash
