@@ -53,6 +53,9 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureStopped,
 )
 from jasper.active_speaker.crossover_v2.evidence_packet import build_crossover_evidence_packet
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session
+from jasper.audio_measurement import snr_policy
+from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry
 from jasper.audio_measurement.program_analysis.model import SWEEP_PEAK_TO_RMS_DB
@@ -84,8 +87,8 @@ from tests.wired_capture_fixtures import FakePcm
 from tests._log_events import event_field_maps
 from tests.crossover_v2_banked_round import bank_executor_take
 from tests.crossover_v2_fixtures import (
-    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _phase_program, _pilot_obs, _verify_analysis,
-    _verify_pilot,
+    HOUSEHOLD_DB, FakeSeams as FlowSeams, _check_analysis, _conductor, _measure_analysis, _phase_program, _pilot_obs,
+    _verify_analysis, _verify_pilot,
 )
 from tests.test_crossover_envelope_v2 import _status
 from tests.test_audio_measurement_program_analysis import _roles, _synthesize
@@ -861,6 +864,75 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     assert [(e["phase"], int(e["attempt"]), int(e["extra_used"])) for e in events] == expected
     assert len(programs) == manifest.takes_measured == len(expected)
     assert fakes.graph.restores == 1
+
+
+def _short_tweeter(program):
+    """Finding F5 of the 2026-10-02 audit: the tweeter's alignment band reads 24 dB
+    under its gain over a -70 dBFS room, so at the -13 dBFS CHECK solves it holds
+    33 dB of SNR against 35 dB, and 3.3 dB louder 36.3 dB."""
+    band = snr_policy.band_snr_verdicts(
+        decision_class="alignment",
+        capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": program.segment("sweep_t").gain_db - 24.0}],
+        noise_bands=[{"band_id": "mid", "level_dbfs": -70.0}], noise_floor_dbfs_scalar=None,
+        relevant_hz=(1000, 4000), model=DRIVER)
+    analysis = _measure_analysis(program)
+    woofer, tweeter = analysis.driver_responses
+    return replace(analysis, driver_responses=(woofer, replace(tweeter, snr={"alignment": band})))
+
+
+async def _run_short_tweeter(tmp_path, box, request):
+    """``request`` played by the web host on a fake chain whose loudest window
+    reads 78.7 dB, 3.3 dB under the 82 dB a raise may reach: each play's phase
+    and its sweeps' gains, in order, and which MEASURE takes each set kept."""
+    tmp_path.mkdir(exist_ok=True)
+    fakes = EngineSeams()
+    captures = plan_run.prepare_plan_captures(request)
+    conductor = _conductor(FlowSeams(measure=_short_tweeter), driver_caps_dbfs={"woofer": 0.0, "tweeter": 0.0},
+                           index_phase_map={i: c.spec.program_phase for i, c in enumerate(captures, 1)},
+                           measure_specs_by_index={i: c.spec for i, c in enumerate(captures, 1)})
+    manifest = RunManifest("short-tweeter", _Store(fakes.records))
+    programs, play = [], fakes.play.run
+
+    async def compose_and_play(**kwargs):
+        programs.append(correction_run_host.compose_plan_program(conductor, kwargs["spec"], kwargs["stimulus_dbfs"]))
+        return await play(**kwargs)
+
+    fakes.play.run = compose_and_play
+    records = core_capture.CapturedRecordStore(manifest, SimpleNamespace(take_answer=lambda: WiredCaptureAnswer(
+        wav=b"", program=programs[-1].to_dict(), capture_integrity={"spl": {"max_window_db_spl": 78.7, "ceiling_db_spl": 85.0}})))
+    analyze, assessor = correction_run_host.bind_plan_analysis(conductor, records, manifest=manifest, evidence={})
+    await plan_run.run_plan(request, door=_run_door(tmp_path, box, fakes, manifest, records), manifest=manifest,
+                            captures=captures, analyze=analyze, assessor=assessor, gate=AnsweredGate(), aborts={},
+                            admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
+    assert manifest.status == "complete"
+    plays = [(program.phase, {segment.role: segment.gain_db for segment in program.stimulus_segments()})
+             for program in programs]
+    measured = [[take["selected"] for take in group["takes"]]
+                for group in manifest.joined()["sets"] if group["takes"][0]["phase"] == "measure"]
+    return plays, measured
+
+
+@pytest.mark.parametrize(("preset", "where", "kept"), [
+    ("speaker", {"layout": "speaker_mark"}, [True, True]),
+    ("tournament", {"layout": "tournament_express"}, [False, True]),
+    ("speaker", {"poses": "0,20"}, [False, True, True]),
+], ids=["two-takes-at-the-mark", "one-take", "one-take-at-the-mark"])
+async def test_a_short_measure_take_is_kept_when_a_later_take_at_its_pose_plays_its_raise(
+        monkeypatch, tmp_path, box, preset, where, kept):
+    """The first MEASURE take passes short of the tweeter's alignment SNR and asks a
+    3.3 dB raise. At speaker/mark a second take at the mark follows: the first is kept,
+    and the run plays what it played before ADR-0433 less the first take's replay, so
+    every pose and gain that plays is one it played, and the pair is one set per
+    driver. A take with no later take at its pose is replayed at the raise, as before."""
+    request = request_for_preset(run_preset(preset, **where), level=LevelPolicy(level_db=-20))
+    plays, measured = await _run_short_tweeter(tmp_path / "now", box, request)
+    monkeypatch.setattr(CrossoverV2Session, "measures_again", lambda self, index: False)
+    before, _ = await _run_short_tweeter(tmp_path / "before", box, request)
+
+    (_, first), (_, raised) = plays[2:4]
+    assert raised == {**first, "tweeter": pytest.approx(first["tweeter"] + 3.3)}
+    assert before == ([*plays[:3], plays[3], *plays[3:]] if kept[0] else plays)
+    assert measured == [kept] * 2
 
 
 async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, tmp_path, box):

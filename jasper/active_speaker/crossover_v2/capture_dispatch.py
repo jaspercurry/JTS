@@ -229,6 +229,7 @@ def _assess_recording(
     session_volume_db: float = 0.0,
     spl_stop_db_spl: float | None = None,
     spl: Mapping[str, Any] | None = None,
+    raise_rides_next: bool = False,
 ) -> TakeVerdict:
     if phase not in {"check", "measure", "verify"}:
         raise ValueError(f"unsupported assessment phase: {phase}")
@@ -396,8 +397,12 @@ def _assess_recording(
     )
     evidence.update(levels)
     if adjusted:
+        raised = {**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}}
+        if raise_rides_next and alignment_only:
+            # A later take at this pose plays at the raise, so this one is kept (ADR-0433).
+            return replace(verdict, evidence=raised)
         return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
-                       evidence={**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}})
+                       evidence=raised)
     return verdict
 
 

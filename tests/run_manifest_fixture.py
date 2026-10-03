@@ -11,7 +11,7 @@ from jasper.active_speaker.crossover_v2.measurement_context import capture_basis
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from jasper.active_speaker.crossover_v2.round_inputs import round_artifact_dir, round_inputs
-from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME
+from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, set_basis
 from jasper.audio_measurement.bundles import ARTIFACT_MANIFEST_NAME
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.platform.json_fields import canonical_json_bytes, sha256_file
@@ -135,16 +135,16 @@ def manifest_set(records, *, set_id=None, selected=None, refused=(), cleared_lay
     (:func:`_banked` lends them), ``cleared_layers`` among them when given: every
     take selected unless ``selected`` names the ones that are; a ``refused`` take
     is never selected, as the executor writes it."""
-    basis = capture_basis(records[0][1] if records else {})
-    basis.pop("pose_kind", None)
+    basis = set_basis(records[0][1] if records else {})
     takes = []
     for path, record in records:
         take_id = record.get("take_id") or record.get("position_id") or path
+        played = capture_basis(record)
         takes.append({"take_id": take_id, "phase": record.get("phase"),
                       "pose": {"kind": record.get("pose_kind", "bearing"),
                       "azimuth_deg": record.get("position_deg"), "elevation_deg": record.get("vertical_deg"),
                       "distance_m": record.get("mark_distance_m"), "seat_offset_m": record.get("seat_offset_m")},
-                      "level": {**{key: basis.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")}, "alignment": {}},
+                      "level": {**{key: played.get(key) for key in ("level_db", "stimulus_dbfs", "stimulus_id")}, "alignment": {}},
                       "artifacts": {"record_id": path},
                       **({"cleared_layers": list(cleared_layers)} if cleared_layers else {}),
                       "selected": take_id not in refused and (selected is None or take_id in selected)})

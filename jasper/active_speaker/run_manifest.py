@@ -21,7 +21,7 @@ from jasper.platform.speaker_layout import measurement_target_parts
 
 from .commissioning_evidence_store import EVIDENCE_ROOT
 from .crossover_v2.measure_spec import MeasureSpec
-from .crossover_v2.measurement_context import capture_basis
+from .crossover_v2.measurement_context import CAPTURE_FIELDS, SHAPE_FIELDS, capture_basis, shaped_capture_basis
 from .crossover_v2.record_index import Measurement, measurement_documents, take_purpose
 from .crossover_v2.refusal_copy import REASON_NOT_REACHED, TakeVerdict
 from .crossover_v2.session_seams import RecordStore
@@ -47,6 +47,15 @@ def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[st
     if record.get("program") and is_level_probe(ExcitationProgram.from_dict(record["program"])):
         basis["level_probe"] = True
     return basis
+
+
+def set_basis(record: Mapping[str, Any], basis: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """What a take's set shares: ``basis``, by default the record's capture basis,
+    with its stimulus named by shape, never by level, and no pose (brief §2.4).
+    Takes that differ only in how loud they played share a set; each row keeps
+    its own level (ADR-0433)."""
+    return {key: value for key, value in shaped_capture_basis(record, basis).items()
+            if key != "pose_kind" and (key in SHAPE_FIELDS or key not in CAPTURE_FIELDS)}
 
 
 def _take_level(basis: Mapping[str, Any], observed: Mapping[str, Any]) -> dict[str, Any]:
@@ -125,17 +134,16 @@ def driver_level_mismatches(manifest: Mapping[str, Any]) -> list[dict[str, Any]]
     ``Pose.place`` counts once per driver) where the drivers of one role play more
     than :data:`LEVEL_MISMATCH_DB` apart for the same drive. A driver's
     ``unit_drive_db_spl`` is the median, over its kept takes, of the level its
-    located sweeps read (ADR-0364) less the stimulus gain and the fader its set
+    located sweeps read (ADR-0364) less the stimulus gain and the fader the take
     played at; the takes are read with their records (ADR-0395). Only close
     poses compare: from one far bearing a rear-facing driver also reads its own
     off-axis loss and the cabinet's shadow. A finding, never a refusal (#5714)."""
     heard: dict[tuple[str, str], dict[str, list[float]]] = {}
-    for basis, take in ((group["capture_basis"], take) for group in view_sets(manifest)
-                        for take in group["takes"] if take.get("selected")):
-        pose = take.get("pose") or {}
+    for take in (take for group in view_sets(manifest) for take in group["takes"] if take.get("selected")):
+        pose, level = take.get("pose") or {}, take.get("level") or {}
         spl, gain, fader = (finite_float(value) for value in (
             ((take.get("verdict") or {}).get("evidence") or {}).get("level_db_spl"),
-            basis.get("stimulus_dbfs"), basis.get("level_db")))
+            level.get("stimulus_dbfs"), level.get("level_db")))
         if (pose.get("driver") and pose.get("kind") == POSE_KIND_CLOSE
                 and spl is not None and gain is not None and fader is not None):
             place = json.dumps({key: value for key, value in pose.items() if key not in {"driver", "place"}},
@@ -345,16 +353,14 @@ class RunManifest:
         status = TAKE_MEASURED if complete and verdict.ok else TAKE_INCOMPLETE if not complete else "refused"
         alignment = (record.get("level") or {}).get("alignment") or {}
         for role in sorted(roles):
-            basis = _played_basis(record, role)
-            # Pose is an observation axis, never a set boundary (brief §2.4).
-            basis.pop("pose_kind", None)
-            basis.update(role=role, calibration=dict(self.calibration))
+            played = _played_basis(record, role)
+            basis = {**set_basis(record, played), "role": role, "calibration": dict(self.calibration)}
             set_id = json_fingerprint(basis)
             group = self._sets.setdefault(set_id, {"set_id": set_id, "capture_basis": basis,
                 "base": candidate_identity(self._context.get("candidate_id") or "") == BASE_CANDIDATE, "takes": []})
             group["takes"].append({
                 **self._context, "take_id": take_id, "record_id": record_id, "stimulus_ordinal": ordinal,
-                "level": _take_level(basis, level_observation), "alignment": alignment, "quality": {"status": status},
+                "level": _take_level(played, level_observation), "alignment": alignment, "quality": {"status": status},
                 **({"fault": verdict.fault, "next": verdict.next, "charge": verdict.charge}
                    if verdict.next != "accept" or not complete else {})})
         if complete and verdict.ok:
