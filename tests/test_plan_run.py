@@ -38,7 +38,7 @@ from jasper.active_speaker.crossover_v2.session import TuningSession
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_DRIFT_BASELINES_DISAGREE, REASON_CLIPPED, REASON_ANCHOR_AMBIGUOUS, REASON_CHANNEL_MAP_MISMATCH,
     REASON_SPL_CEILING_EXCEEDED, REASON_LEVEL_OFF_TARGET, REASON_INTERNAL_ERROR, REASON_CAPTURE_OVERRUN, REASON_LEVEL_UNSOLVED, REASON_NOT_REACHED, REASON_SNR_FLOOR,
-    REASON_USER_STOPPED, TakeVerdict,
+    REASON_USER_STOPPED, REASON_LEVEL_DRIFT_AT_SESSION_GAIN, REASON_RETRIES_SPENT, TakeVerdict,
 )
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal, SegmentAdmission
 from jasper.active_speaker.program_playback import ProgramPlaybackRefused
@@ -1804,6 +1804,39 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
     assert selected == [False] * (len(selected) - repeats) + [True] * repeats
     final = gate.progress[-1]
     assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (retries, left, 0)
+
+
+@pytest.mark.parametrize(("retries", "readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
+    (2, (70.0, 70.0, 73.0, 70.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4, 5}, [], 1),
+    (2, (70.0,) * 4 + (73.0,) * 3, (), {4, 5, 6}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
+    (0, (70.0, 70.0, 73.0, 70.0, 70.0), (), {2}, {0, 1, 3, 4}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
+    (2, (70.0, 70.0, 73.0) + (75.0,) * 5, (3,), {2}, {3, 4, 5, 6, 7}, [], 1),
+    (0, (70.0,) * 5, (5,), set(), set(), [REASON_RETRIES_SPENT] * 5, 0),
+], ids=["a timing repeat drifts once", "a MEASURE repeat keeps drifting", "no retry left", "a redo of a drifted take",
+        "a redo its placement cannot pay for"])
+def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap(
+        retries, readings, redo_at, drifted, kept, unmeasured, left):
+    """A take at its run's fader never levels itself: a repeat more than SAME_POSE_DRIFT_DB
+    off its placement's kept takes is retaken at that level, each retake one of the
+    placement's two extra takes (ADR-0422), and banks the verdict and level it was judged
+    by (ADR-0383). A redo spends one, the takes it plays again none, and its new
+    placement's level is no drift (#5722)."""
+    request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),),
+                                     program="speaker/mark", repeats=2, retries_per_pose=retries)
+
+    result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
+
+    rows, records = sorted(result.takes, key=lambda row: row["take_id"]), {r["take_id"]: r for r in fakes.banked}
+    assert [row["reason"] for row in result.not_measured] == unmeasured
+    assert selected == [take in kept for take in range(len(rows))]
+    assert [row.get("fault") for row in rows] == [REASON_LEVEL_DRIFT_AT_SESSION_GAIN if take in drifted else None
+                                                  for take in range(len(rows))]
+    assert {row["level"]["level_delta_db"] for take, row in enumerate(rows) if take in drifted} <= {3.0}
+    for row in rows:
+        record = records[row["take_id"]]
+        assert record["level"] == {**row["level"], "alignment": row["alignment"]}
+        assert (record["verdict"]["fault"], record["verdict"]["next"]) == (row.get("fault"), row.get("next", "accept"))
+    assert gate.progress[-1]["budget"]["left"] == left
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
