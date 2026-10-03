@@ -85,26 +85,34 @@ alignment feeds none, so its replay buys nothing.
 
 - **Hearing:** a run that plays to its end plays the plays of the flow before this ADR, less the
   replays, each at its pose: a take after a take kept at the mark composes from the gain plan as the
-  replay's verdict raised it, and a take after a take kept off the mark plays the plan, not the raise
-  the flow before carried to it, so it plays quieter. Where a replay would itself have asked a further
-  raise, the next take plays under the gain the flow before played there and asks its own raise from
-  its own reading. Two cases play what the flow before did not, and a third narrows:
+  replay's verdict raised it, and the take right after a take kept off the mark plays the plan, not the
+  raise the flow before carried to it, so it plays quieter. Where a replay would itself have asked a
+  further raise, the next take plays under the gain the flow before played there and asks its own raise
+  from its own reading. Three cases play what the flow before did not, and a fourth narrows:
   - A run whose placement was spent ended `retries_spent` at the replay. It now keeps the take and
     plays the rest of the run: at the raise after a take at the mark, at the plan after one off it.
     Those plays are new for that run; the 85 dB watch bounds them.
   - A replay whose sweep clipped cut every role by 3 dB (`CLIP_RETRY_BACKOFF_DB`). With no replay
     that cut is skipped, so a later take can play louder than in the flow before at the same pose, and
     skipped cuts add up across kept takes.
+  - When a short take at the mark follows a take kept off the mark, it asks its own raise from the plan
+    (its shortfall plus the 6 dB margin, within its own 82 dB bound), which can exceed the raise the flow
+    before carried there, and that raise rides the run's later takes. With an off-axis pose before the
+    mark (an inline order; no shipped layout has one), a later take at a louder pose can then play
+    louder than in the flow before and trip the 85 dB watch (the delta review modelled 86.25 dB at 30°
+    in one adversarial room; the same mark raise trips there on shipped `baseline_full` in both flows).
   - A raise asked off the mark no longer rides on from a kept take, so a raise sized at a quiet
     off-axis pose cannot ride the next take at the louder mark (the review modelled 86.09 dB there,
     and the watch tripped). What stays as before this ADR: a raise sized at the mark rides the run's
     later takes, and so does the raise of a take retaken off the mark (its magnitude failed, or its
     capture was too quiet). At a louder pose only the 85 dB watch holds them.
 
-  An alignment raise stays inside the SPL headroom that its own take read, by the same rule, caps and
-  bound. With no SPL reading, only CHECK's ceiling would cap it: `capture_dispatch` then passes no
-  SPL bound, and `check.alignment_snr_gain_adjustment` falls back to the gain ceilings CHECK solved.
-  The run's SPL watch always reports a window (`wired_stimulus`), so in practice a take has one.
+  An alignment-only raise (the take's magnitude passed) stays inside the SPL headroom that its own take
+  read, by the same rule, caps and bound; with no SPL reading only CHECK's ceiling would cap it, and the
+  run's SPL watch always reports a window (`wired_stimulus`), so in practice a take has one. The raise of
+  a take retaken because its magnitude failed or its capture was too quiet gets no SPL bound
+  (`capture_dispatch._assess_recording` passes none): only the gain ceilings CHECK solved hold it, as
+  before this ADR.
   `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the 85 dB commissioning stop and its
   watch, the declared driver caps and ADR-0405's probe staircase do not change.
 - Proof: `test_a_short_measure_take_is_kept_unless_it_is_the_last_at_the_mark` runs the executor through
@@ -150,7 +158,7 @@ alignment feeds none, so its replay buys nothing.
   - Letting a mark take's raise ride a later take off the mark. On `baseline_express` a short fourth
     mark take would then be the newest take at the mark, with the same ADR-0345 result.
   - Carrying a raise asked off the mark to the takes after it. No decision reads that take's timing,
-    so the raise buys nothing, and it was the one way a kept take could compose a later take past the
-    stop: a raise sized at a quiet off-axis pose rode the next take at the louder mark.
+    so the raise buys nothing, and it was the one way a raise sized off the mark reached the louder mark
+    from a kept take. (A take kept at the mark still carries its raise forward, as §1 wants.)
   - Finding the drift reference by shape too. A one-driver raise moves the broadband reference by a
     share that no take states.
