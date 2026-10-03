@@ -7,9 +7,7 @@
 This module DECIDES and does not act — the session owns every irreversible
 half, so a pure gate asked the same question twice answers the same way. No
 household vocabulary lives here: a refusal leaves as a kind plus an opaque
-reason code and :mod:`.refusal_copy` renders the sentence. Bounded-retry
-ruling #2086, recorded in
-docs/historical/crossover-measurement-v2-campaign-record.md.
+reason code and :mod:`.refusal_copy` renders the sentence.
 """
 
 from __future__ import annotations
@@ -22,7 +20,6 @@ from .refusal_copy import TakeCharge
 __all__ = [
     "DECISION_KINDS",
     "MAX_EXTRA_ATTEMPTS_PER_POSITION",
-    "MAX_AUTOMATIC_RETAKES_PER_POSITION",
     "AttemptOverspendError",
     "BeginDecision",
     "SlotAttempts",
@@ -30,9 +27,8 @@ __all__ = [
 ]
 
 
-MAX_EXTRA_ATTEMPTS_PER_POSITION = 3
-# Six extra takes per pose bound USB-fault work; planned configs/repeats spend none.
-MAX_AUTOMATIC_RETAKES_PER_POSITION = 6
+#: A placement's takes after its free first, of every charge but a replay (ADR-0422).
+MAX_EXTRA_ATTEMPTS_PER_POSITION = 2
 
 
 class AttemptOverspendError(RuntimeError):
@@ -76,7 +72,7 @@ class SlotAttempts:
 
     @property
     def automatic_left(self) -> int:
-        return max(0, MAX_AUTOMATIC_RETAKES_PER_POSITION - self.by_household - self.by_speaker)
+        return max(0, MAX_EXTRA_ATTEMPTS_PER_POSITION - self.by_household - self.by_speaker)
 
     def can_retry(self, charge: TakeCharge = "operator") -> bool:
         return charge == "replay" or (self.automatic_left if charge == "speaker" else self.extras_left) > 0
@@ -105,7 +101,7 @@ class SlotAttempts:
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,
             "automatic_left": self.automatic_left,
-            "automatic_allowed": MAX_AUTOMATIC_RETAKES_PER_POSITION,
+            "automatic_allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
         }
 
 

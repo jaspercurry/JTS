@@ -145,13 +145,14 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
     assert produced == set(admission.DECISION_KINDS)
 
 
-@pytest.mark.parametrize(("budget", "charges"), [
-    (0, ["speaker"] * 6), (3, ["speaker"] * 6),
-    (4, ["operator", "speaker"] * 3), (1, ["operator"]),
+@pytest.mark.parametrize(("budget", "left", "charges"), [
+    (0, 0, ["speaker"] * 2), (2, 2, ["speaker"] * 2),
+    (2, 2, ["operator", "speaker"]), (3, 2, ["operator"] * 2), (1, 1, ["operator"]),
 ])
-def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, charges):
+def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(budget, left, charges):
+    """A placement's takes after its first stop at two, of any charge (ADR-0422)."""
     ledger = admission.SlotAttempts(admitted=100, retries_per_pose=budget)
-    assert ledger.to_payload()["left"] == budget
+    assert ledger.to_payload()["left"] == left
     for charge in charges:
         assert ledger.can_retry(charge)
         ledger.spend(charge)

@@ -828,7 +828,7 @@ async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, 
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("check_passes", [False, True])
 async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path, box, caplog, repeats, check_passes):
-    checks = iter([False, False, False, check_passes])
+    checks = iter([False, False, check_passes])
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
     request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),), repeats=repeats,
@@ -855,9 +855,9 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     assert manifest.reason == ("" if check_passes else "snr_floor")
     assert bool(conductor._gain_plan_db) is check_passes
     events = event_field_maps(caplog, "correction.crossover_v2_authorized")
-    expected = [("check", a, a - 1) for a in range(1, 5)]
+    expected = [("check", a, a - 1) for a in range(1, 4)]
     if check_passes:
-        expected += [(phase, 1, 3) for phase in ["timing"] * repeats + ["measure"] * repeats]
+        expected += [(phase, 1, 2) for phase in ["timing"] * repeats + ["measure"] * repeats]
     assert [(e["phase"], int(e["attempt"]), int(e["extra_used"])) for e in events] == expected
     assert len(programs) == manifest.takes_measured == len(expected)
     assert fakes.graph.restores == 1
@@ -878,7 +878,7 @@ async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, t
         request=_walk([0], ("fp-a", "fp-b", "fp-c")),
     )
     verdicts = iter([
-        *(refusal_copy.TakeVerdict(False, "snr_floor", next="fix_and_retake", charge="operator") for _ in range(4)),
+        *(refusal_copy.TakeVerdict(False, "snr_floor", next="fix_and_retake", charge="operator") for _ in range(3)),
         refusal_copy.TakeVerdict(True),
     ])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
@@ -886,7 +886,7 @@ async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, t
     with pytest.raises(refusal_copy.CrossoverV2Refused) as caught:
         await runner(session)
     assert manifest.records.snapshots[-1]["reason"] == caught.value.code == "retries_spent"
-    assert [take.get("fault") for take in manifest.takes] == ["snr_floor"] * 4 + [None]
+    assert [take.get("fault") for take in manifest.takes] == ["snr_floor"] * 3 + [None]
 
 
 @pytest.mark.parametrize("caller,code,template", [

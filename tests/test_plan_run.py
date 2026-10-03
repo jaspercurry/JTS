@@ -33,7 +33,7 @@ from jasper.active_speaker.crossover_v2.programs import SessionExcitation, progr
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.round_inputs import SetTakes, round_inputs, with_records
 from jasper.active_speaker.crossover_v2.round_views.directivity import _pose as directivity_pose
-from jasper.active_speaker.crossover_v2.admission import MAX_AUTOMATIC_RETAKES_PER_POSITION, MAX_EXTRA_ATTEMPTS_PER_POSITION
+from jasper.active_speaker.crossover_v2.admission import MAX_EXTRA_ATTEMPTS_PER_POSITION
 from jasper.active_speaker.crossover_v2.capture_source import CaptureBeginDeferred
 from jasper.active_speaker.crossover_v2.capture_plan import POSITION_BATCH_SIZE_KEY
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec, branch_probes
@@ -267,16 +267,18 @@ def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, ok
     assert result.status == "complete"
 
 
-@pytest.mark.parametrize("charge", ["speaker", "operator"])
-@pytest.mark.parametrize("budget", [0, 3])
-def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charge, budget):
+@pytest.mark.parametrize("charge,budget,extras", [
+    ("speaker", 0, 2), ("speaker", 3, 2), ("operator", 0, 0), ("operator", 3, 2),
+])
+def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charge, budget, extras):
+    """A placement plays at most two takes after its first, of any charge (ADR-0422)."""
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: TakeVerdict(False,
         REASON_DRIFT_BASELINES_DISAGREE, next="retake_same", charge=charge))
     gate = AnsweredGate()
     result, fakes = asyncio.run(_run_gated(replace(_walk([0]), retries_per_pose=budget), gate=gate))
     assert result.status == "partial"
-    assert len(fakes.banked) == 1 + (MAX_AUTOMATIC_RETAKES_PER_POSITION if charge == "speaker" else budget)
-    assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else budget)
+    assert len(fakes.banked) == 1 + extras
+    assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else extras)
     assert gate.progress[-1]["budget"]["left"] == 0
     assert result.reason == ""
     assert result.not_measured[0]["reason"] == REASON_DRIFT_BASELINES_DISAGREE
@@ -300,7 +302,7 @@ def test_unresolved_stop_skips_only_capture_quality_refusals(monkeypatch, qualit
     if quality_refusal:
         verdicts = iter([
             TakeVerdict(True),
-            *(TakeVerdict(False, reason, next="fix_and_retake", charge="operator") for _ in range(4)),
+            *(TakeVerdict(False, reason, next="fix_and_retake", charge="operator") for _ in range(3)),
             TakeVerdict(True),
         ])
         monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
@@ -315,7 +317,7 @@ def test_unresolved_stop_skips_only_capture_quality_refusals(monkeypatch, qualit
 
     assert result.status == "partial"
     assert result.reason == ("" if quality_refusal else reason)
-    assert fakes.play.bearings == ([0, 20, 20, 20, 20, 40] if quality_refusal else [0, 20])
+    assert fakes.play.bearings == ([0, 20, 20, 20, 40] if quality_refusal else [0, 20])
     assert [(stop["index"], stop["reason"]) for stop in result.not_measured] == (
         [(2, reason)] if quality_refusal else [(2, reason), (3, REASON_NOT_REACHED)])
 
@@ -325,14 +327,14 @@ def test_exhausted_clipped_stop_ends_the_run(monkeypatch):
     verdicts = iter([
         TakeVerdict(True),
         *(TakeVerdict(False, REASON_CLIPPED, next="retake_quieter", next_gain_db=-24,
-                      charge="speaker") for _ in range(7)),
+                      charge="speaker") for _ in range(3)),
     ])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
 
     result, fakes = asyncio.run(_run_gated(_walk([0, 20, 40])))
 
     assert result.reason == REASON_CLIPPED
-    assert fakes.play.bearings == [0, *([20] * 7)]
+    assert fakes.play.bearings == [0, *([20] * 3)]
     assert [(stop["index"], stop["reason"]) for stop in result.not_measured] == [
         (2, REASON_CLIPPED), (3, REASON_NOT_REACHED)]
 
@@ -1417,7 +1419,7 @@ def test_a_branch_set_whose_first_take_never_lands_carries_both_branches_level()
     request = ac.request_for_preset(run_preset("rear/pair", "speaker_mark"))
     clipped = TakeVerdict(False, fault=REASON_CLIPPED, next="retake_quieter", charge="speaker", next_gain_db=-30.0)
 
-    retries = MAX_AUTOMATIC_RETAKES_PER_POSITION
+    retries = MAX_EXTRA_ATTEMPTS_PER_POSITION
 
     result, fakes, _, _ = _run_levelled(
         request, (), ceiling_db=-12.0, chain=_REAR_UP,
@@ -1442,9 +1444,9 @@ def test_a_close_set_that_finds_no_level_plays_no_more_takes():
 
 
 @pytest.mark.parametrize("readings, verdicts, rungs, reasons", [
-    ((66.0,) + (86.0,) * 7 + (80.0,), None,
-     [None, -29.0, -36.0, -43.0, -50.0, -57.0, -64.0, -71.0, -78.0], [REASON_LEVEL_OFF_TARGET]),
-    ((60.0,) * 8, lambda take: _UNHEARD, [None] * 4, [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]),
+    ((66.0,) + (86.0,) * 3 + (80.0,), None,
+     [None, -29.0, -36.0, -43.0, -50.0], [REASON_LEVEL_OFF_TARGET]),
+    ((60.0,) * 8, lambda take: _UNHEARD, [None] * 3, [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]),
 ], ids=["solved", "unsolved"])
 def test_a_driver_pose_whose_first_take_never_lands_carries_its_level_or_skips(readings, verdicts, rungs, reasons):
     """Unlike main, where the next take probes again: a driver's next take at
@@ -1498,9 +1500,9 @@ def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_le
     for it, never at the take's ceiling (ADR-0403)."""
     request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
 
-    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 7 + (80.0,))
+    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 3 + (80.0,))
 
-    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0, -83.0, -90.0, -97.0, -104.0]
+    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0]
     assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
@@ -1930,24 +1932,29 @@ def test_over_a_timing_take_each_candidate_graph_probes_itself(monkeypatch, box,
     assert all(78.0 <= db <= 82.0 for db in pair), pair
 
 
-@pytest.mark.parametrize(("chain_db", "kept", "reason"), [(50.0, False, REASON_SNR_FLOOR),
-                                                          (100.0, True, REASON_LEVEL_UNSOLVED)], ids=["buried", "kept"])
-def test_a_run_probe_that_finds_no_level_ends_the_run_before_any_take(monkeypatch, chain_db, kept, reason):
-    """A probe the room buries asks for the microphone again. The fader is back at
-    the household level before each placement, so it sits at the probe fader only
-    while the probe plays. A probe that never finds a level ends the run, and so
-    does one an assessor keeps, since a probe is never kept: nothing plays at a
-    fader no probe found (ADR-0365, ADR-0403 §4)."""
+@pytest.mark.parametrize(("chain_db", "assessed", "placements", "reason"), [
+    (50.0, None, 1, "level_unreachable"),
+    (100.0, TakeVerdict(False, REASON_SNR_FLOOR, next="fix_and_retake", charge="operator"), 3, REASON_SNR_FLOOR),
+    (100.0, TakeVerdict(True, next="accept"), 1, REASON_LEVEL_UNSOLVED),
+], ids=["buried", "asks-again", "kept"])
+def test_a_run_probe_that_finds_no_level_ends_the_run_before_any_take(monkeypatch, chain_db, assessed, placements,
+                                                                      reason):
+    """A probe the room buries at its ceiling ends the run at once (ADR-0422). One
+    that asks for the microphone again does so while its retries last, and the fader
+    is back at the household level before each placement, so it sits at the probe
+    fader only while the probe plays. A probe an assessor keeps ends the run too,
+    since a probe is never kept: nothing plays at a fader no probe found (ADR-0365,
+    ADR-0403 §4)."""
     request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), level=ac.LevelPolicy(level_db=0.0))
     events: list = []
 
     result, plays, _ = asyncio.run(_run_found(
         monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": chain_db},
         gate=_PlacementLog(events), events=events,
-        assessor=(lambda analysis, **kw: TakeVerdict(True, next="accept")) if kept else None))
+        assessor=(lambda analysis, **kw: assessed) if assessed else None))
 
-    assert result.reason == reason and (len(plays) == 1) is kept
-    assert events == ["placement", 0.0, None] * len(plays)
+    assert (result.reason, len(plays)) == (reason, placements)
+    assert events == ["placement", 0.0, None] * placements
     assert all(call["spec"].level_probe and call["spec"].graph_scope == "timing" for call in plays)
     assert result.level["run"]["level_db"] is None
 
@@ -2020,8 +2027,8 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
 
 
 @pytest.mark.parametrize("driver,repeats,retries,redo_first,left,retakes,reason", [
-    (True, 2, 0, True, 0, 0, ""), (True, 2, 0, False, 0, 0, ""), (True, 6, 3, False, 3, 0, ""),
-    (False, 2, 0, True, 0, 0, ""), (False, 2, 1, False, 0, 1, ""), (False, 6, 3, False, 2, 1, ""),
+    (True, 2, 0, True, 0, 0, ""), (True, 2, 0, False, 0, 0, ""), (True, 6, 2, False, 2, 0, ""),
+    (False, 2, 0, True, 0, 0, ""), (False, 2, 1, False, 0, 1, ""), (False, 6, 2, False, 1, 1, ""),
     (False, 2, 0, False, 0, 0, REASON_RETRIES_SPENT),
 ])
 def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
