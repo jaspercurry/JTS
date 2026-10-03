@@ -19,7 +19,7 @@ can have another cause. Driver class is context, not a diagnosis by itself.
 | Excitation band, level, duration | `excitation_safety_plan.py` | Physical protection |
 | Mic calibration and capture gain | Take calibration record | SPL and magnitude interpretation |
 | Gate window | Per-take gate disclosure | Frequency range the capture can resolve |
-| Rig geometry | `jasper-declare-geometry set|show`, or Speaker placement on `/sound/speaker/` | Reflection-path estimate and its source |
+| Rig geometry | `jasper-declare-geometry set|show`, or the placement form on `/sound/speaker/` | Reflection-path estimate and its source |
 | Repeat spread | The round's own mark takes (ADR-0341) | Random measurement uncertainty |
 
 Geometry is useful when available: speaker acoustic-centre height, mic height,

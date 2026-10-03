@@ -254,7 +254,7 @@ function startingCard() {
 
 function placementForm() {
   const { fields, values, issue } = view.geometry;
-  return h('details', { open: Boolean(issue) || !Object.keys(values).length }, h('summary', {}, 'Speaker placement'),
+  return h('details', { open: Boolean(issue) || !Object.keys(values).length }, h('summary', {}, 'Speaker and microphone placement'),
     h('fieldset', {}, issue && h('p.form-hint', {}, issue.message),
       h('p.form-hint', {}, 'Heights are from the floor to the speaker centre and to the microphone. Toe-in is 0 when the speaker faces straight out from the wall.'),
       Object.entries(fields).map(([key, label]) => field(label, geometry[key], value => edit(geometry, key, value), { type: 'number' })),
