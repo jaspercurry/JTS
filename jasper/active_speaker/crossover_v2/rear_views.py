@@ -97,9 +97,8 @@ ROLE_PAIR = "pair"
 #: ``front_rear`` branch pair excites, in the channel order it plays them.
 PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
 
-#: The capture facts every candidate in one batch must share for the figures to
-#: mean anything, echoed from the takes' own basis rather than restated: the
-#: stimulus's shape, since each candidate graph levels its own (ADR-0423).
+#: The capture facts every candidate in one batch must share for the figures to mean anything,
+#: echoed from the takes' own basis: the stimulus's shape, not its level (ADR-0423).
 LEVEL_FIELDS = ("level_db", "stimulus_shape_id", "calibration_applied", "calibration_reference")
 
 #: The rear score (#5405 comment 5747658591). Behind the box the room refills an
