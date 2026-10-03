@@ -551,7 +551,7 @@ def _rear(draft: Mapping[str, Any], geometry: DeclaredGeometry | None,
         "case": "electrical_dsp",
         "mode": "branches",
         "schema": _rear_calibration_schema(),
-        # At the rate the door binds a rear section to, so it is admitted as written.
+        # At the rate the door binds a rear section to.
         "seed": rear_seed(DEFAULT_SAMPLE_RATE, draft=draft, geometry=geometry, views=views),
         "bounds": {
             "freq_hz_upper_bound_rule": (

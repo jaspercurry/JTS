@@ -23,8 +23,8 @@ from .design_draft import declared_driver_spacing_m
 from .rear_calibration import KIND, MAX_CHAIN_BOOST_DB, PHASE_CONVENTION, flat_shelf
 from .rear_fit import LOWPASS_ORDER, chain, combo, group_delay_ms
 
-#: The rear's lateness over the woofer spacing at the band centre: a supercardioid.
-#: The seat optimum was broad, 0.2 to 0.65 within 0.3 dB (#5438).
+#: The owner's ratio r (#6227): the cancellation delay plus its low-pass's group delay at the band
+#: centre is r·d/c. The seat optimum was broad, 0.2 to 0.65 within 0.3 dB (#5438).
 SUPERCARDIOID_RATIO = 0.6
 #: ADR-0325's complementary Linkwitz-Riley hand-over between the two rear branches.
 HANDOVER_ORDER = 4
@@ -50,6 +50,8 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
         return unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})
     speed = DEFAULT_SOUND_SPEED_M_S
     # The front panel's distance to the wall; its quarter-wave notch is c / (4 * wall_m).
+    # A panel nearer the wall than 2d/3 puts the high-pass above the low-pass; d under ~3.6 mm puts the
+    # low-pass above Nyquist, which the door refuses.
     wall_m = geometry.boundary_walls()[0]["front"]
     handover_hz = round(speed / (6.0 * wall_m), 4)
     lowpass = combo("ButterworthLowpass", round(speed / (4.0 * spacing_m), 4), LOWPASS_ORDER)

@@ -57,7 +57,7 @@ from jasper.active_speaker.rear_calibration import (
 )
 from jasper.active_speaker.run_manifest import view_sets
 from jasper.audio_measurement import impulse_reading
-from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
+from jasper.audio_measurement.measurement_geometry import boundary_prior, read_declared_geometry
 from jasper.audio_measurement.band_ladders import (
     ARRIVAL_GAP_BAND_HZ, FRONT_GUARD_BANDS_HZ, LEVEL_BANDS_HZ, REAR_SCORE_BANDS_HZ,
 )
@@ -180,8 +180,9 @@ def _level_facts(observed: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 def _declared_geometry(inputs: RoundInputs) -> tuple[Any, Mapping[str, float], str]:
     """The round's declared geometry, its boundary walls and why it has none."""
-    geometry = (load_declared_geometry(inputs.declared_geometry_path)
-                if inputs.declared_geometry_path else None)
+    geometry, error = read_declared_geometry(inputs.declared_geometry_path)
+    if error is not None:
+        raise error
     walls, reason = geometry.boundary_walls() if geometry else ({}, "geometry_undeclared")
     return geometry, walls, reason
 

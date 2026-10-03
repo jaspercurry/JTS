@@ -282,7 +282,8 @@ def rear_operating_facts(document: Mapping[str, Any] | None) -> dict[str, Any]:
 def flat_shelf(gain_db: float) -> dict[str, Any]:
     """A flat level change a rear branch carries as a filter, as a weight above 1 is written (ADR-0327).
 
-    A Lowshelf this high is flat to 0.001 dB, and within 1.3 degrees of zero phase, below 1.2 kHz.
+    Below 1.2 kHz a Lowshelf this high is flat to 0.002 dB down to −40 dB; its phase there stays within
+    1.3 degrees for |gain| ≤ 6 dB and reaches 10.6 degrees at −40 dB.
     """
     return {"type": "Biquad", "parameters": {
         "type": "Lowshelf", "freq": FLAT_SHELF_HZ, "q": round(SHELF_Q, 4), "gain": round(gain_db, 4)}}

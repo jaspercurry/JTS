@@ -44,7 +44,7 @@ from jasper.active_speaker.design_draft import (
     DEFAULT_DESIGN_DRAFT_PATH as DRIVERS_DEFAULT_PATH,
 )
 from jasper.audio_measurement.measurement_geometry import (
-    DEFAULT_PATH as _DECLARED_GEOMETRY_DEFAULT_PATH, DeclaredGeometry, load_declared_geometry,
+    DEFAULT_PATH as _DECLARED_GEOMETRY_DEFAULT_PATH, read_declared_geometry,
 )
 from jasper.active_speaker.repeat_floor import (
     DEFAULT_STATE_PATH as REPEAT_FLOOR_DEFAULT_PATH,
@@ -455,16 +455,8 @@ def contract_sources(round_: Path | RoundInputs, *, set_id: str | None = None) -
             "manifest": with_records(inputs.session_dir, manifest) if manifest else {},
             **{f"room_{section}": room.get(section, {})
                for section in ("median", "persistence", "ceiling")},
-            "rear_views": rear, "declared_geometry": _declared_geometry(inputs)}
-
-
-def _declared_geometry(inputs: RoundInputs) -> DeclaredGeometry | None:
-    """The rig the round declared; ``None`` when it banked none or the file does not parse, which the
-    evidence packet's ``declared_geometry`` block names (ADR-0388)."""
-    try:
-        return load_declared_geometry(inputs.declared_geometry_path) if inputs.declared_geometry_path else None
-    except (OSError, ValueError):
-        return None
+            # An unreadable file reads as undeclared here; the evidence packet's block names it (ADR-0388).
+            "rear_views": rear, "declared_geometry": read_declared_geometry(inputs.declared_geometry_path)[0]}
 
 
 #: The round directory's packet names another round (or none), so its bass evidence is not this round's.

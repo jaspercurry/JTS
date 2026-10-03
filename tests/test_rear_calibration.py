@@ -148,8 +148,8 @@ def _geometry(back_m: float | None = 0.2, depth_m: float | None = 0.3, toe_deg: 
     pytest.param(330.0, 0.2, 0.3, 0.0, (114.33, 259.85), 0.5773, id="jts3"),
     pytest.param(250.0, 0.4, 0.3, 60.0, (103.94, 343.0), 0.4373, id="toed_in"),
 ])
-def test_the_seed_is_a_supercardioid_from_the_declared_geometry(spacing_mm, back_m, depth_m, toe_deg, band_hz,
-                                                                 net_delay_ms):
+def test_the_seed_takes_its_corners_and_its_delay_from_the_declared_geometry(spacing_mm, back_m, depth_m, toe_deg,
+                                                                              band_hz, net_delay_ms):
     """The cancellation band runs from c/(6 x the front panel's wall distance) to c/(4 x the woofer spacing);
     that branch is inverted and its delay plus its low-pass make 0.6 x spacing / c at the band centre; the bass
     branch hands over in phase at the band's foot. The seed passes the validator and plays audible."""
