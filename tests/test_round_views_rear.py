@@ -185,13 +185,14 @@ def _round_source(root: Path) -> tuple[dict, Any]:
             if key not in ("schema_version", "capture_session_id")}, store
 
 
-def _round_environment(root: Path, *, applied: Mapping[str, Any]) -> None:
-    """The declared cabinet and the applied tune a rear round reads."""
+def _round_environment(root: Path, *, applied: Mapping[str, Any] | None) -> None:
+    """The declared cabinet and the applied tune a rear round reads; ``None`` applies no rear stage."""
     DeclaredGeometry(speaker_height_m=0.84, mic_height_m=0.84, distance_m=1.0,
                      **_CABINET).save(root / "declared-geometry.json")
     profile = _applied_profile(_active_topology("mono", "active_2_way"))
     profile.update(kind=BASELINE_PROFILE_KIND, artifact_schema_version=SCHEMA_VERSION)
-    profile["recomposition_snapshot"]["rear_calibration"] = applied
+    if applied is not None:
+        profile["recomposition_snapshot"]["rear_calibration"] = applied
     (root / "applied-profile.json").write_text(json.dumps(profile))
 
 
@@ -899,6 +900,23 @@ def test_a_batch_without_repeats_or_a_muted_candidate_falls_back_and_says_so(
     assert set(entry["comparison"]["repeat_spread"]["spread_db"].values()) == {None}
     assert all(row["across_positions"]["worst_regression"]["exceeds_repeat_spread"] is None
                for row in entry["candidates"])
+
+
+def test_a_base_that_plays_no_rear_stage_is_the_rear_off_reference(tmp_path, banked_candidates):
+    """On a first build the base plays no rear stage, so its rear output is muted: it is the
+    rear-off reference, and each candidate's late energy and front guard read against it
+    (ADR-0436). A base that plays a rear stage stays the incumbent reference (above)."""
+    root = rear_round(tmp_path, candidates=(BASE_CANDIDATE, _VARIANT), repeats=1)
+    _round_environment(root, applied=None)
+
+    entry, = packet_of(root)[0]["rear"]
+
+    assert entry["comparison"]["reference"] == {"candidate_id": BASE_CANDIDATE, "kind": "rear_muted",
+                                                "set_id": BASE_CANDIDATE}
+    variant, = (row for row in entry["candidates"] if row["candidate_id"] == _VARIANT)
+    for row in variant["positions"].values():
+        assert (row["late_energy"]["reason"], row["late_energy"]["early_late_change_db"]) == ("", pytest.approx(0.0))
+        assert row["front_guard"]
 
 
 @pytest.mark.parametrize("pose_kind", [POSE_KIND_BEHIND, "seat"])

@@ -4,15 +4,16 @@
 
 """The rear comparison over one banked batch of rear takes (issue #5330).
 
-A SUMMED batch plays, at the same microphone positions and the same session
-level, the incumbent tune, the same tune with its rear muted, and one to three
-variants that each change one control family. This module selects those takes,
-freezes the batch's comparison band and per-position reference curve ONCE, and
-hands :mod:`jasper.audio_measurement.seat_figures` the arrays.
+A SUMMED batch plays the incumbent tune and one to three candidates at the
+same microphone positions, each graph at its own level (ADR-0423). Its
+reference is a candidate with its rear muted, else the base, which is the
+rear-off reference when it plays no rear stage (ADR-0436). This module selects
+those takes, freezes the batch's comparison band and per-position reference
+curve ONCE, and hands :mod:`jasper.audio_measurement.seat_figures` the arrays.
 
-A PAIR batch plays ONE candidate, its parent with the rear calibration
-cleared so the two woofers are raw (ADR-0386), and banks each woofer alone
-beside their sum at every bearing. It carries no candidate
+A PAIR batch plays ONE candidate, its parent with the rear calibration, bass
+and room cleared so the two woofers are raw (ADR-0386, ADR-0436), and banks
+each woofer alone beside their sum at every bearing. It carries no candidate
 comparison because there is only one played candidate: it says what the two
 woofers do separately and how far their superposition may be trusted, which is
 what the no-sound preview predicts from.
@@ -465,9 +466,11 @@ def rear_document(
     coverage_hz = [swept_hz[0], min(ceiling.ceiling_hz, swept_hz[1])]
     captured = sorted({key for poses in batch.values() for key in poses})
 
-    muted = sorted(name for name, (section, _) in sections.items()
-                   if section.get("rear_muted") is True)
-    reference_id = muted[0] if muted else incumbent_id
+    # A base with no rear stage plays its rear output muted (ADR-0436).
+    muted = sorted(name for name, (section, reason) in sections.items()
+                   if section.get("rear_muted") is True or (name == incumbent_id and not section and not reason))
+    reference_id = next((name for name in muted if name != incumbent_id), incumbent_id)
+    reference_muted = reference_id in muted
     zeros: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     reference_late: dict[str, list[Mapping[str, float]]] = {}
     reference_curve: dict[str, np.ndarray] = {}
@@ -478,7 +481,7 @@ def rear_document(
             continue
         grid, mean_db = _mean_curve_db(group)
         zeros[key] = (grid, reference_curve_db(grid, mean_db))
-        if muted:
+        if reference_muted:
             reference_late[key] = [take.late_energy for take in group if take.late_energy]
             reference_curve[key] = mean_db
         if key in on_axis and reference_on_axis is None:
@@ -534,7 +537,7 @@ def rear_document(
             "rear_score": _rear_score(
                 inputs.session_dir, batch[name], batch[reference_id], records,
                 front=bearing, behind=behind, swept_hz=swept_hz,
-            ) if muted else unavailable(REASON_NO_COMPARISON),
+            ) if reference_muted else unavailable(REASON_NO_COMPARISON),
         })
     observed = [basis for rows in bases.values() for basis in rows]
     return {
@@ -544,7 +547,7 @@ def rear_document(
             "band_dip_hz": band["dip_hz"], "band_reason": band["reason"],
             "coverage_hz": coverage_hz, "ceiling": ceiling.to_dict(),
             "reference": {"candidate_id": reference_id,
-                          "kind": ROLE_REAR_MUTED if reference_id in muted else ROLE_INCUMBENT,
+                          "kind": ROLE_REAR_MUTED if reference_muted else ROLE_INCUMBENT,
                           "set_id": (sets.get(reference_id) or {}).get("set_id")},
             "previous_reference": _previous_reference(
                 inputs, manifest, reference_id, {key: batch[reference_id][key] for key in positions}, basis_of),
