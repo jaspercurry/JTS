@@ -31,9 +31,11 @@ plays at the mark after the first, the replay added only a play.
    MEASURE take composes at the raised gain. The raise rule, its caps and its SPL bound do not change.
 3. **The last take at a pose is retaken, as before.** A take with no later MEASURE take at its pose is
    retaken at its raise: the one take of `tournament/express`, the fourth mark take of
-   `baseline_express`, and each off-axis take. So is a take whose magnitude also fails. A short take
-   kept as the newest take at the mark would make ADR-0345 mark the saved timing `not_comparable`
-   (`snr_short`) and ask for `measure_timing`, a new round. The owner may change this rule.
+   `baseline_express`, and each off-axis take. So is a take whose magnitude also fails. If the newest
+   take at the mark were a short take,
+   [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) would read the
+   saved timing as `not_comparable` (`snr_short`) and ask for `measure_timing`, a new round. The owner
+   may change this rule.
 4. **A set keys on its stimulus's shape.** A run-manifest set keys on the capture fields that
    [ADR-0408](0408-over-a-timing-take-each-candidate-graph-probes-its-own-graph.md) compares two takes
    on (`measurement_context.SHAPE_FIELDS`: the side, the capture device, the fader `level_db` and
@@ -41,8 +43,8 @@ plays at the mark after the first, the replay added only a play.
    (`run_manifest.set_basis`). It never keys on the level-bearing `stimulus_dbfs`, `stimulus_id` or
    `stimulus_peak_dbfs`. Takes that differ only in how loud they played share a set, and each row keeps
    its own level. This keeps [ADR-0299](0299-one-evidence-manifest-per-run.md)'s rule that "Sets group
-   one configuration and capture condition across poses" (lines 21–22), with a stimulus's level read as
-   no part of that condition.
+   one configuration and capture condition across poses" (line 21), with a stimulus's level read as no
+   part of that condition.
 5. **The level-drift reference keeps the level-bearing id.** `RunManifest.level_observation` still
    finds a take's reference by its fader and its `stimulus_id`. The reference is one broadband
    loudest-window level, from whichever driver plays loudest, so subtracting one driver's raise from it
@@ -62,10 +64,10 @@ plays at the mark after the first, the replay added only a play.
 ## Consequences
 
 - **Hearing:** this only removes plays. Every take plays a pose and a gain that the flow before this
-  ADR played: the next take at the pose composes from the gain plan that the replay's verdict raised,
-  and every later take played that plan already. When the take a raise rides asks a second raise, the
-  second is solved from that take's reading, at the replay's gain and pose, by the same rule, caps and
-  SPL bound. `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the 85 dB commissioning
+  ADR played. The take a raise rides composes from the gain plan as the replay's verdict raised it, and
+  the flow before this ADR played that take at that plan too. When the take a raise rides asks a second
+  raise, the second is solved from that take's reading, at the replay's gain and pose, by the same rule,
+  caps and SPL bound. `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the 85 dB commissioning
   stop and its watch, the declared driver caps and ADR-0405's probe staircase do not change.
 - Proof: an executor run through the web host's analysis and composer, on a fake chain whose first
   MEASURE take reads 33 dB of tweeter alignment SNR with 3.3 dB of SPL headroom
