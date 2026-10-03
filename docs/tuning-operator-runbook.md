@@ -10,11 +10,15 @@ Run every tool as root on the speaker: `sudo /opt/jasper/.venv/bin/<tool>`, as t
 
 First run `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber status` without a round. Read `applied`,
 `last_banked`, and `next` for the current layers, recent rounds, and next program.
-`last_banked` keeps the latest round per applicable program that kept a take: `round_id`, `round_dir`,
-`banked_at`, `status`, `stale`, and `stale_by`. `stale: true` means a layer at or under its program
-changed since its bank, and a kept take played that layer; `stale_by` names the programs whose layer
-changed ([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)). A preference
-EQ save stales nothing. Only a current round is offered to copy.
+`last_banked` keeps the latest round per applicable program that kept a take: `round_id`, `set_id`,
+`round_dir`, `banked_at`, `status`, `stale`, and `stale_by`. Each set of a round is judged alone, by the
+layers it played: a candidate's set by the layers an apply of that candidate would record. `stale: true`
+means that, in every set, a layer at or under its program changed since the set played it, and a kept
+take of the set played that layer; `stale_by` names the programs whose layer changed under the newest set
+([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md),
+[ADR-0437](adr/0437-a-rounds-staleness-is-judged-per-set.md)). `set_id` names the newest current set
+(else the newest set); pass it as `--set`. So after a seed's apply, the cardioid trial's seed set is the
+in-room base. A preference EQ save stales nothing. Only a current round is offered to copy.
 Bass is an option inside the in-room program, so `next` never asks for it. With every other applicable
 layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless room's latest round went
 stale through the speaker or rear layer: then `next` is room with `upstream_changed`
