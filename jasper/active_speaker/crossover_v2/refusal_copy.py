@@ -134,7 +134,6 @@ REASON_MEASURE_SPL_CALIBRATION_REQUIRED = "measure_spl_calibration_required"
 REASON_WALK_COMMISSIONING_STOP_UNSET = "walk_commissioning_stop_unset"
 REASON_WALK_STIMULUS_NOT_ACCEPTED = "walk_stimulus_not_accepted"
 REASON_WALK_OVER_CAPTURE_CAPACITY = "walk_over_capture_capacity"
-REASON_WALK_CANDIDATE_NOT_MEASURABLE = "walk_candidate_not_measurable"
 REASON_WALK_BRANCH_PAIR_UNDECLARED = "walk_branch_pair_undeclared"
 REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS = "walk_layout_unsupported_for_per_driver_programs"
 
@@ -1170,13 +1169,6 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
         'This plan has more recordings than one session can hold. Split the positions across '
         'separate sessions.',
         own_action={"id": 'split_walk', "label": 'Split the measurement plan',
-                    "href": '/sound/speaker/crossover/'},
-    ),
-    REASON_WALK_CANDIDATE_NOT_MEASURABLE: ReasonSpec(
-        REASON_WALK_CANDIDATE_NOT_MEASURABLE, TEMPLATE_HARD_STOP, 0,
-        "A summed tuning test must use that tuning's own levels and alignment. Remove the separate "
-        'level or alignment overrides.',
-        own_action={"id": 'remove_trial_overrides', "label": "Use the tuning's own settings",
                     "href": '/sound/speaker/crossover/'},
     ),
     REASON_WALK_BRANCH_PAIR_UNDECLARED: ReasonSpec(

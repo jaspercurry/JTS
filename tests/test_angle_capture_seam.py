@@ -981,16 +981,15 @@ def test_invalid_level_policy_refuses_at_construction(level_db):
     assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
-@pytest.mark.parametrize("fields, reason", [
-    ({"candidates": ("missing",)}, ac.WALK_CANDIDATE_NOT_MEASURABLE),
-    *[({"repeats": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (0, -1, True, 1.5)],
-    *[({"retries_per_pose": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in (-1, True, 1.5)],
-    *[({"levels": v}, ac.WALK_LEVEL_POLICY_INVALID) for v in ((), (-10, -10), (1,), (float("nan"),), (None,), "-10")],
+@pytest.mark.parametrize("fields", [
+    *[{"repeats": v} for v in (0, -1, True, 1.5)],
+    *[{"retries_per_pose": v} for v in (-1, True, 1.5)],
+    *[{"levels": v} for v in ((), (-10, -10), (1,), (float("nan"),), (None,), "-10")],
 ])
-def test_invalid_walk_fields_refuse_by_name(fields, reason):
+def test_invalid_walk_fields_refuse_by_name(fields):
     with pytest.raises(ac.LateralWalkRefused) as refused:
         replace(_stops_at([0], regimes=(ac.REGIME_SUMMED,)), **fields)
-    assert refused.value.reason == reason
+    assert refused.value.reason == ac.WALK_LEVEL_POLICY_INVALID
 
 
 @pytest.mark.parametrize("program,layout,mover,reason", [
