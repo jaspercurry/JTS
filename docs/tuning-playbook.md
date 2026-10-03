@@ -262,9 +262,11 @@ full at every volume
 `sudo /opt/jasper/.venv/bin/jasper-round-views bass-alignment` fits the measured alignment: each woofer's
 box alone from a near-field round, or with `--take` a bass round's base take
 as played, the room included. The in-box alignment comes from the near-field
-fit. A seat or bass take carries the room's modes, and a peak pulls the fit:
-one seat spot on jts3 fitted 67 Hz at Q 0.38 in one run and 108 Hz at Q 0.98 in
-the next, where the woofer's near-field fit was 84–86 Hz at Q about 1.0. Read each
+fit. A seat or bass take carries the room's modes, and a peak pulls the fit. The
+fit reads only bins over the 20 dB SNR floor
+(`0419-the-bass-alignment-fit-reads-only-trusted-bins.md`), yet one seat spot on
+jts3 fitted 96 Hz at Q 1.03 in one run, 102 Hz at Q 1.88 in another and no
+corner in a third, where the woofer's near-field fit was 84–86 Hz at Q about 1.0. Read each
 fit's `band_hz` (the band it read) and `residual_db` (its rms miss against the
 sealed box) before you state `source_hz` and `source_q`.
 

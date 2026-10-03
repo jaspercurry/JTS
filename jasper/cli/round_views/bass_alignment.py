@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Jasper Curry
 # SPDX-License-Identifier: Apache-2.0
 
-"""The sealed-box alignment a curve fits: the corner and Q a Linkwitz transform starts from (ADR-0398)."""
+"""The sealed-box alignment a curve fits: the corner and Q a Linkwitz transform starts from (ADR-0398, ADR-0419)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from jasper.active_speaker.crossover_v2.nearfield_view import nearest_raw
 from jasper.active_speaker.crossover_v2.pose_curve import WINDOW_UNGATED
 from jasper.active_speaker.crossover_v2.position_cycle import curve_band, measured_curve_band, take_curve
 from jasper.active_speaker.crossover_v2.round_inputs import RoundInputs, take_artifact_name
+from jasper.active_speaker.measurement_bass import qualified_bands, qualified_bins
 from jasper.audio_measurement.band_ladders import BASS_ALIGNMENT_BAND_HZ
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED, EvidenceUnavailable, unavailable
 from jasper.audio_measurement.trusted_band import banked_band
@@ -35,8 +36,10 @@ _CURVES = ("freqs_hz", "measured_db", "model_db")
 
 
 def _nearfield_fits(inputs: RoundInputs, args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Each driver's raw near-field curve at its nearest placement, fitted."""
+    """Each driver's raw near-field curve at its nearest placement, fitted over
+    the bins whose band every take of that curve trusts."""
     _, document = round_nearfield(inputs)
+    bands = {take["take_id"]: take["bands"] for take in document["takes"]}
     fits = []
     for driver in document["drivers"]:
         placement = nearest_raw(driver)
@@ -45,9 +48,11 @@ def _nearfield_fits(inputs: RoundInputs, args: argparse.Namespace) -> tuple[dict
                 "field": "raw", "take_ids": [one for place in driver["placements"] for one in place["take_ids"]]})})
             continue
         raw = placement["raw"]
+        freqs = np.asarray(raw["freqs_hz"], dtype=float)
+        qualified = np.logical_and.reduce([qualified_bins(freqs, bands[take_id], "trusted") for take_id in raw["take_ids"]])
         fits.append({"role": driver["driver"], "distance_mm": placement["distance_mm"], "kind": placement["kind"],
-                     "take_ids": raw["take_ids"], **bass_alignment(raw["freqs_hz"], raw["level_db"], args.band_hz,
-                                                                   banked_band(placement["trusted_band"]))})
+                     "take_ids": raw["take_ids"], **bass_alignment(freqs, raw["level_db"], args.band_hz,
+                                                                   banked_band(placement["trusted_band"]), qualified)})
     return subject(inputs, take_ids=[take["take_id"] for take in document["takes"]]), fits
 
 
@@ -63,12 +68,14 @@ def _spoken(curve: Mapping[str, Any]) -> tuple[np.ndarray, np.ndarray]:
 
 def _take_fits(round_dir: Path, args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """One take's banked ungated curve for its set's role, fitted as played
-    through the room, inside the band banked on that curve."""
+    through the room, inside the band banked on that curve, over the bins its
+    bass reading qualifies."""
     read, take_id, role, take = resolve_set_take(round_dir, args.set, args.take, None)
     curve = take_curve(take, role, WINDOW_UNGATED, required=True)
     freqs, level = stage(EXIT_UNREADABLE, (ValueError,), _spoken, curve)
     return read, [{"role": role, "take_ids": [take_id],
-                   **bass_alignment(freqs, level, args.band_hz, curve_band(take, curve))}]
+                   **bass_alignment(freqs, level, args.band_hz, curve_band(take, curve),
+                                    qualified_bins(freqs, qualified_bands(take)))}]
 
 
 def _refusal_reason(fits: list[dict[str, Any]]) -> str:
@@ -112,7 +119,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     parser.add_argument("round_dir", metavar=_ROUND_DIR_METAVAR, help=_ROUND_DIR_HELP)
     add_set_argument(parser, take=True)
     parser.add_argument("--band-hz", type=float, nargs=2, metavar=("LOW", "HIGH"), default=list(BASS_ALIGNMENT_BAND_HZ),
-                        help="band the fit reads, in Hz, clipped to each curve's trusted band "
+                        help="band the fit reads, in Hz, clipped to each curve's trusted band and SNR-qualified bins "
                              f"(default: {' '.join(f'{hz:g}' for hz in BASS_ALIGNMENT_BAND_HZ)})")
     parser.add_argument("--out", help="artifact destination")
     parser.set_defaults(func=_cmd, parser=parser)

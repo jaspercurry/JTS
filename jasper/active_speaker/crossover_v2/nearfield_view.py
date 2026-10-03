@@ -33,6 +33,7 @@ from jasper.audio_measurement.level import piston_step_db
 from jasper.audio_measurement.piston import at_driver_near_field
 from jasper.audio_measurement.quality_model import DRIVER
 from jasper.audio_measurement.series_stats import power_mean_across_db, power_mean_db
+from jasper.audio_measurement.sweep_levels import snr_trusted
 from jasper.audio_measurement.trusted_band import TrustedBand, within_trusted
 
 from ..graph_transfer import GraphTransferError, complex_channel_transfer
@@ -104,7 +105,7 @@ def _band(freqs: np.ndarray, sweeps: np.ndarray, band_hz: tuple[float, float],
         rms = float(np.sqrt(np.mean((within[-1] - within[-2]) ** 2)))
         if rms > 0.0:
             row["snr_db"] = round(20.0 * math.log10(20.0 / math.log(10.0) / rms), 1)
-            row["trusted"] = row["snr_db"] >= DRIVER.snr_warn_db and _inside(band_hz, trusted)
+            row["trusted"] = snr_trusted(row["snr_db"]) and _inside(band_hz, trusted)
     return row
 
 

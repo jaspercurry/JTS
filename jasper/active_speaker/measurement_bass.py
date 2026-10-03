@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -105,12 +106,24 @@ def bass_evidence(program: ExcitationProgram, analysis: Any, samples: np.ndarray
         for order in harmonics.orders}}}
 
 
-def _qualified(freqs: np.ndarray, bands: list[dict[str, Any]]) -> np.ndarray:
+def qualified_bins(freqs: np.ndarray, bands: Iterable[Mapping[str, Any]], key: str = "fundamental_qualified") -> np.ndarray:
+    """Each bin of ``freqs`` in a band of ``bands`` whose ``key`` holds; a bin no band holds is not qualified."""
     mask = np.zeros(freqs.shape, dtype=bool)
     for band in bands:
         lo, hi = band["band_hz"]
-        mask |= (freqs >= lo) & (freqs < hi) & band["fundamental_qualified"]
+        mask |= (freqs >= lo) & (freqs < hi) & band[key]
     return mask
+
+
+def qualified_bands(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The bass bands a take ``record`` banked, each marked whether its
+    fundamental qualifies: an intact capture whose band SNR is trusted
+    (:func:`snr_trusted`). A record that banked no bass reading has none."""
+    reading = (record.get("analysis") or {}).get("bass")
+    if reading is None:
+        return []
+    valid = not record["diagnostic"].get("integrity_failed") and not record["analysis"]["glitch_detected"]
+    return [{**band, "fundamental_qualified": valid and snr_trusted(band["estimated_snr_db"])} for band in reading["bands"]]
 
 
 def bass_take(take: BankedMeasurement) -> dict[str, Any]:
@@ -122,17 +135,14 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
     segment = program.segment(reading["segment_id"])
     diagnostics = document["diagnostic"]
     alignment = diagnostics.get("pass_alignment")
-    valid = not diagnostics.get("integrity_failed") and not document["analysis"]["glitch_detected"]
-    bands = [dict(band) for band in reading["bands"]]
-    for band in bands:
-        band["fundamental_qualified"] = valid and snr_trusted(band["estimated_snr_db"])
+    bands = qualified_bands(document)
     orders = {}
     harmonics = reading["harmonics"]
     distortion = (unavailable(harmonics["reason"]) if harmonics.get("status") == "unavailable"
                   else {"status": "available"})
     if distortion["status"] == "available":
         freqs = np.asarray(harmonics["freqs_hz"], dtype=float)
-        harmonic_qualified = _qualified(freqs, bands)
+        harmonic_qualified = qualified_bins(freqs, bands)
         silence = preceding_silence_s(program, segment)
         for order, row in harmonics["orders"].items():
             relative, floor = (np.asarray(row[key], dtype=float) for key in ("relative_db", "floor_relative_db"))
@@ -170,7 +180,7 @@ def bass_take(take: BankedMeasurement) -> dict[str, Any]:
         "diagnostics": diagnostics, "quiet_samples": reading["quiet_samples"], "ladder": "bass", "bands": bands,
         "freqs_hz": _finite(frequencies),
         "fundamental_db": _finite(np.asarray(curve["magnitude_db"], dtype=float)[bass]),
-        "fundamental_qualified": _qualified(frequencies, bands).tolist(), "harmonics": orders,
+        "fundamental_qualified": qualified_bins(frequencies, bands).tolist(), "harmonics": orders,
         "distortion": distortion,
     }
 
