@@ -74,6 +74,10 @@ trials every bass document. So the ladder has no remaining job.
   and preflight as before, so no level changes. `volume_limit` 0.0, the graph doors, the
   `set_volume_db` clamp, the 85 dB commissioning stop, the declared driver caps and ADR-0405's
   probe staircase do not change.
+- The run and dry-run answers drop the ladder's `levels` parameter, the presets answer its
+  `level_ladder_db`, and the contract and judge answers the bass section's `levels` detail, so
+  their schemas move to `jts_round_run/4`, `jts_round_preflight/4`, `jts_round_presets/4`,
+  `jts_prescription_contract/4` and `jts_prescription_judgement/4` (ADR-0344 §4).
 - A banked `bass/axis` round no longer resolves its preset: the round lists count it for no
   program, and a view that resolves its preset refuses it (no backward support).
 - Rule A (`preflight.run_margins`) and the bound in `plan_run` that holds a run's first seat spot
