@@ -650,8 +650,11 @@ def _select_summed_alignment_pair(
         values = {d: evaluate(sign, d) for d in grid}
         center = min(values, key=values.__getitem__)
         radius = 1e6 / fc_hz
-        extended = sorted(set([*grid, *np.arange(center - radius, center + radius + step / 2, step)])) if step else grid
-        bracket = [d for d in extended if abs(d - center) <= radius and lower <= abs(d) <= upper]
+        extension = np.arange(center - radius, center + radius + step / 2, step) if step else np.empty(0)
+        # arange lands ulps off the grid's own points; such a twin would be its grid point's
+        # bracket neighbour, and rounding would pick which side of a minimum is refined (#6227).
+        extension = extension[np.abs(np.subtract.outer(extension, grid)).min(axis=1) > 1e-6]
+        bracket = [d for d in sorted({*grid, *extension}) if abs(d - center) <= radius and lower <= abs(d) <= upper]
         for d in bracket:
             if d not in values:
                 values[d] = evaluate(sign, d)
