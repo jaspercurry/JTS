@@ -196,9 +196,9 @@ Read `spread_rms_db` beside `median`: RMS of the per-bin cross-position spread f
 
 Room correction ends at the printed ceiling. Above it, the speaker owns the
 curve. The ceiling is the applied tune's trusted floor, clamped, else the
-350 Hz default with the fallback disclosed. No applied tune carries a trusted
-floor yet ([#6110](https://github.com/jaspercurry/JTS/issues/6110)), so every
-room document prints the fallback (ADR-0400). The rule, the clamp and
+350 Hz default with the fallback disclosed. A speaker document banks that floor
+from the round it was judged on; a room or bass document keeps its base's
+(ADR-0424). The rule, the clamp and
 room/speaker ownership are defined in ADR-0256
 (`0256-the-room-ceiling-follows-the-applied-tunes-trusted-floor-and-room-correction-is-per-cabinet.md`).
 Full-speaker sweeps use the resolved 20 Hz–20 kHz audio band (ADR-0328); room prescriptions still start at the evidence floor, `coverage_hz[0]`.

@@ -29,11 +29,10 @@ ROOM_BOUNDARY_MAX_HZ: float = 500.0
 ROOM_FLOOR_HZ: float = 20.0
 AUDIO_BAND_TOP_HZ: float = 20_000.0
 
-# Where a room ceiling came from (ADR-0256 rule 1). Nothing writes the applied
-# tune's trusted floor yet (#6110), so only the fallback is produced (ADR-0400).
+# Where a room ceiling came from (ADR-0256 rule 1, ADR-0424).
 CEILING_SOURCE_APPLIED = "applied_candidate"
 CEILING_SOURCE_FALLBACK = "fallback"
-# A stored room layer composed before ADR-0400 may carry it; remove when no applied tune carries it (#6110).
+# A stored room layer composed before ADR-0400 may carry it; remove when no applied tune carries it (ADR-0424).
 CEILING_SOURCE_ROUND_GATE = "round_gate"
 CEILING_SOURCES = frozenset({CEILING_SOURCE_APPLIED, CEILING_SOURCE_FALLBACK, CEILING_SOURCE_ROUND_GATE})
 

@@ -429,10 +429,10 @@ class MeasuredCrossoverCandidate:
     from a resolved one. Empty where no pair was committed, and where a trim
     pin displaced the one that was.
 
-    ``exclusion_evidence`` is the exclusion reason of record for that fit. It
-    deliberately duplicates the session's ``cloud_measure.json``, which bundle
-    retention may prune, so the reason travels with the correction it justifies
-    (widest measured case, a ten-position cloud: ~5.3 kB).
+    ``exclusion_evidence`` is ``{"trusted_floor_hz"}``: the floor below which
+    the speaker sections' gated woofer evidence is not trusted, so where the
+    room layer stops (ADR-0256 rule 1, ADR-0424). ``compose_candidate`` is its
+    only writer.
 
     ``blend_correction`` is a flat ``[{biquad_type, freq, q, gain}, ...]`` list
     emitted pre-split on the stereo bus because it describes the SUM, not a
