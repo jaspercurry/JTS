@@ -22,7 +22,7 @@ from jasper.active_speaker.linearization_fit import linearization_filters_by_rol
 from ..measured_crossover_candidate import (
     MeasuredCrossoverCandidate, MeasuredCrossoverCandidateError,
 )
-from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, prescription_sections
+from jasper.active_speaker.measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_DOCUMENT_ORDER, PURPOSE_SPEAKER, prescription_sections
 from jasper.active_speaker.profile import SIDES_BY_LAYOUT, required_driver_roles
 from jasper.active_speaker.state_paths import baseline_profile_state_path
 from jasper.active_speaker import rear_calibration
@@ -30,6 +30,7 @@ from jasper.audio_measurement.evidence_reasons import REASON_UNREADABLE
 from jasper.bass_extension.dynamic import as_dynamic_bass_descriptor, expected_boost_db
 from jasper.dsp_control.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.audio_routes import output_topology_store as output_topology
+from jasper.platform.json_fields import finite_float
 from ._prescription_common import PRESCRIPTION_MALFORMED, refuse
 
 from . import alignment_prescription as alignment
@@ -39,8 +40,12 @@ from . import driver_prescription as driver
 from . import room_prescription as room
 from . import topology_prescription as topology
 from .capture_prediction import capture_prediction
+from .contracts import DRIVER_ROLE_WOOFER
 from .forward_model import ForwardModelError
 from .evidence_packet.readers import packet_feature_classifications
+from .journey import PHASE_MEASURE
+from .pose_curve import WINDOW_GATED
+from .position_cycle import take_curves
 from .prescription_contract import contract_digests, contract_json, contract_programs, prescription_contracts
 from .refusal_copy import refusal_copy_for
 from .rear_preview import preview_rear_section
@@ -183,6 +188,15 @@ def _played_layers(sources: Mapping[str, Any], names: Collection[str]) -> list[s
     takes = [take for take in group["takes"] if take.get("selected")]
     return sorted(name for name in names if (applied is None or applied.get(_SECTION_PROGRAMS[name]))
                   and any(_SECTION_LAYERS[name] not in (take.get("cleared_layers") or ()) for take in takes))
+
+
+def _woofer_floor_hz(manifest: Mapping[str, Any]) -> float | None:
+    """The highest trusted floor of a gated woofer curve over the round's kept speaker MEASURE takes (ADR-0424)."""
+    return max((floor for group in manifest.get("sets", ()) for take in group["takes"]
+                if take.get("selected") and take.get("phase") == PHASE_MEASURE
+                and take.get("measurement_purpose") == PURPOSE_SPEAKER
+                for curve in take_curves(take, WINDOW_GATED) or () if curve.get("role") == DRIVER_ROLE_WOOFER
+                and (floor := finite_float(curve.get("trusted_floor_hz"))) is not None), default=None)
 
 
 def _seat_median(evidence: PrescriptionEvidence, bass_layer: Mapping[str, Any] | None,
@@ -456,7 +470,7 @@ def judge_prescription_document(raw: Any, *, base: BankedCandidate,
             base_profile = load_applied_baseline_profile_state()
         return compose_candidate(
             base, sections=selected, rationale=document["rationale"],
-            base_profile=base_profile,
+            base_profile=base_profile, trusted_floor_hz=_woofer_floor_hz(evidence.sources.get("manifest") or {}),
             room_prescription_sha256=(blend.prescription_sha256(contract_json(judged["room"]).encode())
                                       if selected.get("room") else ""),
             room_measured_basis=judged.get("room", {}).get("measured_basis"),

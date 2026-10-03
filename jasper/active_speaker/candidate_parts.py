@@ -38,7 +38,7 @@ from .measured_crossover_candidate import (
 
 from .level_trim import declared_driver_gains
 from ._common import MeasurementGraphRefused
-from .measurement_programs import PRESCRIPTION_SECTIONS
+from .measurement_programs import PRESCRIPTION_SECTIONS, PROGRAM_ROWS, PURPOSE_SPEAKER
 from .profile import ActiveSpeakerPreset, required_driver_roles
 from .program_headroom import graph_headroom_db
 
@@ -47,6 +47,8 @@ COMPOSITION_KIND = "jts_candidate_composition"
 COMPOSITION_INVALID = "composition_invalid"
 DECLARED_CROSSOVER_PROGRAM_ID = "jts_declared_crossover"
 AlignmentSource = Literal["document", "cleared", "saved", "measured", "base"]
+_SPEAKER_SECTIONS = frozenset(section.name for row in PROGRAM_ROWS if row.purpose == PURPOSE_SPEAKER
+                              for section in row.sections)
 
 
 def _source(parent: BankedCandidate) -> dict[str, str]:
@@ -206,8 +208,12 @@ def compose_candidate(
     sections: Mapping[str, Any] | None = None,
     evidence: Mapping[str, Any] | None = None,
     base_profile: Mapping[str, Any] | None = None,
+    trusted_floor_hz: float | None = None,
 ) -> MeasuredCrossoverCandidate:
-    """Replace selected parts and retain unchanged measured timing."""
+    """Replace selected parts and retain unchanged measured timing.
+
+    ``trusted_floor_hz`` is the floor of the round the document was judged on;
+    a document that names no speaker section keeps its base's (ADR-0424)."""
     selected = dict(sections or {})
     evidence = dict(evidence or {})
     if "topology" in selected and not selected["topology"]:
@@ -274,10 +280,14 @@ def compose_candidate(
             ROOM_MEDIAN_FIELD: room["basis"][ROOM_MEDIAN_FIELD],
             "measured_basis": measured_basis,
         }
+    floor = base.candidate.exclusion_evidence
+    if _SPEAKER_SECTIONS & selected.keys():
+        floor = {} if trusted_floor_hz is None else {"trusted_floor_hz": trusted_floor_hz}
     candidate = MeasuredCrossoverCandidate(
         program_id=COMPOSITION_KIND, analysis=analysis, source_preset=preset, role_attenuations_db=trims,
         alignment=resolved_alignment,
         linearization=linearization,
+        exclusion_evidence=floor,
         blend_correction=selected.get("blend", base.candidate.blend_correction) or (),
         room_correction=room, bass_extension=bass, rear_calibration=rear,
     )

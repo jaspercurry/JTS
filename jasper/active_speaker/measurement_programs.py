@@ -113,7 +113,7 @@ _PROGRAM_SECTIONS = (
          PrescriptionSection("alignment", "jts_crossover_alignment_prescription", 2, 2, compose=False, envelope=_VERSIONED),
          PrescriptionSection("topology", "jts_crossover_topology_prescription", 3, 0, reset=False, envelope=_VERSIONED)),
         (CandidateField("linearization", dict), CandidateField("linearization_outcome", str, False),
-         CandidateField("trim_decision", dict, False), CandidateField("exclusion_evidence", dict, False),
+         CandidateField("trim_decision", dict, False), CandidateField("exclusion_evidence", dict),
          CandidateField("blend_correction", list)),
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
         "Driver linearization and crossover", "Measure each driver and refine its response and crossover.",

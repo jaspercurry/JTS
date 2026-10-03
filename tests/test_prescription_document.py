@@ -199,6 +199,28 @@ def test_empty_clears_and_omitted_layers_inherit(base, section, empty):
         assert child.role_attenuations_db == base.candidate.role_attenuations_db
 
 
+@pytest.mark.parametrize("sections,judged,floor", [
+    ({"alignment": {"delay_us": 100, "basis_delay_us": 0, "basis_artifacts": ["alignment.json"]}}, True, 420.0),
+    ({"alignment": {}}, False, None),
+    ({"room": {}}, True, 300.0),
+    ({"bass": {}}, True, 300.0),
+])
+def test_a_speaker_document_banks_its_rounds_woofer_floor_and_others_keep_the_bases(bank, base, sections, judged, floor):
+    """ADR-0424: the highest trusted floor of a kept, gated woofer MEASURE take of the round the
+    speaker sections were judged on; a document naming no speaker section keeps its base's."""
+    def take(phase, *, selected=True, purpose="speaker", **floors):
+        return {"selected": selected, "phase": phase, "measurement_purpose": purpose,
+                "curves": [{"role": role, "window": "gated", "trusted_floor_hz": hz} for role, hz in floors.items()]}
+    takes = [take("measure", woofer=357.1, tweeter=600.0), take("measure", woofer=420.0),
+             take("measure", selected=False, woofer=480.0), take("lateral", woofer=450.0),
+             take("measure", purpose="rear", woofer=470.0)]
+    evidence = PrescriptionEvidence({"bass_evidence": {}, "manifest": {"sets": [
+        {"set_id": "speaker", "capture_basis": {}, "takes": takes}]}}, round_id="r1") if judged else None
+    base = publish_authored_candidate(replace(base.candidate, exclusion_evidence={"trusted_floor_hz": 300.0}), root=bank)
+    child = judge_prescription_document(document(base.fingerprint, sections), base=base, evidence=evidence)
+    assert child.exclusion_evidence == ({} if floor is None else {"trusted_floor_hz": floor})
+
+
 @pytest.fixture
 def evidence(bass_packet):
     """A round banked on a speaker with no bass or room layer applied."""

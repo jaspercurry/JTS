@@ -20,6 +20,8 @@ from jasper.active_speaker.round_packet import write_round_packet
 from tests.test_round_views_speaker_fit import speaker_round as speaker_round
 from jasper.active_speaker.crossover_v2.prescription_contract import prescription_contracts
 from jasper.active_speaker.baseline_profile import BASELINE_PROFILE_KIND, SCHEMA_VERSION
+from jasper.active_speaker.baseline_record import recomposition_snapshot_for
+from jasper.active_speaker.measurement_emit import MeasurementGraphProfile
 from jasper.active_speaker.crossover_v2.position_cycle import take_artifact_path
 from jasper.active_speaker.crossover_v2.record_index import measurement_documents
 from tests.run_manifest_fixture import manifest_set, write_manifest
@@ -42,7 +44,8 @@ from jasper.active_speaker.crossover_v2.room_grade import grade_room_median
 from jasper.audio_measurement import room_limits
 from jasper.audio_measurement.measurement_geometry import DeclaredGeometry, boundary_prior
 from tests.test_active_speaker_audition import _applied_profile
-from tests.active_speaker_fixtures import _active_topology
+from tests.test_active_speaker_measured_crossover_candidate import _candidate
+from tests.active_speaker_fixtures import _active_topology, mono_output_topology
 from tests.test_active_speaker_baseline_profile import _ROOM_CORRECTION
 from tests.test_crossover_v2_room_prescription import _document
 from tests.crossover_v2_banked_round import SEAT_GRID_HZ, bank_measure_round, bank_seat_round
@@ -166,45 +169,31 @@ def test_the_ceiling_is_the_trusted_floor_clamped(trusted_floor_hz, ceiling_hz) 
     assert room_ceiling_hz(trusted_floor_hz) == ceiling_hz
 
 
-def _add_gated_take(round_dir: Path, *, take_id: str, floor_hz: float) -> tuple[str, dict]:
-    bundle = round_inputs(round_dir).session_dir
-    row, record = next(iter(measurement_documents(bundle)))
-    gated = {
-        **record,
-        "take_id": take_id,
-        "position_id": take_id,
-        "phase": "measure",
-        "measurement_purpose": "speaker",
-        "gating_applied": True,
-        "curves": [{**record["curves"][0], "window": "gated", "trusted_floor_hz": floor_hz}],
-    }
-    take_artifact_path(bundle, row.path).with_name(f"{take_id}.json").write_text(json.dumps(gated))
-    return Path(row.path).with_name(f"{take_id}.json").as_posix(), gated
-
-
-@pytest.mark.parametrize("gated", [False, True])
-def test_the_ceiling_is_the_disclosed_fallback_whatever_the_round_gated(tmp_path, capsys, gated) -> None:
-    """ADR-0256 rule 1: no applied tune carries a trusted floor (#6110), so the
-    room layer stops at the default and says why. A gated take in the round
-    does not move it (ADR-0400)."""
+@pytest.mark.parametrize("floor_hz,ceiling_hz", [
+    (None, ROOM_BOUNDARY_DEFAULT_HZ), (357.1, 357.1), (900.0, ROOM_BOUNDARY_MAX_HZ),
+])
+def test_the_ceiling_is_the_applied_tunes_trusted_floor_else_the_disclosed_fallback(
+    tmp_path, capsys, floor_hz, ceiling_hz,
+) -> None:
+    """ADR-0256 rule 1, ADR-0424: the room layer stops at the trusted floor the
+    apply's snapshot carries, clamped; with none it stops at the default and says why."""
     round_dir = bank_seat_round(tmp_path)
-    flags = []
-    if gated:
-        seats = [(row.path, record) for row, record in measurement_documents(round_inputs(round_dir).session_dir)]
-        write_manifest(round_dir, program="room", groups=[
-            manifest_set(seats, set_id="seats"),
-            manifest_set([_add_gated_take(round_dir, take_id="gate", floor_hz=450.0)], set_id="speaker")])
-        flags = ["--set", "seats"]
+    candidate = _candidate(exclusion_evidence={} if floor_hz is None else {"trusted_floor_hz": floor_hz})
+    snapshot = recomposition_snapshot_for(candidate, design_draft={}, declaration=MeasurementGraphProfile(
+        candidate.source_preset, mono_output_topology(), {}, "null"))
+    (round_dir / "applied-profile.json").write_text(json.dumps({
+        "artifact_schema_version": SCHEMA_VERSION, "kind": BASELINE_PROFILE_KIND, "status": "applied",
+        "recomposition_snapshot": snapshot}))
 
-    answer = _run(capsys, ["room", str(round_dir), *flags])
-    ceiling = json.loads(Path(answer["out"]).read_text())["ceiling"]
+    ceiling = json.loads(Path(_run(capsys, ["room", str(round_dir)])["out"]).read_text())["ceiling"]
 
     provenance = ceiling.pop("provenance")
     reason = provenance.pop("reason")
-    assert ceiling == {"hz": ROOM_BOUNDARY_DEFAULT_HZ}
-    assert provenance == {"ceiling_hz": ROOM_BOUNDARY_DEFAULT_HZ, "ceiling_source": "fallback",
-                          "trusted_floor_hz": None, "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]}
-    assert isinstance(reason, str) and reason
+    assert ceiling == {"hz": ceiling_hz}
+    assert provenance == {"ceiling_hz": ceiling_hz, "trusted_floor_hz": floor_hz,
+                          "ceiling_source": "fallback" if floor_hz is None else "applied_candidate",
+                          "clamp_hz": [ROOM_BOUNDARY_MIN_HZ, ROOM_BOUNDARY_MAX_HZ]}
+    assert bool(reason) is (floor_hz is None)
 
 
 def test_room_views_accept_explicit_arm_positions_and_exclude_speaker_takes(tmp_path, capsys):
@@ -302,7 +291,7 @@ def test_room_document_sections_and_owners(room_round, capsys, geometry, walls, 
     median = document["median"]
     selection = select_seat_takes(inputs.session_dir, take_ids=selected.selected_ids,
                                   basis=selected.capture_basis)
-    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling()),
+    assert median == {**room_views.room_median(selection.takes, room_views.room_ceiling(None)),
                       "set_id": selected.set_id, "evidence": selection.evidence}
     value = read_room_median(median)
     assert document["limits"] == {

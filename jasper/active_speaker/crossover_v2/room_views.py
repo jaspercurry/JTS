@@ -18,6 +18,7 @@ from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.evidence_reasons import REASON_COVERAGE_SHORT, EvidenceUnavailable
 from jasper.audio_measurement.excess_phase import local_features
 from jasper.audio_measurement.room_boundary import (
+    CEILING_SOURCE_APPLIED,
     CEILING_SOURCE_FALLBACK,
     ROOM_BOUNDARY_MAX_HZ,
     ROOM_BOUNDARY_MIN_HZ,
@@ -28,6 +29,7 @@ from jasper.audio_measurement.room_boundary import (
 from jasper.audio_measurement.measurement_geometry import boundary_prior, load_declared_geometry
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.seat_figures import spread_rms_db
+from jasper.platform.json_fields import finite_float
 from ..run_manifest import view_sets
 
 from .evidence_packet.incumbent import applied_profile_source
@@ -85,12 +87,15 @@ class Ceiling:
         }
 
 
-def room_ceiling() -> Ceiling:
+def room_ceiling(profile: Mapping[str, Any] | None) -> Ceiling:
     """Where the room layer stops: the applied tune's trusted floor, clamped,
-    else the default, disclosed (ADR-0256 rule 1). No applied tune carries a
-    floor yet (#6110), so it is the default (ADR-0400)."""
-    return Ceiling(ceiling_hz=room_ceiling_hz(None), source=CEILING_SOURCE_FALLBACK, trusted_floor_hz=None,
-                   reason="the applied tune carries no trusted floor")
+    else the default, disclosed (ADR-0256 rule 1, ADR-0424)."""
+    snapshot = (profile or {}).get("recomposition_snapshot") or {}
+    floor = finite_float((snapshot.get("exclusion_evidence") or {}).get("trusted_floor_hz"))
+    if floor is None:
+        return Ceiling(ceiling_hz=room_ceiling_hz(None), source=CEILING_SOURCE_FALLBACK, trusted_floor_hz=None,
+                       reason="the applied tune carries no trusted floor")
+    return Ceiling(ceiling_hz=room_ceiling_hz(floor), source=CEILING_SOURCE_APPLIED, trusted_floor_hz=floor, reason="")
 
 
 def _stacked(
@@ -282,7 +287,7 @@ def room_document(
     manifest: Mapping[str, Any],
 ) -> dict[str, Any]:
     profile, _ = applied_profile_source(applied_profile_path)
-    ceiling = room_ceiling()
+    ceiling = room_ceiling(profile)
     median = {**room_median(takes, ceiling), "set_id": set_id, "evidence": dict(evidence)}
     value = read_room_median(median)
     persistence = room_persistence(takes, ceiling)
