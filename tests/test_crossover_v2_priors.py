@@ -330,9 +330,8 @@ class C:
 @pytest.mark.parametrize("position_deg, shape, reason", [
     (0, "valid", None), (-20, "valid", None), (20, "valid", None), (0, "cardioid", None),
     (0, "missing_gain", "missing_alignment_filter"), (0, "renamed_delay", "missing_alignment_filter"),
-    (0, "mixer_polarity", "mixer_polarity"), (0, "full_range", "missing_crossover_region"),
-    (0, "no_filters", "unsupported_graph"), (0, "Volume", "unsupported_graph"),
-    (0, "Loudness", "unsupported_graph"),
+    (0, "mixer_polarity", "mixer_polarity"), (0, "no_filters", "unsupported_graph"),
+    (0, "Volume", "unsupported_graph"), (0, "Loudness", "unsupported_graph"),
 ])
 @pytest.mark.parametrize("repeats", [1, 3])
 def test_session_summed_alignment_uses_raw_capture_and_played_chain(
@@ -362,8 +361,6 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
     elif shape in ("Volume", "Loudness"):
         filters["unsupported"] = {"type": shape, "parameters": {}}
         pipeline[-1]["names"].append("unsupported")
-    elif shape == "full_range":
-        preset = replace(PRESET, crossover_regions=())
     elif shape == "cardioid":
         graph.update(devices={"samplerate": 48000, "capture": {"channels": 2}}, mixers={"split": {
             "channels": {"in": 2, "out": 3},

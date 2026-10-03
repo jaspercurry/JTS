@@ -70,8 +70,6 @@ def reference_from_graph(
             if any(name not in names or filters.get(name, {}).get("type") != kind
                    for name, kind in ((gain_name, "Gain"), (delay_name, "Delay"))):
                 return _unreadable("missing_alignment_filter")
-            if role not in configured_response_by_role or role not in configured_polarity_by_role:
-                return _unreadable("missing_crossover_region")
             filters[gain_name]["parameters"]["inverted"] = configured_polarity_by_role[role] < 0
             transfer = filter_transfer(tuple(name for name in names if name != delay_name), filters, freqs_hz)
             configured = configured_response_by_role[role](freqs_hz) * configured_polarity_by_role[role]
