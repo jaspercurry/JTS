@@ -2242,10 +2242,7 @@ class _StubConductor:
     """The minimum ``persist_conductor_state`` reads off a conductor."""
 
     def __init__(self, session_id: str = "s1") -> None:
-        self._session_id = session_id
-
-    def snapshot(self):
-        return SimpleNamespace(session_id=self._session_id)
+        self.session_id = session_id
 
 
 def test_every_host_owned_apply_key_survives_persist_conductor_state():
