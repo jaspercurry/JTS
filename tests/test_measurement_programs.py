@@ -22,6 +22,7 @@ from jasper.active_speaker import measured_crossover_candidate as mc, measuremen
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker.capture_schedule import prepare_plan_captures
 from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+from jasper.active_speaker.crossover_v2.intervention import LINEARIZATION_MIN_PAIRED_OCCURRENCES
 from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.candidate_parts import compose_candidate
 from jasper.active_speaker.crossover_v2 import prescription_document as pd, prescription_contract as pc
@@ -30,6 +31,7 @@ from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.active_speaker_fixtures import mono_output_topology, passive_stereo_output_topology
 from jasper.active_speaker.round_view_artifacts import ARTIFACT_BY_VIEW, BOOKKEEPING_ORDER, bookkeeping_views
 from jasper.audio_measurement.gating import NEAR_FIELD_EXEMPT
+from jasper.audio_measurement.interference_nulls import FEATURE_MIN_DEEP_POSITIONS
 from jasper.audio_measurement.piston import NEAR_FIELD_MAX_DISTANCE_M
 from jasper.cli import crossover_prescriber, round as round_cli, round_views
 
@@ -105,7 +107,7 @@ def test_program_table_projections(site):
 @pytest.mark.parametrize(("preset", "layout", "poses", "moves", "captures"), [
     ("speaker/mark", "speaker_mark", 1, 1, 2),
     ("speaker/mark", "baseline_full", 13, 13, 16),
-    ("speaker/mark", "baseline_express", 5, 5, 8),
+    ("speaker/mark", "baseline_express", 6, 6, 7),
     ("tournament/express", "tournament_full", 3, 3, 3),
     ("tournament/express", "tournament_express", 1, 1, 1),
     ("room/seat", "seat_cloud", 11, 11, 11),
@@ -295,14 +297,17 @@ def test_run_help_names_every_registry_pose_set(capsys):
     assert set(mp.available_presets()) <= words
 
 
-def test_express_geometry() -> None:
+def test_express_gives_the_angle_reader_six_positions_and_the_fit_its_floor_at_the_mark() -> None:
+    """The mark twice at its preset's count, which the fit's repeatability floor
+    needs, and each other spot once at one sweep per driver: six positions in all,
+    the fewest the feature classifier reads (ADR-0435)."""
     row = mp.run_preset("speaker", "baseline_express")
+    mark, *spots = row.poses
 
-    assert {p.azimuth_deg for p in row.poses} == {0, -20, 20}
-    assert {p.elevation_deg for p in row.poses} == {0, -10, 10}
-    assert [
-        p.repeats for p in row.poses if (p.azimuth_deg, p.elevation_deg) == (0, 0)
-    ] == [mp.run_preset("speaker", "baseline_full").poses[0].repeats]
+    assert len({pose.position for pose in row.poses}) == FEATURE_MIN_DEEP_POSITIONS
+    assert ((mark.azimuth_deg, mark.elevation_deg), mark.repeats, mark.sweeps_per_take) == ((0, 0), 2, None)
+    assert row.sweeps_per_take >= LINEARIZATION_MIN_PAIRED_OCCURRENCES
+    assert {(pose.repeats, pose.sweeps_per_take) for pose in spots} == {(1, 1)}
 
 
 @pytest.mark.parametrize("name", ["baseline/medium", "tournament/medium", "spot/express", "spot", ""])

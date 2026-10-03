@@ -26,14 +26,15 @@
       {"azimuth_deg": 0, "elevation_deg": 20}
     ]},
     "baseline_express": {
-      "description": "Five poses 1 m out: on axis four times, 20 degrees left and right, and 10 degrees up and down.",
-      "use_when": "Use when one speaker round should collect driver fits, repeats and off-axis evidence together.",
+      "description": "Six spots 1 m out: on axis twice, then once each at 20 degrees left and right, 30 degrees right, and 10 degrees down and up, with one sweep per driver off axis.",
+      "use_when": "Use when one speaker round should fit the drivers at the mark and show which features move with angle.",
       "poses": [
-      {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 4},
-      {"azimuth_deg": -20, "elevation_deg": 0},
-      {"azimuth_deg": 20, "elevation_deg": 0},
-      {"azimuth_deg": 0, "elevation_deg": -10},
-      {"azimuth_deg": 0, "elevation_deg": 10}
+      {"azimuth_deg": 0, "elevation_deg": 0, "repeats": 2},
+      {"azimuth_deg": -20, "elevation_deg": 0, "sweeps_per_take": 1},
+      {"azimuth_deg": 20, "elevation_deg": 0, "sweeps_per_take": 1},
+      {"azimuth_deg": 30, "elevation_deg": 0, "sweeps_per_take": 1},
+      {"azimuth_deg": 0, "elevation_deg": -10, "sweeps_per_take": 1},
+      {"azimuth_deg": 0, "elevation_deg": 10, "sweeps_per_take": 1}
     ]},
     "tournament_express": {
       "description": "The design mark, 1 m on axis, taken once.",
