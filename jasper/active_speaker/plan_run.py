@@ -19,7 +19,6 @@ from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
-from jasper.platform.json_fields import finite_float
 from jasper.platform.log_event import log_event
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
@@ -41,7 +40,7 @@ from .crossover_v2.capture_plan import announce_run, pose_batch_screens, positio
 from .crossover_v2.capture_source import CaptureBeginDeferred, CaptureBeginRefused, CaptureStopped
 from .crossover_v2.door import IsolationHold, OpenMeasurementDoor, MeasurementDoorRefused, level_window
 from .crossover_v2.journey import PHASE_CHECK
-from .crossover_v2.measure_spec import CANDIDATE_SCOPES, MeasureSpec, branch_probes, solo_target
+from .crossover_v2.measure_spec import MeasureSpec, branch_probes, solo_target
 from .crossover_v2.position_gate import POSITION_HOLD_POLL_S, PositionGate
 from .crossover_v2.program_transaction import StimulusCaptureStopped, playback_observer
 from .crossover_v2.refusal_copy import (
@@ -52,8 +51,8 @@ from .crossover_v2.refusal_copy import (
 from .crossover_v2.session import TuningSession
 from .program_failure import classify_program_failure
 from .restore_wait import resilient_restore
-from .measurement_programs import BASE_CANDIDATE, POSE_KIND_SEAT, PoseLevel, run_level
-from .crossover_v2.programs import predictive_program_for_spec, probe_backoff_db, probe_fader_db, run_fader_db
+from .measurement_programs import BASE_CANDIDATE, PoseLevel, run_level
+from .crossover_v2.programs import predictive_program_for_spec, probe_fader_db, run_fader_db
 from .run_manifest import RunManifest, driver_level_mismatches
 from .round_copy import PLACE_MICROPHONE, take_counts
 
@@ -138,9 +137,6 @@ class RunDoor:
     program_for_spec: Callable[..., ExcitationProgram] | None = None
     #: The session's driver caps; a door that states them finds its run's fader (ADR-0403 §4).
     caps_dbfs: Mapping[str, float] | None = None
-    #: dB a take of the run may play over the take it probed: the largest bass lift
-    #: and rear-woofer sum against the probe's graph (ADR-0403 §4).
-    margin_db: float = 0.0
 
     @property
     def is_open(self) -> bool:
@@ -186,16 +182,6 @@ def _relevelled(spec: MeasureSpec, played: ExcitationProgram, probes: Sequence[f
     else:
         moved = [play + shift for play in plays]
     return replace(spec, level_dbfs=moved[-1], branch_levels_dbfs=tuple(moved[:-1]))
-
-
-def _landed_db_spl(verdict: TakeVerdict, rule: PoseLevel, probe: ExcitationProgram) -> float:
-    """Where the take a probe levelled lands: 1 dB under its target, or less where its
-    raise or its ceiling held it (ADR-0365)."""
-    target, heard = (finite_float(verdict.evidence.get(key)) for key in ("level_target_db_spl", "level_db_spl"))
-    aim = (rule.target_db_spl if target is None else target) - rule.tolerance_db / 2
-    ceiling = max(segment.gain_db for segment in probe.stimulus_segments())
-    return ((aim if heard is None else min(aim, heard + rule.max_raise_db))
-            - max(0.0, (verdict.next_gain_db or 0.0) - ceiling))
 
 
 def _pose(stop: Any) -> dict[str, Any]:
@@ -488,11 +474,10 @@ async def _run(
     # A run finds its fader with a probe of its first summed take that plays at the run's
     # fader, before the first take of that take's placement, banked as that take's attempts.
     # Until then only takes that level themselves play, at the probe fader: preflight refuses a
-    # run where a take at its fader would play first. The fader held is the probe's, turned down by
-    # what its margins pass the stop by, never above the level the plan states (ADR-0403 §4).
+    # run where a take at its fader would play first. The fader held is the one the probe solves,
+    # never above the level the plan states (ADR-0403 §4, ADR-0432).
     caps, cap = (door.caps_dbfs if door is not None else None), level
     probe_at = probe_start = None
-    other_graphs = False
 
     def hold_fader(found: float, source: str) -> float:
         held = found if cap is None else min(found, cap)
@@ -508,9 +493,6 @@ async def _run(
             probe_start = next(index for index, item in enumerate(work) if item.pose_index == work[probe_at].pose_index)
             manifest.level["run"]["level_db"] = None
             playing[probe_at] = replace(work[probe_at].spec, level_probe=True)
-            probed = (work[probe_at].spec.graph_scope, work[probe_at].spec.candidate_id)
-            other_graphs = any((item.spec.graph_scope, item.spec.candidate_id) != probed for item in work
-                               if item.spec.graph_scope in CANDIDATE_SCOPES and item.level_set is None)
 
     def solved_level(offset: int, pending: TakeVerdict) -> float | None:
         """The last level solved for a take that levels itself, never above the last it
@@ -732,17 +714,10 @@ async def _run(
                     if offset == probe_at and verdict.next in _LEVEL_RETAKES and verdict.next_gain_db is not None:
                         # The run holds the fader its probe found and plays its placement from its
                         # first take (ADR-0403 §4).
-                        assert caps is not None and door is not None and door.ceiling_db_spl is not None
-                        assert item.pose_level is not None and probe_start is not None
+                        assert caps is not None and probe_start is not None
                         probe = ExcitationProgram.from_dict(next(
                             record["program"] for record, _ in records if record.get("program")))
-                        rise = door.margin_db + (probe_backoff_db(probe, caps) if other_graphs else 0.0)
-                        bound = door.ceiling_db_spl
-                        if item.stop["pose"]["kind"] == POSE_KIND_SEAT:
-                            # The first seat spot reads at most 76 dB, 9 dB under the stop (ADR-0403 §4).
-                            bound = min(bound, item.pose_level.target_db_spl + item.pose_level.tolerance_db)
-                        solved = run_fader_db(probe, verdict.next_gain_db, caps, cut_db=max(0.0, _landed_db_spl(
-                            verdict, item.pose_level, probe) + item.pose_level.tolerance_db + rise - bound))
+                        solved = run_fader_db(probe, verdict.next_gain_db, caps)
                         level = hold_fader(solved, "probe")
                         manifest.level["run"]["probe_level_db"] = solved
                         await window.aclose()

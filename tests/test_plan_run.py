@@ -246,7 +246,7 @@ def test_retry_recomposes_at_requested_gain_and_keeps_both_takes(monkeypatch, ok
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
     gate = AnsweredGate()
     result, fakes = asyncio.run(_run_gated(_walk([0]), gate=gate))
-    assert fakes.play.rungs == ([None, gain] if refusal else [None])
+    assert fakes.play.stimulus_dbfs == ([None, gain] if refusal else [None])
     assert len(fakes.banked) == (2 if refusal else 1)
     assert gate.grants == ([(1, 1), (1, 2)] if next_action == "fix_and_retake" else [(1, 1)])
     rows = _takes(result.joined())
@@ -611,7 +611,7 @@ def test_an_assessor_error_ends_its_captures_assessment_then_the_run(caplog):
     fakes, assessor = FakeSeams(), Mock(side_effect=RuntimeError)
     with caplog.at_level("WARNING", logger=plan_run.logger.name), pytest.raises(RuntimeError):
         asyncio.run(_run_gated(_walk([0, 20]), seams=fakes, assessor=assessor))
-    assert (assessor.call_count, fakes.play.rungs) == (1, [None])
+    assert (assessor.call_count, fakes.play.stimulus_dbfs) == (1, [None])
     assert [(record["verdict"]["fault"], record["verdict"]["evidence"]) for record in fakes.banked] == [
         (REASON_INTERNAL_ERROR, {"error_type": "RuntimeError"})]
     assert event_fields(caplog, "active_speaker.take_assessment_failed") == {
@@ -1030,19 +1030,19 @@ def test_a_near_field_take_levels_itself_before_it_is_kept():
     result, fakes, selected, gate = _run_levelled(request, readings, replace_at=3)
 
     assert result.status == "complete"
-    assert fakes.play.rungs == [None, -29.0, -29.0, None, -29.0, None, -27.0, None, -29.0]
+    assert fakes.play.stimulus_dbfs == [None, -29.0, -29.0, None, -29.0, None, -27.0, None, -29.0]
     assert selected == [False, True, False, False, True, False, True, False, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
-    assert [step == "probe" for step in steps.values()] == [rung is None for rung in fakes.play.rungs]
+    assert [step == "probe" for step in steps.values()] == [asked is None for asked in fakes.play.stimulus_dbfs]
     assert [take["level"]["loudest_half_second_db_spl"] for take in sorted(
         _takes(result.joined()), key=lambda take: take["take_id"])] == [reading - 3 for reading in readings]
 
 
-@pytest.mark.parametrize("readings, rungs, notices, retakes", [
+@pytest.mark.parametrize("readings, asked, notices, retakes", [
     ((66.0, 80.0), [None, -29.0], [None, None], 0),
     ((66.0, 86.0, 80.0), [None, -29.0, -36.0], [None, None, REASON_LEVEL_OFF_TARGET], 1),
 ])
-def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, rungs, notices, retakes):
+def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, asked, notices, retakes):
     """A driver's probe finds its take's level, and the play after it is the take: no retake
     notice, no retake counted, none spent. A take that then misses its level is a retake, named
     by its fault (ADR-0365)."""
@@ -1051,9 +1051,9 @@ def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, rungs, 
 
     result, fakes, _, gate = _run_levelled(request, readings)
 
-    assert fakes.play.rungs == rungs
+    assert fakes.play.stimulus_dbfs == asked
     played = {(p["measurement"], p["attempt"]): p for p in gate.progress if "level_step" in p}
-    assert [p["level_step"] for p in played.values()] == ["probe"] + ["levelled"] * (len(rungs) - 1)
+    assert [p["level_step"] for p in played.values()] == ["probe"] + ["levelled"] * (len(asked) - 1)
     assert [p.get("retake_reason") for p in played.values()] == notices
     assert result.to_dict()["honoured"]["retakes"] == gate.progress[-1]["retakes"] == retakes
     assert gate.progress[-1]["budget"]["by_speaker"] == retakes
@@ -1070,7 +1070,7 @@ def test_a_stop_counts_no_retake_for_a_play_it_kept_from_starting(readings, stop
 
     result, fakes, _, gate = _run_levelled(request, readings, stop_at=stop_at)
 
-    assert (len(fakes.play.rungs), result.reason) == (stop_at, REASON_USER_STOPPED)
+    assert (len(fakes.play.stimulus_dbfs), result.reason) == (stop_at, REASON_USER_STOPPED)
     assert result.to_dict()["honoured"]["retakes"] == gate.progress[-1]["retakes"] == retakes
 
 
@@ -1083,7 +1083,7 @@ def test_a_near_field_take_its_ceiling_holds_quiet_is_kept_not_retaken():
     result, fakes, selected, _ = _run_levelled(request, (66.0, 77.0), ceiling_db=-30.0)
 
     assert result.status == "complete"
-    assert (fakes.play.rungs, selected) == ([None, -29.0], [False, True])
+    assert (fakes.play.stimulus_dbfs, selected) == ([None, -29.0], [False, True])
 
 
 def test_a_speaker_pose_names_its_driver_and_plays_what_the_reference_pose_plays():
@@ -1099,7 +1099,7 @@ def test_a_speaker_pose_names_its_driver_and_plays_what_the_reference_pose_plays
             targets=("tweeter", "woofer"))
         captures = plan_run.prepare_plan_captures(request)
         result, fakes, selected, _ = _run_levelled(request, (66.0, 80.0))
-        runs.append(([capture.spec for capture in captures], fakes.play.rungs, selected,
+        runs.append(([capture.spec for capture in captures], fakes.play.stimulus_dbfs, selected,
                      {take["measurement_purpose"] for take in _takes(result.joined())}))
     speaker, reference = runs
 
@@ -1122,7 +1122,7 @@ def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
     with caplog.at_level("WARNING", logger=plan_run.logger.name):
         result, fakes, _, gate = _run_levelled(request, (70.0, 80.0) * 2 + (60.0, 80.0) * 2)
 
-    assert fakes.play.rungs == [None, -33.0] * 2 + [None, -27.0] * 2
+    assert fakes.play.stimulus_dbfs == [None, -33.0] * 2 + [None, -27.0] * 2
     *live, ended = gate.progress
     assert [(finding["role"], finding["pose"]["distance_m"], finding["spread_db"])
             for finding in ended["level_mismatches"]] == [("woofer", 0.015, 6.0), ("woofer", 0.03, 6.0)]
@@ -1142,7 +1142,7 @@ def test_a_close_driverless_spot_turns_itself_down_once():
         ac.request_for_preset(run_preset("rear/express", "rear_behind")), (75.0, 79.0, 92.0, 80.0))
 
     assert result.status == "complete"
-    assert fakes.play.rungs == [None, -38.0, None, -55.0]
+    assert fakes.play.stimulus_dbfs == [None, -38.0, None, -55.0]
     assert selected == [False, True, False, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
     assert list(steps.values()) == ["probe", "levelled", "probe", "levelled"]
@@ -1158,7 +1158,7 @@ def test_a_close_driverless_set_shares_one_level():
     result, fakes, selected, _ = _run_levelled(request, (90.0, 80.0, 80.4, 76.0, 76.3))
 
     assert result.status == "complete"
-    assert fakes.play.rungs == [None] + [-53.0] * 4
+    assert fakes.play.stimulus_dbfs == [None] + [-53.0] * 4
     assert selected == [False] + [True] * 4
 
 
@@ -1344,8 +1344,7 @@ def test_a_cardioid_on_off_trial_behind_the_cabinet_lands_each_graph_at_80_db(mo
     and every repeat (ADR-0406)."""
     request = replace(ac.request_for_preset(run_preset("rear/express", poses=_BEHIND), candidates=("base", "trial")),
                       repeats=2)
-    report = preflight(request, ready_facts(request, applied_rear_plays=False,
-                                                   candidates={"trial": _cardioid_trial()}))
+    report = preflight(request, ready_facts(request, candidates={"trial": _cardioid_trial()}))
     assert not report.blocking
 
     result, _, _ = asyncio.run(_run_found(
@@ -1414,7 +1413,7 @@ def test_a_branch_set_whose_first_take_never_lands_carries_both_branches_level()
         request, (), ceiling_db=-12.0, chain=_REAR_UP,
         verdicts=lambda take: clipped if take == 3 else _OVERRUN if 4 <= take <= 3 + retries else None)
 
-    assert fakes.play.rungs == [None, None, -39.0] + [-42.0] * retries + [-42.0]
+    assert fakes.play.stimulus_dbfs == [None, None, -39.0] + [-42.0] * retries + [-42.0]
     assert [call["spec"].branch_levels_dbfs for call in fakes.play.calls] == [
         (), (), (-27.0, -33.0), *[(-30.0, -36.0)] * (retries + 1)]
     assert [row["reason"] for row in result.not_measured] == [REASON_CAPTURE_OVERRUN]
@@ -1432,12 +1431,12 @@ def test_a_close_set_that_finds_no_level_plays_no_more_takes():
     assert [row["reason"] for row in result.not_measured] == [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]
 
 
-@pytest.mark.parametrize("readings, verdicts, rungs, reasons", [
+@pytest.mark.parametrize("readings, verdicts, asked, reasons", [
     ((66.0,) + (86.0,) * 3 + (80.0,), None,
      [None, -29.0, -36.0, -43.0, -50.0], [REASON_LEVEL_OFF_TARGET]),
     ((60.0,) * 8, lambda take: _UNHEARD, [None] * 3, [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]),
 ], ids=["solved", "unsolved"])
-def test_a_driver_pose_whose_first_take_never_lands_carries_its_level_or_skips(readings, verdicts, rungs, reasons):
+def test_a_driver_pose_whose_first_take_never_lands_carries_its_level_or_skips(readings, verdicts, asked, reasons):
     """Unlike main, where the next take probes again: a driver's next take at
     the same placement plays at the last level solved for it, with no probe,
     or, when its placement found none, does not play (ADR-0361 §3)."""
@@ -1447,7 +1446,7 @@ def test_a_driver_pose_whose_first_take_never_lands_carries_its_level_or_skips(r
 
     result, fakes, _, _ = _run_levelled(request, readings, verdicts=verdicts)
 
-    assert fakes.play.rungs == rungs
+    assert fakes.play.stimulus_dbfs == asked
     assert [row["reason"] for row in result.not_measured] == reasons
 
 
@@ -1481,7 +1480,7 @@ def test_a_redo_as_a_set_finds_no_level_plays_the_rest_at_the_level_it_then_land
                                         redo_when_unmeasured=3)
 
     assert result.status == "complete" and result.not_measured == []
-    assert fakes.play.rungs == [None, -38.0, -38.0] + [None] * 5 + [-55.0, -55.0]
+    assert fakes.play.stimulus_dbfs == [None, -38.0, -38.0] + [None] * 5 + [-55.0, -55.0]
 
 
 def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():
@@ -1492,7 +1491,7 @@ def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_le
 
     result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0, 92.0) + (86.0,) * 3 + (80.0,))
 
-    assert fakes.play.rungs == [None, -38.0, -38.0, None, -55.0, -62.0, -69.0, -76.0]
+    assert fakes.play.stimulus_dbfs == [None, -38.0, -38.0, None, -55.0, -62.0, -69.0, -76.0]
     assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
@@ -1575,11 +1574,11 @@ def _found_door(monkeypatch, windows, events):
     monkeypatch.setattr(plan_run, "level_window", window)
 
 
-def _chain_door(fakes, manifest, caps, chain_db, scope_gains=None, graph_db=None, margin_db=0.0):
+def _chain_door(fakes, manifest, caps, chain_db, scope_gains=None, graph_db=None):
     chain = _RunChain(manifest, fakes.play, caps, chain_db, scope_gains, graph_db)
     return plan_run.RunDoor(nullcontext(SimpleNamespace()), lambda opened, allocate: TuningSession(
         "run", replace(fakes, records=chain).seams(), opened.measurement_volume_db, allocate),
-        _MIC, SimpleNamespace(model_key="minidsp_umik2"), 85.0, caps_dbfs=caps, margin_db=margin_db)
+        _MIC, SimpleNamespace(model_key="minidsp_umik2"), 85.0, caps_dbfs=caps)
 
 
 def _accept_unlevelled(analysis, **kw):
@@ -1587,7 +1586,7 @@ def _accept_unlevelled(analysis, **kw):
 
 
 async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals=None, events=None, assessor=None,
-                     scope_gains=None, margin_db=0.0, graph_db=None):
+                     scope_gains=None, graph_db=None):
     """A run through a door that finds its fader, on a fake chain; each take that
     does not level itself is accepted. Answers the result, the plays and the
     fader of each level window, in order. ``events`` logs each fader a window
@@ -1596,7 +1595,7 @@ async def _run_found(monkeypatch, request, *, caps, chain_db, gate=None, signals
     _found_door(monkeypatch, windows, [] if events is None else events)
     fakes = FakeSeams(volume=_Fader())
     manifest = RunManifest("run", _Store(fakes.records))
-    door = _chain_door(fakes, manifest, caps, chain_db, scope_gains, graph_db, margin_db)
+    door = _chain_door(fakes, manifest, caps, chain_db, scope_gains, graph_db)
     result = await plan_run.run_plan(
         request, door=door, manifest=manifest, analyze=_run_chain_analysis, gate=gate or AnsweredGate(),
         aborts=_ABORTS, signals=signals, captures=plan_run.prepare_plan_captures(request),
@@ -1652,34 +1651,25 @@ def test_a_first_spot_where_every_take_levels_itself_holds_the_probe_fader(monke
     assert (result.level["run"]["level_db"], result.level["run"]["source"]) == (held, source)
 
 
-@pytest.mark.parametrize(("tweeter_cap", "chain_db", "timing_gain", "margin_db", "fader", "timing_db", "pair_db"), [
-    (-6.0, 100.0, 0.0, 0.0, -9.0, 79.0, 79.0), (-6.0, 100.0, 6.0, 0.0, -3.0, 79.0, 79.0),
-    (-6.0, 100.0, 6.0, 0.0, -3.0, 79.0, None), (-6.0, 100.0, 0.0, 7.0, -12.0, 76.0, 76.0),
-    (-20.0, 97.0, 0.0, 9.0, -11.0, 74.0, 74.0)],
-    ids=["under the stop", "backoff, a pair that probes its graphs", "backoff on one graph", "lift and rise",
-         "lift and rise over a take the cap holds"])
-def test_the_run_fader_comes_down_by_what_its_margins_pass_the_stop_by(
-        monkeypatch, tweeter_cap, chain_db, timing_gain, margin_db, fader, timing_db, pair_db):
-    """A speaker run probes its timing take, which lands 1 dB under 80 dB, or at
-    the tweeter's cap when that holds it lower. Its landed reading, the 2 dB
-    tolerance and the margins stated for its other takes bring the takes down
-    only by how far their sum passes the 85 dB stop. A trial's A/B pair probes its
-    own graphs there (ADR-0408), so the timing graph's own backoff adds nothing.
-    A take the cap holds at the output comes down too, as the fader drops far
-    enough to free it (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"),
-                                    candidates=("base", "trial") if pair_db is not None else ())
+@pytest.mark.parametrize(("timing_gain", "fader", "pair"), [(0.0, -9.0, True), (6.0, -3.0, True), (6.0, -3.0, False)],
+                         ids=["no scope gain", "a scope gain, a pair that probes its graphs", "a scope gain on one graph"])
+def test_the_run_holds_the_fader_its_timing_probe_solves(monkeypatch, timing_gain, fader, pair):
+    """A speaker run probes its timing take, which lands 1 dB under 80 dB, and
+    holds the fader that probe solves, whatever the timing graph's scope gain:
+    nothing cuts it (ADR-0432). A trial's A/B pair probes its own graphs there
+    and lands at its own level (ADR-0408)."""
+    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", "trial") if pair else ())
 
     result, _, windows = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": tweeter_cap}, chain_db={"bearing": chain_db},
-        scope_gains={"timing": dict.fromkeys(("woofer", "tweeter"), timing_gain)}, margin_db=margin_db))
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0},
+        scope_gains={"timing": dict.fromkeys(("woofer", "tweeter"), timing_gain)}))
 
     assert result.status == "complete" and windows == [0.0, pytest.approx(fader, abs=0.02)]
     read = {(take["phase"], take["candidate_id"]): take["capture_integrity"]["spl"]["max_window_db_spl"]
             for take in _takes(result.joined()) if take["selected"] and take["phase"] in ("timing", "lateral")}
-    pair = {("lateral", "banked-base"), ("lateral", "trial")} if pair_db is not None else set()
-    assert set(read) == {("timing", "banked-base")} | pair
-    assert read == {key: pytest.approx(timing_db if key[0] == "timing" else pair_db, abs=0.02) for key in read}
+    pairs = {("lateral", "banked-base"), ("lateral", "trial")} if pair else set()
+    assert set(read) == {("timing", "banked-base")} | pairs
+    assert read == {key: pytest.approx(79.0, abs=0.02) for key in read}
 
 
 #: jts3's applied bass extension at the smoke test (#6113): a 14.78 dB reserve (ADR-0359).
@@ -1701,15 +1691,13 @@ def test_each_candidate_graph_levels_its_own_set(monkeypatch, program, layout, l
     graph plays than the other: its first take probes that graph from −60 dBFS at
     the output and lands 1 dB under its run level, 80 ± 2 dB at the mark or 74 ± 2
     dB at a seat, and its other spots carry that level. So no take of either graph
-    plays over the level a run's probed take lands at, and rule A cuts no fader: a
-    run with a timing take holds the fader that take's probe finds, and any other
-    run the probe fader (ADR-0408, ADR-0423)."""
+    plays over the level a run's probed take lands at, and the trial's declared
+    bass reserve cuts no fader: a run with a timing take holds the fader that
+    take's probe finds, and any other run the probe fader (ADR-0408, ADR-0423, ADR-0432)."""
     selected = run_preset(program, layout)
     request = ac.request_for_preset(selected, candidates=("base", "trial"), mover=selected.mover or ac.MOVER_HUMAN)
-    trial = replace(_cardioid_trial(), role_attenuations_db={"woofer": 0.0, "tweeter": -25.2})
-    report = preflight(request, ready_facts(request, applied_bass_extension=_JTS3_BASS, applied_rear_plays=True,
-                                                   candidates={"trial": trial}))
-    assert not report.blocking and report.rung_admission.get("run_margin_db", 0.0) == 0.0
+    trial = replace(_cardioid_trial(), role_attenuations_db={"woofer": 0.0, "tweeter": -25.2}, bass_extension=_JTS3_BASS)
+    assert not preflight(request, ready_facts(request, candidates={"trial": trial})).blocking
 
     result, _, windows = asyncio.run(_run_found(
         monkeypatch, request, caps={"woofer": 0.0, "tweeter": -25.0}, chain_db={"bearing": 110.0, "seat": 104.0},
@@ -1790,7 +1778,7 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
 
     assert (result.status, result.reason, result.not_measured) == ("complete", "", [])
     assert [index for index, _ in gate.grants] == [1] * (redos + 1) + [2]
-    assert fakes.play.rungs == [None] * (redos + 1) + [-29.0, None, -29.0, -29.0]
+    assert fakes.play.stimulus_dbfs == [None] * (redos + 1) + [-29.0, None, -29.0, -29.0]
     assert selected == [False] * (redos + 1) + [True, False, True, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
     assert list(steps.values()) == ["probe"] * (redos + 1) + ["levelled", "probe", "levelled", "levelled"]
