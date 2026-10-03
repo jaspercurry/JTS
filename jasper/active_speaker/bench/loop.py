@@ -451,7 +451,6 @@ def plan_emit_loop(
     linearization: Mapping[str, Sequence[Mapping[str, Any]]],
     work_dir: Path,
     sweep_seconds: float = STIMULUS_SWEEP_SECONDS,
-    emit_kwargs: Mapping[str, Any] | None = None,
 ) -> EmitLoopPlan:
     """Emit both candidates, derive both, write both configs. No binary, no render.
 
@@ -459,13 +458,6 @@ def plan_emit_loop(
       EmitLoopError: on any refusal reachable without a binary.
     """
 
-    extra = dict(emit_kwargs or {})
-    if "linearization" in extra:
-        raise EmitLoopError(
-            "emit_kwargs must not carry 'linearization' — the loop sets it per "
-            "candidate, and a caller-supplied one would make the two candidates differ by "
-            "something other than the filters under test"
-        )
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     roles = required_driver_roles(preset.way_count)
@@ -474,10 +466,9 @@ def plan_emit_loop(
         preset,
         playback_device=playback_device,
         linearization=dict(linearization),
-        **extra,
     )
     control_text = emit_active_speaker_baseline_config(
-        preset, playback_device=playback_device, linearization=None, **extra
+        preset, playback_device=playback_device, linearization=None
     )
 
     geometry = device_geometry(control_text)
@@ -620,7 +611,6 @@ def run_emit_loop(
     binary: BinaryIdentity,
     bounds: RenderBounds = DEFAULT_RENDER_BOUNDS,
     sweep_seconds: float = STIMULUS_SWEEP_SECONDS,
-    emit_kwargs: Mapping[str, Any] | None = None,
 ) -> EmitLoopReport:
     """Render a predicted linearization and grade what the DSP actually emits.
 
@@ -631,11 +621,6 @@ def run_emit_loop(
     unchanged AND used, unchanged, to build the claimed curve, so a filter the
     emitter validates away or clamps shows up as a disagreement rather than
     disappearing from both sides at once.
-
-    ``emit_kwargs`` are threaded to BOTH candidates identically. Anything asymmetric
-    would break the cancellation the whole method rests on, so ``linearization``
-    is the one key this function sets itself and it refuses a caller that tries
-    to pass it here.
 
     Raises:
       EmitLoopError: on any refusal — emit, derive, render, or an unattributable
@@ -648,7 +633,6 @@ def run_emit_loop(
         linearization=linearization,
         work_dir=work_dir,
         sweep_seconds=sweep_seconds,
-        emit_kwargs=emit_kwargs,
     )
     sample_rate = plan.geometry.sample_rate_hz
     sweep, meta = synchronized_swept_sine(

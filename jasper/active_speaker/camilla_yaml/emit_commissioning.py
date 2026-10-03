@@ -30,7 +30,6 @@ from .filters import (
     APPLIED_RESPONSE_FILTER_MODE,
     COMMISSIONING_FILTER_MODE,
     STARTUP_HEADROOM_DB,
-    STARTUP_LIMITER_CLIP_LIMIT_DB,
     _emit_commissioning_filter_definitions,
 )
 from ..camilla_names import STARTUP_MUTE_GAIN_DB
@@ -52,7 +51,6 @@ def emit_active_speaker_commissioning_config(
     chunksize: int | None = None,
     target_level: int | None = None,
     startup_headroom_db: float = STARTUP_HEADROOM_DB,
-    limiter_clip_limit_db: float = STARTUP_LIMITER_CLIP_LIMIT_DB,
     queuelimit: int | None = None,
     enable_rate_adjust: bool | None = None,
     out_path: str | Path | None = None,
@@ -92,14 +90,9 @@ def emit_active_speaker_commissioning_config(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
     startup_headroom_db = _finite_float(startup_headroom_db, "startup_headroom_db")
-    limiter_clip_limit_db = _finite_float(limiter_clip_limit_db, "limiter_clip_limit_db")
     audible_gain_db = _finite_float(audible_gain_db, "audible_gain_db")
     if startup_headroom_db < 0 or startup_headroom_db > 80:
         raise ActiveSpeakerConfigError("startup_headroom_db must be between 0 and 80")
-    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
-        raise ActiveSpeakerConfigError(
-            "limiter_clip_limit_db must be between -120 and 0 dB"
-        )
     # Structural bound only: the per-output audible gain is an attenuation, so
     # it never exceeds the 0 dB ceiling nor drops below the -120 dB mute floor.
     # The tighter commissioning level envelope is the ramp gate's.
@@ -124,7 +117,6 @@ def emit_active_speaker_commissioning_config(
     filter_yaml = _emit_commissioning_filter_definitions(
         preset,
         startup_headroom_db=startup_headroom_db,
-        limiter_clip_limit_db=limiter_clip_limit_db,
         audible_outputs=audible,
         audible_gain_db=audible_gain_db,
         filter_mode=filter_mode,

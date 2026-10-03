@@ -42,7 +42,6 @@ from .devices import (
 )
 from .document import _atomic_write_text, _reserialize_keeping_header, logger
 from .filters import (
-    BASELINE_LIMITER_CLIP_LIMIT_DB,
     ProgramHeadroomExhausted,
     _emit_baseline_filter_definitions,
     linearization_slot,
@@ -73,7 +72,6 @@ def emit_active_speaker_baseline_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int | None = None,
     target_level: int | None = None,
-    limiter_clip_limit_db: float = BASELINE_LIMITER_CLIP_LIMIT_DB,
     room_peqs: Sequence[PeqFilter] = (),
     preference_filters: Sequence[FilterSpec] = (),
     output_trim_db: float = 0.0,
@@ -148,15 +146,7 @@ def emit_active_speaker_baseline_config(
     chunksize, target_level, queuelimit = _camilla_latency(
         capture_device, playback_device, chunksize, target_level, queuelimit
     )
-    limiter_clip_limit_db = _finite_float(
-        limiter_clip_limit_db,
-        "limiter_clip_limit_db",
-    )
     output_trim_db = _finite_float(output_trim_db, "output_trim_db")
-    if limiter_clip_limit_db < -120 or limiter_clip_limit_db > 0:
-        raise ActiveSpeakerConfigError(
-            "limiter_clip_limit_db must be between -120 and 0 dB"
-        )
 
     safe_corrections = _validated_driver_corrections(preset, corrections)
     safe_linearization = _validated_linearization(preset, linearization)
@@ -178,7 +168,6 @@ def emit_active_speaker_baseline_config(
         filter_yaml = _emit_baseline_filter_definitions(
             preset,
             headroom_db=headroom_db,
-            limiter_clip_limit_db=limiter_clip_limit_db,
             corrections=safe_corrections,
             room_peqs=room_peqs,
             preference_filters=emitted_preference_filters,
