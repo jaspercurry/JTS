@@ -35,9 +35,6 @@ from jasper.active_speaker.crossover_v2.capture_source import (
 from jasper.active_speaker.crossover_v2.contracts import (
     CrossoverV2FlowError,
 )
-from jasper.active_speaker.crossover_v2.durable_state import (
-    V2ConductorSnapshot,
-)
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
@@ -129,8 +126,6 @@ class CrossoverV2Session:
         driver_sweep_duration_limits_s: Mapping[str, float] | None = None,
         target_bands: Mapping[str, Any] | None = None,
         driver_spacing_m: float | None = 0.0,
-        gain_plan_db: Mapping[str, float] | None = None,
-        measure_gain_ceiling_db: Mapping[str, float] | None = None,
         timing_prior: str | None = None,
         measurement_protection_sections_by_role: Mapping[
             str, Sequence[CrossoverSection]
@@ -181,8 +176,8 @@ class CrossoverV2Session:
         self._lateral_indexes = tuple(sorted(
             index for index, phase in self._index_phase_map.items() if phase == PHASE_LATERAL
         ))
-        self._gain_plan_db = dict(gain_plan_db) if gain_plan_db else None
-        self._measure_gain_ceiling_db = dict(measure_gain_ceiling_db or {})
+        self._gain_plan_db: dict[str, float] | None = None
+        self._measure_gain_ceiling_db: dict[str, float] = {}
         # CHECK's measured room floor, held for the MEASURE and lateral priors.
         # In-memory only: CHECK/MEASURE evidence does not carry across sessions.
         self._check_ambient_report: dict[str, Any] | None = None
@@ -304,9 +299,6 @@ class CrossoverV2Session:
         """The retry-budget key for one capture index."""
         phase = self.phase_of_index(index)
         return f"{phase}:{index}" if phase == PHASE_LATERAL else phase
-
-    def snapshot(self) -> V2ConductorSnapshot:
-        return V2ConductorSnapshot(session_id=self.session_id)
 
     def authorize_begin(
         self,

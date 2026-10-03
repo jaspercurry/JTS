@@ -401,6 +401,7 @@ def _conductor(
     driver_caps_dbfs: Mapping[str, float] | None = None,
     driver_spacing_m: float = 0.15,
     index_phase_map: Mapping[int, str] | None = None,
+    gain_plan_db: Mapping[str, float] | None = None,
     **kwargs,
 ) -> CrossoverV2Session:
     seams = kwargs.pop("seams", fakes.seams())
@@ -420,6 +421,8 @@ def _conductor(
         index_phase_map=index_phase_map,
         **kwargs,
     )
+    if gain_plan_db:
+        conductor._gain_plan_db = dict(gain_plan_db)
     if not supplied_prior and journey.PHASE_TIMING not in index_phase_map.values():
         conductor.set_timing_prior("fixture-timing-take")
     return conductor

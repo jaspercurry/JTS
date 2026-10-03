@@ -445,7 +445,8 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(cap, pea
                        driver_responses=(replace(_driver_response("woofer", 8), snr={"alignment": band}),))
 
     conductor = _conductor(FakeSeams(measure=measure), index_phase_map={1: "measure"}, gain_plan_db=GAINS,
-                           measure_gain_ceiling_db=GAINS, driver_caps_dbfs={"woofer": cap, "tweeter": -30})
+                           driver_caps_dbfs={"woofer": cap, "tweeter": -30})
+    conductor._measure_gain_ceiling_db.update(GAINS)
     manifest = RunManifest("alignment", SimpleNamespace(bank=AsyncMock(side_effect=lambda record: record.get("take_id", "manifest"))))
     records = SimpleNamespace(enrich=None, after_bank=None)
     analyze, assessor = bind_plan_analysis(conductor, records, manifest=manifest, evidence={})

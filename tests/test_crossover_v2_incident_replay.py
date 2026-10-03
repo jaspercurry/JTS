@@ -125,7 +125,7 @@ def _conductor() -> CrossoverV2Session:
         analyze=lambda *a, **k: None,
         records=V2RecordPublishers(check=lambda plan, ambient: None),
     )
-    return CrossoverV2Session(
+    conductor = CrossoverV2Session(
         session_id=SESSION_ID,
         source_preset=_session_preset(),
         roles_bands=_roles_bands(),
@@ -135,11 +135,12 @@ def _conductor() -> CrossoverV2Session:
         seams=seams,
         index_phase_map={1: "check", 2: "measure", 3: "verify"},
         driver_spacing_m=0.15,
-        # The incident's own CHECK solve, so the MEASURE program the fit reads
-        # its sweep bounds from is composed at construction — the same state a
-        # session reaches by walking CHECK, without walking it.
-        gain_plan_db=SESSION_CONTEXT["gain_plan_db"],
     )
+    # The incident's own CHECK solve, so the MEASURE program the fit reads
+    # its sweep bounds from can be composed — the same state a session
+    # reaches by walking CHECK, without walking it.
+    conductor._gain_plan_db = dict(SESSION_CONTEXT["gain_plan_db"])
+    return conductor
 
 
 # the banked record

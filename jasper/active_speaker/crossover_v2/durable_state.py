@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import logging
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -15,24 +13,14 @@ from jasper.platform.json_fields import finite_float as _finite
 
 from .topology_prescription import candidate_topology
 
-logger = logging.getLogger(__name__)
-
 
 DEFAULT_V2_STATE_PATH = Path("/var/lib/jasper/active_speaker_crossover_v2_state.json")
 
 __all__ = [
     "DEFAULT_V2_STATE_PATH",
-    "V2ConductorSnapshot",
     "build_conductor_state",
     "candidate_summary",
 ]
-
-
-@dataclass(frozen=True)
-class V2ConductorSnapshot:
-    """The capture session a state document is bound to (§5.6)."""
-
-    session_id: str
 
 
 def _candidate_octave_summary(linearization: Any) -> dict[str, dict[str, float]]:
@@ -216,10 +204,9 @@ def build_conductor_state(
     ``failure["code"]`` through the reason registry and ignores this key.
     """
 
-    snap = conductor.snapshot()
-    same_session = prior.get("session_id") == snap.session_id
+    same_session = prior.get("session_id") == conductor.session_id
     state: dict[str, Any] = {
-        "session_id": snap.session_id,
+        "session_id": conductor.session_id,
         "candidate": None,
         "failure": (
             {
