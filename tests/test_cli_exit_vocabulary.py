@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import errno
 import importlib
 import importlib.util
 import json
@@ -261,6 +262,7 @@ def test_every_tuning_cli_publishes_the_shared_refusal_document(
     ("jasper.cli.round", ["wait", "--run", "run-1"]),
     ("jasper.cli.round", ["run", "--program", "speaker"]),
     ("jasper.cli.round_views", ["frequency", "round-a"]),
+    ("jasper.cli.round_views", ["catalog", "round-a"]),
     ("jasper.cli.crossover_prescriber", ["status"]),
     ("jasper.cli.crossover_prescriber", ["status", "round-a"]),
     ("jasper.cli.audition", ["start"]),
@@ -273,8 +275,10 @@ def test_a_tuning_cli_refuses_local_state_this_user_cannot_read(
     ``0 banked round(s)`` instead of refusing."""
     path = resolve()
     deny_reading(monkeypatch, path)
-    # The round store is closed to that user too: reading a round named on the command line faults.
-    monkeypatch.setattr(round_bank, "resolve_round", Mock(side_effect=PermissionError))
+    # The round store is closed to that user too: reading a round named on the command line faults, naming its path.
+    monkeypatch.setattr(
+        round_bank, "resolve_round", Mock(side_effect=PermissionError(errno.EACCES, "Permission denied", str(path))),
+    )
 
     code = importlib.import_module(module_name).main(argv)
 

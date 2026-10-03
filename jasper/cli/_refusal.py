@@ -203,6 +203,12 @@ def failed(
     )
 
 
+def refuse_unreadable(exc: PermissionError) -> int:
+    """The refusal for local state this user cannot read: the path ``exc`` names."""
+    return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
+                  code="local_state_unreadable")
+
+
 def refuse_unreadable_paths(paths: Iterable[Path]) -> int | None:
     """The refusal exit code when this user cannot read one of ``paths``, else ``None``.
 
@@ -214,8 +220,7 @@ def refuse_unreadable_paths(paths: Iterable[Path]) -> int | None:
             with path.open("rb"):
                 pass
         except PermissionError as exc:
-            return failed(EXIT_REFUSED, "local_state_unreadable", {"evidence": {"path": exc.filename}},
-                          code="local_state_unreadable")
+            return refuse_unreadable(exc)
         except OSError:
             pass
     return None

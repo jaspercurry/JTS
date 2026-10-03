@@ -24,6 +24,7 @@ from jasper.cli._refusal import (
     exit_codes_help,
     failed,
     help_from_rows,
+    refuse_unreadable,
 )
 
 from ._common import (
@@ -128,11 +129,15 @@ def build_parser(*, resolve_rounds: bool = True) -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     # Resolving a round reads the round store, which faults for a user the
-    # speaker's state is closed to: the guard runs before that parse.
+    # speaker's state is closed to: the guard runs before that parse, and
+    # catalog, which the guard exempts, refuses here given a banked round id.
     args = build_parser(resolve_rounds=False).parse_args(argv)
     if (refused := refuse_unreadable_state(args.command, NO_STATE_VERBS)) is not None:
         return refused
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except PermissionError as exc:
+        return refuse_unreadable(exc)
     try:
         return int(args.func(args))
     except RoundSetRefused as refusal:
