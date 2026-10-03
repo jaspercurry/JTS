@@ -303,9 +303,9 @@ def classify_round(
     # The feature's own pooled size and width, off the PRIMARY window — the
     # curves this function already built. Not the ladder's: the ladder's job is
     # what changes across windows, and the row's depth is what one window read.
-    pooled = detrended.mean(axis=0)
-    pooled_db = {f"{fc:.0f}": read_feature(pooled, grid, fc) for fc in features}
-    measured_q = {f"{fc:.0f}": feature_q(pooled, grid, fc) for fc in features}
+    pooled_curve = detrended.mean(axis=0)
+    pooled_db = {f"{fc:.0f}": read_feature(pooled_curve, grid, fc) for fc in features}
+    measured_q = {f"{fc:.0f}": feature_q(pooled_curve, grid, fc) for fc in features}
 
     swept, frame, ladder_poses, ladder_refusal = _sweep_ladder(captures, features, ladder)
     timing = _timing_scatter(captures, irs, peaks, sample_rate, trusted_band_hz)
