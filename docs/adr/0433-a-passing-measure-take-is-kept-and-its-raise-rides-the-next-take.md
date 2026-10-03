@@ -52,7 +52,9 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
    [ADR-0428](0428-a-placement-stops-after-two-attempts-with-the-same-fault-and-reading.md). The take
    is kept with its evidence, and the host still rearms by the capped raise. This removes that take's
    replays, which raised it 0.18, 0.01 or about 0 dB at a time until its placement was spent; where
-   they would have spent it, the run goes on at the capped raise (the first Hearing case below).
+   they would have spent it, the run goes on at the capped raise (the first Hearing case below). The
+   kept take is still short, so as the newest take at the mark it makes ADR-0345 ask for
+   `measure_timing`, as the last of its replays did.
 5. **A set keys on its stimulus's shape.** A run-manifest set keys on the capture fields that
    [ADR-0408](0408-over-a-timing-take-each-candidate-graph-probes-its-own-graph.md) compares two takes
    on (`measurement_context.SHAPE_FIELDS`: the side, the capture device, the fader `level_db` and
@@ -112,9 +114,8 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
 - On a two-way speaker a MEASURE take plays six sweeps and the timing take one. A `speaker/mark` round
   whose first take reads short plays 13 sweeps, not 19. A replay now follows only the last take at the
   mark, at a raise that can reach its floor, so the replays a round can add, one for each MEASURE take,
-  fall from 12 sweeps to 6 on
-  `speaker/mark`, from 48 to 6 on `baseline_express` (49 clean) and from 96 to 6 on `baseline_full`
-  (97 clean). Each replay saved is also a `speaker` charge saved from its placement's two extra takes
+  fall from 12 sweeps to 6 on `speaker/mark`, from 48 to 6 on `baseline_express` (49 clean) and from
+  96 to 6 on `baseline_full` (97 clean). Each replay saved is also a `speaker` charge saved from its placement's two extra takes
   ([ADR-0422](0422-a-placement-gets-two-extra-takes-and-a-probe-at-its-ceiling-stops.md)).
 - A kept pair can hold one take at the CHECK gain and one at the raise. The repeat view and the mark
   repeat spread compare their transfer functions, each deconvolved from its own stimulus gain, as
@@ -132,8 +133,8 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
   of the take that replaced it. A level probe keeps a set of its own: its shape differs, and its basis
   names `level_probe`.
 - Rejected:
-  - Keeping a short last take at the mark too. ADR-0345 would ask for a new round, which costs more than
-    one replay.
+  - Keeping a short last take at the mark whose raise could lift it to its floor. ADR-0345 would ask
+    for a new round, which costs more than one replay.
   - Holding an off-axis take to the mark's rule, a later take at its own pose. Its timing feeds no
     decision, so its replay buys nothing.
   - Letting a mark take's raise ride a later take off the mark. On `baseline_express` a short fourth
