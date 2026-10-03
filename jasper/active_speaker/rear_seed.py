@@ -30,6 +30,10 @@ SUPERCARDIOID_RATIO = 0.6
 HANDOVER_ORDER = 4
 REAR_SEED_GEOMETRY_UNDECLARED = "rear_seed_geometry_undeclared"
 REAR_SEED_BAND_EMPTY = "rear_seed_band_empty"
+#: Why ``conditions.level_gap_db`` is null: no rear view of the round has a pair section, or a pair view
+#: has no row at the mark inside the band. See ADR-0438.
+LEVEL_GAP_NO_PAIR_TAKE = "no_pair_take"
+LEVEL_GAP_NO_PAIR_ROW_IN_BAND = "no_pair_row_in_band"
 #: The placement the wall distance is derived from (ADR-0317).
 PLACEMENT_FIELDS = ("cabinet_back_wall_m", "cabinet_depth_m", "toe_in_degrees")
 ASSUMPTIONS = (
@@ -63,7 +67,7 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
     lowpass = combo("ButterworthLowpass", lowpass_hz, LOWPASS_ORDER)
     centre_hz = math.sqrt(handover_hz * lowpass["parameters"]["freq"])
     delay_ms = round(SUPERCARDIOID_RATIO * spacing_m / speed * 1e3 - _group_delay_ms(lowpass, centre_hz), 4)
-    trim_db, gap_db = _trim(views, (handover_hz, lowpass["parameters"]["freq"]))
+    trim_db, gap_db, gap_reason = _trim(views, (handover_hz, lowpass["parameters"]["freq"]))
     return {
         "kind": KIND, "schema": 1, "case": "electrical_dsp", "sample_rate_hz": sample_rate,
         "phase_convention": PHASE_CONVENTION,
@@ -71,7 +75,7 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
                      "details": {"rear_woofer_spacing_m": spacing_m, "cabinet_depth_m": geometry.cabinet_depth_m,
                                  "toe_in_degrees": geometry.toe_in_degrees}},
         "reference": {"quantity": "electrical_filter_transfer", "units": "linear output/input", "level": None},
-        "conditions": {"trim_db": trim_db, "level_gap_db": gap_db},
+        "conditions": {"trim_db": trim_db, "level_gap_db": gap_db, "level_gap_reason": gap_reason},
         "valid_band_hz": None,
         "assumptions": list(ASSUMPTIONS),
         "included_stages": {"front": [], "rear": []},
@@ -94,14 +98,15 @@ def _group_delay_ms(filter_: Mapping[str, Any], freq_hz: float) -> float:
     return group_delay_ms(camilla_filter_response([filter_], grid), grid, freq_hz)
 
 
-def _trim(views: Sequence[Mapping[str, Any]], band_hz: Sequence[float]) -> tuple[float, float | None]:
+def _trim(views: Sequence[Mapping[str, Any]], band_hz: Sequence[float]) -> tuple[float, float | None, str]:
     """Minus the rear-minus-front level the round's pair take read at the mark over the band's
-    third octaves, within the boost cap, and that level; 0 dB and ``None`` when it read none."""
-    rows = [row for view in views for key, position in ((view.get("pair") or {}).get("positions") or {}).items()
+    third octaves, within the boost cap, that level, and why it is ``None``; 0 dB when it read none."""
+    pairs = [view["pair"] for view in views if view.get("pair")]
+    rows = [row for pair in pairs for key, position in (pair.get("positions") or {}).items()
             if key.startswith(ON_AXIS_KEY_PREFIX) for row in position["bands"]
             if band_hz[0] <= math.sqrt(row["band_hz"][0] * row["band_hz"][1]) <= band_hz[1]]
     if not rows:
-        return 0.0, None
+        return 0.0, None, LEVEL_GAP_NO_PAIR_ROW_IN_BAND if pairs else LEVEL_GAP_NO_PAIR_TAKE
     gap_db = round(power_mean_db(np.array([row["rear_db"] for row in rows]))
                    - power_mean_db(np.array([row["front_db"] for row in rows])), 4)
-    return round(min(-gap_db, MAX_CHAIN_BOOST_DB), 4), gap_db
+    return round(min(-gap_db, MAX_CHAIN_BOOST_DB), 4), gap_db, ""

@@ -23,7 +23,8 @@
   },
   "conditions": {
     "trim_db": 0.0,
-    "level_gap_db": null
+    "level_gap_db": null,
+    "level_gap_reason": "no_pair_take"
   },
   "valid_band_hz": null,
   "assumptions": [
