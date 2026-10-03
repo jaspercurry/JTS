@@ -46,6 +46,12 @@
     of one graph plays the same probe as before, on its set's first take.
   - A redo at a set's first spot plays its probe again and spends no retry, as at any pose that
     levels itself (ADR-0361). A redo at a spot that carries the level still spends one.
+  - Each graph's level retake at its set's first spot is a `speaker` charge against the
+    placement's one cap of two extra takes (ADR-0422). With several graphs at one spot, one graph's
+    two retakes can spend the cap: another graph's first take there is then left
+    `level_off_target` and its set carries the level its probe solved. Before this ADR a room
+    trial's seat takes took no level retakes. It costs takes, never level: no take plays above its
+    pose's run level.
   - Rule A now reads only a timing take, which gives it no margin, and the bass ladder's takes.
     #6227 A6 deletes it once A5 retires the ladder. Until then the bound in `plan_run` that holds a
     run's first seat spot to 76 dB serves only the ladder.
