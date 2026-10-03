@@ -3,8 +3,9 @@
 - **Date:** 2026-10-03
 - **Status:** Accepted: the owner's measurement plan on [#6227](https://github.com/jaspercurry/JTS/issues/6227)
   (2026-10-02), step B3 part 2. Amends [ADR-0420](0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)
-  §1, §3, §5 and three of its consequences, each quoted below. Its cardioid consequences rest on ADR-0436
-  (#6227 B3, merged first): every rear take plays bass and room cleared.
+  §1, §3, §5 and three of its consequences, each quoted below. Its cardioid consequences rest on
+  [ADR-0436](0436-the-cardioid-default-one-pair-take-then-one-seat-trial-against-the-rear-off-base.md)
+  (#6227 B3): every rear take plays bass and room cleared.
 
 ## Context
 
