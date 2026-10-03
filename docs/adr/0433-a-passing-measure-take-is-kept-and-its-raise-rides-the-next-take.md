@@ -20,8 +20,7 @@ The raise was already carried to every later take: the run's gain plan is sessio
 timing (azimuth 0°, elevation 0°) feeds a decision: `alignment_evidence.commissioning_alignment` (the
 packet's next action and a composed candidate's commissioning alignment) and ADR-0345's timing read
 (which the analysis makes on the design axis only) take the newest kept take there. An off-axis take's
-alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver, which read about
-4.8 dB less alignment SNR, so they would ask the raise often.
+alignment feeds none, so its replay buys nothing.
 
 ## Decision
 
