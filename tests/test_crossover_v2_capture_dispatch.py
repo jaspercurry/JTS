@@ -403,10 +403,10 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     stop,
     raise_rides_next,
 ):
-    """A take whose magnitude passes asks only its alignment's raise. A later
-    take at its pose plays at that raise, so the take is kept with the raise in
-    its evidence; with none, it is retaken at the raise. A take whose magnitude
-    fails is retaken at any raise (ADR-0433)."""
+    """When only a take's alignment asks a raise, the take is kept with the raise
+    in its evidence if a later take at its pose plays it, and is retaken at the
+    raise if none does. A take whose magnitude fails is retaken at any raise
+    (ADR-0433)."""
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
         noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,

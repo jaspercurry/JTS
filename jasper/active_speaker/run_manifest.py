@@ -50,10 +50,8 @@ def _played_basis(record: Mapping[str, Any], role: str | None = None) -> dict[st
 
 
 def set_basis(record: Mapping[str, Any], basis: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """What a take's set shares: ``basis``, by default the record's capture basis,
-    with its stimulus named by shape, never by level, and no pose (brief §2.4).
-    Takes that differ only in how loud they played share a set; each row keeps
-    its own level (ADR-0433)."""
+    """What a take's set shares: ``basis`` (the record's capture basis by default) with no
+    pose (brief §2.4) and its stimulus named by shape, never by level (ADR-0433)."""
     return {key: value for key, value in shaped_capture_basis(record, basis).items()
             if key != "pose_kind" and (key in SHAPE_FIELDS or key not in CAPTURE_FIELDS)}
 
