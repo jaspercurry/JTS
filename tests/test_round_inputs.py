@@ -15,12 +15,11 @@ from jasper.active_speaker.commissioning_coordinator import next_program_action
 from jasper.active_speaker.crossover_v2.prescription_document import PrescriptionEvidence, preview_prescription_document
 from jasper.platform.atomic_io import atomic_write_json
 from jasper.platform.json_fields import parse_utc_iso
-from tests.run_manifest_fixture import IN_ROOM_CLEARED
 from tests.test_active_speaker_commissioning_coordinator import _applied_anchor
 from tests.test_active_speaker_measured_crossover_candidate import _candidate
 from tests.test_crossover_v2_room_prescription import MEDIAN_SHA256, _document as room_document, _room_median
 from jasper.active_speaker.crossover_v2.round_inputs import latest_banked_rounds, packet_purposes, take_artifact_name
-from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, run_purpose
+from jasper.active_speaker.measurement_programs import REGIME_SUMMED, RUNNABLE_PROGRAMS, cleared_layers, run_purpose
 
 
 def _bank_packet(directory, identity, program, *, sets=({"takes": [{"selected": True}]},), **fields):
@@ -121,11 +120,9 @@ def _tune(*layers, rear="S1"):
     return profile
 
 
-def _trial(name, base, candidate, *, preset="rear/seat", off=True):
-    """A seat trial's two sets and the tunes they played: its base, with bass and room off, and its candidate,
-    the seed of a cardioid trial with bass and room off too, or a room trial's candidate as composed (ADR-0429,
-    ADR-0436)."""
-    return name, preset, (("base", base, True), ("candidate", candidate, off))
+def _trial(name, base, candidate, *, preset="rear/seat"):
+    """A seat trial's two sets and the tunes they played: its base and its candidate, a cardioid trial's seed."""
+    return name, preset, (("base", base), ("candidate", candidate))
 
 
 @pytest.mark.parametrize("trials,applied,named,action", [
@@ -136,7 +133,7 @@ def _trial(name, base, candidate, *, preset="rear/seat", off=True):
     ([_trial("trial", _tune("speaker", "rear", "room"), _tune("speaker", "rear", "room", rear="S2"))],
      _tune("speaker", "rear", "room", rear="S2"),
      ("trial", "candidate"), ("copy_prompt", "room", "trial", "candidate", "upstream_changed")),
-    ([_trial("trial", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat", off=False)],
+    ([_trial("trial", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat")],
      _tune(*RUNNABLE_PROGRAMS), ("trial", "base"), (None, None, None, None, "complete")),
     ([_trial("older", _tune("speaker"), _tune("speaker", "rear")),
       _trial("newer", _tune("speaker"), _tune("speaker", "rear", rear="S2"))], _tune("speaker", "rear"),
@@ -153,8 +150,9 @@ def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeyp
     banked = {}
     for age, (name, preset, sets) in enumerate(trials):
         banked[name] = [{"set_id": set_id, "base": set_id == "base", "layer_fingerprints": layer_fingerprints(tune),
-                         "takes": [{"selected": True, "cleared_layers": list(IN_ROOM_CLEARED) if off else []}] * 3}
-                        for set_id, tune, off in sets]
+                         "takes": [{"selected": True, "cleared_layers": list(cleared_layers(
+                             run_purpose(preset), base=set_id == "base", regime=REGIME_SUMMED))}] * 3}
+                        for set_id, tune in sets]
         _bank_packet(tmp_path / "campaigns" / name, applied_identity(sets[0][1]), preset, room=[{}], bass=[{}],
                      sets=banked[name], finalized_at=1.0 + age)
 
