@@ -882,8 +882,8 @@ def _short_tweeter(program):
 
 async def _run_short_tweeter(tmp_path, box, request):
     """``request`` played by the web host on a fake chain whose loudest window
-    reads 78.7 dB, 3.3 dB under the 82 dB a raise may reach: each play's phase
-    and its sweeps' gains, in order, and which MEASURE takes each set kept."""
+    reads 78.7 dB, 3.3 dB under the 82 dB a raise may reach: each play's bearing,
+    phase and sweep gains, in order, and which MEASURE takes each set kept."""
     tmp_path.mkdir(exist_ok=True)
     fakes = EngineSeams()
     captures = plan_run.prepare_plan_captures(request)
@@ -905,8 +905,8 @@ async def _run_short_tweeter(tmp_path, box, request):
                             captures=captures, analyze=analyze, assessor=assessor, gate=AnsweredGate(), aborts={},
                             admit=lambda i, a, e, ledger: conductor.authorize_begin(i, a, e, executor_ledger=ledger))
     assert manifest.status == "complete"
-    plays = [(program.phase, {segment.role: segment.gain_db for segment in program.stimulus_segments()})
-             for program in programs]
+    plays = [(call["position_deg"], program.phase, {segment.role: segment.gain_db for segment in program.stimulus_segments()})
+             for call, program in zip(fakes.play.calls, programs, strict=True)]
     measured = [[take["selected"] for take in group["takes"]]
                 for group in manifest.joined()["sets"] if group["takes"][0]["phase"] == "measure"]
     return plays, measured
@@ -916,22 +916,25 @@ async def _run_short_tweeter(tmp_path, box, request):
     ("speaker", {"layout": "speaker_mark"}, [True, True]),
     ("tournament", {"layout": "tournament_express"}, [False, True]),
     ("speaker", {"poses": "0,20"}, [False, True, True]),
-], ids=["two-takes-at-the-mark", "one-take", "one-take-at-the-mark"])
-async def test_a_short_measure_take_is_kept_when_a_later_take_at_its_pose_plays_its_raise(
+    ("speaker", {"poses": "20,-20"}, [True, True]),
+    ("speaker", {"poses": "20"}, [True]),
+], ids=["two-at-the-mark", "one-at-the-mark", "mark-then-off", "off-the-mark", "last-off-the-mark"])
+async def test_a_short_measure_take_is_kept_unless_it_is_the_last_at_the_mark(
         monkeypatch, tmp_path, box, preset, where, kept):
     """The first MEASURE take passes short of the tweeter's alignment SNR and asks a
-    3.3 dB raise. At speaker/mark a second take at the mark follows: the first is kept,
-    and the run plays what it played before ADR-0433 less the first take's replay, so
-    every pose and gain that plays is one it played, and the pair is one set per
-    driver. A take with no later take at its pose is replayed at the raise, as before."""
+    3.3 dB raise. Before ADR-0433 it was replayed at the raise, where it played. Now it is
+    kept, and the run plays what it played before less that replay, unless it is the last
+    MEASURE take at the mark (ADR-0345): off the mark its raise rides whatever takes
+    follow, and with none it is moot. A kept take shares each driver's set with the takes
+    after it."""
     request = request_for_preset(run_preset(preset, **where), level=LevelPolicy(level_db=-20))
     plays, measured = await _run_short_tweeter(tmp_path / "now", box, request)
-    monkeypatch.setattr(CrossoverV2Session, "measures_again", lambda self, index: False)
+    monkeypatch.setattr(CrossoverV2Session, "raise_rides_next", lambda self, index: False)
     before, _ = await _run_short_tweeter(tmp_path / "before", box, request)
 
-    (_, first), (_, raised) = plays[2:4]
-    assert raised == {**first, "tweeter": pytest.approx(first["tweeter"] + 3.3)}
-    assert before == ([*plays[:3], plays[3], *plays[3:]] if kept[0] else plays)
+    (pose, phase, first), replay = before[2:4]
+    assert replay == (pose, phase, {**first, "tweeter": pytest.approx(first["tweeter"] + 3.3)})
+    assert plays == ([*before[:3], *before[4:]] if kept[0] else before)
     assert measured == [kept] * 2
 
 

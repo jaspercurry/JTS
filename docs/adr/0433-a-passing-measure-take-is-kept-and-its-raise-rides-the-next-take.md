@@ -2,8 +2,8 @@
 
 - **Date:** 2026-10-03
 - **Status:** Accepted: the owner's measurement plan on [#6227](https://github.com/jaspercurry/JTS/issues/6227)
-  (2026-10-02), step D2. Amends [ADR-0417](0417-the-courtesy-prelude-announces-each-run-once.md) §4,
-  quoted below.
+  (2026-10-02), step D2, under the owner's rule that a passing take is never replayed. Amends
+  [ADR-0417](0417-the-courtesy-prelude-announces-each-run-once.md) §4, quoted below.
 
 ## Context
 
@@ -16,26 +16,32 @@ asked. The replay read 35.7 and 36.3 dB, and in run 3 its delay moved 2 µs with
 residual: it changed nothing material. The replay played 36.3 s, and the first take was discarded.
 
 The raise was already carried to every later take: the run's gain plan is session-wide
-(`CrossoverV2Session.rearm_measure_after_transient`). So on `speaker/mark`, whose second MEASURE take
-plays at the mark after the first, the replay added only a play.
+(`CrossoverV2Session.rearm_measure_after_transient`). So the replay added only a play. Only the mark's
+timing (azimuth 0°, elevation 0°) feeds a decision: `alignment_evidence.commissioning_alignment` (the
+packet's next action and a composed candidate's commissioning alignment) and ADR-0345's timing read
+(which the analysis makes on the design axis only) take the newest kept take there. An off-axis take's
+alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver, which read about
+4.8 dB less alignment SNR, so they would ask the raise often.
 
 ## Decision
 
-1. **A take is kept when a later take at its pose plays its raise.** A MEASURE take whose magnitude
-   passes and whose alignment SNR alone asks a raise (`alignment_only`) is accepted with no charge when
-   the plan holds a later MEASURE take at the same pose (`CrossoverV2Session.measures_again`). Its
-   evidence keeps the raise (`next_gain_db.<role>`) and its alignment levels (`alignment.<role>.*`). The
-   level-drift merge in `capture_dispatch.assess` treats it as any accepted take.
+1. **A take is kept when its raise can ride later takes.** A MEASURE take whose magnitude passes and
+   whose alignment SNR alone asks a raise (`alignment_only`) is accepted with no charge when it is off
+   the mark, or when it is at the mark and the plan holds a later MEASURE take there
+   (`CrossoverV2Session.raise_rides_next`). The mark is `contracts.on_design_axis`, the test that
+   `commissioning_alignment` reads too. The take's evidence keeps the raise (`next_gain_db.<role>`) and
+   its alignment levels (`alignment.<role>.*`). The level-drift merge in `capture_dispatch.assess`
+   treats it as any accepted take.
 2. **The raise moves the gain plan.** The web host rearms the session's gain plan from every MEASURE
-   verdict that names a raise, kept or retaken (`correction_run_host.bind_plan_analysis`). So the next
-   MEASURE take composes at the raised gain. The raise rule, its caps and its SPL bound do not change.
-3. **The last take at a pose is retaken, as before.** A take with no later MEASURE take at its pose is
-   retaken at its raise: the one take of `tournament/express`, the fourth mark take of
-   `baseline_express`, and each off-axis take. So is a take whose magnitude also fails. If the newest
-   take at the mark were a short take,
-   [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) would read the
-   saved timing as `not_comparable` (`snr_short`) and ask for `measure_timing`, a new round. The owner
-   may change this rule.
+   verdict that names a raise, kept or retaken (`correction_run_host.bind_plan_analysis`). So every
+   later MEASURE take composes at the raised gain, at whatever pose. Off the mark with no later MEASURE
+   take, the raise is moot. The raise rule, its caps and its SPL bound do not change.
+3. **The last take at the mark is retaken, as before.** A take at the mark with no later MEASURE take
+   there is retaken at its raise: the one take of `tournament/express` and the fourth mark take of
+   `baseline_express`. So is a take whose magnitude also fails. If the newest take at the mark were a
+   short take, [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) would
+   read the saved timing as `not_comparable` (`snr_short`) and ask for `measure_timing`, a new round.
+   The owner may change this rule.
 4. **A set keys on its stimulus's shape.** A run-manifest set keys on the capture fields that
    [ADR-0408](0408-over-a-timing-take-each-candidate-graph-probes-its-own-graph.md) compares two takes
    on (`measurement_context.SHAPE_FIELDS`: the side, the capture device, the fader `level_db` and
@@ -63,28 +69,34 @@ plays at the mark after the first, the replay added only a play.
 
 ## Consequences
 
-- **Hearing:** this only removes plays. Every take plays a pose and a gain that the flow before this
-  ADR played. The take a raise rides composes from the gain plan as the replay's verdict raised it, and
-  the flow before this ADR played that take at that plan too. When the take a raise rides asks a second
-  raise, the second is solved from that take's reading, at the replay's gain and pose, by the same rule,
-  caps and SPL bound. `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the 85 dB commissioning
-  stop and its watch, the declared driver caps and ADR-0405's probe staircase do not change.
-- Proof: an executor run through the web host's analysis and composer, on a fake chain whose first
-  MEASURE take reads 33 dB of tweeter alignment SNR with 3.3 dB of SPL headroom
-  (`test_a_short_measure_take_is_kept_when_a_later_take_at_its_pose_plays_its_raise`). On `speaker/mark`
-  the run plays the level check, the timing take, take 1, and take 2 at the raise: what the same run
-  plays with the rule switched off, less the replay. Both takes are kept, in one set per driver. On
-  `tournament/express`, and on a speaker run with one take at the mark and one at 20°, the take is
-  retaken once at the raise, as before.
-- A two-way `speaker/mark` round whose first take is short plays 13 sweeps, not 19: one timing sweep
-  and two MEASURE takes of six. About 35 s of play and the replay's analysis go. The replay's
-  `speaker` charge is no longer spent from the placement's two extra takes
+- **Hearing:** this only removes plays. A later take composes from the gain plan as the replay's
+  verdict raised it, so the run plays what the flow before this ADR played, less the replay. Where
+  that replay would have moved the plan again, the next take plays the plan before that move. If the
+  replay would have asked a further raise, the next take plays under the gain the flow before played
+  there and asks its own raise from its own reading. If a clip would have cut the replay's gain, the
+  next take plays the gain the replay played, and its own clip check cuts it. Every raise stays inside
+  the SPL headroom that its own take read, by the same rule, caps and bound. `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the
+  85 dB commissioning stop and its watch, the declared driver caps and ADR-0405's probe staircase do
+  not change.
+- Proof: `test_a_short_measure_take_is_kept_unless_it_is_the_last_at_the_mark` runs the executor through
+  the web host's analysis and composer, on a fake chain whose first MEASURE take reads 33 dB of tweeter
+  alignment SNR with 3.3 dB of SPL headroom, beside the same run with the rule switched off. At
+  `speaker/mark` (two takes at the mark), off the mark (a take at 20°, then one at −20°), and with one
+  take at 20° only, the run plays the plays of the run before less the first take's replay, each at its
+  bearing and its gains. With one take at the mark (`tournament/express`), or a take at the mark and
+  then one at 20°, the run is unchanged. A kept take shares each driver's set with the takes after it.
+- On a two-way speaker a MEASURE take plays six sweeps and the timing take one. A `speaker/mark` round
+  whose first take reads short plays 13 sweeps, not 19. A replay now follows only the last take at the
+  mark, so the replays a round can add, one for each MEASURE take, fall from 12 sweeps to 6 on
+  `speaker/mark`, from 48 to 6 on `baseline_express` (49 clean) and from 96 to 6 on `baseline_full`
+  (97 clean). Each replay saved is also a `speaker` charge saved from its placement's two extra takes
   ([ADR-0422](0422-a-placement-gets-two-extra-takes-and-a-probe-at-its-ceiling-stops.md)).
-- The kept pair is one take at the CHECK gain and one at the raise. The repeat view and the mark
+- A kept pair can hold one take at the CHECK gain and one at the raise. The repeat view and the mark
   repeat spread compare their transfer functions, each deconvolved from its own stimulus gain, as
   ADR-0408 accepts for an A/B pair. The packet's timing line reads the newest take at the mark, which
   banks its own shortfall as before and after. The take that asked the raise keeps that shortfall and
-  the raise in its own record. The page shows no retake for a kept take.
+  the raise in its own record. A kept off-axis take keeps its short alignment reading; no decision
+  reads it. The page shows no retake for a kept take.
 - Every new run's `set_id` moves once: the set basis drops `stimulus_dbfs`, `stimulus_id` and
   `stimulus_peak_dbfs` and gains `stimulus_shape_id`. Per-set views, their evidence bases and the
   packet's sets follow. Take records, program `stimulus_id`s and request fingerprints do not move. A
@@ -94,8 +106,11 @@ plays at the mark after the first, the replay added only a play.
   of the take that replaced it. A level probe keeps a set of its own: its shape differs, and its basis
   names `level_probe`.
 - Rejected:
-  - Keeping a short last take too. ADR-0345 would ask for a new round, which costs more than one replay.
-  - Letting the raise ride a later MEASURE take at any pose. On `baseline_express` a short fourth mark
-    take would then be kept as the newest take at the mark, with the same ADR-0345 result.
+  - Keeping a short last take at the mark too. ADR-0345 would ask for a new round, which costs more than
+    one replay.
+  - Holding an off-axis take to the mark's rule, a later take at its own pose. Its timing feeds no
+    decision, so its replay buys nothing.
+  - Letting a mark take's raise ride a later take off the mark. On `baseline_express` a short fourth
+    mark take would then be the newest take at the mark, with the same ADR-0345 result.
   - Finding the drift reference by shape too. A one-driver raise moves the broadband reference by a
     share that no take states.

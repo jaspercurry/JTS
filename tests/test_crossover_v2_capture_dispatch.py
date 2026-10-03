@@ -404,8 +404,8 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     raise_rides_next,
 ):
     """When only a take's alignment asks a raise, the take is kept with the raise
-    in its evidence if a later take at its pose plays it, and is retaken at the
-    raise if none does. A take whose magnitude fails is retaken at any raise
+    in its evidence if the raise may ride the run's later takes, and is retaken
+    at the raise if not. A take whose magnitude fails is retaken at any raise
     (ADR-0433)."""
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
@@ -442,7 +442,7 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
 @pytest.mark.parametrize("takes", [1, 2], ids=["last-take-replays", "raise-rides-the-next-take"])
 async def test_round_retake_banks_played_levels_and_measured_shortfalls(
         takes, cap, peak, raise_db, noise_drop_db, capped_by, after):
-    """The last MEASURE take at its pose is retaken at its raise, and the
+    """The last MEASURE take at the mark is retaken at its raise, and the
     retake's record banks its alignment levels with the shortfall its stop's
     first attempt measured before it (ADR-0383 §4, ADR-0395). With a later
     MEASURE take there, the first is kept and the next plays at the raise the
@@ -467,7 +467,7 @@ async def test_round_retake_banks_played_levels_and_measured_shortfalls(
     asked = None
     for index, attempt in ((1, 1), (1, 2)) if takes == 1 else ((1, 1), (2, 1)):
         first = (index, attempt) == (1, 1)
-        manifest.begin({"index": index, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 20, "elevation_deg": 0}},
+        manifest.begin({"index": index, "candidate_id": "candidate", "purpose": "speaker", "purposes": ["speaker"], "pose": {"kind": "bearing", "azimuth_deg": 0, "elevation_deg": 0}},
                        attempt=attempt, pose_index=0)
         program = compose_plan_program(conductor, spec, asked)
         gain = program.segment("sweep_w").gain_db

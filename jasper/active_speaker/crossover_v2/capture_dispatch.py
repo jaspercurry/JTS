@@ -399,7 +399,7 @@ def _assess_recording(
     if adjusted:
         raised = {**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}}
         if raise_rides_next and alignment_only:
-            # A later take at this pose plays at the raise, so this one is kept (ADR-0433).
+            # The raise rides the run's later takes, so this one is kept (ADR-0433).
             return replace(verdict, evidence=raised)
         return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
                        evidence=raised)

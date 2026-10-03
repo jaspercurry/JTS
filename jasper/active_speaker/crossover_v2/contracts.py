@@ -45,6 +45,7 @@ __all__ = [
     "POSITION_AXIS_VERTICAL",
     "REFERENCE_MARK_DESIGN_AXIS",
     "ResponseCurve",
+    "on_design_axis",
 ]
 
 SCHEMA_VERSION = 3
@@ -353,3 +354,8 @@ POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
 #: prompted move of its own is a design-axis capture at `0`. `None` is a
 #: different fact — "no side was declared" — never a synonym for this.
 DESIGN_AXIS_DEG = 0
+
+
+def on_design_axis(azimuth_deg: float | None, elevation_deg: float | None) -> bool:
+    """Whether a pose is the mark, the one pose whose timing a decision reads (ADR-0345, ADR-0433)."""
+    return azimuth_deg == DESIGN_AXIS_DEG and elevation_deg == DESIGN_AXIS_DEG
