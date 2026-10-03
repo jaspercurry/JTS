@@ -135,7 +135,7 @@ def _trial(name, base, candidate, *, preset="rear/seat", kind="seat"):
      _tune("speaker", "rear", "room", rear="S2"),
      ("trial", "candidate"), ("copy_prompt", "room", "trial", "candidate", "upstream_changed")),
     ([_trial("trial", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat")],
-     _tune(*RUNNABLE_PROGRAMS), ("trial", "base"), (None, None, None, None, "complete")),
+     _tune(*RUNNABLE_PROGRAMS), ("trial", "base"), (None, None, "trial", "base", "complete")),
     ([_trial("older", _tune("speaker"), _tune("speaker", "rear")),
       _trial("newer", _tune("speaker"), _tune("speaker", "rear", rear="S2"))], _tune("speaker", "rear"),
      ("older", "candidate"), ("copy_prompt", "room", "older", "candidate", "round_available")),

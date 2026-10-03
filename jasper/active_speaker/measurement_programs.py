@@ -121,9 +121,8 @@ _PROGRAM_SECTIONS = (
         (REGIME_PER_DRIVER, REGIME_SUMMED, REGIME_BRANCHES), 0,
         "Driver linearization and crossover", "Measure each driver and refine its response and crossover.",
         "Measure the baseline", "driver",
-        run_headline=("JTS is measuring from a few spots either side of the mark, and then back on it — follow the "
-                      "step below. Moving the microphone is what shows how the speaker's drivers hand over to each "
-                      "other away from the middle."),
+        run_headline=("JTS is measuring each driver at the mark, then at any spots the plan adds either side of it "
+                      "— follow the step below. Those spots show how the drivers hand over away from the middle."),
         trial=(("speaker/mark", "speaker_mark"),), preview=(2, "emitted_graph", ("driver", "blend", "topology")),
     ),
     TuningProgram(

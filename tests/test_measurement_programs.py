@@ -279,11 +279,11 @@ def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_pres
 def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round_dir, room_round):
     """Where tuning stands, what the agent can ask and what a document may write (#5928 TB6), each
     a call its tool's own parser accepts; the contract evaluates its bounds on the latest round. When the
-    next-program pointer names a room round and set, the room prompt's contract, judge and compose calls
-    name them, it trials the candidate, and it runs no new round (ADR-0437)."""
+    next-program pointer names an in-room round and set, the room and bass prompts' contract, judge and
+    compose calls name them, they trial the candidate, and they run no new round (ADR-0437)."""
     parsers = {module.PROG: module.build_parser() for module in (crossover_prescriber, round_views, round_cli)}
     prompt = th.build_tuning_handoff_prompt({"latest_round_dir": round_dir, "room_round": room_round}, program)
-    design = room_round if program == mp.PURPOSE_ROOM else None
+    design = room_round if program in (mp.PURPOSE_ROOM, mp.PURPOSE_BASS) else None
     calls = []
     for line in prompt.splitlines():
         label, _, command = line.partition(": ")
