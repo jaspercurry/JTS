@@ -353,8 +353,8 @@ async def run_plan(
             planned.append(stop)
             if spec is not None:
                 expanded.append((spec, stop, pose_index, stops[offset],
-                                 take_level(angle_stops[offset], scope=spec.graph_scope, over_timing="timing" in scopes)
-                                 if spec.level_probe else None, level_starts[offset]))
+                                 take_level(angle_stops[offset], scope=spec.graph_scope) if spec.level_probe else None,
+                                 level_starts[offset]))
     manifest.planned = planned
     screens = pose_batch_screens(list(range(1, len(expanded) + 1)),
                                  [row[3].prompt for row in expanded], [row[3].candidate_id for row in expanded])

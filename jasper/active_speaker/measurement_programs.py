@@ -427,7 +427,8 @@ SEAT_LEVEL = PoseLevel(target_db_spl=74.0, tolerance_db=2.0, max_raise_db=15.0)
 
 
 def run_level(pose_kind: str) -> PoseLevel:
-    """The level a run's first spot finds its fader at (ADR-0403 §4)."""
+    """The level a pose kind's probe levels to: a run's first spot (ADR-0403 §4), and
+    each candidate graph's summed set at its first spot (ADR-0423)."""
     return SEAT_LEVEL if pose_kind == POSE_KIND_SEAT else SPOT_LEVEL
 
 
@@ -435,7 +436,8 @@ def pose_level(pose: Pose) -> PoseLevel | None:
     """The one level rule of a pose's takes (ADR-0366 §2): a pose that plays one
     driver alone levels itself, at any kind and distance (ADR-0361), and so does
     a driverless spot closer than the mark that is not a seat (ADR-0403); any
-    other pose plays at its run's fader and answers to its repeats (``None``)."""
+    other pose answers to its repeats (``None``), and its summed takes on a
+    candidate graph take their run level from ``angle_capture.take_level`` (ADR-0423)."""
     close = pose.kind != POSE_KIND_SEAT and pose.distance_m is not None and pose.distance_m < MARK_DISTANCE_M
     return SPOT_LEVEL if pose.driver or close else None
 

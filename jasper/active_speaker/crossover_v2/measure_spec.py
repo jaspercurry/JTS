@@ -93,8 +93,9 @@ class MeasureSpec:
     #: door when it compiles the take's graph (ADR-0370). Candidate graphs only.
     cleared_layers: tuple[str, ...] = ()
     #: Whether this take finds its level, playing its level probe when no level
-    #: is asked: a driver's take, or the first take of a driverless summed set
-    #: closer than the mark. The first take of a branch set plays its branches'
+    #: is asked: a driver's take, the first take of a driverless summed set closer
+    #: than the mark, or a candidate graph's first summed take at any spot (ADR-0423).
+    #: The first take of a branch set plays its branches'
     #: probes instead (:func:`branch_probes`). Only
     #: ``capture_schedule.prepare_plan_captures`` sets it (ADR-0365, ADR-0403).
     level_probe: bool = False

@@ -28,6 +28,7 @@ from jasper.active_speaker.round_bank import bank_round
 from jasper.active_speaker.crossover_v2.window_view import window_view
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, kept_measurements
 from jasper.audio_measurement.evidence_reasons import TAKE_CURVES_NOT_BANKED
+from jasper.audio_measurement.program import stimulus_shape_id
 from jasper.cli._refusal import EXIT_REFUSED
 from jasper.cli._report import render_report
 from jasper.cli.round_views import build_parser, main, run_bookkeeping
@@ -78,7 +79,9 @@ def test_set_selects_manifest_takes_and_files_its_own_artifact(two_sets, capsys,
     doc = document["median"]
     assert answer["out"] == str(root / f"room-{group['set_id'][:12]}.json")
     assert set(doc["evidence"]["take_ids"]) == set(selected.selected_ids)
-    assert doc["evidence"]["basis"] == group["capture_basis"]
+    # Each graph's set levels itself, so its evidence names the stimulus's shape too (ADR-0423).
+    played, = {stimulus_shape_id(record["program"]) for _, record in measurement_documents(round_inputs(root).session_dir)}
+    assert doc["evidence"]["basis"] == {**group["capture_basis"], "stimulus_shape_id": played}
     assert main(["room-grade", str(root), "--set", group["set_id"]]) == 0
     _, grade = artifact_answer(capsys)
     assert grade["room"] == answer["out"]
@@ -293,11 +296,12 @@ def test_room_views_select_one_measured_set_and_count_physical_poses(tmp_path, c
         if original.get("pose_kind") != "seat":
             continue
         path = take_artifact_path(root, row.path)
-        original.update(candidate_id="first", graph_scope="candidate", program={"stimulus_id": "program"})
+        original.update(candidate_id="first", graph_scope="candidate", program={**original["program"], "stimulus_id": "program"})
         original["curves"][0]["band_hz"] = [30.0, 200.0]
         path.write_text(json.dumps(original))
         second = json.loads(json.dumps(original))
         second.update(changed)
+        second["program"] = {**original["program"], **second["program"]}
         second["pose_id"] += "_second"
         second["take_id"] += "_second"
         second["curves"][0]["magnitude_db"] = [-20.0] * len(SEAT_GRID_HZ)

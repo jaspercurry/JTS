@@ -255,12 +255,12 @@ def played_layers(stop: AngleStop) -> tuple[str, ...]:
     return cleared_layers(stop.purpose, base=not stop.candidate_id, regime=stop.regime)
 
 
-def take_level(stop: AngleStop, *, scope: str, over_timing: bool) -> PoseLevel | None:
+def take_level(stop: AngleStop, *, scope: str) -> PoseLevel | None:
     """The level rule of a take of ``stop`` on graph ``scope``: its stop's own
-    (:attr:`AngleStop.level`). In a run that takes a timing take, a summed take
-    on a candidate graph levels itself too, at its pose's run level, since the
-    timing take's probe reads only the timing graph (ADR-0408)."""
-    if stop.level is None and over_timing and scope == TEMPLATE_SWEEP_SCOPE:
+    (:attr:`AngleStop.level`), else, for a summed take on a candidate graph, its
+    pose's run level, since a probe reads only the graph it plays (ADR-0408,
+    ADR-0423). A bass stimulus's ladder keeps its run's fader (ADR-0403 §4)."""
+    if stop.level is None and scope == TEMPLATE_SWEEP_SCOPE and stop.stimulus is None:
         return run_level(stop.pose.kind)
     return stop.level
 
@@ -271,13 +271,12 @@ def level_sets(stops: Sequence[AngleStop], scopes: Sequence[str]) -> tuple[int |
     §2). A driver's takes share a level within their placement (ADR-0361). A
     driverless summed spot closer than the mark shares one with the next spots at
     its kind and distance -- its repeats and lateral poses -- found by the set's
-    first take (ADR-0403), and so does each candidate graph's summed take at any
-    spot of a run that takes a timing take (ADR-0408); a branch take of one pair
-    shares one only within its placement, since each placement probes what it
-    plays (ADR-0407). A summed set is one candidate graph there (its candidate and
-    ``played_layers``), levelled by that graph's own first take; a branch set's
-    probes play the drivers graph, so its candidates share them (ADR-0406)."""
-    over_timing = "timing" in scopes
+    first take (ADR-0403), and so does each candidate graph's summed take but a
+    bass ladder's at any other spot (ADR-0408, ADR-0423); a branch take of one
+    pair shares one only within its placement, since each placement probes what
+    it plays (ADR-0407). A summed set is one candidate graph there (its candidate
+    and ``played_layers``), levelled by that graph's own first take; a branch
+    set's probes play the drivers graph, so its candidates share them (ADR-0406)."""
 
     def key(stop: AngleStop) -> tuple[object, ...]:
         if stop.pose.driver:
@@ -289,7 +288,7 @@ def level_sets(stops: Sequence[AngleStop], scopes: Sequence[str]) -> tuple[int |
     starts: list[int | None] = []
     firsts: dict[tuple[object, ...], int] = {}
     for index, (stop, scope) in enumerate(zip(stops, scopes, strict=True)):
-        if take_level(stop, scope=scope, over_timing=over_timing) is None:
+        if take_level(stop, scope=scope) is None:
             starts.append(None)
             continue
         if not (index > 0 and starts[-1] is not None and key(stops[index - 1]) == key(stop)):

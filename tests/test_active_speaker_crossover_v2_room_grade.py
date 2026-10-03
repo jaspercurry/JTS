@@ -176,17 +176,17 @@ def test_comparison_uses_only_common_frequency_support():
     assert top["delta_rms_db"] == pytest.approx(0.0, abs=1e-12)
 
 
-@pytest.mark.parametrize("level,program,disclosed,fields", [
-    (-24.0, "program", "mismatched_fields", {"level_db"}),
-    (None, None, "unknown_fields", {"level_db", "stimulus_id"}),
+@pytest.mark.parametrize("level,shape,disclosed,fields", [
+    (-24.0, "shape", "mismatched_fields", {"level_db"}),
+    (None, None, "unknown_fields", {"level_db", "stimulus_shape_id"}),
 ])
-def test_comparison_aligns_a_whole_graph_level_shift_once(level, program, disclosed, fields):
+def test_comparison_aligns_a_whole_graph_level_shift_once(level, shape, disclosed, fields):
     document = _comparison_document(graph="candidate")
     shifted = {
         **document,
         "median_db": [value + 6.0 for value in document["median_db"]],
         "evidence": {**document["evidence"], "basis": {
-            **document["evidence"]["basis"], "level_db": level, "stimulus_id": program,
+            **document["evidence"]["basis"], "level_db": level, "stimulus_shape_id": shape,
         }},
     }
 
@@ -218,6 +218,7 @@ def _comparison_document(*, graph: str, side: str = "left") -> dict[str, Any]:
             "capture_device": {"usb_id": "mic-1", "channel_selected": 0},
             "level_db": -30.0,
             "stimulus_id": "program",
+            "stimulus_shape_id": "shape",
             "stimulus_dbfs": -12.0,
             "stimulus_wav_sha256": "program",
             "stimulus_peak_dbfs": -12.0,
@@ -267,14 +268,17 @@ def test_known_capture_basis_mismatch_withholds_the_comparison():
     assert all(row["delta_rms_db"] is None for row in artifact["bands"])
 
 
-@pytest.mark.parametrize(("field", "value", "incompatible"), [
-    ("level_db", -24.0, []),
-    ("stimulus_id", "another-stimulus", ["stimulus_id"]),
-])
-def test_medians_compare_across_levels_but_not_across_stimuli(field, value, incompatible):
-    """Level alignment removes a pure level offset (ADR-0359); the stimulus id leaves the fader out (#5012)."""
+@pytest.mark.parametrize(("changes", "incompatible"), [
+    ({"level_db": -24.0}, []),
+    ({"stimulus_id": "louder", "stimulus_dbfs": -6.0, "stimulus_peak_dbfs": -6.0}, []),
+    ({"stimulus_shape_id": "another-stimulus"}, ["stimulus_shape_id"]),
+], ids=["another fader", "the level its own set found", "another stimulus"])
+def test_medians_compare_across_levels_but_not_across_stimuli(changes, incompatible):
+    """Level alignment removes a pure level offset (ADR-0359), so medians compare
+    across faders and across the stimulus level each graph's set finds, but never
+    across stimuli of another shape (#5012, ADR-0423)."""
     candidate, incumbent = _comparison_document(graph="candidate"), _comparison_document(graph="incumbent")
-    candidate["evidence"]["basis"][field] = value
+    candidate["evidence"]["basis"].update(changes)
 
     artifact = grade_room_median(read_room_median(candidate), incumbent=read_room_median(incumbent)).to_dict()
 

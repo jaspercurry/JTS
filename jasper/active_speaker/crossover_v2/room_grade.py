@@ -22,7 +22,7 @@ from jasper.audio_measurement.evidence_reasons import unavailable
 from jasper.audio_measurement.room_limits import spatial_support
 from jasper.audio_measurement.series_stats import curve_difference
 from .record_index import bundle_measurements
-from .measurement_context import CAPTURE_FIELDS, compare_capture_basis
+from .measurement_context import SHAPE_FIELDS, compare_capture_basis
 from .room_prescription import RoomMedian, read_room_median
 from .room_views import band_masks
 
@@ -129,7 +129,7 @@ def _comparison_basis(median: RoomMedian, incumbent: RoomMedian) -> dict[str, An
         return {**(raw if isinstance(raw, Mapping) else {}),
                 "n_positions": value.n_positions, "pose_keys": evidence.get("pose_keys")}
     return compare_capture_basis(
-        basis(median), basis(incumbent), required=(*CAPTURE_FIELDS, "n_positions", "pose_keys"),
+        basis(median), basis(incumbent), required=(*SHAPE_FIELDS, "n_positions", "pose_keys"),
         exempt=("level_db",),
     )
 

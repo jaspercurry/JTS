@@ -75,7 +75,7 @@ from jasper.platform.json_fields import finite_float
 
 from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
-from .measurement_context import capture_basis, compare_capture_basis
+from .measurement_context import capture_basis, compare_capture_basis, shaped_capture_basis
 from .pose_curve import WINDOW_UNGATED
 from .position_cycle import parse_curve_complex, take_curve
 from .record_index import take_pose_kind
@@ -97,9 +97,9 @@ ROLE_PAIR = "pair"
 #: ``front_rear`` branch pair excites, in the channel order it plays them.
 PAIR_ROLES = (*branch_target_ids_for(BRANCH_PAIR_FRONT_REAR, ()), "summed")
 
-#: The capture facts every candidate in one batch must share for the figures to
-#: mean anything, echoed from the takes' own basis rather than restated.
-LEVEL_FIELDS = ("level_db", "stimulus_id", "calibration_applied", "calibration_reference")
+#: The capture facts every candidate in one batch must share for the figures to mean anything,
+#: echoed from the takes' own basis: the stimulus's shape, not its level (ADR-0423).
+LEVEL_FIELDS = ("level_db", "stimulus_shape_id", "calibration_applied", "calibration_reference")
 
 #: The rear score (#5405 comment 5747658591). Behind the box the room refills an
 #: ungated null, so the bands centred at or above REAR_SCORE_WINDOWED_FROM_HZ
@@ -430,7 +430,7 @@ def rear_document(
             continue
         candidate = _candidate_key(record.get("candidate_id"))
         batch.setdefault(candidate, {}).setdefault(take.pose_key, []).append(take)
-        basis_of[take.take_id] = capture_basis(record)
+        basis_of[take.take_id] = shaped_capture_basis(record)
         bases.setdefault(candidate, []).append(basis_of[take.take_id])
         records[take.take_id] = record
         if row.pose_kind == POSE_KIND_BEARING:
@@ -727,7 +727,7 @@ def _pair_document(
     observed: list[Mapping[str, Any]] = []
     for _row, record in purpose_take_records(inputs.session_dir, purpose=PURPOSE_REAR):
         records.setdefault(doc_pose_key(record), []).append(record)
-        observed.append(capture_basis(record))
+        observed.append(shaped_capture_basis(record))
     if not records:
         raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})
     every = [record for rows in records.values() for record in rows]

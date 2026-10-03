@@ -51,10 +51,11 @@ CAPTURE_FIELDS = (
 SHAPE_FIELDS = ("side", "capture_device", "level_db", "stimulus_shape_id")
 
 
-def shaped_capture_basis(record: Mapping[str, Any]) -> dict[str, Any]:
-    """:func:`capture_basis` with the shape of the stimulus the take played."""
+def shaped_capture_basis(record: Mapping[str, Any], basis: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """``basis``, by default :func:`capture_basis`, with the shape of the stimulus the take played."""
     program = record.get("program")
-    return {**capture_basis(record), "stimulus_shape_id": stimulus_shape_id(program) if program else None}
+    return {**(capture_basis(record) if basis is None else basis),
+            "stimulus_shape_id": stimulus_shape_id(program) if program else None}
 
 
 def _capture_calibration_identity(value: Any) -> tuple[bool, str | None, str | None] | None:

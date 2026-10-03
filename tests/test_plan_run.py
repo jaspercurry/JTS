@@ -80,7 +80,7 @@ from tests.engine_twin import FakeGraph, FakeSeams, FakePlay, FakeVolume, SeamFa
 from tests._log_events import event_fields
 from tests.test_active_speaker_program_admission import _profile_and_targets
 from tests.test_preflight import (
-    _REAR_SUM_DB, _cardioid_trial, ready_facts,
+    _REAR_SUM_DB, _boost, _cardioid_trial, ready_facts,
 )
 from tests.test_active_speaker_measurement_door import box as box  # noqa: F401
 from tests.test_crossover_v2_tuning_scope import _room_candidate, tuning_profile as tuning_profile
@@ -91,6 +91,17 @@ def _walk(angles, candidates=("fp-a",)):
     return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
         ac.AngleStop(Pose(angle, 0), ac.REGIME_SUMMED, candidate_id=candidate, purpose="speaker")
         for angle in angles for candidate in candidates), program="tournament/express")
+
+
+_BASS = preset("bass/axis").stimulus
+
+
+def _ladder_walk(angles, candidates=("fp-a",)):
+    """:func:`_walk` as the bass ladder plays it: the summed takes that still play
+    at their run's fader (ADR-0403 §4, ADR-0423)."""
+    return ac.AngleCaptureRequest(candidates=candidates, stops=tuple(
+        ac.AngleStop(Pose(angle, 0), ac.REGIME_SUMMED, candidate_id=candidate, purpose="bass", stimulus=_BASS)
+        for angle in angles for candidate in candidates), program="bass/axis")
 
 
 def _analysis(_record):
@@ -614,7 +625,7 @@ def test_a_take_banks_the_verdict_and_level_the_run_judged(case, status, faults)
     take holds the verdict and level the run decided it by, a refused one and
     one whose analysis failed too (ADR-0383, ADR-0395)."""
     if case == "drift":
-        result, fakes, _, _ = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
+        result, fakes, _, _ = _run_levelled(replace(_ladder_walk([0]), repeats=2), (70.0, 73.0, 70.0))
     else:
         calls = count(1)
         def analyze(record):
@@ -1167,11 +1178,11 @@ def test_a_near_field_round_shows_drivers_of_one_size_that_play_apart(caplog):
                for record in caplog.records) == 2
 
 
-def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
-    """Only a take at one driver's pose is held to the near-field target: a
-    far-field repeat that reads 3 dB off its first is retaken as drift, at the
-    same level (ADR-0361)."""
-    result, fakes, selected, gate = _run_levelled(replace(_walk([0]), repeats=2), (70.0, 73.0, 70.0))
+def test_a_take_at_its_runs_fader_keeps_the_drift_rule_and_is_never_levelled():
+    """A take at its run's fader, a bass ladder's, is never levelled: a far-field
+    repeat that reads 3 dB off its first is retaken as drift, at the same level
+    (ADR-0361, ADR-0423)."""
+    result, fakes, selected, gate = _run_levelled(replace(_ladder_walk([0]), repeats=2), (70.0, 73.0, 70.0))
 
     assert result.status == "complete"
     assert fakes.play.rungs == [None, None, None]
@@ -1180,18 +1191,17 @@ def test_a_far_field_take_keeps_the_drift_rule_and_is_never_levelled():
 
 
 def test_a_close_driverless_spot_turns_itself_down_once():
-    """rear_behind's spot 0.1 m behind the cabinet reads louder than the mark at
-    the run's fader. It plays one probe of its own summed sweep, and its take is
-    turned down to 80 dB; the mark before it plays at the fader and is never
-    levelled (ADR-0403)."""
+    """rear_behind's spot 0.1 m behind the cabinet reads louder than the mark. It
+    plays one probe of its own summed sweep, and its take is turned down to 80 dB;
+    the mark before it probes and levels its own set (ADR-0403, ADR-0423)."""
     result, fakes, selected, gate = _run_levelled(
-        ac.request_for_preset(run_preset("rear/express", "rear_behind")), (75.0, 92.0, 80.0))
+        ac.request_for_preset(run_preset("rear/express", "rear_behind")), (75.0, 79.0, 92.0, 80.0))
 
     assert result.status == "complete"
-    assert fakes.play.rungs == [None, None, -55.0]
-    assert selected == [True, False, True]
+    assert fakes.play.rungs == [None, -38.0, None, -55.0]
+    assert selected == [False, True, False, True]
     steps = {(p["measurement"], p["attempt"]): p["level_step"] for p in gate.progress if "level_step" in p}
-    assert list(steps.values()) == ["probe", "levelled"]
+    assert list(steps.values()) == ["probe", "levelled", "probe", "levelled"]
 
 
 def test_a_close_driverless_set_shares_one_level():
@@ -1398,8 +1408,7 @@ def test_a_cardioid_on_off_trial_behind_the_cabinet_lands_each_graph_at_80_db(mo
 
     result, _, _ = asyncio.run(_run_found(
         monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0, "behind": 110.0},
-        graph_db={("candidate", "trial", "bearing"): _REAR_SUM_DB, ("candidate", "trial", "behind"): 15.0},
-        margin_db=report.rung_admission["run_margin_db"]))
+        graph_db={("candidate", "trial", "bearing"): _REAR_SUM_DB, ("candidate", "trial", "behind"): 15.0}))
 
     behind = [take for take in _takes(result.joined()) if take["pose_kind"] == "behind"]
     probes = [take for take in behind if is_level_probe(ExcitationProgram.from_dict(take["program"]))]
@@ -1474,10 +1483,10 @@ def test_a_close_set_that_finds_no_level_plays_no_more_takes():
     level. The rest of the set does not play (ADR-0361 §3, ADR-0403 §3)."""
     request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
 
-    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0) + (70.0,) * 8,
-                                        verdicts=lambda take: _UNHEARD if take >= 3 else None)
+    result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0) + (70.0,) * 8,
+                                        verdicts=lambda take: _UNHEARD if take >= 4 else None)
 
-    assert _takes_played_unlevelled(fakes)[2:] == []
+    assert _takes_played_unlevelled(fakes) == []
     assert [row["reason"] for row in result.not_measured] == [REASON_SNR_FLOOR, REASON_LEVEL_UNSOLVED]
 
 
@@ -1500,11 +1509,12 @@ def test_a_driver_pose_whose_first_take_never_lands_carries_its_level_or_skips(r
     assert [row["reason"] for row in result.not_measured] == reasons
 
 
-@pytest.mark.parametrize("redo_at", [3, 4], ids=["during-the-rear-probe", "after-the-take"])
+@pytest.mark.parametrize("redo_at", [4, 5], ids=["during-the-rear-probe", "after-the-take"])
 def test_a_redo_probes_both_branches_again_behind_a_summed_take(redo_at):
     """A summed take at the mark, then a branch set at the mark: a Redo there
-    plays the summed take again and both probes again before the branch take,
-    never the take at no level or at its old one (ADR-0365, ADR-0403 §3)."""
+    plays the summed take's probe and take again and both probes again before
+    the branch take, never the take at no level or at its old one (ADR-0365,
+    ADR-0403 §3, ADR-0423)."""
     request = ac.AngleCaptureRequest(stops=(
         ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="rear"),
         ac.AngleStop(Pose(0, 0), ac.REGIME_BRANCHES, purpose="rear", branch_pair="front_rear")))
@@ -1514,7 +1524,7 @@ def test_a_redo_probes_both_branches_again_behind_a_summed_take(redo_at):
 
     assert result.status == "complete"
     plays = [(call["spec"].graph_scope, call["stimulus_dbfs"]) for call in fakes.play.calls]
-    assert plays[redo_at:] == [("candidate", None), ("drivers", None), ("drivers", None),
+    assert plays[redo_at:] == [("candidate", None), ("candidate", -31.0), ("drivers", None), ("drivers", None),
                                ("candidate_branches", -37.0)]
 
 
@@ -1524,12 +1534,12 @@ def test_a_redo_as_a_set_finds_no_level_plays_the_rest_at_the_level_it_then_land
     set plays at its level, not skipped as level_unsolved (ADR-0403 §3)."""
     request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
 
-    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0) + (70.0,) * 4 + (92.0, 80.0, 80.0),
-                                        verdicts=lambda take: _UNHEARD if 3 <= take <= 6 else None,
+    result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0) + (70.0,) * 4 + (92.0, 80.0, 80.0),
+                                        verdicts=lambda take: _UNHEARD if 4 <= take <= 7 else None,
                                         redo_when_unmeasured=3)
 
     assert result.status == "complete" and result.not_measured == []
-    assert fakes.play.rungs == [None] * 7 + [-55.0, -55.0]
+    assert fakes.play.rungs == [None, -38.0, -38.0] + [None] * 5 + [-55.0, -55.0]
 
 
 def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_level():
@@ -1538,15 +1548,17 @@ def test_a_close_set_whose_first_take_never_lands_plays_on_at_its_last_solved_le
     for it, never at the take's ceiling (ADR-0403)."""
     request = replace(ac.request_for_preset(run_preset("rear/express", "rear_behind")), repeats=2)
 
-    result, fakes, _, _ = _run_levelled(request, (75.0, 75.0, 92.0) + (86.0,) * 3 + (80.0,))
+    result, fakes, _, _ = _run_levelled(request, (75.0, 79.0, 79.0, 92.0) + (86.0,) * 3 + (80.0,))
 
-    assert fakes.play.rungs == [None, None, None, -55.0, -62.0, -69.0, -76.0]
+    assert fakes.play.rungs == [None, -38.0, -38.0, None, -55.0, -62.0, -69.0, -76.0]
     assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_OFF_TARGET]
 
 
-#: A two-way speaker's drivers, and CHECK's plan for them, as the fake run chain composes its plays.
+#: A two-way speaker's drivers, CHECK's plan for them, and the profile a bass take is
+#: composed from, as the fake run chain composes its plays.
 _RUN_BANDS = {"woofer": FrequencyBand(20, 4000), "tweeter": FrequencyBand(1500, 20000)}
 _RUN_GAINS = {"woofer": -20.0, "tweeter": -26.0}
+_, _RUN_SAFETY, _RUN_TARGETS = _profile_and_targets(woofer_floor=20)
 
 
 class _Fader(FakeVolume):
@@ -1573,7 +1585,8 @@ class _RunChain:
             target_bands=_RUN_BANDS)
         spec = self.play.calls[-1]["spec"]
         program = program_for_spec(replace(spec, scope_gains_db=self.scope_gains.get(spec.graph_scope)), excitation,
-                                   _RUN_GAINS, record.get("stimulus_dbfs"), safety_profile={}, role_targets={})
+                                   _RUN_GAINS, record.get("stimulus_dbfs"), safety_profile=_RUN_SAFETY,
+                                   role_targets=_RUN_TARGETS)
         graph = (spec.graph_scope, spec.candidate_id)
         chain = self.chain_db[record["pose_kind"]] + self.graph_db.get(
             (*graph, record["pose_kind"]), self.graph_db.get(graph, 0.0))
@@ -1718,19 +1731,6 @@ def test_a_first_spot_where_every_take_levels_itself_holds_the_probe_fader(monke
     assert (result.level["run"]["level_db"], result.level["run"]["source"]) == (held, source)
 
 
-def test_a_run_whose_first_spot_is_a_seat_lands_it_under_74_db(monkeypatch):
-    """A first seat spot is levelled 1 dB under 74 dB, and the other seat spots
-    hold that fader (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("room", "seat_express"), level=ac.LevelPolicy(level_db=0.0))
-
-    result, plays, windows = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0}))
-
-    assert windows == [0.0, -9.0] and len(plays) == 4
-    first = min((take for take in _takes(result.joined()) if take["selected"]), key=lambda take: take["index"])
-    assert first["capture_integrity"]["spl"]["max_window_db_spl"] == pytest.approx(73.0)
-
-
 @pytest.mark.parametrize(("tweeter_cap", "chain_db", "timing_gain", "margin_db", "fader", "timing_db", "pair_db"), [
     (-6.0, 100.0, 0.0, 0.0, -9.0, 79.0, 79.0), (-6.0, 100.0, 6.0, 0.0, -3.0, 79.0, 79.0),
     (-6.0, 100.0, 6.0, 0.0, -3.0, 79.0, None), (-6.0, 100.0, 0.0, 7.0, -12.0, 76.0, 76.0),
@@ -1764,12 +1764,10 @@ def test_the_run_fader_comes_down_by_what_its_margins_pass_the_stop_by(
 def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(monkeypatch):
     """A plan whose first spot levels itself (a close set behind the cabinet)
     plays it at the probe fader, where it finds its own level. Its later spot,
-    at the mark, levels nothing, so its first summed take is probed under that
-    spot's own placement before its first take, which then plays at the fader
-    the probe found (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("rear/express", poses=[
-        {"azimuth_deg": 0, "elevation_deg": 0, "kind": "behind", "distance_m": 0.1},
-        {"azimuth_deg": 0, "elevation_deg": 0}]))
+    at the mark, plays a bass ladder's take, which levels nothing, so that take
+    is probed under that spot's own placement before it plays at the fader the
+    probe found (ADR-0403 §4, ADR-0423)."""
+    request = ac.AngleCaptureRequest((_BEHIND_SET, _FADER_MARK), program="rear/express")
     gate = AnsweredGate()
 
     result, plays, windows = asyncio.run(_run_found(
@@ -1790,21 +1788,23 @@ def test_a_later_spot_that_does_not_level_itself_probes_before_its_first_take(mo
 _CLOSE_SET = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3}
 _DRIVER_POSE = {"azimuth_deg": 0, "elevation_deg": 0, "kind": "close", "distance_m": 0.3, "driver": "woofer"}
 _MARK = {"azimuth_deg": 0, "elevation_deg": 0}
+#: A bass ladder's take at the mark, a summed take that plays at its run's fader
+#: (ADR-0423), and a close set behind the cabinet.
+_FADER_MARK = ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="bass", stimulus=_BASS)
+_BEHIND_SET = ac.AngleStop(Pose(0, 0, kind="behind", distance_m=0.1), ac.REGIME_SUMMED, purpose="rear")
 
 
 def _ladder_plans():
     """Plans for a ladder. The two whose first pose levels every take itself are
     the review's; a later pose of drivers alone has no summed take of its own."""
-    def placed(program, poses):
-        return ac.request_for_preset(run_preset(program, poses=poses), targets=("woofer", "tweeter"))
-
-    return {"mark first": placed("rear/express", [_MARK, _CLOSE_SET]),
+    close = ac.AngleStop(Pose(**_CLOSE_SET), ac.REGIME_SUMMED, purpose="rear")
+    return {"mark first": ac.AngleCaptureRequest((_FADER_MARK, close), program="rear/express"),
             "drivers alone at a later pose": ac.AngleCaptureRequest(
-                (ac.AngleStop(Pose(0, 0), ac.REGIME_SUMMED, purpose="rear"),
-                 ac.AngleStop(Pose(20, 0), ac.REGIME_PER_DRIVER, purpose="speaker")),
+                (_FADER_MARK, ac.AngleStop(Pose(20, 0), ac.REGIME_PER_DRIVER, purpose="speaker")),
                 program="rear/express"),
-            "close set first": placed("rear/express", [_CLOSE_SET, _MARK]),
-            "driver pose first": placed("speaker/mark", [_DRIVER_POSE, _MARK])}
+            "close set first": ac.AngleCaptureRequest((close, _FADER_MARK), program="rear/express"),
+            "driver pose first": ac.request_for_preset(run_preset("speaker/mark", poses=[_DRIVER_POSE, _MARK]),
+                                                       targets=("woofer", "tweeter"))}
 
 
 @pytest.mark.parametrize(("shape", "found"), [
@@ -1860,75 +1860,36 @@ def test_a_ladders_frames_name_the_program_the_page_words_them_by(monkeypatch):
         row.run_headline for row in PROGRAM_ROWS if row.purpose == run_purpose(request.program))
 
 
-def test_a_first_seat_spot_reads_at_most_76_db_over_a_lift(monkeypatch):
-    """A run probed at its first seat spot comes down by what its margins pass
-    76 dB by, not the 85 dB stop, so an A/B trial whose dynamic bass may lift
-    6 dB over the probe's graph reads at most 76 dB there (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
+@pytest.mark.parametrize("trial", [None, "lift", "rear", "backoff"],
+                         ids=["the base alone", "a trial's bass lift", "a rear the probe mutes", "the probe's backoff"])
+def test_a_bass_trials_first_seat_spot_reads_at_most_76_db(monkeypatch, tuning_profile, trial):
+    """A bass ladder's takes still play at their run's fader (ADR-0423). Its first
+    rung probes the base at the first seat spot and lands it 1 dB under 74 dB, and
+    the other seat spots hold that fader. A trial may read louder than the probe's
+    graph by preflight's margins, its dynamic bass lift and the coherent sum of a
+    rear woofer the probe's graph mutes, and by the probe's own backoff, so the
+    fader comes down by what that passes 76 dB by: the trial reads at most 76 dB
+    there (ADR-0403 §4)."""
+    candidate = (_cardioid_trial() if trial == "rear" else
+                 replace(_room_candidate(tuning_profile), bass_extension=_boost(6.0) if trial == "lift" else {}))
+    request = ac.request_for_preset(run_preset("bass", "seat_express"), candidates=("base", "trial") if trial else ())
+    report = preflight_levels(request, ready_facts(request, applied_rear_plays=False, candidates={"trial": candidate}))
+    backoff = 6.0 if trial == "backoff" else 0.0
+    rise = report.rung_admission["run_margin_db"] + backoff
 
     result, _, windows = asyncio.run(_run_found(
         monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
-        graph_db={("candidate", "trial"): 6.0}, margin_db=6.0))
+        scope_gains={"candidate": dict.fromkeys(("woofer", "tweeter"), backoff)},
+        graph_db={("candidate", "trial"): rise}, margin_db=report.rung_admission["run_margin_db"]))
 
-    seat1 = [take for take in _takes(result.joined()) if take["selected"] and take["seat_offset_m"] == request.stops[0].pose.seat_offset_m]
-    read = {take["candidate_id"]: take["capture_integrity"]["spl"]["max_window_db_spl"] for take in seat1}
-    assert windows == [0.0, pytest.approx(-14.0, abs=0.02)] and result.status == "complete"
-    assert read == {"banked-base": pytest.approx(68.0, abs=0.02), "trial": pytest.approx(74.0, abs=0.02)}
-
-
-def test_an_ab_trial_over_a_room_boost_lands_under_76_db_at_its_first_seat(monkeypatch, tuning_profile):
-    """An A/B trial's takes on the candidates' own graphs play a 6 dB room boost.
-    A run probed on a candidate's own graph plays that boost in its probe, so it
-    adds no margin, and its first seat spot reads under 76 dB (ADR-0403 §4,
-    ADR-0385)."""
-    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
-    report = preflight_levels(request, ready_facts(request, candidates={"trial": _room_candidate(tuning_profile)}))
-    assert not report.blocking and report.rung_admission["run_margin_db"] == 0.0
-
-    result, _, _ = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
-        graph_db=dict.fromkeys((("candidate", "banked-base"), ("candidate", "trial")), 6.0),
-        margin_db=report.rung_admission["run_margin_db"]))
-
-    read = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in _takes(result.joined())
-            if take["selected"] and take["phase"] == "lateral"]
-    assert result.status == "complete" and len(read) == len(request.stops) and max(read) < 76.0
-
-
-def test_a_cardioid_ab_trial_over_a_probe_that_mutes_the_rear_lands_under_76_db(monkeypatch):
-    """A cardioid trial plays the front and rear woofers in phase where the seat
-    probe's graph mutes the rear. Preflight's margin counts their coherent sum, so
-    every take at the first seat spot reads at or under 76 dB (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
-    report = preflight_levels(request, ready_facts(request, applied_rear_plays=False,
-                                                   candidates={"trial": _cardioid_trial()}))
-    assert not report.blocking
-
-    result, _, windows = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
-        graph_db={("candidate", "trial"): _REAR_SUM_DB}, margin_db=report.rung_admission["run_margin_db"]))
-
-    first = request.stops[0].pose.place
-    read = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in _takes(result.joined())
-            if take["selected"] and (take["pose_kind"], take["seat_offset_m"]) == (first[0], first[4])]
-    assert result.status == "complete" and windows[-1] < windows[0] and max(read) <= 76.0 + 1e-6
-
-
-def test_a_room_trial_comes_down_by_its_probes_backoff_for_a_graph_at_its_fader(monkeypatch):
-    """A room trial's pair plays at the run's fader, found by the base's probe at
-    the first seat spot. That probe's graph backs off 6 dB, so a take on another
-    graph may play up to 6 dB over it, and the run comes down by that too: the
-    trial reads at most 76 dB there (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("room", "seat_express"), candidates=("base", "trial"))
-
-    result, _, windows = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"seat": 94.0},
-        scope_gains={"candidate": dict.fromkeys(("woofer", "tweeter"), 6.0)}, graph_db={("candidate", "trial"): 6.0}))
-
+    first = request.stops[0].pose.seat_offset_m
     read = {take["candidate_id"]: take["capture_integrity"]["spl"]["max_window_db_spl"]
-            for take in _takes(result.joined()) if take["selected"]}
-    assert result.status == "complete" and windows == [0.0, pytest.approx(-8.0, abs=0.02)]
-    assert read == {"banked-base": pytest.approx(68.0, abs=0.02), "trial": pytest.approx(74.0, abs=0.02)}
+            for take in _takes(result.joined()) if take["selected"] and take["seat_offset_m"] == first}
+    cut = max(0.0, rise - 1.0)
+    assert (rise > 0.0) is (trial is not None) and result.status == "complete"
+    assert windows == [0.0, pytest.approx(backoff - 9.0 - cut, abs=0.02)]
+    assert read == {"banked-base": pytest.approx(73.0 - cut, abs=0.02),
+                    **({"trial": pytest.approx(73.0 - cut + rise, abs=0.02)} if trial else {})}
 
 
 #: jts3's applied bass extension at the smoke test (#6113): a 14.78 dB reserve (ADR-0359).
@@ -1936,38 +1897,51 @@ _JTS3_BASS = {"linkwitz_transform": {"source_hz": 112.8, "source_q": 1.23, "targ
               "delta_highpass_hz": 30.0, "detector_lowpass_hz": 120.0, "compressor_threshold_dbfs": -15.0}
 
 
+@pytest.mark.parametrize(("program", "layout", "lands_db"), [
+    ("speaker", "speaker_mark", 79.0), ("room", "seat_express", 73.0), ("rear", "rear_express", 79.0),
+    ("room", "room_quick", 79.0)],
+    ids=["over a timing take", "at the seats", "at the mark's spots", "on the arm"])
 @pytest.mark.parametrize(("box", "over_db"), [
     ("a two-way's room boost", {"banked-base": 6.0, "trial": 6.0}),
     ("a cardioid tune", {"banked-base": 3.32 + _REAR_SUM_DB, "trial": 3.32 + _REAR_SUM_DB}),
-    ("jts3's bass and rear seed", {"banked-base": 14.78 + _REAR_SUM_DB, "trial": _REAR_SUM_DB})])
-def test_over_a_timing_take_each_candidate_graph_probes_itself(monkeypatch, box, over_db):
-    """A speaker trial's timing take finds the run's fader and plays at its own
-    probe's level, with no margin cut, however much louder the candidates' graphs
-    play: jts3's applied tune adds its 14.78 dB bass reserve and a rear seed, and
-    its trial keeps the tweeter's trim. Each candidate graph's first take at the
-    mark probes that graph, so every take of the pair lands at 80 ± 2 dB (ADR-0408)."""
-    request = ac.request_for_preset(run_preset("speaker", "speaker_mark"), candidates=("base", "trial"))
+    ("jts3's bass and rear seed", {"banked-base": 14.78 + _REAR_SUM_DB, "trial": _REAR_SUM_DB}),
+    ("a trial's bass boost", {"banked-base": 0.0, "trial": 14.2})])
+def test_each_candidate_graph_levels_its_own_set(monkeypatch, program, layout, lands_db, box, over_db):
+    """Each candidate graph's summed takes are one set, however much louder one
+    graph plays than the other: its first take probes that graph from −60 dBFS at
+    the output and lands 1 dB under its run level, 80 ± 2 dB at the mark or 74 ± 2
+    dB at a seat, and its other spots carry that level. So no take of either graph
+    plays over the level a run's probed take lands at, and rule A cuts no fader: a
+    run with a timing take holds the fader that take's probe finds, and any other
+    run the probe fader (ADR-0408, ADR-0423)."""
+    selected = run_preset(program, layout)
+    request = ac.request_for_preset(selected, candidates=("base", "trial"), mover=selected.mover or ac.MOVER_HUMAN)
     trial = replace(_cardioid_trial(), role_attenuations_db={"woofer": 0.0, "tweeter": -25.2})
     report = preflight_levels(request, ready_facts(request, applied_bass_extension=_JTS3_BASS, applied_rear_plays=True,
                                                    candidates={"trial": trial}))
-    assert not report.blocking and report.rung_admission["run_margin_db"] == 0.0
+    assert not report.blocking and report.rung_admission.get("run_margin_db", 0.0) == 0.0
 
-    result, _, _ = asyncio.run(_run_found(
-        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -25.0}, chain_db={"bearing": 110.0},
-        graph_db={("candidate", name): db for name, db in over_db.items()},
-        margin_db=report.rung_admission["run_margin_db"]))
+    result, _, windows = asyncio.run(_run_found(
+        monkeypatch, request, caps={"woofer": 0.0, "tweeter": -25.0}, chain_db={"bearing": 110.0, "seat": 104.0},
+        graph_db={("candidate", name): db for name, db in over_db.items()}))
 
     takes = _takes(result.joined())
     timing = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in takes
               if take["selected"] and take["phase"] == "timing"]
-    pair = [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in takes
-            if take["selected"] and take["phase"] == "lateral"]
-    probed = sorted(take["candidate_id"] for take in takes
-                    if take["phase"] == "lateral" and is_level_probe(ExcitationProgram.from_dict(take["program"])))
-    assert result.status == "complete" and probed == ["banked-base", "trial"]
-    assert result.to_dict()["honoured"]["retakes"] == 0
-    assert timing == [pytest.approx(79.0)] and len(pair) == len(request.stops)
-    assert all(78.0 <= db <= 82.0 for db in pair), pair
+    sets = {name: [take for take in takes if take["phase"] == "lateral" and take["candidate_id"] == name]
+            for name in over_db}
+    probes = {name: [ExcitationProgram.from_dict(take["program"]) for take in rows
+                     if is_level_probe(ExcitationProgram.from_dict(take["program"]))] for name, rows in sets.items()}
+    kept = {name: [take for take in rows if take["selected"]] for name, rows in sets.items()}
+    assert result.status == "complete" and result.to_dict()["honoured"]["retakes"] == 0
+    assert windows == ([0.0, windows[-1]] if request.takes_timing else [0.0])
+    assert timing == ([pytest.approx(79.0)] if request.takes_timing else [])
+    for name, rows in kept.items():
+        probe, = probes[name]
+        assert probe.stimulus_segments()[0].effective_peak_dbfs == pytest.approx(-60.0)
+        assert len(rows) == len(request.stops) // 2 and len({take["level"]["stimulus_dbfs"] for take in rows}) == 1
+        assert [take["capture_integrity"]["spl"]["max_window_db_spl"] for take in rows] == pytest.approx(
+            [lands_db] * len(rows), abs=0.02), (name, box)
 
 
 @pytest.mark.parametrize(("chain_db", "assessed", "placements", "reason"), [
@@ -2014,7 +1988,8 @@ def test_a_close_set_after_the_run_probe_plays_only_at_its_own_level(monkeypatch
     """At the fader the run found, a close set still plays its own probe from
     −60 dBFS at the output and then its takes at the level it solves, never at
     the run's fader; no view reads a probe's set (ADR-0403 §4)."""
-    request = ac.request_for_preset(run_preset("rear/express", "rear_behind"), level=ac.LevelPolicy(level_db=0.0))
+    request = ac.AngleCaptureRequest((_FADER_MARK, _BEHIND_SET), program="rear/express",
+                                     level=ac.LevelPolicy(level_db=0.0))
 
     result, plays, windows = asyncio.run(_run_found(
         monkeypatch, request, caps={"woofer": 0.0, "tweeter": -6.0}, chain_db={"bearing": 100.0, "behind": 110.0}))
@@ -2035,7 +2010,7 @@ def test_a_repeat_that_keeps_drifting_is_retaken_only_for_its_retries(web, retri
     """A level-drift retake spends one of the pose's retries in a web run and in
     the bass ladder alike, so a repeat that keeps drifting is left unmeasured
     once they are spent, never retaken without end (#5722)."""
-    result, _, selected, _ = _run_levelled(replace(_walk([0]), repeats=2, retries_per_pose=retries),
+    result, _, selected, _ = _run_levelled(replace(_ladder_walk([0]), repeats=2, retries_per_pose=retries),
                                            (70.0,) + (73.0,) * (retries + 1), web=web)
 
     assert [row["reason"] for row in result.not_measured] == [REASON_LEVEL_DRIFT_AT_SESSION_GAIN]
@@ -2072,8 +2047,8 @@ def test_a_redo_at_a_driver_pose_places_it_again_and_never_ends_the_round(retrie
 def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
         monkeypatch, driver, repeats, retries, redo_first, left, retakes, reason):
     """A redo during a pose's last take plays the pose again from its start, and
-    each take it plays again is free (#5722): a far-field redo costs its own retry,
-    and a driver's pose starts over with its retries (ADR-0361). The earlier takes
+    each take it plays again is free (#5722): a redo at its run's fader costs its own
+    retry, and a driver's pose starts over with its retries (ADR-0361). The earlier takes
     stay banked, but neither kept nor the level the new placement is held to, so
     a placement that moved the level is not refused as drift. A redo before any
     take played only asks for the placement again; one the pose cannot pay for
@@ -2082,7 +2057,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(
     request = (ac.request_for_preset(Preset("nearfield/each", (
         Pose(0, 0, repeats=repeats, kind="close", distance_m=0.015, driver="woofer"),),
         purposes=("reference",), stimulus=NEAR_FIELD), retries_per_pose=retries) if driver else
-        replace(_walk([0]), repeats=repeats, retries_per_pose=retries))
+        replace(_ladder_walk([0]), repeats=repeats, retries_per_pose=retries))
     placements = [(66.0, *(80.0,) * repeats)] * 2 if driver else [(70.0,) * repeats, (75.0,) * repeats]
 
     result, _, selected, gate = _run_levelled(request, placements[0] + placements[1],
@@ -2265,8 +2240,7 @@ async def test_bass_levels_keep_one_hold_and_finish_each_pose(tmp_path, box, par
     with its probe, announces the run (ADR-0417)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
-    request = _walk([0, 20], candidates=("base",))
-    request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
+    request = _ladder_walk([0, 20], candidates=("base",))
     ladder = level_ladder(request, ready_facts(request))
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     last = 2 * len(LEVEL_OFFSETS_DB)
@@ -2324,9 +2298,7 @@ async def test_a_ladder_rungs_operator_retake_plays_in_place_then_its_other_take
     and the rung's other takes still play (#6113 bug 10, trial `e1be550bff88`)."""
     from tests.test_correction_crossover_v2_wired import _run_door  # lazy: fixture module imports this module
 
-    request = _walk([0], candidates=("base",))
-    request = replace(request, repeats=2, stops=tuple(replace(stop, purpose="bass", purposes=("bass",))
-                                                      for stop in request.stops))
+    request = replace(_ladder_walk([0], candidates=("base",)), repeats=2)
     ladder = level_ladder(request, ready_facts(request))
     fakes, gate, manifests = FakeSeams(), AnsweredGate(), []
     packet = RoundPacket(RunManifest("ladder", _Store(fakes.records)), ladder.to_dict())
@@ -2363,8 +2335,7 @@ async def test_every_ladder_position_holds_with_its_count(tmp_path, box, rung_sp
             sizes.append(int(entry.screen[POSITION_BATCH_SIZE_KEY]))
             super().gate(index, attempt, entry)
 
-    request = _walk([0, 20, 40], candidates=("base",))
-    request = replace(request, stops=tuple(replace(stop, purpose="bass", purposes=("bass",)) for stop in request.stops))
+    request = _ladder_walk([0, 20, 40], candidates=("base",))
     ladder = level_ladder(request, ready_facts(request))
     fakes, gate, sizes, manifests = FakeSeams(), CountingGate(), [], []
     gate.publish({"measurements_per_pose": [2, 2, 2]})
@@ -2566,7 +2537,8 @@ def test_the_preview_times_every_play_whole_and_announces_the_run_once():
     captures = plan_run.prepare_plan_captures(request, roles_bands=context.roles_bands)
     compose = predictive_program_for_spec(context)
     first, *rest = (capture.spec for capture in captures)
-    plays = [compose(replace(first, level_probe=True)), compose(replace(first, courtesy_prelude=True)), *map(compose, rest)]
+    plays = [compose(replace(first, level_probe=True)), compose(replace(first, level_probe=False, courtesy_prelude=True)),
+             *map(compose, rest)]
 
     facts = plan_run.preview_schedule(request, captures, context)
 

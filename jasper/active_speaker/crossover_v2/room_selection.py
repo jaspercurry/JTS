@@ -23,7 +23,7 @@ from .journey import PHASE_LATERAL
 from .pose_curve import WINDOW_UNGATED
 from .position_cycle import parse_curve_magnitude, take_curve
 from .record_index import Measurement, record_path
-from .measurement_context import capture_basis
+from .measurement_context import capture_basis, shaped_capture_basis
 from .round_captures import doc_pose_key
 
 REFUSE_ROOM_SELECTION = "room_capture_selection_required"
@@ -120,7 +120,8 @@ def select_seat_takes(
     for row, record, take in analyzed_purpose_takes(bundle_dir, purposes=purposes, take_ids=take_ids):
         row_basis = dict(basis) if basis is not None else capture_basis(record)
         key = "manifest" if take_ids is not None else json_fingerprint(row_basis)
-        bases[key] = row_basis
+        # Each graph's set levels itself, so medians compare by its stimulus's shape (ADR-0423).
+        bases[key] = shaped_capture_basis(record, row_basis)
         groups.setdefault(key, []).append((row, record, take))
     matches = [
         key for key, rows in groups.items()

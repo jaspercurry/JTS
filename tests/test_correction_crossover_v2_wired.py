@@ -78,7 +78,7 @@ from jasper.active_speaker.crossover_v2 import wired_stimulus as core_capture
 from jasper.active_speaker.crossover_v2 import summed_alignment
 
 from tests.test_wired_capture import UMIK2_USB_ID, _Sensitivity, _make_card
-from tests.test_plan_run import AnsweredGate, _Store, _walk
+from tests.test_plan_run import AnsweredGate, _Store, _ladder_walk, _walk
 from tests.test_preflight import ready_facts
 from tests.engine_twin import FakeSeams as EngineSeams
 from jasper.web.correction_runtime import refusal_envelope
@@ -876,7 +876,7 @@ async def test_host_retake_after_budget_exhaustion_keeps_its_code(monkeypatch, t
 
     runner, session, _, manifest, _, _ = _plan_host(
         monkeypatch, tmp_path, box, gate=RetakingGate(), signals=signals,
-        request=_walk([0], ("fp-a", "fp-b", "fp-c")),
+        request=_ladder_walk([0], ("fp-a", "fp-b", "fp-c")),
     )
     verdicts = iter([
         *(refusal_copy.TakeVerdict(False, "snr_floor", next="fix_and_retake", charge="operator") for _ in range(3)),
@@ -971,7 +971,8 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
 
     signals = plan_run.RunSignals()
     gate = AnsweredGate()
-    runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate, signals=signals)
+    runner, session, fakes, manifest, _, _ = _plan_host(monkeypatch, tmp_path, box, gate=gate, signals=signals,
+                                                        request=_ladder_walk([0, 20]))
     def assessed(*args, **kwargs):
         if len(gate.grants) == 1:
             signals.retake.set()
