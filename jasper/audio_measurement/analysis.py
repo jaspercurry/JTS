@@ -141,6 +141,16 @@ def crossover_null_depth_db(
     return (lower_shoulder + upper_shoulder) / 2.0 - at_fc
 
 
+def fractional_octave_windows(
+    freqs: np.ndarray, centers: np.ndarray, fraction: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The ``[lo, hi)`` spans of ``freqs`` that :func:`smooth_fractional_octave` averages
+    around each positive ``centers`` frequency: its 1/``fraction``-octave box, at least one bin."""
+    factor = 2.0 ** (1.0 / (2.0 * fraction))
+    lo_idx = np.searchsorted(freqs, centers / factor, side="left")
+    return lo_idx, np.maximum(lo_idx + 1, np.searchsorted(freqs, centers * factor, side="right"))
+
+
 def smooth_fractional_octave(
     freqs: np.ndarray,
     magnitude_db: np.ndarray,
@@ -156,7 +166,6 @@ def smooth_fractional_octave(
         )
     # dB -> linear power for averaging; dB-mean would over-emphasize deep nulls.
     power = 10.0 ** (magnitude_db / 10.0)
-    factor = 2.0 ** (1.0 / (2.0 * fraction))
 
     smoothed = np.empty_like(power)
     n = len(freqs)
@@ -165,11 +174,7 @@ def smooth_fractional_octave(
     smoothed[~positive] = power[~positive]
 
     if finite and np.any(positive):
-        positive_freqs = freqs[positive]
-        lo_idx = np.searchsorted(freqs, positive_freqs / factor, side="left")
-        hi_idx = np.searchsorted(freqs, positive_freqs * factor, side="right")
-        lo_idx = np.maximum(0, lo_idx)
-        hi_idx = np.maximum(lo_idx + 1, np.minimum(n, hi_idx))
+        lo_idx, hi_idx = fractional_octave_windows(freqs, freqs[positive], fraction)
 
         # Prefix sums reduce every power mean to two indexed reads and a subtraction.
         prefix_dtype = np.result_type(power.dtype, np.float64)
@@ -212,17 +217,13 @@ def smooth_fractional_octave(
     if not finite:
         # Prefix subtraction can contaminate windows after NaN/+inf or overflow; scalar fallback.
         for i in range(n):
-            f = freqs[i]
-            if f <= 0:
+            if freqs[i] <= 0:
                 smoothed[i] = power[i]
                 continue
-            lower = f / factor
-            upper = f * factor
-            lo_idx = int(np.searchsorted(freqs, lower, side="left"))
-            hi_idx = int(np.searchsorted(freqs, upper, side="right"))
-            lo_idx = max(0, lo_idx)
-            hi_idx = max(lo_idx + 1, min(n, hi_idx))
-            smoothed[i] = float(np.mean(power[lo_idx:hi_idx]))
+            # One center per search: numpy seeds a multi-key search from the previous key's
+            # answer, which disagrees with a fresh search once a NaN unsorts ``freqs``.
+            lo, hi = fractional_octave_windows(freqs, freqs[i:i + 1], fraction)
+            smoothed[i] = float(np.mean(power[lo[0]:hi[0]]))
 
     # Clamp before log to avoid -inf for any all-zero windows.
     return 10.0 * np.log10(np.maximum(smoothed, 1e-12))
