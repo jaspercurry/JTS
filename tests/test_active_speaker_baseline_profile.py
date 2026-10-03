@@ -158,10 +158,10 @@ def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
 
 
 @pytest.mark.parametrize("changed", [False, True])
-def test_noop_draft_save_preserves_source_identity(tmp_path, changed):
+def test_noop_draft_save_preserves_applied_identity(tmp_path, changed):
     topology = _dual_apple_topology()
     path = tmp_path / "draft.json"
-    sources = []
+    drafts, identities = [], []
     research, inputs = current_research(topology, _research())
     for index in range(2):
         draft = save_design_draft(
@@ -169,12 +169,12 @@ def test_noop_draft_save_preserves_source_identity(tmp_path, changed):
             operator_inputs={**inputs, "notes": "edited" if changed and index else "same"},
             created_at=f"2026-06-14T12:0{index}:00Z",
         )
-        sources.append(baseline_record._source_payload(
-            topology, draft, build_crossover_preview(draft),
-        ))
-    first, second = sources
-    assert first["design_draft_updated_at"] != second["design_draft_updated_at"]
-    assert (first["fingerprint"] == second["fingerprint"]) is not changed
+        drafts.append(draft)
+        identities.append(declared_profile_fixture(
+            topology, design_draft=draft, config_path=tmp_path / "active_speaker_baseline.yml",
+        )["candidate_fingerprint"])
+    assert drafts[0]["updated_at"] != drafts[1]["updated_at"]
+    assert (identities[0] == identities[1]) is not changed
 
 
 def test_an_applied_profile_without_its_snapshot_refuses_by_that_field():
