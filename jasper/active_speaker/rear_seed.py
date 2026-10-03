@@ -44,7 +44,9 @@ ASSUMPTIONS = (
 
 def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredGeometry | None,
               views: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The rear stage's starting document, or the gap that names each declaration it lacks.
+    """The rear stage's starting document, or the gap that says why there is none:
+    ``rear_seed_geometry_undeclared`` names each declaration it lacks, and ``rear_seed_band_empty``
+    a front panel at or nearer the wall than two thirds of the woofer spacing.
 
     ``views`` are the round's rear views; a pair view's reading at the mark levels the rear woofer to the front.
     """
