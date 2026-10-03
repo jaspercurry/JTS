@@ -828,7 +828,7 @@ async def test_run_failure_without_result_keeps_detail_and_restore(monkeypatch, 
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("check_passes", [False, True])
 async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path, box, caplog, repeats, check_passes):
-    checks = iter([False, False, check_passes])
+    checks = iter([False, check_passes])
     flow = FlowSeams(check=lambda program: _check_analysis(program, snr_floor_ok=next(checks)))
     fakes = EngineSeams()
     request = AngleCaptureRequest(stops=(AngleStop(Pose(0, 0), "per_driver", purpose="speaker"),), repeats=repeats,
@@ -855,9 +855,10 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
     assert manifest.reason == ("" if check_passes else "snr_floor")
     assert bool(conductor._gain_plan_db) is check_passes
     events = event_field_maps(caplog, "correction.crossover_v2_authorized")
-    expected = [("check", a, a - 1) for a in range(1, 4)]
+    # Each CHECK reads the fixture's one peak, so a second refusal ends the run (ADR-0428).
+    expected = [("check", a, a - 1) for a in range(1, 3)]
     if check_passes:
-        expected += [(phase, 1, 2) for phase in ["timing"] * repeats + ["measure"] * repeats]
+        expected += [(phase, 1, 1) for phase in ["timing"] * repeats + ["measure"] * repeats]
     assert [(e["phase"], int(e["attempt"]), int(e["extra_used"])) for e in events] == expected
     assert len(programs) == manifest.takes_measured == len(expected)
     assert fakes.graph.restores == 1

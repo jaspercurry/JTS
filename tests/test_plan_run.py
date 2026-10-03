@@ -284,6 +284,43 @@ def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charg
     assert result.not_measured[0]["reason"] == REASON_DRIFT_BASELINES_DISAGREE
 
 
+def _refused(fault, next_action="fix_and_retake", **evidence):
+    """A take refused with ``fault``, its readings in its evidence."""
+    return TakeVerdict(False, fault, evidence=evidence, next=next_action,
+                       charge="operator" if next_action == "fix_and_retake" else "speaker",
+                       next_gain_db=-20.0 if next_action == "retake_louder" else None)
+
+
+_ALIKE, _KEPT, _DRIFT = REASON_ANCHOR_AMBIGUOUS, TakeVerdict(True), capture_dispatch.SAME_POSE_DRIFT_DB
+
+
+@pytest.mark.parametrize("verdicts, unmeasured", [
+    ([_refused(_ALIKE, peak_dbfs=-30.0), _refused(_ALIKE, peak_dbfs=-30.0 - _DRIFT), _KEPT], [_ALIKE]),
+    ([_refused(_ALIKE, peak_dbfs=-30.0), *[_refused(_ALIKE, peak_dbfs=-30.5 - _DRIFT)] * 2, _KEPT], [_ALIKE]),
+    ([_refused(_ALIKE, peak_dbfs=-30.0), *[_refused(REASON_DRIFT_BASELINES_DISAGREE, "retake_same", peak_dbfs=-30.0)] * 2,
+      _KEPT], [REASON_DRIFT_BASELINES_DISAGREE]),
+    ([*[_refused(REASON_LEVEL_OFF_TARGET, "retake_louder", peak_dbfs=-30.0)] * 3, _KEPT], [REASON_LEVEL_OFF_TARGET]),
+    ([_refused(_ALIKE, level_db_spl=70.0, peak_dbfs=-30.0), _refused(_ALIKE, level_db_spl=71.0, peak_dbfs=-20.0), _KEPT],
+     [_ALIKE]),
+    ([_refused(_ALIKE, peak_dbfs=-30.0), TakeVerdict(False, next="retake_louder", charge="replay", next_gain_db=-20.0),
+      _refused(_ALIKE, peak_dbfs=-30.0), _KEPT], [_ALIKE]),
+    ([_refused(_ALIKE, peak_dbfs=-30.0), _KEPT, _refused(_ALIKE, peak_dbfs=-30.0), _KEPT], []),
+], ids=["alike", "reading-moved", "other-fault", "level-retakes", "level-reading", "replay-between", "kept-between"])
+def test_a_placement_stops_after_two_takes_refused_alike(monkeypatch, verdicts, unmeasured):
+    """A take refused for a retake at its level, with the fault of the placement's last
+    such refusal and a reading within ``SAME_POSE_DRIFT_DB`` of it (its level reading,
+    else its peak), spends the placement as its spent extras do (ADR-0428). A moved reading, another
+    fault, a level retake or a kept take resets the pair; a replay is free and does not.
+    Each row is the verdict of every take its placement's two configs play."""
+    answers = iter(verdicts)
+    monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(answers))
+
+    result, fakes = asyncio.run(_run_gated(_walk([0], ("fp-a", "fp-b")), gate=AnsweredGate()))
+
+    assert len(fakes.play.calls) == len(verdicts)
+    assert [row["reason"] for row in result.not_measured] == unmeasured
+
+
 def test_fix_and_retake_needs_a_fresh_same_pose_grant(monkeypatch):
     verdicts = iter([TakeVerdict(False, REASON_ANCHOR_AMBIGUOUS, next="fix_and_retake", charge="operator"), TakeVerdict(True), TakeVerdict(True)])
     monkeypatch.setattr(plan_run, "assess", lambda *a, **k: next(verdicts))
@@ -1993,7 +2030,7 @@ def test_a_close_set_after_the_run_probe_plays_only_at_its_own_level(monkeypatch
 
 
 @pytest.mark.parametrize("web", [True, False], ids=["web", "ladder"])
-@pytest.mark.parametrize("retries", [0, 2])
+@pytest.mark.parametrize("retries", [0, 1])  # past one, a second drift to one reading stops it first (ADR-0428)
 def test_a_repeat_that_keeps_drifting_is_retaken_only_for_its_retries(web, retries):
     """A level-drift retake spends one of the pose's retries in a web run and in
     the bass ladder alike, so a repeat that keeps drifting is left unmeasured
