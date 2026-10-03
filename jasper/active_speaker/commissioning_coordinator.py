@@ -48,11 +48,10 @@ def next_program_action(
     program = next((name for name in programs if name not in IN_ROOM_OPTIONS and not layers[name]
                     or name == PURPOSE_ROOM and upstream_changed), None)
     if program is None:
-        # Bass added later is designed on the in-room round's set and trialled, with no new round (ADR-0437).
+        # Bass added later is designed on the in-room round's set and trialled, with no new round (ADR-0441).
         bass = recent_rounds.get(PURPOSE_BASS) or {}
         return {"id": None, "enabled": False, "program": None, "label": "Tuning complete", "reason_code": "complete",
-                **({"round_dir": bass["round_dir"], "set_id": bass["set_id"]}
-                   if bass.get("set_id") and not bass.get("stale") else {})}
+                **({"round_dir": bass["round_dir"], "set_id": bass["set_id"]} if bass.get("set_id") else {})}
     round_ = recent_rounds.get(program) or {}
     # Room is designed on a current set that played bass and room off; another program's round need only be current.
     copies = round_.get("set_id") if program == PURPOSE_ROOM else not layers[program] and round_ and not round_.get("stale")
