@@ -37,15 +37,23 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
    later MEASURE take composes at the raised gain, at whatever pose. Off the mark with no later MEASURE
    take, the raise is moot. The raise rule, its caps and its SPL bound do not change.
 3. **The last take at the mark is retaken, as before.** A take at the mark with no later MEASURE take
-   there is retaken at its raise: the one take of `tournament/express` and the fourth mark take of
-   `baseline_express`. So is a take whose magnitude also fails. If the newest take at the mark were a
-   short take, [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) would
-   read the saved timing as `not_comparable` (`snr_short`) and ask for `measure_timing`, a new round.
-   That still happens when the later take at the mark never lands (the operator presses Complete, its
-   placement is spent, or the run stops): `raise_rides_next` reads the plan, not what lands, so the
-   kept short take is then the newest there, in a run that is partial anyway. The owner may change
-   either rule.
-4. **A set keys on its stimulus's shape.** A run-manifest set keys on the capture fields that
+   there is retaken at its raise, when that raise can lift it to its floor (§4): the one take of
+   `tournament/express` and the fourth mark take of `baseline_express`. So is a take whose magnitude
+   also fails. If the newest take at the mark were a short take,
+   [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) would read the
+   saved timing as `not_comparable` (`snr_short`) and ask for `measure_timing`, a new round. That still
+   happens when the later take at the mark never lands (the operator presses Complete, its placement is
+   spent, or the run stops): `raise_rides_next` reads the plan, not what lands, so the kept short take
+   is then the newest there, in a run that is partial anyway. The owner may change either rule.
+4. **A raise its caps hold under the shortfall is not replayed.** In the same room, a replay reads
+   each role's alignment SNR higher by its raise. So when the driver's ceiling or the SPL headroom
+   holds a take's raise under its own shortfall in any role, a replay at that raise cannot reach the
+   floor and could not change the answer, the rule of
+   [ADR-0428](0428-a-placement-stops-after-two-attempts-with-the-same-fault-and-reading.md). The take
+   is kept with its evidence, and the host still rearms by the capped raise. This removes that take's
+   replays, which raised it 0.18, 0.01 or about 0 dB at a time until its placement was spent; where
+   they would have spent it, the run goes on at the capped raise (the first Hearing case below).
+5. **A set keys on its stimulus's shape.** A run-manifest set keys on the capture fields that
    [ADR-0408](0408-over-a-timing-take-each-candidate-graph-probes-its-own-graph.md) compares two takes
    on (`measurement_context.SHAPE_FIELDS`: the side, the capture device, the fader `level_db` and
    `stimulus_shape_id`), with the graph, role and calibration fields as before
@@ -54,12 +62,12 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
    its own level. This keeps [ADR-0299](0299-one-evidence-manifest-per-run.md)'s rule that "Sets group
    one configuration and capture condition across poses" (line 21), with a stimulus's level read as no
    part of that condition.
-5. **The level-drift reference keeps the level-bearing id.** `RunManifest.level_observation` still
+6. **The level-drift reference keeps the level-bearing id.** `RunManifest.level_observation` still
    finds a take's reference by its fader and its `stimulus_id`. The reference is one broadband
    loudest-window level, from whichever driver plays loudest, so subtracting one driver's raise from it
    could falsely trip the 2 dB same-pose bound. So the first take after a raise has no drift
    reference, as a replay has none today.
-6. **Readers follow the set key.** The near-field level mismatch (`driver_level_mismatches`) reads
+7. **Readers follow the set key.** The near-field level mismatch (`driver_level_mismatches`) reads
    each take's own gain and fader, and `speaker_fit` matches a take to its set by shape.
 
 ### What this amends
@@ -67,7 +75,7 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
 - ADR-0417 §4, lines 21–23: "A take keys its run-manifest set and compares with other takes on the
   stimulus it measures: `program.take_stimulus_id`, its program's `stimulus_id` less the prelude, and
   the stimulus shape likewise." A take now keys its set on the shape, which is prelude-free and
-  gain-free (§4 above). Its drift reference and its record's `stimulus_id` still use
+  gain-free (§5 above). Its drift reference and its record's `stimulus_id` still use
   `program.take_stimulus_id`.
 
 ## Consequences
@@ -96,9 +104,15 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
   take at 20° only, the run plays the plays of the run before less the first take's replay, each at its
   bearing and its gains. With one take at the mark (`tournament/express`), or a take at the mark and
   then one at 20°, the run is unchanged. A kept take shares each driver's set with the takes after it.
+  `test_alignment_only_retry_uses_driver_and_spl_headroom` pins §4: a take whose raise its caps hold
+  under its 6 dB shortfall is kept, one whose raise can reach the floor is retaken, and one whose
+  magnitude fails is retaken. On the same executor run (a scratch harness, not committed), a
+  `tournament/express` take whose SPL headroom held its raise to 0.18 dB against a 2 dB shortfall
+  played twice more and ended the run `retries_spent`; it is now kept, and the run completes.
 - On a two-way speaker a MEASURE take plays six sweeps and the timing take one. A `speaker/mark` round
   whose first take reads short plays 13 sweeps, not 19. A replay now follows only the last take at the
-  mark, so the replays a round can add, one for each MEASURE take, fall from 12 sweeps to 6 on
+  mark, at a raise that can reach its floor, so the replays a round can add, one for each MEASURE take,
+  fall from 12 sweeps to 6 on
   `speaker/mark`, from 48 to 6 on `baseline_express` (49 clean) and from 96 to 6 on `baseline_full`
   (97 clean). Each replay saved is also a `speaker` charge saved from its placement's two extra takes
   ([ADR-0422](0422-a-placement-gets-two-extra-takes-and-a-probe-at-its-ceiling-stops.md)).

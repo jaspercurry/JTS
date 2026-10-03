@@ -371,7 +371,7 @@ def test_effective_caps_become_digital_gain_ceilings(cap, volume, expected):
     verdict = cd.assess(_analysis(driver_responses=(response,)), phase="measure", gain_db={"tweeter": -50},
                         gain_ceiling_db={"tweeter": -50}, caps_dbfs=caps, session_volume_db=volume,
                         spl_stop_db_spl=85, spl={"max_window_db_spl": 30, "ceiling_db_spl": 85})
-    assert verdict.next_gain_db == (pytest.approx(expected) if expected is not None else None)
+    assert verdict.evidence.get("next_gain_db.tweeter") == (pytest.approx(expected) if expected is not None else None)
 
 
 @pytest.mark.parametrize("cap,volume,session_headroom,spl_headroom,magnitude,raise_db,capped_by,residual", [
@@ -401,6 +401,11 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     residual,
     stop,
 ):
+    """A take whose magnitude passes asks only its alignment's raise, inside the driver's
+    ceiling and the SPL headroom its loudest window leaves. A raise those caps hold under
+    the take's 6 dB shortfall cannot lift it to its floor, so the take is kept with the
+    raise in its evidence; a raise that can is retaken. A take whose magnitude fails is
+    retaken at any raise (ADR-0433)."""
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
         noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
@@ -412,7 +417,7 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
         gain_ceiling_db={"woofer": -30 + session_headroom}, caps_dbfs={"woofer": cap} if cap is not None else {},
         session_volume_db=volume, spl_stop_db_spl=stop,
         spl={"max_window_db_spl": stop - 3 - spl_headroom if spl_headroom is not None else None, "ceiling_db_spl": 85})
-    retaken = bool(raise_db)
+    retaken = bool(raise_db) and (magnitude == "insufficient" or raise_db >= 6)
     assert verdict.ok and verdict.fault is None
     assert (verdict.next, verdict.charge) == (("retake_louder", "speaker") if retaken else ("accept", "none"))
     assert verdict.next_gain_db == (pytest.approx(-30 + raise_db) if retaken else None)
@@ -428,18 +433,19 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     assert verdict.evidence.get("alignment.woofer.alignment_snr_residual_shortfall_db") == (pytest.approx(residual) if residual is not None else None)
 
 
-@pytest.mark.parametrize("cap,peak,raise_db,noise_drop_db,capped_by,after", [
-    (-37.99, 62, 12, 0, None, 0), (-45.99, 62, 4, 0, "driver_cap", 2),
-    (-37.99, 79, 3, 0, "spl_stop", 3), (-45.99, 62, 4, 3, None, 0),
+@pytest.mark.parametrize("takes,cap,peak,raise_db,noise_drop_db,capped_by,after", [
+    (1, -37.99, 62, 12, 0, None, 0),
+    (2, -37.99, 62, 12, 0, None, 0), (2, -45.99, 62, 4, 0, "driver_cap", 2),
+    (2, -37.99, 79, 3, 0, "spl_stop", 3), (2, -45.99, 62, 4, 3, None, 0),
 ])
-@pytest.mark.parametrize("takes", [1, 2], ids=["last-take-replays", "raise-rides-the-next-take"])
 async def test_round_retake_banks_played_levels_and_measured_shortfalls(
         takes, cap, peak, raise_db, noise_drop_db, capped_by, after):
-    """The last MEASURE take at the mark is retaken at its raise, and the
-    retake's record banks its alignment levels with the shortfall its stop's
-    first attempt measured before it (ADR-0383 §4, ADR-0395). With a later
-    MEASURE take there, the first is kept and the next plays at the raise the
-    retake would have played; its record banks its own shortfall (ADR-0433)."""
+    """The last MEASURE take at the mark is retaken at a raise that can lift it
+    to its floor, and the retake's record banks its alignment levels with the
+    shortfall its stop's first attempt measured before it (ADR-0383 §4,
+    ADR-0395). With a later MEASURE take there, the first is kept and the next
+    plays at the raise the retake would have played; its record banks its own
+    shortfall (ADR-0433)."""
     def measure(program):
         band = snr_policy.band_snr_verdicts(
             decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000],

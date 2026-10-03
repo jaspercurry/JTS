@@ -396,10 +396,16 @@ def _assess_recording(
         max_raise_db=headroom or 0.0,
     )
     evidence.update(levels)
+
+    def short_at_raise(role: str) -> bool:
+        # In the same room, a replay reads a role's alignment SNR higher by its raise.
+        shortfall = finite_float(levels.get(f"alignment.{role}.alignment_snr_shortfall_db")) or 0.0
+        return shortfall > (adjusted[role] - gains[role] if role in adjusted else 0.0)
+
     if adjusted:
         raised = {**evidence, **{f"next_gain_db.{role}": gain for role, gain in adjusted.items()}}
-        if raise_rides_next and alignment_only:
-            # The raise rides the run's later takes, so this one is kept (ADR-0433).
+        if alignment_only and (raise_rides_next or any(short_at_raise(r.role) for r in analysis.driver_responses)):
+            # The raise rides the run's later takes, or a replay at it could not reach the floor (ADR-0433).
             return replace(verdict, evidence=raised)
         return replace(verdict, next="retake_louder", next_gain_db=program_peak(adjusted), charge="speaker",
                        evidence=raised)
