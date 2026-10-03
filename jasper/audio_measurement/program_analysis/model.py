@@ -65,6 +65,12 @@ MAX_DRIFT_PPM = 500.0
 # also routes a failed sweep schedule to locate failure instead of a glitch retry.
 SWEEP_LOCATE_CONFIDENCE_FLOOR = 0.3
 
+# A level probe's burst is heard at its anchor when its best match within SEGMENT_SEARCH_S
+# of it stands this many times over its best match BURST_FAR_LAGS_S (s) away, above the
+# room's modal tails; ADR-0442 holds the measured margins.
+BURST_PRESENCE_RATIO = 3.0
+BURST_FAR_LAGS_S = (0.1, 0.5)
+
 # How many TIMES more present the winning anchor hypothesis's evidence must
 # be than its runner-up's before `_resolve_anchor` may call it RESOLVED.
 # Cannot-discriminate readings measure 1.07-12.4 (CHECK's twin 3.5). The

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal as scipy_signal
+from scipy.fft import next_fast_len
 
 from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ
 
@@ -169,6 +170,13 @@ def _bandlimit(ir: np.ndarray, sample_rate: int, lo_hz: float, hi_hz: float) -> 
     mask = (freqs >= lo_hz) & (freqs <= hi_hz)
     spectrum = spectrum * mask
     return np.fft.irfft(spectrum, n=n)
+
+
+def _bandlimit_padded(x: np.ndarray, sample_rate: int, lo_hz: float, hi_hz: float) -> np.ndarray:
+    """:func:`_bandlimit` over ``x`` zero-padded to a fast FFT length, cut back to its own.
+    Sweep lengths carry large prime factors, which put an unpadded FFT on its slow path."""
+    padded = np.pad(x, (0, next_fast_len(x.size, real=True) - x.size))
+    return _bandlimit(padded, sample_rate, lo_hz, hi_hz)[:x.size]
 
 
 def _gcc_correlation(
