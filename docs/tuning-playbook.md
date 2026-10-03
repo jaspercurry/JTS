@@ -130,6 +130,9 @@ Read `gate_window_ms`, `validity_floor_hz`, `trusted_floor_hz` and `floor_source
 per role. Nothing below the trusted floor, 2.5 divided by gate length in
 seconds, supports a speaker claim
 (`docs/research/2026-08-31-tuning-methodology-deep-research/03-gating-windowing-and-low-frequency-truth.md`).
+Declare the placement on the speaker page first: the gate then ends at the
+earliest declared bounce, the wall behind the speaker included
+([ADR-0427](adr/0427-the-derived-gate-floor-counts-the-declared-wall-behind-the-speaker.md)).
 
 ### Document
 
