@@ -5,8 +5,8 @@
 """The validated sweep spec a commissioning capture session opens on.
 
 One spec states everything a capture of one measurement kind needs: the
-recording window, the mono/48 kHz format the analysis demands, the operator
-acknowledgement, and — for a session-spanning walk — the
+mono/48 kHz format the analysis demands, the operator acknowledgement, and —
+for a session-spanning walk — the
 :class:`~jasper.playback_state.capture_protocol.CapturePlan`. It is built by a per-kind builder
 (:func:`build_crossover_sweep_spec` here), validated strictly and loudly at the
 boundary, and re-validated at session open before a tone can play. The plan
@@ -433,16 +433,6 @@ def _validate_capture_plan_entries(capture_plan: CapturePlan) -> None:
                 f"duplicate capture_plan.entries index: {entry.index}"
             )
         seen_indexes.add(entry.index)
-        if isinstance(entry.duration_ms, bool) or not isinstance(
-            entry.duration_ms, int
-        ):
-            raise CaptureSpecError(
-                f"capture_plan.entries[{position}].duration_ms must be an integer"
-            )
-        if entry.duration_ms <= 0:
-            raise CaptureSpecError(
-                f"capture_plan.entries[{position}].duration_ms must be positive"
-            )
         if not isinstance(entry.kind_label, str) or not re.fullmatch(
             r"[a-z][a-z0-9_]{0,31}", entry.kind_label
         ):
@@ -490,7 +480,6 @@ def build_crossover_sweep_spec(
     driver_role: str = "driver",
     driver_capture_geometry: str = "near_field",
     acknowledgement_binding: str = "",
-    stimulus_duration_ms: int | None = None,
     pre_roll_ms: int = 800,
     post_roll_ms: int = 700,
     hard_timeout_ms: int = 30000,
@@ -501,19 +490,8 @@ def build_crossover_sweep_spec(
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work: a clean log sweep, magnitude FR, drift-insensitive.
 
-    ``stimulus_duration_ms`` defaults to the KERNEL-side sweep length the
-    active-crossover flow actually plays (``driver_acoustics.DEFAULT_DURATION_S``)
-    rather than a second, forked sweep constant. The capture sweep is written
-    and deconvolved from that one length and the deconvolution reference is
-    regenerated from the played ``sweep_meta``, so the spec must not advertise a
-    different duration: the recording window is sized from this.
-
-    ``duration_ms`` is the HARD recording deadline, and its clock starts when the
-    capture arms — before the sweep completes the speaker must load the
-    commissioning config, generate the sweep WAV, play the full sweep, release
-    the fan-in lane and roll the transient graph back. The acoustic window is
-    therefore FLOORED by ``hard_timeout_ms``: the normal stop is the sweep
-    completing, and the deadline is only the backstop.
+    ``duration_ms`` sizes nothing: the wired recorder sizes each take's window
+    from the program it plays (``WiredStimulusCapture.around``).
 
     ``capture_plan`` opts the spec into a session-spanning walk. It requires an
     ``acknowledgement_binding``, because placement gates run per capture.
@@ -524,12 +502,10 @@ def build_crossover_sweep_spec(
     ``crossover_v2_uncalibrated_capture`` even with a resolvable stored mic. It
     is applied silently when nothing has already been chosen for the session.
     """
-    if stimulus_duration_ms is None:
-        stimulus_duration_ms = int(round(DEFAULT_DURATION_S * 1000))
     if ambient_duration_ms < 0:
         raise CaptureSpecError("ambient_duration_ms must be >= 0")
     duration_ms = max(
-        pre_roll_ms + ambient_duration_ms + stimulus_duration_ms + post_roll_ms,
+        pre_roll_ms + ambient_duration_ms + int(round(DEFAULT_DURATION_S * 1000)) + post_roll_ms,
         int(hard_timeout_ms),
     )
     is_driver = str(driver_role or "").strip().lower() not in {"", "summed"}

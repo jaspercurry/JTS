@@ -69,7 +69,6 @@ def _stops_at(angles_deg, *, mover: str = ac.MOVER_HUMAN,
         ac.AngleStop(mp.Pose(angle, 0), regime, purpose="speaker")
         for angle in angles_deg for regime in regimes), mover=mover)
 
-_FC_HZ = 2000.0
 _ROLES_BANDS = (
     RoleBand("woofer", 0, FrequencyBand(150.0, 6000.0)),
     RoleBand("tweeter", 1, FrequencyBand(300.0, 20000.0)),
@@ -574,7 +573,7 @@ def _candidate_batch_plan(request):
     return capture_plan.build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id)
          for c in captures if c.spec.program_phase == PHASE_LATERAL],
-        roles_bands=_ROLES_BANDS, fc_hz=_FC_HZ, acknowledgement_binding="candidate-batch-test",
+        acknowledgement_binding="candidate-batch-test",
     ).capture_plan
 
 

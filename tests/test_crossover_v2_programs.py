@@ -450,15 +450,12 @@ def test_prepared_summed_captures_name_no_band_of_their_purpose(purpose, poses):
 def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
     """The PRODUCTION composer, not the builder. ``compose_plan_program`` is what
     ``bind_production_play`` plays, and the same session's admission has to
-    accept what it composed. Its plan entry's budget covers the program.
+    accept what it composed.
 
     The registry row decides WHICH two targets sound: ``front_rear`` excites the
     two woofers and leaves the tweeter alone, and it reaches the composer and the
     emitted graph through the spec, never through the box's acoustic roles.
     """
-    from jasper.active_speaker.crossover_v2.capture_plan import (
-        CAPTURE_ENTRY_MARGIN_MS, _program_duration_ms, build_inline_session_spec,
-    )
     from jasper.active_speaker.program_admission import readmit_summed_program_from_wav
     from jasper.audio_measurement.program import write_program_wav
     from tests.test_active_speaker_program_admission import (
@@ -489,13 +486,6 @@ def test_a_branch_take_the_plan_host_composes_is_admitted(tmp_path, row):
         role_targets=targets, session_volume_db=excitation.session_volume_db)
     assert admission.allowed, admission.to_dict()
     assert {segment.role for segment in admission.segments} == set(take)
-
-    plan = build_inline_session_spec(
-        [(c.spec, c.resolved(request).prompt, "trial") for c in captures],
-        roles_bands=roles, fc_hz=excitation.fc_hz, acknowledgement_binding="a" * 32,
-    ).capture_plan
-    assert plan.entries[0].duration_ms >= (
-        _program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS)
 
 
 def test_per_driver_measure_keeps_declared_bands_with_a_room_session():

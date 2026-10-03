@@ -39,7 +39,7 @@ class CaptureSpecError(ValueError):
 
 @dataclass(frozen=True)
 class CapturePlanEntry:
-    """One capture's identity/timing/copy inside a heterogeneous v3 plan.
+    """One capture's identity and copy inside a heterogeneous v3 plan.
 
     Wave 3 (crossover-measurement-productization-design.md §5.7) extends the
     session-spanning ``CapturePlan`` from "N repeats of ONE spec" to N
@@ -53,12 +53,6 @@ class CapturePlanEntry:
     - ``kind_label`` — a short slug naming what this capture measures (e.g.
       ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
       like ``CaptureStimulus.label`` — never trusted for logic.
-    - ``duration_ms`` — THIS capture's DECLARED acoustic length (the design
-      doc's CHECK ~25s / MEASURE ~20s / VERIFY ~15s can differ per index).
-      Presentation + analysis data — phone-side progress/countdown copy and
-      the analysis side's per-entry locator windows (design §5.7) — NEVER a
-      hard deadline: the session runner's recording+upload backstop stays
-      its own session-level ``timeout_s`` for every plan, entries or not.
     - ``screen`` — optional phone-side prompt copy for this capture (a
       string-to-string mapping such as ``{"title": ..., "body": ...}``).
       Opaque: the schema bounds size and value types, never the keys — the
@@ -67,15 +61,10 @@ class CapturePlanEntry:
 
     index: int
     kind_label: str
-    duration_ms: int
     screen: Mapping[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "index": self.index,
-            "kind_label": self.kind_label,
-            "duration_ms": self.duration_ms,
-        }
+        data: dict[str, Any] = {"index": self.index, "kind_label": self.kind_label}
         if self.screen is not None:
             data["screen"] = dict(self.screen)
         return data

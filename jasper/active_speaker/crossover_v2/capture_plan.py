@@ -4,8 +4,8 @@
 
 
 """The walk a session will do, decided before anything plays: where the
-microphone goes, in what order, with what words on the screen, how many attempts
-each pose is allowed, and which excitation program each capture index runs.
+microphone goes, in what order, with what words on the screen, and how many
+attempts each pose is allowed.
 
 It decides; it does not act — no I/O, no session state, no fader, no graph. Mover-agnostic
 (MS-17): positions are degrees and centimetres, and nothing here knows whether a
@@ -13,23 +13,11 @@ human or an arm moves the microphone.
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field, replace
 from itertools import groupby
 from typing import Any, Sequence
 
-from jasper.audio_measurement.branch_program import build_branch_program
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
-from jasper.audio_measurement.program import (
-    BASE_STIMULUS_PEAK_DBFS,
-    DEFAULT_VERIFY_SWEEP_S,
-    SUMMED_SWEEP_BAND_HZ,
-    ExcitationProgram,
-    RoleBand,
-    build_check_program,
-    build_measure_program,
-    build_verify_program,
-)
 from jasper.playback_state.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.platform.env_load import bounded_env_float
 from jasper.platform.speaker_layout import measurement_target_name
@@ -47,16 +35,7 @@ from .contracts import (
     POSITION_AXIS_HORIZONTAL,
     CrossoverV2FlowError,
 )
-from .journey import (
-    PHASE_CHECK,
-    PHASE_MEASURE,
-)
-from .programs import (
-    SessionExcitation,
-    compose_target_program,
-    measurement_band_hz,
-)
-from .measure_spec import MeasureSpec, branch_channels_for, solo_target
+from .measure_spec import MeasureSpec
 from .spatial import (
     MARK_DISTANCE_M,
     POSITION_ROLE_ONAX,
@@ -64,8 +43,6 @@ from .spatial import (
 )
 from .sweep_spec import build_crossover_sweep_spec
 from .refusal_copy import CrossoverV2Refused
-
-logger = logging.getLogger(__name__)
 
 
 def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
@@ -76,44 +53,24 @@ def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
 
 def build_inline_session_spec(
     captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
-    roles_bands: Sequence[RoleBand], fc_hz: float | None, excitation: SessionExcitation | None = None,
     acknowledgement_binding: str, **spec_kwargs: Any,
 ) -> Any:
     prompts = [prompt for _, prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
                                  [candidate_id for _, _, candidate_id in captures])
-    entries = []
-    for index, (spec, prompt) in enumerate(zip(announce_run([spec for spec, _, _ in captures]), prompts), 1):
-        phase, prelude = spec.program_phase, spec.courtesy_prelude
-        if solo_target(spec):
-            assert excitation is not None
-            program = compose_target_program(excitation, spec)  # never played; duration only
-        elif phase == PHASE_CHECK:
-            program = build_check_program(roles_bands, courtesy_prelude=prelude)
-        elif phase == PHASE_MEASURE:
-            program = build_measure_program({r.role: BASE_STIMULUS_PEAK_DBFS for r in roles_bands}, roles_bands,
-                                            repeat_count=spec.sweeps_per_take, courtesy_prelude=prelude)
-        else:
-            program = build_verify_program(fc_hz, measurement_band_hz=measurement_band_hz(roles_bands),
-                                           sweep_band_hz=spec.sweep_band_hz or None,
-                                           sweep_s=spec.sweep_s or DEFAULT_VERIFY_SWEEP_S, courtesy_prelude=prelude)
-        if spec.graph_scope == "candidate_branches":
-            program = build_branch_program(program, branch_channels_for(spec))
-        entries.append(CapturePlanEntry(
-            index=index - 1, kind_label=phase,
-            duration_ms=_program_duration_ms(program) + CAPTURE_ENTRY_MARGIN_MS,
-            screen={"title": prompt.headline, "body": prompt.detail,
-                    **position_screen_keys(prompt), **batches.get(index, {})},
-        ))
+    entries = tuple(
+        CapturePlanEntry(index=index - 1, kind_label=spec.program_phase,
+                         screen={"title": prompt.headline, "body": prompt.detail,
+                                 **position_screen_keys(prompt), **batches.get(index, {})})
+        for index, (spec, prompt, _) in enumerate(captures, 1))
     placements = sum(1 for _ in groupby(prompt.pose.place for prompt in prompts))
     attempts = len(entries) + placements * MAX_EXTRA_ATTEMPTS_PER_POSITION
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
-    plan = CapturePlan(capture_target=len(entries), max_attempts=attempts,
-                       schema_version=2, entries=tuple(entries))
+    plan = CapturePlan(capture_target=len(entries), max_attempts=attempts, schema_version=2, entries=entries)
     return build_crossover_sweep_spec(
         driver_label="crossover", driver_role="summed", acknowledgement_binding=acknowledgement_binding,
-        stimulus_duration_ms=max(e.duration_ms for e in entries), capture_plan=plan, **spec_kwargs,
+        capture_plan=plan, **spec_kwargs,
     )
 
 
@@ -359,10 +316,6 @@ def _seat_headline(offset_m: tuple[float, float, float] | None) -> str:
 # capture plan + session spec
 # --------------------------------------------------------------------------- #
 
-# Phone-side recording margin around each program (lead + tail), presentation /
-# locator-window data — never a hard deadline (the session runner's timeout_s
-# stays the backstop).
-CAPTURE_ENTRY_MARGIN_MS = 2000
 # The cancelable auto-advance countdown between an accepted CHECK and MEASURE.
 AUTO_ADVANCE_COUNTDOWN_S = 5
 
@@ -393,10 +346,6 @@ def v2_first_begin_timeout_s() -> float:
         "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,
         lo=30.0, hi=float(MAX_TTL_S),
     )
-
-
-def _program_duration_ms(program: ExcitationProgram) -> int:
-    return int(round(program.total_samples / program.sample_rate_hz * 1000))
 
 
 #: The per-entry screen keys that state an entry's TARGET POSITION in machine
@@ -462,11 +411,6 @@ def position_screen_keys(
         **({POSITION_KIND_KEY: prompt.pose.kind} if prompt is not None and prompt.pose.kind != POSE_KIND_BEARING
            else {}),
     }
-
-
-def summed_sweep_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
-    low, high = measurement_band_hz(roles)
-    return max(SUMMED_SWEEP_BAND_HZ[0], low), min(SUMMED_SWEEP_BAND_HZ[1], high)
 
 
 def wall_clock_ceiling_s(capture_target: int) -> float:

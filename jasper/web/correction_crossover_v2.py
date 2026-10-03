@@ -32,7 +32,7 @@ from jasper.active_speaker.baseline_profile import load_applied_baseline_profile
 from jasper.active_speaker.crossover_v2.capture_plan import (
     build_inline_session_spec,
 )
-from jasper.active_speaker.crossover_v2.programs import excitation_from_context, probe_fader_db
+from jasper.active_speaker.crossover_v2.programs import probe_fader_db
 from jasper.web.correction_run_host import bind_run_door, compose_plan_program, publish_round_packet
 from jasper.active_speaker.plan_run import RunSignals, prepare_plan_captures, preview_schedule
 from jasper.active_speaker.run_manifest import RunManifest, incumbent_fingerprints
@@ -218,8 +218,6 @@ def prepare_v2_session(
     schedule = preview_schedule(request, captures, context)
     spec = build_inline_session_spec(
         [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        roles_bands=context.roles_bands, fc_hz=context.fc_hz,
-        excitation=excitation_from_context(context),
         acknowledgement_binding=acknowledgement_binding,
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
     )
