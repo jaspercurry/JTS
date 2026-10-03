@@ -137,17 +137,12 @@ class CloudFitTerms:
     The three optional arguments of
     :func:`~jasper.active_speaker.linearization_envelope.compose_envelope`,
     travelling together as one value so the fit cannot be handed a
-    half-supplied pair, plus the boost-only bound the fit *vocabulary* takes.
-
-    ``boost_excluded_bands_hz`` does NOT go to the envelope. Empty is the
-    ordinary case and means "nothing contradicted a boost", never "no
-    evidence".
+    half-supplied pair.
     """
 
     excluded_bands_hz: tuple[tuple[float, float], ...] = ()
     band_spread: tuple[Any, ...] = ()
     n_positions: int = 0
-    boost_excluded_bands_hz: tuple[tuple[float, float], ...] = ()
     boost_responses: tuple[Any, ...] = ()
 
 
