@@ -129,8 +129,9 @@ ADR-0437, §3).
   seat graph's first take probes the graph it plays, now without bass and room, and lands at
   74 ± 2 dB (ADR-0423). A pair take's graph no longer carries the applied bass boost or room set, so
   it plays closer to the drivers graph its probes read: each branch lands nearer its probe's
-  80 ± 2 dB, and no branch carries a bass reserve, so each branch's ceiling under the fader is its
-  driver cap (ADR-0407 §1). `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the
+  80 ± 2 dB, and no branch carries a bass reserve, so each branch's ceiling under the fader is the
+  tighter of the pair's two driver caps (ADR-0407 §1, `programs._alone_gains_db`); at 0 dBFS caps the
+  base stimulus's −12 dBFS peak binds first. `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the
   85 dB commissioning stop and the declared driver caps do not change.
 - A rear seat round now files a bass view per set too, so it counts for the bass program as well as
   for rear and room (ADR-0429 §2).
