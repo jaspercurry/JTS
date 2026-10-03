@@ -28,6 +28,7 @@ from jasper.active_speaker.measurement_programs import (
 )
 from jasper.active_speaker.run_manifest import RUN_MANIFEST_FILENAME, RoundSetRefused, pointer_rows, row_record_id, view_sets
 from jasper.active_speaker.baseline_profile import load_applied_baseline_profile_state
+from .contracts import on_design_axis
 from .journey import PHASE_TIMING
 from .position_cycle import take_artifact_path
 from jasper.active_speaker import bundles
@@ -535,7 +536,7 @@ class SetTakes(NamedTuple):
         joined takes (:meth:`with_records`)."""
         return tuple(take for take in self.takes if take["selected"]
                      and take["pose"].get("kind") == POSE_KIND_BEARING
-                     and take["pose"].get("azimuth_deg") == 0 and take["pose"].get("elevation_deg") == 0)
+                     and on_design_axis(take["pose"].get("azimuth_deg"), take["pose"].get("elevation_deg")))
 
     def take_id(self, requested: str | None = None) -> str:
         ids = self.selected_ids

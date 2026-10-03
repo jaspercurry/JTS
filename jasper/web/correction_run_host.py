@@ -168,7 +168,6 @@ def bind_plan_analysis(conductor: Any, records: Any, *, manifest: Any, evidence:
                           spl=(getattr(answer, "capture_integrity", None) or {}).get("spl"),
                           raise_rides_next=conductor.raise_rides_next(index))
         assessed = assess(analysis, prior_verdict=prior, **kwargs)
-        # A raise, from a kept take or a retake, moves the session's gain plan that every later MEASURE take plays (ADR-0433).
         if verdict is None and phase == PHASE_MEASURE and any(key.startswith("next_gain_db.") for key in assessed.evidence):
             after_grading(partial(conductor.rearm_measure_after_transient, assessed))
         return assessed

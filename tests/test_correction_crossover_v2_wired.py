@@ -867,9 +867,9 @@ async def test_check_exhaustion_before_timing_and_measure(monkeypatch, tmp_path,
 
 
 def _short_tweeter(program):
-    """Finding F5 of the 2026-10-02 audit: the tweeter's alignment band reads 24 dB
-    under its gain over a -70 dBFS room, so at the -13 dBFS CHECK solves it holds
-    33 dB of SNR against 35 dB, and 3.3 dB louder 36.3 dB."""
+    """Audit finding F5: the tweeter's alignment band reads 24 dB under its gain
+    over a -70 dBFS room, so at the -13 dBFS CHECK solves it holds 33 dB of SNR
+    against 35 dB, and 3.3 dB louder 36.3 dB."""
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment",
         capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": program.segment("sweep_t").gain_db - 24.0}],

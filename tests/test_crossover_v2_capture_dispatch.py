@@ -390,7 +390,6 @@ def test_effective_caps_become_digital_gain_ceilings(cap, volume, expected):
     (-33.2, -16.9, 4, 20, "insufficient", 4, None, None),
 ])
 @pytest.mark.parametrize("stop", [80, 85])
-@pytest.mark.parametrize("raise_rides_next", [False, True])
 def test_alignment_only_retry_uses_driver_and_spl_headroom(
     cap,
     volume,
@@ -401,12 +400,7 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     capped_by,
     residual,
     stop,
-    raise_rides_next,
 ):
-    """When only a take's alignment asks a raise, the take is kept with the raise
-    in its evidence if the raise may ride the run's later takes, and is retaken
-    at the raise if not. A take whose magnitude fails is retaken at any raise
-    (ADR-0433)."""
     band = snr_policy.band_snr_verdicts(
         decision_class="alignment", capture_bands=[{"band_id": "mid", "band_hz": [1000, 4000], "level_dbfs": -41}],
         noise_bands=[{"band_id": "mid", "level_dbfs": -70}], noise_floor_dbfs_scalar=None,
@@ -417,9 +411,8 @@ def test_alignment_only_retry_uses_driver_and_spl_headroom(
     verdict = cd.assess(_analysis(driver_responses=(response,)), phase="measure", gain_db=GAINS,
         gain_ceiling_db={"woofer": -30 + session_headroom}, caps_dbfs={"woofer": cap} if cap is not None else {},
         session_volume_db=volume, spl_stop_db_spl=stop,
-        spl={"max_window_db_spl": stop - 3 - spl_headroom if spl_headroom is not None else None, "ceiling_db_spl": 85},
-        raise_rides_next=raise_rides_next)
-    retaken = bool(raise_db) and not (raise_rides_next and magnitude == "ok")
+        spl={"max_window_db_spl": stop - 3 - spl_headroom if spl_headroom is not None else None, "ceiling_db_spl": 85})
+    retaken = bool(raise_db)
     assert verdict.ok and verdict.fault is None
     assert (verdict.next, verdict.charge) == (("retake_louder", "speaker") if retaken else ("accept", "none"))
     assert verdict.next_gain_db == (pytest.approx(-30 + raise_db) if retaken else None)

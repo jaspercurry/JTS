@@ -41,7 +41,10 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
    `baseline_express`. So is a take whose magnitude also fails. If the newest take at the mark were a
    short take, [ADR-0345](0345-a-timing-reading-that-is-not-comparable-never-asks-for-a-reset.md) would
    read the saved timing as `not_comparable` (`snr_short`) and ask for `measure_timing`, a new round.
-   The owner may change this rule.
+   That still happens when the later take at the mark never lands (the operator presses Complete, its
+   placement is spent, or the run stops): `raise_rides_next` reads the plan, not what lands, so the
+   kept short take is then the newest there, in a run that is partial anyway. The owner may change
+   either rule.
 4. **A set keys on its stimulus's shape.** A run-manifest set keys on the capture fields that
    [ADR-0408](0408-over-a-timing-take-each-candidate-graph-probes-its-own-graph.md) compares two takes
    on (`measurement_context.SHAPE_FIELDS`: the side, the capture device, the fader `level_db` and
@@ -69,15 +72,23 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
 
 ## Consequences
 
-- **Hearing:** this only removes plays. A later take composes from the gain plan as the replay's
-  verdict raised it, so the run plays what the flow before this ADR played, less the replay. Where
-  that replay would have moved the plan again, the next take plays the plan before that move. If the
-  replay would have asked a further raise, the next take plays under the gain the flow before played
-  there and asks its own raise from its own reading. If a clip would have cut the replay's gain, the
-  next take plays the gain the replay played, and its own clip check cuts it. Every raise stays inside
-  the SPL headroom that its own take read, by the same rule, caps and bound. `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the
-  85 dB commissioning stop and its watch, the declared driver caps and ADR-0405's probe staircase do
-  not change.
+- **Hearing:** a run that plays to its end plays the plays of the flow before this ADR, less the
+  replays, each at its pose and gain: a later take composes from the gain plan as the replay's verdict
+  raised it. Where a replay would itself have asked a further raise, the next take plays under the
+  gain the flow before played there and asks its own raise from its own reading. Two cases play what
+  the flow before did not, and one case stays as it was:
+  - A run whose placement was spent ended `retries_spent` at the replay. It now keeps the take and
+    plays the rest of the run at the raise. Those plays are new for that run; the 85 dB watch bounds
+    them.
+  - A replay whose sweep clipped cut every role by 3 dB (`CLIP_RETRY_BACKOFF_DB`). With no replay
+    that cut is skipped, so a later take can play louder than in the flow before at the same pose, and
+    skipped cuts add up across kept takes.
+  - As before this ADR, a raise sized at a quiet pose rides the run's later takes, and at a louder
+    pose only the 85 dB watch holds it.
+
+  Every raise stays inside the SPL headroom that its own take read, by the same rule, caps and bound.
+  `volume_limit` 0.0, the graph doors, the `set_volume_db` clamp, the 85 dB commissioning stop and its
+  watch, the declared driver caps and ADR-0405's probe staircase do not change.
 - Proof: `test_a_short_measure_take_is_kept_unless_it_is_the_last_at_the_mark` runs the executor through
   the web host's analysis and composer, on a fake chain whose first MEASURE take reads 33 dB of tweeter
   alignment SNR with 3.3 dB of SPL headroom, beside the same run with the rule switched off. At
@@ -100,7 +111,8 @@ alignment feeds none, and #6227 D3 plans off-axis takes of one sweep per driver,
 - Every new run's `set_id` moves once: the set basis drops `stimulus_dbfs`, `stimulus_id` and
   `stimulus_peak_dbfs` and gains `stimulus_shape_id`. Per-set views, their evidence bases and the
   packet's sets follow. Take records, program `stimulus_id`s and request fingerprints do not move. A
-  round banked before this change keeps the sets its manifest stored.
+  round banked before this change keeps the sets its manifest stored, but they name no stimulus shape,
+  so `speaker_fit` refuses its takes (no backward support).
 - Takes that differ only in level now share a set. The near-field takes of one woofer at 15 mm and at
   30 mm, each levelled at its own place, are one set per woofer. A refused level retake joins the set
   of the take that replaced it. A level probe keeps a set of its own: its shape differs, and its basis
