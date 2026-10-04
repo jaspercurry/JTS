@@ -9,11 +9,7 @@ import os
 import re
 import shutil
 import socket
-from ...audio_hardware.dac import (
-    MixerControl,
-    by_id as _dac_profile_for,
-    output_identity_id,
-)
+from ...audio_hardware.dac import MixerControl, by_id as _dac_profile_for
 from ...config import Config
 from ...mics import xvf3800
 from jasper.audio_routes.output_hardware import (
@@ -76,33 +72,6 @@ REASON_APPLE_DONGLE_CARDS_MISSING = "apple_dongle_cards_missing"
 
 REASON_DAC_MIXER_PINS_NOT_APPLICABLE = "dac_mixer_pins_not_applicable"
 REASON_DAC_MIXER_PINS_NOT_HELD = "dac_mixer_pins_not_held"
-
-
-_OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES = frozenset({
-    "dual_apple_observation_missing",
-    "dual_apple_usb_topology_mismatch",
-    "dual_apple_usb_topology_unknown",
-    "dual_apple_stable_identity_missing",
-    "dual_apple_endpoint_not_synchronous",
-})
-
-
-def _observed_output_hardware_clock_blockers(
-    clock: dict[str, object],
-) -> list[dict[str, object]]:
-    issues = clock.get("issues")
-    if not isinstance(issues, list):
-        return []
-    blockers: list[dict[str, object]] = []
-    for issue in issues:
-        if not isinstance(issue, dict) or issue.get("severity") != "blocker":
-            continue
-        code = str(issue.get("code") or "")
-        if code.startswith("dual_apple_observed_") or (
-            code in _OBSERVED_OUTPUT_HARDWARE_CLOCK_ISSUE_CODES
-        ):
-            blockers.append(issue)
-    return blockers
 
 
 def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
@@ -512,7 +481,7 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
 
     from jasper.active_speaker.output_contract import classify_output_contract
     from jasper.audio_routes.output_topology import OutputTopologyError  # lazy: doctor per-check import budget (ADR-0233)
-    from jasper.dsp_control.output_topology_observation import clock_domain_report  # lazy: doctor per-check import budget (ADR-0233)
+    from jasper.dsp_control.output_topology_observation import declared_hardware_mismatch  # lazy: doctor per-check import budget (ADR-0233)
 
     try:
         topology = evidence.output_topology_strict()
@@ -543,36 +512,20 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
         )
 
     saved = topology.hardware
-    saved_count = int(saved.physical_output_count or 0)
-    observed_count = int(observed.physical_output_count or 0)
     detail = (
-        f"saved={saved.device_id} outputs={saved_count}; "
+        f"saved={saved.device_id} outputs={saved.physical_output_count}; "
         f"current={observed.profile_id} status={observed.status} "
-        f"outputs={observed_count}"
+        f"outputs={observed.physical_output_count}"
     )
-    hardware_matches = (
-        output_identity_id(saved.device_id) == output_identity_id(observed.profile_id)
-        and saved_count == observed_count
-    )
-    clock_blockers: list[dict[str, object]] = []
-    if hardware_matches:
-        clock_blockers = _observed_output_hardware_clock_blockers(
-            clock_domain_report(topology, observed)
-        )
-        if not clock_blockers:
-            return CheckResult("active speaker output hardware", "ok", detail)
+    mismatch = declared_hardware_mismatch(topology, observed)
+    if mismatch is None:
+        return CheckResult("active speaker output hardware", "ok", detail)
 
-    status = "fail" if contract.requires_roleful_graph else "warn"
-    blocker_detail = ""
-    if clock_blockers:
-        codes = ",".join(str(issue.get("code") or "") for issue in clock_blockers)
-        messages = "; ".join(
-            str(issue.get("message") or "") for issue in clock_blockers
-            if issue.get("message")
-        )
-        blocker_detail = (
-            f"; current-hardware clock blockers={codes}"
-            f"{': ' + messages if messages else ''}"
+    if blockers := mismatch["clock_blockers"]:
+        detail += (
+            "; current-hardware clock blockers="
+            f"{','.join(issue['code'] for issue in blockers)}: "
+            f"{'; '.join(issue['message'] for issue in blockers)}"
         )
     suffix = (
         "active speaker actions are blocked; reconnect the saved hardware "
@@ -580,18 +533,15 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
         if contract.requires_roleful_graph
         else "saved topology differs from currently attached hardware"
     )
-    text = (
-        f"{detail}{blocker_detail}; {suffix}. "
-        "Basic output hardware is reported separately."
-    )
-    if hardware_matches:
-        return CheckResult(
-            "active speaker output hardware", status, text,
-            reason=REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED,
-        )
     return CheckResult(
-        "active speaker output hardware", status, text,
-        reason=REASON_OUTPUT_HARDWARE_MISMATCH,
+        "active speaker output hardware",
+        "fail" if contract.requires_roleful_graph else "warn",
+        f"{detail}; {suffix}. Basic output hardware is reported separately.",
+        reason=(
+            REASON_OUTPUT_HARDWARE_MISMATCH
+            if mismatch["hardware_differs"]
+            else REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED
+        ),
     )
 
 

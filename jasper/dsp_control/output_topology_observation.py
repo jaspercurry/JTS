@@ -450,6 +450,7 @@ def declared_hardware_mismatch(
         "current_label": current_label,
         "saved_count": saved_count,
         "current_count": current_count,
+        "hardware_differs": id_mismatch or count_mismatch,
         "clock_blockers": clock_blockers,
         "message": message,
     }
