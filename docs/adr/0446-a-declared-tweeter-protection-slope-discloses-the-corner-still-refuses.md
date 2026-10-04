@@ -38,14 +38,20 @@
   every order, as before. Every graph keeps `devices.volume_limit: 0.0` and its Limiters.
   `set_volume_db`, the graph doors, the 85 dB stop and the driver caps do not change.
 - **Consequences:**
-  - No other check changes. Program admission still proves that the graph carries each confirmed
-    requirement (`protection_requirement_present`), and a high-pass built from that requirement
-    meets it. `tweeter_guard_present` (order 2 or more) and the active verifier (corner 400 Hz or
-    more, orders 2, 4 and 8) do not change.
-  - The driver safety profile still derives a declared tweeter's protective high-pass at the
-    published slope raised to 24 dB/octave (a prefill, ADR-0227 §1). So a tweeter that publishes
-    12 dB/octave, as B&C does for the DE250, still gets an LR4 protection from a profile computed
-    today. The disclosure fires only for a confirmed protection that was not derived that way.
+  - No other check changes. The program graph plays in the drivers scope, whose admission
+    (`program_admission.readmit_program_from_wav`) does not read the graph;
+    `protection_requirement_present` checks only the tuning graphs. The program's high-pass meets
+    the confirmed requirement because `branch_chain.confirmed_protection_sections` builds it so:
+    the smallest of orders 2, 4 and 8 whose slope meets the declared slope.
+    `tweeter_guard_present` (order 2 or more) and the active verifier (corner 400 Hz or more,
+    orders 2, 4 and 8) do not change.
+  - Every confirmed protection today comes from the driver safety profile.
+    `driver_protection.apply_driver_low_limit` derives a tweeter's protective high-pass, a typed
+    one included, at the published slope raised to 24 dB/octave (a prefill, ADR-0227 §1). So a
+    tweeter that publishes 12 dB/octave, as B&C does for the DE250, still plays an LR4
+    protection, and no product graph changes today. Playing it at LR2 needs a change to that
+    prefill (`DriverLowLimit.derived_protection_slope_db_per_octave`): an owner call, not this
+    decision.
   - A Linkwitz-Riley order is even. `CrossoverSection` documents 2, 4 or 8, and
     `confirmed_protection_sections` builds only those. In the program emitter, only the slope
     figure refused orders 1 and 3. Now order 1 fails `tweeter_guard_present`, and order 3 is
