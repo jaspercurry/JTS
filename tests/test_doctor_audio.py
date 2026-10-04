@@ -367,6 +367,27 @@ def test_a_dac8x_overlay_switch_keeps_the_saved_topology(
     assert declared_hardware_mismatch(topology, observed) is None
 
 
+@pytest.mark.parametrize(
+    ("observed_id", "observed_count"),
+    [("innomaker_hifi_amp_pro", 8), ("hifiberry_dac8x", 2)],
+    ids=["device_only", "count_only"],
+)
+def test_hardware_that_differs_in_one_field_is_a_mismatch_not_a_clock_block(
+    monkeypatch, tmp_path, observed_id, observed_count
+):
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(mono_output_topology(), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    evidence.seed("output_hardware_state", OutputHardwareState(
+        profile_id=observed_id, profile_label=observed_id, status="ready",
+        physical_output_count=observed_count,
+    ))
+
+    active = audio.check_active_speaker_output_hardware_match()
+
+    assert active.reason == audio.REASON_OUTPUT_HARDWARE_MISMATCH
+
+
 def test_output_hardware_state_warns_without_a_record():
     evidence.seed("output_hardware_state", None)
 
