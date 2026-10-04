@@ -7708,10 +7708,10 @@ def test_a_probe_solves_from_the_highest_burst_it_heard_past_a_dropout():
     # The host received fewer frames than the encoder counted.
     (lambda n, lost: {"frames": n + lost, "encoded_frames": n + lost}, REASON_DRIFT_BASELINES_DISAGREE),
 ], ids=["overrun", "unbalanced"])
-def test_a_probe_whose_ledger_names_lost_frames_is_retaken_before_it_is_levelled(counts, fault):
+def test_a_probe_whose_ledger_names_lost_frames_is_never_levelled(counts, fault):
     """Frames lost inside a probe's top burst can make that burst read low, so a probe
     whose frame ledger names lost frames is retaken the same, with that fault and no
-    gain, and is never levelled from what it read."""
+    gain, and is never levelled from what it read (ADR-0443)."""
     program, capture, offset = _echoey_probe(stopped_in=5)
     top = program.segment("level_probe_4")
     start, lost = offset + top.start_sample + top.n_samples // 4, round(0.2 * SR)

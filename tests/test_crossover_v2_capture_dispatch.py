@@ -616,6 +616,22 @@ def test_a_near_field_take_is_levelled_toward_its_target(heard, prior, reading, 
         assert (verdict.ok, verdict.fault, verdict.charge) == (False, "level_off_target", "speaker")
 
 
+@pytest.mark.parametrize("ledger, fault", [
+    (FrameLedger(received_frames=128, capture_gaps=1, capture_gap_frames=48), refusal_copy.REASON_CAPTURE_OVERRUN),
+    (FrameLedger(received_frames=128, declared_frames=256), refusal_copy.REASON_DRIFT_BASELINES_DISAGREE),
+])
+def test_a_take_whose_ledger_names_lost_frames_is_never_levelled(ledger, fault):
+    """A near-field take read 14 dB under its target, whose frame ledger names lost
+    frames, is retaken the same with that fault and no gain (ADR-0443)."""
+    program = build_measure_program({"woofer": -40.0}, (RoleBand("woofer", 0, FrequencyBand(20, 2000)),),
+                                    repeat_count=1, sweep_durations={"woofer": 0.2})
+    analysis = _analysis(stimulus_levels=(LevelReading(-40.0, 66.0 - 106.0, 36.0 - 106.0),), frame_ledger=ledger)
+    verdict = cd.assess(analysis, phase="measure", program=program, spl={"sens_factor_db": -12.0, "ceiling_db_spl": 85.0},
+                        pose_level=SPOT_LEVEL)
+    assert (verdict.ok, verdict.fault, verdict.next, verdict.charge, verdict.next_gain_db) == (
+        False, fault, "retake_same", "speaker", None)
+
+
 @pytest.mark.parametrize("gains,heard,floor,stopped_at,next_,gain,shortfall", [
     # The burst playing when the stop fired may be cut: the highest one before it solves.
     ((-52.0, -46.0, -40.0, -34.0, -28.0), (58.0, 64.0, 70.0, 74.0), 40.0, 76.0, "retake_louder", -31.0, None),
