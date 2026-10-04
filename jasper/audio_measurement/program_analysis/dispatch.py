@@ -36,6 +36,7 @@ from jasper.audio_measurement.program import (
     PROGRAM_PHASE_CHECK,
     PROGRAM_PHASE_MEASURE,
     PROGRAM_PHASE_VERIFY,
+    STIMULUS_KINDS,
     is_level_probe,
     segment_emitted_band_hz,
 )
@@ -50,7 +51,7 @@ from .check import (
     _solve_gain_plan,
 )
 from .drift import estimate_drift, _sweep_occurrences_by_role
-from .locate import locate_global_offset, locate_segments, _staircase_offset
+from .locate import burst_presence, locate_global_offset, locate_segments, _staircase_offset
 from .model import (
     ALIGNMENT_ESTIMATED_FLAT_SUM,
     ALIGNMENT_COMMITTED_SUMMED_FIT, ALIGNMENT_SAVED_TIMING,
@@ -59,6 +60,7 @@ from .model import (
     ALIGNMENT_SNR_REFUSAL_VERDICT,
     AlignmentEstimate,
     AppliedAlignment,
+    BURST_PRESENCE_RATIO,
     CAPTURE_BOUND_MARGIN_S,
     CONFIGURED_PATH_PROTECTION_FLOOR_DB,
     ConfiguredPathConditioningError,
@@ -205,8 +207,19 @@ def _stimulus_levels(
 ) -> tuple[LevelReading, ...]:
     """One driver's located sweeps over the room before them, one reading per gain
     (ADR-0364). A sweep the capture does not hold, such as a probe's burst after its
-    stop, reads nothing (ADR-0365)."""
-    by_role = _sweep_occurrences_by_role([loc for loc in locations if loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR])
+    stop, reads nothing (ADR-0365). A probe reads, at its anchor, each burst heard there
+    (ADR-0442)."""
+    if is_level_probe(program):
+        presence = {loc.segment_id: burst_presence(capture, program.segment(loc.segment_id), loc.scheduled_start,
+                                                   sample_rate=sample_rate)
+                    for loc in locations if loc.kind in STIMULUS_KINDS}
+        log_event(logger, "program_analysis.level_probe_presence", stimulus_id=program.stimulus_id,
+                  presence=",".join(f"{value:.2f}" for value in presence.values()))
+        heard = [replace(loc, located_start=loc.scheduled_start) for loc in locations
+                 if presence.get(loc.segment_id, 0.0) >= BURST_PRESENCE_RATIO]
+    else:
+        heard = [loc for loc in locations if loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR]
+    by_role = _sweep_occurrences_by_role(heard)
     if len(by_role) != 1:
         return ()
     (sweeps,) = by_role.values()

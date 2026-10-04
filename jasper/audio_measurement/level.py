@@ -11,9 +11,8 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from scipy.fft import next_fast_len
 
-from jasper.audio_measurement.alignment import _bandlimit
+from jasper.audio_measurement.alignment import _bandlimit_padded
 from jasper.audio_measurement.quality import dbfs
 from jasper.audio_measurement.ramp import capped_gap_step_db
 from jasper.audio_measurement.wired_capture import PERIOD_FRAMES
@@ -53,9 +52,7 @@ def _period_mean_squares(samples: np.ndarray, sample_rate: int, band_hz: tuple[f
     count = x.size // PERIOD_FRAMES
     if count == 0:
         return np.empty(0)
-    # Sweep lengths carry large prime factors, which put an unpadded FFT on its slow path.
-    padded = np.pad(x, (0, next_fast_len(x.size, real=True) - x.size))
-    filtered = _bandlimit(padded, sample_rate, *band_hz)[:count * PERIOD_FRAMES]
+    filtered = _bandlimit_padded(x, sample_rate, *band_hz)[:count * PERIOD_FRAMES]
     return np.square(filtered).reshape(count, PERIOD_FRAMES).mean(axis=1)
 
 

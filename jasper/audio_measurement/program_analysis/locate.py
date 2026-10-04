@@ -13,7 +13,7 @@ import numpy as np
 from scipy.fft import next_fast_len
 from scipy.signal import correlate, resample_poly
 
-from jasper.audio_measurement.alignment import _bandlimit
+from jasper.audio_measurement.alignment import _bandlimit, _bandlimit_padded
 from jasper.audio_measurement.branch_program import is_branch_program
 from jasper.audio_measurement.program import (
     ExcitationProgram,
@@ -26,6 +26,7 @@ from jasper.platform.log_event import log_event
 from .model import (
     ANCHOR_DISCRIMINATION_RATIO,
     AnchorEvidence,
+    BURST_FAR_LAGS_S,
     LOCATOR_RATE_HZ,
     logger,
     SEGMENT_SEARCH_S,
@@ -78,20 +79,25 @@ def _earliest_strong_peak(
         # than correlate silence against silence.
         if float(np.linalg.norm(stim_b)) > 0.0 and float(np.linalg.norm(cap_b)) > 0.0:
             cap, stim = cap_b, stim_b
-    stim_norm = float(np.linalg.norm(stim))
-    if stim_norm <= 0.0:
+    if float(np.linalg.norm(stim)) <= 0.0:
         return 0
-    num = correlate(cap, stim, mode="valid", method="fft")
-    local_energy = correlate(cap * cap, np.ones(L), mode="valid", method="fft")
-    local_norm = np.sqrt(np.maximum(local_energy, 0.0))
-    # Floor the denominator so silent (near-zero-energy) windows don't blow the
-    # ratio up; a floor at a small fraction of the loudest window is enough.
-    floor = 1e-6 * float(local_norm.max()) + 1e-12
-    ncc = np.abs(num) / (local_norm * stim_norm + floor)
+    ncc = _normalized_correlation(cap, stim)
     peak = float(ncc.max()) if ncc.size else 0.0
     if peak <= 0.0:
         return 0
     return int(np.argmax(ncc >= frac * peak))
+
+
+def _normalized_correlation(capture: np.ndarray, stimulus: np.ndarray) -> np.ndarray:
+    """``stimulus``'s cosine similarity with ``capture`` at each lag, over that lag's own
+    window energy; ``capture`` must hold ``stimulus``."""
+    num = correlate(capture, stimulus, mode="valid", method="fft")
+    local_energy = correlate(capture * capture, np.ones(stimulus.size), mode="valid", method="fft")
+    local_norm = np.sqrt(np.maximum(local_energy, 0.0))
+    # Floor the denominator so silent (near-zero-energy) windows don't blow the
+    # ratio up; a floor at a small fraction of the loudest window is enough.
+    floor = 1e-6 * float(local_norm.max()) + 1e-12
+    return np.abs(num) / (local_norm * float(np.linalg.norm(stimulus)) + floor)
 
 
 def _stimulus_shape(segment: ProgramSegment) -> tuple[float | None, float | None, int]:
@@ -409,6 +415,29 @@ def _staircase_offset(
     offset = _earliest_strong_peak(capture_lo, template, frac=1.0, band_hz=(bursts[0].f1_hz, bursts[0].f2_hz),
                                    sample_rate=sample_rate // down) * down
     return offset, stimuli
+
+
+def burst_presence(capture: np.ndarray, burst: ProgramSegment, anchor: int, *, sample_rate: int) -> float:
+    """How many times better a level probe's burst matches the capture within
+    :data:`SEGMENT_SEARCH_S` of its anchor than :data:`BURST_FAR_LAGS_S` away, above the
+    room's modal tails; ``0.0`` when the capture does not hold the burst whole.
+
+    A room's early arrivals crowd the near lags, so a peak's margin over them cannot say a
+    burst was heard; its match over lags past them can (ADR-0442)."""
+    stimulus = np.asarray(segment_stimulus(burst), dtype=np.float64)
+    if anchor < 0 or anchor + stimulus.size > capture.size:
+        return 0.0
+    near, far_lo, far_hi = (round(seconds * sample_rate) for seconds in (SEGMENT_SEARCH_S, *BURST_FAR_LAGS_S))
+    lo = max(0, anchor - far_hi)
+    assert burst.f1_hz is not None and burst.f2_hz is not None
+    band = _above_modal_tails_hz(burst) or (burst.f1_hz, burst.f2_hz)
+    window = np.asarray(capture[lo:anchor + stimulus.size + far_hi], dtype=np.float64)
+    window, stimulus = (_bandlimit_padded(x - x.mean(), sample_rate, *band) for x in (window, stimulus))
+    ncc = _normalized_correlation(window, stimulus)
+    distance = np.abs(np.arange(ncc.size) + lo - anchor)
+    far = ncc[(distance >= far_lo) & (distance <= far_hi)]
+    best_far = float(far.max()) if far.size else 0.0
+    return float(ncc[distance <= near].max()) / best_far if best_far > 0.0 else 0.0
 
 
 def _locate_in_window(

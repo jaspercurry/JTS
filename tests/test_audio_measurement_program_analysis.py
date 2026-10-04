@@ -54,7 +54,7 @@ from jasper.audio_measurement.program_analysis.response import (
 from scipy.signal import butter, fftconvolve, resample_poly, sosfilt, sosfreqz
 
 from jasper.active_speaker.crossover_v2.planning import analysis_json
-from jasper.active_speaker.measurement_programs import POSE_KIND_SEAT
+from jasper.active_speaker.measurement_programs import POSE_KIND_SEAT, SEAT_LEVEL
 from jasper.audio_measurement import analysis as analysis_mod
 from jasper.audio_measurement import (
     deconv,
@@ -70,10 +70,14 @@ from jasper.audio_measurement.alignment import (
     gcc_phat,
 )
 from jasper.audio_measurement.quality_model import DRIVER
+from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S
 from jasper.audio_measurement.admission.excitation_admission import FrequencyBand
+from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.frame_fit import fit_frame
+from jasper.audio_measurement.level import stimulus_level
 from jasper.audio_measurement.program import (
     AMBIENT_SEGMENT_ID,
+    KIND_SUMMED_SWEEP,
     KIND_SWEEP,
     PROGRAM_PHASE_MEASURE,
     RoleBand,
@@ -86,6 +90,7 @@ from jasper.audio_measurement.program import (
     build_check_program,
     build_level_probe_program,
     build_measure_program,
+    build_summed_level_probe_program,
     build_verify_program,
     mesm_gap_samples,
     occurrence_index,
@@ -182,6 +187,7 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _capture_dispatch
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_LOCATE_FAILED
 from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
@@ -7599,3 +7605,95 @@ def test_a_level_probe_reads_each_burst_it_played_at_its_own_gain(band_hz, start
     assert abs((heard[0].level_db - heard[0].gain_db) - (heard[1].level_db - heard[1].gain_db)) < 1.0
     assert all(abs(loc.located_start - loc.scheduled_start) < SR // 100 for loc in analysis.locations
                if loc.confidence >= SWEEP_LOCATE_CONFIDENCE_FLOOR)
+
+
+# A jts3 seat probe heard an arrival 8.6 ms after the first, 1.1 dB under it, which leaves
+# every burst's correlation peak a 0.13 margin over its neighbours; one 0.45 dB under it
+# leaves 0.06 (ADR-0442).
+_PROBE_GAINS = (-60.0, -54.0, -48.0, -42.0, -36.0, -30.0, -24.0)
+_PROBE_SPL = {"sens_factor_db": -12.07, "ceiling_db_spl": 85.0}
+_STOPPED = {**_PROBE_SPL, "stopped_at_db_spl": 76.0}
+_KNOCK = np.exp(-np.arange(SR // 20) / (0.01 * SR))
+
+
+def _echoey_probe(*, stopped_in: int, dropped: int | None = None, arrival: float = 0.88):
+    """A seat probe through one early arrival at ``arrival`` of the first, stopped in burst
+    ``stopped_in``, its playback lost over burst ``dropped``."""
+    program = build_summed_level_probe_program(_PROBE_GAINS, sweep_band_hz=(20.0, 20000.0), gap_s=0.5,
+                                               downstream_gain_db=0.0)
+    room = np.zeros(SR // 50)
+    room[[96, 96 + round(0.0086 * SR)]] = (1.0, arrival)
+    offset = SR // 4
+    capture = _synthesize(program, woofer_ir=room, tweeter_ir=np.zeros(1), global_offset=offset,
+                          noise=10 ** (-70 / 20))
+    if dropped is not None:
+        lost = slice(offset + program.segment(f"level_probe_{dropped}").start_sample,
+                     offset + program.segment(f"level_probe_{dropped + 1}").start_sample)
+        capture[lost] = np.random.default_rng(1).normal(0.0, 10 ** (-70 / 20), lost.stop - lost.start)
+    burst = program.segment(f"level_probe_{stopped_in}")
+    return program, capture[:offset + burst.start_sample + burst.n_samples // 3 + round(WIRED_POST_ROLL_S * SR)], offset
+
+
+def _probe_verdict(program, capture, spl):
+    analysis = program_analysis.analyze_program_capture(program, capture, SR)
+    return analysis, _capture_dispatch.assess(analysis, phase=program.phase, program=program, spl=spl,
+                                              pose_level=SEAT_LEVEL)
+
+
+@pytest.mark.parametrize("arrival, floor", [(0.88, SWEEP_LOCATE_CONFIDENCE_FLOOR),
+                                            (0.95, _capture_dispatch.LOCATE_MIN_CONFIDENCE)])
+def test_a_probe_heard_through_an_early_arrival_reads_each_burst_at_its_anchor(arrival, floor):
+    """No burst stands a sharp correlation peak over the arrival behind it, not even one
+    over the floor that judges a take heard, yet the probe reads each burst it heard
+    where its staircase puts it, at the level it played, and solves its take from it
+    (ADR-0442)."""
+    program, capture, offset = _echoey_probe(stopped_in=5, arrival=arrival)
+
+    analysis, verdict = _probe_verdict(program, capture, _STOPPED)
+
+    assert max(loc.confidence for loc in analysis.locations if loc.kind == KIND_SUMMED_SWEEP) < floor
+    assert (verdict.fault, verdict.next) == (None, "retake_louder")
+    top = program.segment("level_probe_4")
+    played = stimulus_level([capture[offset + top.start_sample + 96:][:top.n_samples]], None,
+                            gain_db=top.gain_db, sample_rate=SR, band_hz=(20.0, 20000.0))
+    readings = {reading.gain_db: reading for reading in analysis.stimulus_levels}
+    assert max(readings) == top.gain_db and readings[top.gain_db].trusted
+    assert readings[top.gain_db].level_db == pytest.approx(played.level_db, abs=0.5)
+    assert verdict.evidence["level_db_spl"] == pytest.approx(
+        MicSensitivity(_PROBE_SPL["sens_factor_db"]).db_spl_from_dbfs(played.level_db), abs=0.5)
+
+
+def test_a_probe_whose_program_never_played_reads_nothing_where_the_room_knocked(monkeypatch):
+    """A knock at each burst's start reads well over the room, but no burst played: the
+    probe reads no level and is judged a take the microphone did not hear (ADR-0442)."""
+    monkeypatch.setattr(_capture_dispatch, "read_output_volume", lambda: {})
+    program, capture, offset = _echoey_probe(stopped_in=5)
+    rng = np.random.default_rng(1)
+    room = rng.normal(0.0, 10 ** (-70 / 20), capture.size)
+    for burst in program.stimulus_segments():
+        start = offset + burst.start_sample
+        if start + _KNOCK.size < room.size:
+            room[start:start + _KNOCK.size] += 10 ** (-40 / 20) * rng.normal(size=_KNOCK.size) * _KNOCK
+
+    analysis, verdict = _probe_verdict(program, room, _STOPPED)
+
+    assert analysis.stimulus_levels == ()
+    assert (verdict.fault, verdict.next, verdict.next_gain_db) == (REASON_LOCATE_FAILED, "fix_and_retake", None)
+
+
+def test_a_probe_solves_from_the_highest_burst_it_heard_past_a_dropout():
+    """A playback dropout over the top burst leaves a knock in its window that reads over
+    the room, but no burst played there: the probe solves from the highest burst it heard,
+    no louder than its whole play asks (ADR-0442, ADR-0411)."""
+    program, capture, offset = _echoey_probe(stopped_in=5, dropped=4)
+    lost = program.segment("level_probe_4")
+    start = offset + lost.start_sample
+    capture[start:start + _KNOCK.size] += 10 ** (-40 / 20) * np.random.default_rng(50).normal(size=_KNOCK.size) * _KNOCK
+
+    analysis, verdict = _probe_verdict(program, capture, _STOPPED)
+
+    assert stimulus_level([capture[start:start + lost.n_samples]], capture[offset:offset + SR], gain_db=lost.gain_db,
+                          sample_rate=SR, band_hz=(20.0, 20000.0)).trusted
+    whole = _probe_verdict(*_echoey_probe(stopped_in=5)[:2], _STOPPED)[1]
+    assert verdict.fault is None and verdict.next_gain_db <= whole.next_gain_db + 0.5
+    assert max(reading.gain_db for reading in analysis.stimulus_levels) == -42.0
