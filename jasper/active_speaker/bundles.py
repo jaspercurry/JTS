@@ -57,7 +57,6 @@ from jasper.platform.paths import resolve_state_path
 
 from . import measurement as _measurement
 from .capture_geometry import DRIVER_PLACEMENT_POLICY_ID
-from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 from jasper.playback_state.install_profile import BUILD_MANIFEST_FILE
 
 logger = logging.getLogger(__name__)
@@ -74,11 +73,6 @@ LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION = 5
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/active_speaker/sessions")
 SESSIONS_DIR_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_DIR"
 
-# Aliased, not mirrored, from the owner
-# test_signal_plan.CROSSOVER_CAPTURE_MAX_WAV_BYTES. A bundle copy is never
-# larger than the capture it was made from, so one ceiling bounds both.
-MAX_CAPTURE_WAV_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
-
 # Retention ceiling for the commissioning-bundle store. Sized so twelve cloud
 # sessions fit: a run retains one ~1-2 MiB capture WAV per prompted position,
 # around 30 MB. Full per-position WAVs are kept rather than derived summaries —
@@ -91,7 +85,6 @@ SESSIONS_MAX_BYTES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BYTES"
 DEFAULT_SESSIONS_MAX_BUNDLES = 12
 SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"
 
-# Mirrors web_measurement.CAPTURE_FILE_MODE.
 BUNDLE_FILE_MODE = 0o640
 
 #: One capture entry's kind: ``driver`` is one driver alone, ``summed`` every
@@ -190,7 +183,7 @@ def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
 
     Minted BEFORE the measurement write so the same relative path can be
     embedded as the record's ``bundle_ref.artifact_path`` and later handed to
-    :func:`append_capture`, keeping the on-disk WAV equal to the path the
+    :func:`register_capture`, keeping the on-disk WAV equal to the path the
     durable measurement record names.
     """
 
@@ -443,7 +436,6 @@ def open_bundle(
         },
         "captures": [],
         "summed_captures": [],
-        "repeat_progress": {},
         "verification": None,
     }
     ensure_directory_mode(bundle_dir)
@@ -538,45 +530,6 @@ def _capture_group_role(payload: Mapping[str, Any]) -> tuple[Any, Any]:
     return group, role
 
 
-def _guarded_capture_source(
-    bundle_dir: Path, wav_source_path: Path | str, *, op: str
-) -> Path | None:
-    """Validate a capture WAV source exists and is within the size cap.
-
-    Returns ``None`` (WARN-logged under the shared fail-soft event name)
-    when the guard fails, so the caller can bail out before touching the
-    bundle at all — never a partial write from a missing/oversized source.
-    """
-
-    try:
-        source = Path(wav_source_path)
-    except TypeError:
-        log_event(
-            logger,
-            "active_speaker.bundle_write_failed",
-            level=logging.WARNING,
-            session=bundle_dir.name,
-            op=op,
-            error="capture wav source is not a filesystem path",
-        )
-        return None
-    try:
-        source_size = source.stat().st_size
-    except OSError:
-        source_size = None
-    if source_size is None or source_size > MAX_CAPTURE_WAV_BYTES:
-        log_event(
-            logger,
-            "active_speaker.bundle_write_failed",
-            level=logging.WARNING,
-            session=bundle_dir.name,
-            op=op,
-            error="capture wav source is missing or too large",
-        )
-        return None
-    return source
-
-
 def _record_capture_wav(bundle_dir: Path, rel_path: str) -> None:
     """Enter one in-bundle capture WAV in the artifact manifest."""
 
@@ -595,38 +548,12 @@ def _record_capture_wav(bundle_dir: Path, rel_path: str) -> None:
     )
 
 
-def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None:
-    """Copy (never move) one WAV to ``bundle_dir / rel_path`` and record it.
-
-    Copy, not move, so ``web_measurement.py``'s own browser-capture-store
-    retention is untouched. Raises on failure (``OSError``/``BundleError``)
-    — the caller is a ``_fail_soft``-wrapped public entry point.
-    """
-
-    dest = bundle_dir / rel_path
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    ensure_directory_mode(dest.parent)
-    tmp = dest.with_name(f".{dest.name}.tmp")
-    try:
-        shutil.copy2(source, tmp)
-        os.chmod(tmp, BUNDLE_FILE_MODE)
-        os.replace(tmp, dest)
-    finally:
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
-    _record_capture_wav(bundle_dir, rel_path)
-
-
 def _append_capture_entry(
     bundle_dir: Path, *, kind: str, rel_path: str, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
     """Write one capture's ``*.json`` sidecar and append its ``info.json`` entry.
 
-    Shared by the two placement routes — :func:`append_capture` copies the WAV
-    in first, :func:`register_capture` finds it already there — so one entry
-    shape serves both. Raises on failure; both callers are ``_fail_soft``.
+    Raises on failure; the caller is ``_fail_soft``.
     """
 
     group, role = _capture_group_role(payload)
@@ -706,10 +633,9 @@ def register_capture(
 ) -> dict[str, Any] | None:
     """Record a capture WAV the caller already wrote into the bundle.
 
-    :func:`append_capture`'s sibling for callers that mint the bundle relpath
-    with :func:`capture_artifact_relpath` and stream the bytes straight to it.
-    With no source file outside the bundle there is nothing to copy or
-    size-guard, so this does only the recording half.
+    The caller mints ``relative_path`` with :func:`capture_artifact_relpath` and
+    writes the bytes there itself; this enters the WAV in the artifact manifest
+    and files its ``*.json`` sidecar and ``info.json`` entry.
     """
 
     if kind not in _CAPTURE_KINDS:
@@ -718,158 +644,6 @@ def register_capture(
     return _append_capture_entry(
         bundle_dir, kind=kind, rel_path=relative_path, payload=payload
     )
-
-
-@_fail_soft("append_capture")
-def append_capture(
-    bundle_dir: Path,
-    *,
-    kind: str,
-    wav_source_path: Path | str,
-    payload: Mapping[str, Any],
-    relative_path: str | None = None,
-) -> dict[str, Any] | None:
-    """Copy one capture WAV into the bundle and record its compact entry.
-
-    ``payload`` is what a ``record_*_acoustic_capture`` call returned, or a
-    caller-enriched superset. It is written verbatim as the capture's ``*.json``
-    artifact, and a compact entry is appended to ``info.json``'s
-    ``captures``/``summed_captures`` list.
-
-    Guards the source file's existence and size before copying: a missing or
-    oversized source WARNs and returns ``None`` without touching the bundle.
-    """
-
-    if kind not in _CAPTURE_KINDS:
-        raise BundleError(f"unsupported capture kind: {kind!r}")
-    source = _guarded_capture_source(bundle_dir, wav_source_path, op="append_capture")
-    if source is None:
-        return None
-
-    group, role = _capture_group_role(payload)
-    rel_path = relative_path or capture_artifact_relpath(kind, group, role)
-    _copy_wav_into_bundle(bundle_dir, source, rel_path)
-    return _append_capture_entry(
-        bundle_dir, kind=kind, rel_path=rel_path, payload=payload
-    )
-
-
-@_fail_soft("append_repeat_capture")
-def append_repeat_capture(
-    bundle_dir: Path,
-    *,
-    index: int,
-    wav_source_path: Path | str,
-    payload: Mapping[str, Any],
-    relative_path: str | None = None,
-) -> dict[str, Any] | None:
-    """Copy one repeat-attempt WAV into ``repeat_captures/`` and record it.
-
-    Unlike :func:`append_capture`, a repeat attempt gets no compact
-    ``info.json`` entry: the ``per_repeat[]`` array,
-    attached to the WINNING capture's entry, is where each repeat's
-    ``artifact_path`` is discoverable. This files only the raw evidence — the
-    WAV plus its quality JSON, with a manifest dependency edge between them.
-
-    Returns ``{artifact_path, quality_json_path}`` or ``None`` on any
-    guard/write failure.
-    """
-
-    source = _guarded_capture_source(
-        bundle_dir, wav_source_path, op="append_repeat_capture"
-    )
-    if source is None:
-        return None
-
-    rel_path = relative_path or f"repeat_captures/repeat_{index}_{uuid.uuid4().hex}.wav"
-    _copy_wav_into_bundle(bundle_dir, source, rel_path)
-
-    json_rel = str(Path(rel_path).with_suffix(".json"))
-    write_json_artifact(
-        bundle_dir,
-        json_rel,
-        dict(payload),
-        kind="repeat_capture_analysis",
-        sensitivity="derived",
-        recomputable=True,
-        generated_by="active_speaker.bundles",
-        bundle_schema_version=(
-            BUNDLE_SCHEMA_VERSION
-            if (bundle_dir / "info.json").exists()
-            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
-        ),
-        dependencies=[rel_path],
-        schema_version=BUNDLE_SCHEMA_VERSION,
-        file_mode=BUNDLE_FILE_MODE,
-    )
-    return {"artifact_path": rel_path, "quality_json_path": json_rel}
-
-
-@_fail_soft("record_repeat_progress")
-def record_repeat_progress(
-    bundle_dir: Path,
-    *,
-    comparison_set_id: str,
-    target_fingerprint: str,
-    target_id: str,
-    attempts: int,
-    accepted: int,
-    target: int,
-    per_repeat: list[Mapping[str, Any]],
-    status: str,
-    reason: str | None = None,
-) -> dict[str, Any] | None:
-    """Persist compact, comparison-bound interim repeat state.
-
-    Raw WAVs and full analyses remain manifest artifacts. ``info.json`` keeps
-    only a forensic mirror of the authoritative admission ledger so a session
-    can be diagnosed without making bundle state a playback controller.
-    """
-
-    if status not in {"active", "completed", "refused"}:
-        raise BundleError("repeat progress status is invalid")
-    info = _read_info(bundle_dir)
-    progress = dict(info.get("repeat_progress") or {})
-    entry: dict[str, Any] = {
-        "schema_version": 1,
-        "comparison_set_id": str(comparison_set_id),
-        "target_fingerprint": str(target_fingerprint),
-        "target_id": str(target_id),
-        "attempts": int(attempts),
-        "accepted": int(accepted),
-        "target": int(target),
-        "status": status,
-        "per_repeat": [
-            {
-                key: item.get(key)
-                for key in (
-                    "index",
-                    "attempt",
-                    "accepted",
-                    "reject_reason",
-                    "artifact_path",
-                    "estimated_snr_db",
-                    "clipping",
-                    "above_validity_floor",
-                    "level_dbfs",
-                )
-            }
-            for item in per_repeat[:4]
-        ],
-        "updated_at": time.time(),
-    }
-    if reason:
-        entry["reason"] = str(reason)
-    progress[str(target_id)] = entry
-    _write_info(
-        bundle_dir,
-        {
-            **info,
-            "repeat_progress": progress,
-            "updated_at": time.time(),
-        },
-    )
-    return entry
 
 
 def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:

@@ -27,6 +27,5 @@ NEAR_FIELD_SILENCE_S = 0.5
 
 # Sweeps each driver plays in one take, unless its preset row or its pose
 # states its own (ADR-0434). Repeats past the first are bit-identical and feed
-# the in-capture drift and glitch estimator (#1668); a test pins a MEASURE
-# take at this count under the 5 MiB capture upload cap.
+# the in-capture drift and glitch estimator (#1668).
 SWEEPS_PER_TAKE = 3

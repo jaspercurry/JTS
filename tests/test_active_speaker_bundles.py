@@ -80,10 +80,8 @@ def _driver_payload(
         "measurement": measurement,
     }
     if not recorded:
-        # A skipped capture has no nested measurement record; the caller
-        # (web_measurement.py) enriches the payload with the top-level
-        # identity it already has in scope so append_capture can still file
-        # the capture under the right group/role.
+        # A skipped capture has no nested measurement record, so the caller
+        # supplies the top-level identity register_capture files it under.
         payload["speaker_group_id"] = group
         payload["role"] = role
     return payload
@@ -116,9 +114,23 @@ def _summed_payload(*, group: str = "mono", fc_hz: float = 2500.0) -> dict:
     }
 
 
-def _write_wav(path: Path, *, size: int = 64) -> Path:
-    path.write_bytes(b"\x00" * size)
-    return path
+def _register(
+    bundle_dir: Path,
+    *,
+    kind: str,
+    payload: dict,
+    relative_path: str | None = None,
+    wav_bytes: int = 64,
+) -> dict | None:
+    """Write a WAV into the bundle, as a wired take does, then register it."""
+
+    relative = relative_path or bundles.capture_artifact_relpath(kind, "mono", None)
+    wav = bundle_dir / relative
+    wav.parent.mkdir(parents=True, exist_ok=True)
+    wav.write_bytes(b"\x00" * wav_bytes)
+    return bundles.register_capture(
+        bundle_dir, kind=kind, relative_path=relative, payload=payload
+    )
 
 
 # --------------------------------------------------------------------------
@@ -157,7 +169,6 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     }
     assert info["captures"] == []
     assert info["summed_captures"] == []
-    assert info["repeat_progress"] == {}
     assert info["verification"] is None
 
     # Persisted to disk, not just returned in-memory.
@@ -338,30 +349,26 @@ def test_mark_state_validates_enum(tmp_path: Path, state: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# append_capture
+# register_capture
 # --------------------------------------------------------------------------
 
 
-def test_append_capture_records_wav_and_json_with_dependencies(
+def test_register_capture_records_wav_and_json_with_dependencies(
     tmp_path: Path,
 ) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
-    payload = _driver_payload()
+    relative = "captures/pre_minted_name.wav"
 
-    entry = bundles.append_capture(
-        bundle_dir, kind="driver", wav_source_path=wav, payload=payload
+    entry = _register(
+        bundle_dir, kind="driver", payload=_driver_payload(), relative_path=relative
     )
 
     assert entry is not None
+    assert entry["artifact_path"] == relative
     wav_path = bundle_dir / entry["artifact_path"]
-    assert wav_path.is_file()
-    assert wav_path.read_bytes() == wav.read_bytes()
     json_path = bundle_dir / entry["capture_json_path"]
     assert json_path.is_file()
-
-    assert wav_path.parent.stat().st_mode & 0o7777 == 0o750
 
     manifest = read_artifact_manifest(bundle_dir)
     assert manifest["bundle_schema_version"] == bundles.BUNDLE_SCHEMA_VERSION
@@ -379,18 +386,15 @@ def test_append_capture_records_wav_and_json_with_dependencies(
     assert json_entry["dependencies"] == [entry["artifact_path"]]
 
 
-def test_append_capture_appends_compact_entry_with_driver_role(
+def test_register_capture_appends_compact_entry_with_driver_role(
     tmp_path: Path,
 ) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
     payload = _driver_payload(group="mono", role="woofer")
     payload["placement_proof"]["accepted"] = True
 
-    entry = bundles.append_capture(
-        bundle_dir, kind="driver", wav_source_path=wav, payload=payload
-    )
+    entry = _register(bundle_dir, kind="driver", payload=payload)
 
     reloaded = bundles._read_info(bundle_dir)
     assert reloaded["captures"] == [entry]
@@ -406,15 +410,14 @@ def test_append_capture_appends_compact_entry_with_driver_role(
     assert reloaded["placement"]["acknowledged"] is True
 
 
-def test_append_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
+def test_register_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
     tmp_path: Path,
 ) -> None:
     for suffix, accepted, policy in (
         ("unaccepted", False, "driver_same_distance_v1"),
         ("wrong-policy", True, "summed_listening_position_v1"),
     ):
-        root = tmp_path / suffix
-        info = _open(root)
+        info = _open(tmp_path / suffix)
         bundle_dir = Path(info["bundle_dir"])
         payload = _driver_payload(group="mono", role="woofer")
         payload["placement_proof"].update(
@@ -423,26 +426,19 @@ def test_append_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
                 "policy_id": policy,
             }
         )
-        bundles.append_capture(
-            bundle_dir,
-            kind="driver",
-            wav_source_path=_write_wav(root / "src.wav"),
-            payload=payload,
-        )
+        _register(bundle_dir, kind="driver", payload=payload)
 
         assert bundles._read_info(bundle_dir)["placement"]["acknowledged"] is False
 
 
-def test_append_capture_summed_kind_omits_role_and_carries_fc(
+def test_register_capture_summed_kind_omits_role_and_carries_fc(
     tmp_path: Path,
 ) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "summed.wav")
-    payload = _summed_payload(fc_hz=2500.0)
 
-    entry = bundles.append_capture(
-        bundle_dir, kind="summed", wav_source_path=wav, payload=payload
+    entry = _register(
+        bundle_dir, kind="summed", payload=_summed_payload(fc_hz=2500.0)
     )
 
     reloaded = bundles._read_info(bundle_dir)
@@ -454,21 +450,18 @@ def test_append_capture_summed_kind_omits_role_and_carries_fc(
     assert entry["artifact_path"].startswith("summed/")
 
 
-def test_append_capture_resolves_group_role_from_top_level_when_unrecorded(
+def test_register_capture_resolves_group_role_from_top_level_when_unrecorded(
     tmp_path: Path,
 ) -> None:
     """A skipped (recorded=False) capture has no nested measurement record;
-    append_capture must still file it under the caller-supplied identity."""
+    register_capture must still file it under the caller-supplied identity."""
 
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
     payload = _driver_payload(group="mono", role="tweeter", recorded=False)
     assert payload["measurement"] is None
 
-    entry = bundles.append_capture(
-        bundle_dir, kind="driver", wav_source_path=wav, payload=payload
-    )
+    entry = _register(bundle_dir, kind="driver", payload=payload)
 
     assert entry is not None
     assert entry["group"] == "mono"
@@ -477,129 +470,37 @@ def test_append_capture_resolves_group_role_from_top_level_when_unrecorded(
     assert entry["measurement_id"] is None
 
 
-def test_append_capture_uses_relative_path_when_given(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
-    payload = _driver_payload()
-
-    entry = bundles.append_capture(
-        bundle_dir,
-        kind="driver",
-        wav_source_path=wav,
-        payload=payload,
-        relative_path="captures/pre_minted_name.wav",
-    )
-
-    assert entry["artifact_path"] == "captures/pre_minted_name.wav"
-    assert (bundle_dir / "captures" / "pre_minted_name.wav").is_file()
-
-
-def test_append_capture_copies_never_moves_source(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
-
-    bundles.append_capture(
-        bundle_dir, kind="driver", wav_source_path=wav, payload=_driver_payload()
-    )
-
-    assert wav.exists()  # source untouched — web_measurement owns its own retention
-
-
-def test_append_capture_rejects_missing_source(tmp_path: Path, caplog) -> None:
+def test_register_capture_rejects_unsupported_kind(tmp_path: Path) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
 
-    with caplog.at_level(logging.WARNING):
-        entry = bundles.append_capture(
-            bundle_dir,
-            kind="driver",
-            wav_source_path=tmp_path / "missing.wav",
-            payload=_driver_payload(),
-        )
-
-    assert entry is None
-    event_fields(caplog, "active_speaker.bundle_write_failed")
-    reloaded = bundles._read_info(bundle_dir)
-    assert reloaded["captures"] == []
-
-
-def test_append_capture_rejects_oversized_source(tmp_path: Path, caplog) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "huge.wav", size=bundles.MAX_CAPTURE_WAV_BYTES + 1)
-
-    with caplog.at_level(logging.WARNING):
-        entry = bundles.append_capture(
-            bundle_dir, kind="driver", wav_source_path=wav, payload=_driver_payload()
-        )
-
-    assert entry is None
-    event_fields(caplog, "active_speaker.bundle_write_failed")
-
-
-def test_append_capture_rejects_source_that_is_not_a_filesystem_path(
-    tmp_path: Path, caplog
-) -> None:
-    """A wav_source_path that Path() itself cannot construct (e.g. a caller
-    bug passing None) must fail soft exactly like the missing/oversized
-    guard, never raise TypeError out of append_capture."""
-
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-
-    with caplog.at_level(logging.WARNING):
-        entry = bundles.append_capture(
-            bundle_dir,
-            kind="driver",
-            wav_source_path=None,
-            relative_path="captures/x.wav",
-            payload={},
-        )
-
-    assert entry is None
-    fields = event_fields(caplog, "active_speaker.bundle_write_failed")
-    assert fields["op"] == "append_capture"
-    manifest = read_artifact_manifest(bundle_dir)
-    assert not any(a["path"] == "captures/x.wav" for a in manifest["artifacts"])
-    assert not (bundle_dir / "captures" / "x.wav").exists()
-
-
-def test_append_capture_rejects_unsupported_kind(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
-
-    result = bundles.append_capture(
-        bundle_dir, kind="bogus", wav_source_path=wav, payload=_driver_payload()
-    )
+    result = _register(bundle_dir, kind="bogus", payload=_driver_payload())
     assert result is None
 
 
-def test_append_capture_is_fail_soft_when_info_json_is_missing(
+def test_register_capture_is_fail_soft_when_info_json_is_missing(
     tmp_path: Path, caplog
 ) -> None:
     """The pinned promise: a bundle-dir write failure never blocks the
-    capture path. Here the bundle directory exists (so the WAV copy and its
-    manifest entry succeed) but has no info.json — append_capture must still
+    capture path. Here the bundle directory exists (so the WAV's manifest
+    entry succeeds) but has no info.json — register_capture must still
     return None + WARN, mid-write, rather than raise once it reaches the
-    info.json read/rewrite step."""
+    sidecar/info.json step."""
 
     bundle_dir = tmp_path / "partial-bundle"
     bundle_dir.mkdir()
-    wav = _write_wav(tmp_path / "src.wav")
 
     with caplog.at_level(logging.WARNING):
-        result = bundles.append_capture(
-            bundle_dir, kind="driver", wav_source_path=wav, payload=_driver_payload()
-        )
+        result = _register(bundle_dir, kind="driver", payload=_driver_payload())
 
     assert result is None
     fields = event_fields(caplog, "active_speaker.bundle_write_failed")
-    assert fields["op"] == "append_capture"
-    # The WAV copy ran to completion before the info.json step failed.
-    assert list(bundle_dir.glob("captures/*.wav"))
+    assert fields["op"] == "register_capture"
+    assert (
+        read_artifact_manifest(bundle_dir)["bundle_schema_version"]
+        == bundles.LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        == 5
+    )
 
 
 # --------------------------------------------------------------------------
@@ -649,16 +550,15 @@ def test_list_bundles_treats_missing_sessions_dir_as_empty(
 def test_summarize_bundle_reports_counts_and_size(tmp_path: Path) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "src.wav")
-    bundles.append_capture(
-        bundle_dir, kind="driver", wav_source_path=wav, payload=_driver_payload()
+    _register(
+        bundle_dir, kind="driver", payload=_driver_payload(), wav_bytes=256 * 1024
     )
 
     summary = bundles.summarize_bundle(bundle_dir)
 
     assert summary["capture_count"] == 1
     assert summary["summed_capture_count"] == 0
-    assert summary["bundle_size_bytes"] > 0
+    assert summary["bundle_size_bytes"] >= 256 * 1024
     assert summary["has_artifact_manifest"] is True
     assert summary["artifact_count"] >= 2  # info.json + the WAV (+ its JSON)
 
@@ -797,190 +697,3 @@ def test_capture_artifact_relpath_is_unique_per_call() -> None:
     a = bundles.capture_artifact_relpath("driver", "mono", "woofer")
     b = bundles.capture_artifact_relpath("driver", "mono", "woofer")
     assert a != b
-
-
-# --------------------------------------------------------------------------
-# Step 2: repeat captures — repeat_captures/ manifest entries
-# --------------------------------------------------------------------------
-
-
-def test_append_repeat_capture_records_wav_and_json_under_repeat_captures(
-    tmp_path: Path,
-) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "repeat.wav")
-    payload = {
-        "verdict": "present",
-        "acoustic": {"observed_mic_dbfs": -30.0, "mic_clipping": False},
-    }
-
-    entry = bundles.append_repeat_capture(
-        bundle_dir, index=0, wav_source_path=wav, payload=payload
-    )
-
-    assert entry is not None
-    assert entry["artifact_path"].startswith("repeat_captures/")
-    wav_path = bundle_dir / entry["artifact_path"]
-    assert wav_path.is_file()
-    assert wav_path.read_bytes() == wav.read_bytes()
-    json_path = bundle_dir / entry["quality_json_path"]
-    assert json_path.is_file()
-
-    manifest = read_artifact_manifest(bundle_dir)
-    by_path = {a["path"]: a for a in manifest["artifacts"]}
-    assert entry["artifact_path"] in by_path
-    assert by_path[entry["artifact_path"]]["kind"] == "capture_wav"
-    assert by_path[entry["artifact_path"]]["sensitivity"] == "private_raw_audio"
-    json_entry = by_path[entry["quality_json_path"]]
-    assert json_entry["kind"] == "repeat_capture_analysis"
-    assert json_entry["dependencies"] == [entry["artifact_path"]]
-
-    # A repeat capture is NOT added to info.json's captures/summed_captures
-    # compact lists -- it's raw evidence only, indexed via the winning
-    # capture's per_repeat[] array instead.
-    reloaded = bundles._read_info(bundle_dir)
-    assert reloaded["captures"] == []
-    assert reloaded["summed_captures"] == []
-
-
-def test_append_repeat_capture_uses_relative_path_when_given(
-    tmp_path: Path,
-) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    wav = _write_wav(tmp_path / "repeat.wav")
-
-    entry = bundles.append_repeat_capture(
-        bundle_dir,
-        index=2,
-        wav_source_path=wav,
-        payload={"verdict": "present"},
-        relative_path="repeat_captures/pre_minted.wav",
-    )
-
-    assert entry["artifact_path"] == "repeat_captures/pre_minted.wav"
-    assert (bundle_dir / "repeat_captures" / "pre_minted.wav").is_file()
-
-
-def test_append_repeat_capture_multiple_attempts_coexist(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    paths = set()
-    for index in range(3):
-        wav = _write_wav(tmp_path / f"repeat_{index}.wav", size=32 + index)
-        entry = bundles.append_repeat_capture(
-            bundle_dir,
-            index=index,
-            wav_source_path=wav,
-            payload={"verdict": "present", "index": index},
-        )
-        assert entry is not None
-        paths.add(entry["artifact_path"])
-    assert len(paths) == 3  # every attempt gets a distinct file
-    manifest = read_artifact_manifest(bundle_dir)
-    repeat_entries = [
-        a for a in manifest["artifacts"] if a["path"].startswith("repeat_captures/")
-    ]
-    # 3 WAVs + 3 quality JSONs.
-    assert len(repeat_entries) == 6
-
-
-def test_repeat_progress_is_compact_bounded_and_durable(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    per_repeat = [
-        {
-            "index": index,
-            "accepted": index != 2,
-            "reject_reason": "level_outlier" if index == 2 else None,
-            "artifact_path": f"repeat_captures/{index}.wav",
-            "estimated_snr_db": 31.0 + index,
-            "clipping": False,
-            "above_validity_floor": True,
-            "level_dbfs": -30.0 + index / 10,
-            "full_acoustic_curve_must_not_be_copied": [1, 2, 3],
-        }
-        for index in range(5)
-    ]
-
-    entry = bundles.record_repeat_progress(
-        bundle_dir,
-        comparison_set_id="c" * 32,
-        target_fingerprint="driver-fp",
-        target_id="mono:woofer",
-        attempts=4,
-        accepted=3,
-        target=3,
-        per_repeat=per_repeat,
-        status="active",
-    )
-
-    assert entry is not None
-    assert entry["attempts"] == 4
-    assert len(entry["per_repeat"]) == 4
-    assert all(
-        "full_acoustic_curve_must_not_be_copied" not in repeat
-        for repeat in entry["per_repeat"]
-    )
-    reloaded = bundles._read_info(bundle_dir)["repeat_progress"]["mono:woofer"]
-    assert reloaded == entry
-
-
-def test_append_repeat_capture_rejects_missing_source(tmp_path: Path, caplog) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-
-    with caplog.at_level(logging.WARNING):
-        entry = bundles.append_repeat_capture(
-            bundle_dir,
-            index=0,
-            wav_source_path=tmp_path / "missing.wav",
-            payload={"verdict": "present"},
-        )
-
-    assert entry is None
-    fields = event_fields(caplog, "active_speaker.bundle_write_failed")
-    assert fields["op"] == "append_repeat_capture"
-
-
-def test_append_repeat_capture_is_fail_soft_when_info_json_is_missing(
-    tmp_path: Path, caplog
-) -> None:
-    # append_repeat_capture never touches info.json, but the WAV copy step
-    # itself must still degrade gracefully rather than raise if the bundle
-    # directory disappears mid-write.
-    bundle_dir = tmp_path / "partial-bundle"
-    bundle_dir.mkdir()
-    wav = _write_wav(tmp_path / "repeat.wav")
-
-    entry = bundles.append_repeat_capture(
-        bundle_dir, index=0, wav_source_path=wav, payload={"verdict": "present"}
-    )
-
-    # No info.json requirement -- this succeeds even without an opened
-    # bundle, since repeat evidence has no compact list to update.
-    assert entry is not None
-    assert (
-        bundles.read_artifact_manifest(bundle_dir)["bundle_schema_version"]
-        == bundles.LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
-        == 5
-    )
-    assert (bundle_dir / entry["artifact_path"]).is_file()
-
-
-def test_repeat_captures_count_toward_bundle_size_and_retention(
-    tmp_path: Path,
-) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    bundles.append_repeat_capture(
-        bundle_dir,
-        index=0,
-        wav_source_path=_write_wav(tmp_path / "r.wav", size=256),
-        payload={"verdict": "present"},
-    )
-
-    summary = bundles.summarize_bundle(bundle_dir)
-
-    assert summary["bundle_size_bytes"] >= 256

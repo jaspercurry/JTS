@@ -47,7 +47,6 @@ LEGACY_UNNAMESPACED_KINDS = frozenset(
         "capture_analysis",
         "capture_wav",
         "metadata",
-        "repeat_capture_analysis",
     }
 )
 

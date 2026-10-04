@@ -409,12 +409,8 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     ``summed_captures: []`` and ``artifact_manifest.json`` listed only
     ``info.json`` itself, so a bundle carrying tens of MB of real audio did
     not describe any of it.
-
-    The oversize take is the second half of the pin: a real summed capture
-    runs past ``append_capture``'s external-source size guard, so the
-    recording route must be the one that does not apply it.
     """
-    from jasper.active_speaker.bundles import MAX_CAPTURE_WAV_BYTES, open_bundle
+    from jasper.active_speaker.bundles import open_bundle
     from jasper.active_speaker.commissioning_evidence_store import (
         CommissioningEvidenceStore,
     )
@@ -433,9 +429,9 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     )
     bank = retained_take_writer(store, "cap_record_session", asyncio.run)
 
-    oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
+    take = b"retained-take"
     bank_id = bank(
-        WiredCaptureAnswer(wav=oversize),
+        WiredCaptureAnswer(wav=take),
         {"position_id": f"{PHASE_VERIFY}_04",
          "take_id": f"{PHASE_VERIFY}_04_a04", "measure_kind": "",
          "phase": PHASE_VERIFY, "index": 4, "attempt": 4,
@@ -451,7 +447,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     assert len(entries) == 1
     entry = entries[0]
     assert entry["group"] == f"{PHASE_VERIFY}_04_a04"
-    assert (bundle_dir / entry["artifact_path"]).read_bytes() == oversize
+    assert (bundle_dir / entry["artifact_path"]).read_bytes() == take
     assert (bundle_dir / entry["capture_json_path"]).is_file()
 
     manifest = json.loads((bundle_dir / "artifact_manifest.json").read_text())
@@ -460,9 +456,9 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     }
     assert entry["artifact_path"] in recorded
     assert entry["capture_json_path"] in recorded
-    assert recorded[entry["artifact_path"]]["byte_size"] == len(oversize)
+    assert recorded[entry["artifact_path"]]["byte_size"] == len(take)
     assert recorded[entry["artifact_path"]]["sha256"] == hashlib.sha256(
-        oversize
+        take
     ).hexdigest()
 
 

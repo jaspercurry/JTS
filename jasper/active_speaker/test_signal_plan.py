@@ -48,12 +48,6 @@ DRIVER_SWEEP_DURATIONS_S = {
 DEFAULT_DRIVER_SWEEP_DURATION_S = 6.0
 MAX_TWEETER_SWEEP_DURATION_S = 4.0
 
-# Bounds a capture WAV upload. The longest production capture (MEASURE) fits
-# under it with margin, pinned by tests/test_audio_measurement_program.py, and
-# it stays far below the correction host's 32 MiB generic upload ceiling
-# (``correction_runtime.MAX_WAV_BODY_BYTES``).
-CROSSOVER_CAPTURE_MAX_WAV_BYTES = 5 * 1024 * 1024
-
 
 def driver_sweep_duration_s(role: str) -> float:
     """Return the protected measurement-sweep duration for ``role``.

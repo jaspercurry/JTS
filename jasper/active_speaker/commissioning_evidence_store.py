@@ -9,10 +9,9 @@ canonical artifacts under ``evidence/v1/artifacts/``, and verifies exact bytes
 on every reopen. ``info.json`` and the fail-soft forensic manifest are not
 evidence authority.
 
-One raw artifact is capped at the 5 MiB crossover-capture ceiling; the total
-bound is a hard safety ceiling, not a retention target. A capture WAV is
-published once at its authoritative path; this store creates no manifest or
-shadow WAV copy.
+One raw artifact is capped at 5 MiB; the total bound is a hard safety ceiling,
+not a retention target. A capture WAV is published once at its authoritative
+path; this store creates no manifest or shadow WAV copy.
 """
 
 from __future__ import annotations
@@ -44,13 +43,12 @@ from .bundles import (
     BUNDLE_KIND,
     open_bundle_admission_authority,
 )
-from .test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 
 # "v1" is the artifact namespace's on-disk schema version, still written by
 # crossover_v2 and attribution -- unrelated to the deleted v1 commissioning
 # lane (ADR-0288).
 EVIDENCE_ROOT = "evidence/v1"
-MAX_EVIDENCE_ARTIFACT_BYTES = CROSSOVER_CAPTURE_MAX_WAV_BYTES
+MAX_EVIDENCE_ARTIFACT_BYTES = 5 * 1024 * 1024
 # Bound for a read outside ``evidence/v1/artifacts/`` -- e.g.
 # crossover_v2/record_index.reopen_measurement_capture reopening take JSON
 # and ``summed/*.wav`` capture bytes.
