@@ -436,7 +436,6 @@ def open_bundle(
         },
         "captures": [],
         "summed_captures": [],
-        "repeat_progress": {},
         "verification": None,
     }
     ensure_directory_mode(bundle_dir)
@@ -645,73 +644,6 @@ def register_capture(
     return _append_capture_entry(
         bundle_dir, kind=kind, rel_path=relative_path, payload=payload
     )
-
-
-@_fail_soft("record_repeat_progress")
-def record_repeat_progress(
-    bundle_dir: Path,
-    *,
-    comparison_set_id: str,
-    target_fingerprint: str,
-    target_id: str,
-    attempts: int,
-    accepted: int,
-    target: int,
-    per_repeat: list[Mapping[str, Any]],
-    status: str,
-    reason: str | None = None,
-) -> dict[str, Any] | None:
-    """Persist compact, comparison-bound interim repeat state.
-
-    Raw WAVs and full analyses remain manifest artifacts. ``info.json`` keeps
-    only a forensic mirror of the authoritative admission ledger so a session
-    can be diagnosed without making bundle state a playback controller.
-    """
-
-    if status not in {"active", "completed", "refused"}:
-        raise BundleError("repeat progress status is invalid")
-    info = _read_info(bundle_dir)
-    progress = dict(info.get("repeat_progress") or {})
-    entry: dict[str, Any] = {
-        "schema_version": 1,
-        "comparison_set_id": str(comparison_set_id),
-        "target_fingerprint": str(target_fingerprint),
-        "target_id": str(target_id),
-        "attempts": int(attempts),
-        "accepted": int(accepted),
-        "target": int(target),
-        "status": status,
-        "per_repeat": [
-            {
-                key: item.get(key)
-                for key in (
-                    "index",
-                    "attempt",
-                    "accepted",
-                    "reject_reason",
-                    "artifact_path",
-                    "estimated_snr_db",
-                    "clipping",
-                    "above_validity_floor",
-                    "level_dbfs",
-                )
-            }
-            for item in per_repeat[:4]
-        ],
-        "updated_at": time.time(),
-    }
-    if reason:
-        entry["reason"] = str(reason)
-    progress[str(target_id)] = entry
-    _write_info(
-        bundle_dir,
-        {
-            **info,
-            "repeat_progress": progress,
-            "updated_at": time.time(),
-        },
-    )
-    return entry
 
 
 def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:

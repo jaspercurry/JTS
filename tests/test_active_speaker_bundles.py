@@ -169,7 +169,6 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
     }
     assert info["captures"] == []
     assert info["summed_captures"] == []
-    assert info["repeat_progress"] == {}
     assert info["verification"] is None
 
     # Persisted to disk, not just returned in-memory.
@@ -698,49 +697,3 @@ def test_capture_artifact_relpath_is_unique_per_call() -> None:
     a = bundles.capture_artifact_relpath("driver", "mono", "woofer")
     b = bundles.capture_artifact_relpath("driver", "mono", "woofer")
     assert a != b
-
-
-# --------------------------------------------------------------------------
-# record_repeat_progress
-# --------------------------------------------------------------------------
-
-
-def test_repeat_progress_is_compact_bounded_and_durable(tmp_path: Path) -> None:
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    per_repeat = [
-        {
-            "index": index,
-            "accepted": index != 2,
-            "reject_reason": "level_outlier" if index == 2 else None,
-            "artifact_path": f"repeat_captures/{index}.wav",
-            "estimated_snr_db": 31.0 + index,
-            "clipping": False,
-            "above_validity_floor": True,
-            "level_dbfs": -30.0 + index / 10,
-            "full_acoustic_curve_must_not_be_copied": [1, 2, 3],
-        }
-        for index in range(5)
-    ]
-
-    entry = bundles.record_repeat_progress(
-        bundle_dir,
-        comparison_set_id="c" * 32,
-        target_fingerprint="driver-fp",
-        target_id="mono:woofer",
-        attempts=4,
-        accepted=3,
-        target=3,
-        per_repeat=per_repeat,
-        status="active",
-    )
-
-    assert entry is not None
-    assert entry["attempts"] == 4
-    assert len(entry["per_repeat"]) == 4
-    assert all(
-        "full_acoustic_curve_must_not_be_copied" not in repeat
-        for repeat in entry["per_repeat"]
-    )
-    reloaded = bundles._read_info(bundle_dir)["repeat_progress"]["mono:woofer"]
-    assert reloaded == entry
