@@ -11,7 +11,7 @@
 - **Context:** `capture_dispatch.assess` levelled a take from its reading before it judged the
   recording, and the frame-ledger refusals are part of that judgment (any lost or inserted frame
   fails, #2094). So a take whose ledger named lost frames could still be levelled: a level probe
-  that read a burst, and any other take that levels itself and read outside its band. A reading is
+  with a trusted reading, and any other take that levels itself and read outside its band. A reading is
   the loudest period of a sweep (ADR-0364), and lost frames can cut that period out. A jts3 seat
   probe with 100 to 200 ms of frames removed at 20% of its −36 dBFS burst solved 2.54 dB louder
   than the same take whole. The review of [#6281](https://github.com/jaspercurry/JTS/pull/6281)
@@ -27,7 +27,9 @@
     `level_unreachable` (ADR-0422 §2) or asks for the microphone as `snr_floor`. A probe that read
     no burst already did this (ADR-0442 §3).
   - The retake is the speaker's charge and counts against the placement's two extra takes
-    (ADR-0422 §1), as for any other take with a frame fault.
+    (ADR-0422 §1), as for any other take with a frame fault. Two faulted probes in a row whose
+    readings agree within 2 dB spend the placement at once (ADR-0428), and a spent placement at the
+    run's probe still stops the run, now named as the frame fault.
   - A stopped probe is not refused for its stop. The ledger counts overruns and the frames at each
     stage of the capture chain, never the program's length, and the recorder records its post-roll
     after the stop. All 8 stopped jts3 probes had clean ledgers.
