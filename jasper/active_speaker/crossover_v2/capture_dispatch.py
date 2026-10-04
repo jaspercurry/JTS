@@ -153,6 +153,10 @@ def _pilots_heard(analysis: ProgramAnalysis) -> bool | None:
     return analysis.pilot_snr_ok or analysis.linearity_ok is True
 
 
+def _frames_lost(analysis: ProgramAnalysis) -> bool:
+    return bool(analysis.frame_ledger and analysis.frame_ledger.lost_at)
+
+
 def pilot_screens(analysis: ProgramAnalysis, *, program: ExcitationProgram | None = None) -> list[dict[str, Any]]:
     if _pilots_heard(analysis) is not False:
         return []
@@ -179,9 +183,10 @@ def assess(
     # level probe is never kept: with no reading it trusts, it asks for the microphone
     # again (ADR-0365), unless its SPL watch did not stop it: it then played every burst up
     # to its take's ceiling, so no more level is available and the run stops (ADR-0422).
+    # A probe that lost frames is judged first: the loss can cut a burst's loudest period.
     capped = (level is not None and level.gap_db > 0 and level_asked_dbfs is not None
               and level.peak_dbfs < level_asked_dbfs)
-    if prior_verdict is None and _stimulus_locate_ok(analysis, program):
+    if prior_verdict is None and _stimulus_locate_ok(analysis, program) and not (probe and _frames_lost(analysis)):
         if probe and (level is None or not level.reading.trusted):
             prior_verdict = TakeVerdict(False, fault=reasons.REASON_SNR_FLOOR, next="fix_and_retake", charge="operator")
         elif level is not None and (probe or (abs(level.gap_db) > level.rule.tolerance_db and not capped)):
@@ -258,7 +263,7 @@ def _assess_recording(
         "pilot_ambient": analysis.pilot_ambient,
         "anchor_ambiguous": analysis.anchor_ambiguous or bool(anchor and anchor.ambiguous),
         "glitch_detected": bool(analysis.glitch_detected),
-        "frame_loss": bool(analysis.frame_ledger and analysis.frame_ledger.lost_at),
+        "frame_loss": _frames_lost(analysis),
         "glitch_inputs": ",".join(drift.glitch_inputs) if drift else "",
     }
     figures = {

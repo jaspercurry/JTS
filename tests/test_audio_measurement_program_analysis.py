@@ -187,7 +187,9 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _capture_dispatch
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_LOCATE_FAILED
+from jasper.active_speaker.crossover_v2.refusal_copy import (
+    REASON_CAPTURE_OVERRUN, REASON_DRIFT_BASELINES_DISAGREE, REASON_LOCATE_FAILED,
+)
 from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
@@ -7634,8 +7636,8 @@ def _echoey_probe(*, stopped_in: int, dropped: int | None = None, arrival: float
     return program, capture[:offset + burst.start_sample + burst.n_samples // 3 + round(WIRED_POST_ROLL_S * SR)], offset
 
 
-def _probe_verdict(program, capture, spl):
-    analysis = program_analysis.analyze_program_capture(program, capture, SR)
+def _probe_verdict(program, capture, spl, report=None):
+    analysis = program_analysis.analyze_program_capture(program, capture, SR, capture_report=report)
     return analysis, _capture_dispatch.assess(analysis, phase=program.phase, program=program, spl=spl,
                                               pose_level=SEAT_LEVEL)
 
@@ -7697,3 +7699,26 @@ def test_a_probe_solves_from_the_highest_burst_it_heard_past_a_dropout():
     whole = _probe_verdict(*_echoey_probe(stopped_in=5)[:2], _STOPPED)[1]
     assert verdict.fault is None and verdict.next_gain_db <= whole.next_gain_db + 0.5
     assert max(reading.gain_db for reading in analysis.stimulus_levels) == -42.0
+
+
+@pytest.mark.parametrize("counts, fault", [
+    # The recorder overran and counted the frames it lost.
+    (lambda n, lost: {"frames": n, "encoded_frames": n, "capture_gaps": 1, "capture_gap_frames": lost},
+     REASON_CAPTURE_OVERRUN),
+    # The host received fewer frames than the encoder counted.
+    (lambda n, lost: {"frames": n + lost, "encoded_frames": n + lost}, REASON_DRIFT_BASELINES_DISAGREE),
+], ids=["overrun", "unbalanced"])
+def test_a_probe_whose_ledger_names_lost_frames_is_retaken_before_it_is_levelled(counts, fault):
+    """Frames lost inside a probe's top burst can make that burst read low, so a probe
+    whose frame ledger names lost frames is retaken the same, with that fault and no
+    gain, and is never levelled from what it read."""
+    program, capture, offset = _echoey_probe(stopped_in=5)
+    top = program.segment("level_probe_4")
+    start, lost = offset + top.start_sample + top.n_samples // 4, round(0.2 * SR)
+    capture = np.delete(capture, slice(start, start + lost))
+
+    analysis, verdict = _probe_verdict(program, capture, _STOPPED, counts(capture.size, lost))
+
+    assert analysis.stimulus_levels
+    assert (verdict.ok, verdict.fault, verdict.next, verdict.charge, verdict.next_gain_db) == (
+        False, fault, "retake_same", "speaker", None)
