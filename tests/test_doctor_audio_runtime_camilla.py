@@ -115,11 +115,13 @@ def test_camilla_configs_writable_verdicts(monkeypatch, tmp_path, mode, group, s
     d = tmp_path / "configs"
     if mode is not None:
         d.mkdir()
+        # BSD parents (macOS /private/tmp) hand a new dir their own group.
+        os.chown(d, -1, os.getgid())
         os.chmod(d, mode)
         # macOS sandboxes clear setgid on chmod; pin the classifier's input mode.
         real_stat = Path.stat
         st = os.stat_result((d.stat().st_mode | (mode & 0o2000), *d.stat()[1:]))
-        monkeypatch.setattr(Path, "stat", lambda path: st if path == d else real_stat(path))
+        monkeypatch.setattr(Path, "stat", lambda path, **kwargs: st if path == d else real_stat(path, **kwargs))
 
     res = audio_runtime_camilla._camilla_configs_writable_result(
         d, expected_group=group or _own_group()
