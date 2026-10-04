@@ -163,9 +163,7 @@ def load_commissioning_view(topology: OutputTopology | None = None) -> dict[str,
     preview = build_crossover_preview(design_draft)
     calibration_level = load_calibration_level_state()
     applied = load_applied_baseline_profile_state()
-    baseline = compile_commissioning_profile(
-        applied_profile=applied, topology=topology, design_draft=design_draft, crossover_preview=preview,
-    )
+    baseline = compile_commissioning_profile(applied_profile=applied, topology=topology, design_draft=design_draft)
     programs = programs_for_topology(topology)
     return build_commissioning_view(
         topology,

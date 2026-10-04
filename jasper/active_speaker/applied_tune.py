@@ -138,7 +138,6 @@ def rear_calibration_issues(candidate: MeasuredCrossoverCandidate) -> list[dict[
 def compile_commissioning_profile(
     *, applied_profile: Mapping[str, Any] | None, topology: OutputTopology | None = None,
     design_draft: Mapping[str, Any] | None = None,
-    crossover_preview: Mapping[str, Any] | None = None,
     find_candidate: Callable[[str], candidate_bank.BankedCandidate] | None = None,
 ) -> dict[str, Any]:
     """Review the applied candidate, or bootstrap from the declared crossover.
@@ -169,8 +168,7 @@ def compile_commissioning_profile(
         target = baseline_candidate_config_path(text)
         profile.update(baseline_record.prepare_applied_baseline_profile(
             banked, declaration=declaration, design_draft=draft,
-            config_path=target, config_sha256=sha256_text(text), crossover_preview=crossover_preview,
-            saved_timing=(applied or {}).get("timing"),
+            config_path=target, config_sha256=sha256_text(text), saved_timing=(applied or {}).get("timing"),
         ))
         profile["issues"] = [*(candidate.analysis.get("issues") or []), *rear_calibration_issues(candidate)]
         profile["candidate_fingerprint"] = baseline_profile.baseline_candidate_fingerprint(profile)

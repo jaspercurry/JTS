@@ -23,7 +23,6 @@ from .baseline_profile import (
     BASELINE_PROFILE_KIND, PROVENANCE_AUTHORED_BY_MODEL, PROVENANCE_MANUAL, PROVENANCE_MEASURED, SCHEMA_VERSION,
 )
 from .candidate_bank import BankedCandidate
-from .crossover_preview import build_crossover_preview, crossover_preview_fingerprint
 from .measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
@@ -37,8 +36,6 @@ from .profile import ActiveSpeakerPreset, required_driver_roles
 
 def _source_payload(
     topology: OutputTopology,
-    design_draft: Mapping[str, Any],
-    crossover_preview: Mapping[str, Any],
     *,
     measured_candidate_fingerprint: str | None = None,
     driver_protection: Mapping[str, Any] | None = None,
@@ -48,9 +45,6 @@ def _source_payload(
     source = {
         "topology_id": topology.topology_id,
         "topology_fingerprint": topology_config_fingerprint(topology),
-        "crossover_preview_fingerprint": crossover_preview_fingerprint(
-            crossover_preview, design_draft
-        ),
         # Frozen at the retired driver-check record's no-record answer; see
         # empty_driver_check_summary.
         "measurements_updated_at": None,
@@ -182,7 +176,6 @@ def prepare_applied_baseline_profile(
     declaration: MeasurementGraphProfile,
     design_draft: Mapping[str, Any],
     config_path: str | Path | None = None,
-    crossover_preview: Mapping[str, Any] | None = None,
     config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
@@ -191,11 +184,8 @@ def prepare_applied_baseline_profile(
     """Build an apply record from resolved inputs without reading or writing the bank."""
     candidate = banked.candidate
     protection = protection_projection(design_draft.get("driver_safety_profile"))
-    if crossover_preview is None:
-        crossover_preview = build_crossover_preview(design_draft)
     source = _source_payload(
-        declaration.topology, design_draft, crossover_preview,
-        measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
+        declaration.topology, measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
     )
     source = {**source, **((provenance or {}).get("source") or {}),
               **({"driver_protection_fingerprint": _fingerprint(protection)} if protection is not None else {}),

@@ -10,7 +10,7 @@ import math
 from typing import Any, Mapping
 
 from jasper.platform.json_fields import as_float, issue as _issue
-from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError, canonical_fingerprint
+from jasper.audio_routes.output_topology import OutputTopology, OutputTopologyError
 from jasper.platform.speaker_layout import ADJACENT_PAIRS_BY_MAIN_MODE
 from .design_inputs import resolved_draft_inputs
 from .driver_protection import (
@@ -38,58 +38,6 @@ DEFAULT_SLOPE_DB_PER_OCTAVE = 24.0
 
 def _as_mapping(raw: Any) -> Mapping[str, Any] | None:
     return raw if isinstance(raw, Mapping) else None
-
-
-def _manual_crossover_settings(design_draft: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    manual = _as_mapping(design_draft.get("manual_settings"))
-    if manual is None:
-        return None
-    # The rear stage's spacing binds no driver trim: a layer above never stales one below (#6227).
-    return {**{key: value for key, value in manual.items()
-               if value is not None and key != "rear_woofer_spacing_mm"}, "drivers": [
-        {key: value for key, value in driver.items() if key != "installation"}
-        for driver in manual.get("drivers", [])
-    ]}
-
-
-def crossover_preview_fingerprint(
-    preview: Mapping[str, Any], design_draft: Mapping[str, Any] | None = None,
-) -> str:
-    """The normalized declaration's identity, bound into the baseline source."""
-
-    design_fingerprint = None
-    if design_draft is not None and design_draft.get("status") not in {"not_saved", "unreadable"}:
-        design = {
-            "status": design_draft.get("status"),
-            "topology": design_draft.get("topology"),
-            "operator_inputs": design_draft.get("operator_inputs"),
-            "driver_research": design_draft.get("driver_research"),
-            "manual_settings": _manual_crossover_settings(design_draft),
-        }
-        design_fingerprint = canonical_fingerprint(design)
-    source = _as_mapping(preview.get("source")) or {}
-    stable = {
-        "artifact_schema_version": preview.get("artifact_schema_version"),
-        "kind": preview.get("kind"),
-        "status": preview.get("status"),
-        "source": {
-            "design_draft_status": source.get("design_draft_status"),
-            "topology_id": source.get("topology_id"),
-            "design_draft_fingerprint": design_fingerprint,
-        },
-        "drivers": preview.get("drivers"),
-        "groups": preview.get("groups"),
-        "permissions": {
-            "may_explain": True,
-            "may_prepare_protected_startup_config": preview.get("status") == "ready_for_protected_staging",
-            "may_not_emit_camilla_yaml": True,
-            "may_not_load_camilla": True,
-            "may_not_emit_audio": True,
-            "may_not_authorize_playback": True,
-        },
-        "safety": preview.get("safety"),
-    }
-    return canonical_fingerprint(stable)
 
 
 def _finite_positive(value: Any) -> float | None:
