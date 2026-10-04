@@ -1573,10 +1573,18 @@ def _fresh_cardioid(monkeypatch, *, rear_calibration=None, woofer_peak=-30.0, tw
 _FRONT = frozenset({"woofer", "tweeter"})
 _REAR = "woofer:rear"
 _BASS_BASE_CLEARS = ("room_correction", "bass_extension")
+
+
+def _shipped_take(program, candidate_id):
+    """The first take of a shipped preset on one named candidate, built as a run
+    builds it, so what it clears is its program's (ADR-0436)."""
+    return prepare_plan_captures(request_for_preset(preset(program), candidates=(candidate_id,)))[0].spec
+
+
 #: Each program's takes on a fresh cardioid base, and the targets each excites:
 #: speaker (check, measure, timing), every summed take (speaker candidates,
-#: rear/express, rear/seat, room) and its probe, the branch takes, rear/pair and
-#: its probes, near-field and one-driver takes.
+#: rear/express, rear/seat, room) and its probe, the branch takes,
+#: front_rear/express, rear/pair and its probes, near-field and one-driver takes.
 FRESH_CARDIOID_TAKES = {
     "speaker_check": (dict(graph_scope="drivers", program_phase="check"), _FRONT),
     "speaker_measure": (dict(graph_scope="drivers", program_phase="measure"), _FRONT),
@@ -1585,9 +1593,8 @@ FRESH_CARDIOID_TAKES = {
     "summed_probe": (dict(graph_scope="candidate", program_phase="lateral", level_probe=True), _FRONT),
     "branches": (dict(graph_scope="candidate_branches", program_phase="lateral",
                       branch_target_ids=("woofer", "tweeter")), _FRONT),
-    "rear_pair": (dict(graph_scope="candidate_branches", program_phase="lateral",
-                       branch_target_ids=("woofer", _REAR), cleared_layers=("rear_calibration",)),
-                  frozenset({"woofer", _REAR})),
+    "front_rear": (partial(_shipped_take, "front_rear/express"), frozenset({"woofer", _REAR})),
+    "rear_pair": (partial(_shipped_take, "rear/pair"), frozenset({"woofer", _REAR})),
     "rear_pair_probe_rear": (_REAR, frozenset({_REAR})),
     "rear_pair_probe_front": ("woofer", frozenset({"woofer"})),
     "nearfield_rear": (dict(graph_scope="drivers", program_phase="lateral", branch_target_ids=(_REAR,),
@@ -1602,10 +1609,11 @@ FRESH_CARDIOID_TAKES = {
 
 
 def _fresh_take(shape, candidate_id):
+    if callable(shape):
+        return shape(candidate_id)
     if isinstance(shape, str):  # one branch's probe of a rear/pair take, on the drivers graph
-        pair = MeasureSpec(kind="verify", graph_scope="candidate_branches", candidate_id=candidate_id,
-                           program_phase="lateral", branch_target_ids=("woofer", _REAR), level_probe=True)
-        return next(spec for spec in branch_probes(pair) if spec.branch_target_ids == (shape,))
+        return next(spec for spec in branch_probes(_shipped_take("rear/pair", candidate_id))
+                    if spec.branch_target_ids == (shape,))
     if shape["graph_scope"] == "drivers":
         return MeasureSpec(kind="baseline", **shape)
     return MeasureSpec(kind="verify", candidate_id=candidate_id, **shape)
@@ -1682,12 +1690,13 @@ ALONE_CEILINGS = {
     "crossover, jts3-like caps": ("branches", (0.0, -25.0), 0.0, (-22.0, -40.0), -46.0, {}, (-25.01, -40.0), -46.0),
     # The rear pair shares its limits: the tweeter it does not play holds neither branch.
     "rear pair": ("rear_pair", (0.0, -65.0), -20.0, (-40.0, -30.0), -46.0, {}, (-40.0, -30.0), -46.0),
-    # The bass boost the take's graph keeps on both woofers holds both (ADR-0359), and,
-    # where no other cap holds it lower, the sum too (ADR-0408).
-    "rear pair, bass boost": ("rear_pair", (-20.0, -25.0), 0.0, (-12.0, -12.0), -46.0, _BASS,
-                              (-20.01 - _BASS_RESERVE_DB,) * 2, -46.0),
-    "rear pair, bass boost, a high probe": ("rear_pair", (-20.0, -20.0), 0.0, (-12.0, -12.0), -18.0, _BASS,
-                                            (-20.01 - _BASS_RESERVE_DB,) * 2, -20.01 - _BASS_RESERVE_DB),
+    # rear/pair clears the bass layer (ADR-0436); a pair take that keeps it, as
+    # front_rear/express does, holds both branches to the boost its graph keeps on both
+    # woofers (ADR-0359), and, where no other cap holds it lower, the sum too (ADR-0408).
+    "front/rear pair, bass boost": ("front_rear", (-20.0, -25.0), 0.0, (-12.0, -12.0), -46.0, _BASS,
+                                    (-20.01 - _BASS_RESERVE_DB,) * 2, -46.0),
+    "front/rear pair, bass boost, a high probe": ("front_rear", (-20.0, -20.0), 0.0, (-12.0, -12.0), -18.0, _BASS,
+                                                  (-20.01 - _BASS_RESERVE_DB,) * 2, -20.01 - _BASS_RESERVE_DB),
     # A re-tune: the rear stage the take clears plays the rear woofer far under the
     # raw rear the take plays, and holds neither branch under its probe (#6275).
     "rear pair, rear tune applied": ("rear_pair", (0.0, -25.0), 0.0, (-28.0, -14.0), -34.0,
