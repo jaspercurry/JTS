@@ -187,7 +187,7 @@ from jasper.active_speaker.branch_chain import (
 )
 from jasper.active_speaker.crossover_section import CrossoverSection
 from jasper.active_speaker.crossover_v2 import capture_dispatch as _capture_dispatch
-from jasper.active_speaker.crossover_v2.refusal_copy import REASON_SNR_FLOOR
+from jasper.active_speaker.crossover_v2.refusal_copy import REASON_LOCATE_FAILED
 from jasper.active_speaker.driver_protection import driver_protection_profile
 from jasper.active_speaker.excitation_safety_plan import (
     resolve_driver_excitation_ceilings,
@@ -7608,20 +7608,21 @@ def test_a_level_probe_reads_each_burst_it_played_at_its_own_gain(band_hz, start
 
 
 # A jts3 seat probe heard an arrival 8.6 ms after the first, 1.1 dB under it, which leaves
-# every burst's correlation peak a 0.13 margin over its neighbours (ADR-0442).
+# every burst's correlation peak a 0.13 margin over its neighbours; one 0.45 dB under it
+# leaves 0.06 (ADR-0442).
 _PROBE_GAINS = (-60.0, -54.0, -48.0, -42.0, -36.0, -30.0, -24.0)
 _PROBE_SPL = {"sens_factor_db": -12.07, "ceiling_db_spl": 85.0}
 _STOPPED = {**_PROBE_SPL, "stopped_at_db_spl": 76.0}
 _KNOCK = np.exp(-np.arange(SR // 20) / (0.01 * SR))
 
 
-def _echoey_probe(*, stopped_in: int, dropped: int | None = None):
-    """A seat probe through one strong early arrival, stopped in burst ``stopped_in``,
-    its playback lost over burst ``dropped``."""
+def _echoey_probe(*, stopped_in: int, dropped: int | None = None, arrival: float = 0.88):
+    """A seat probe through one early arrival at ``arrival`` of the first, stopped in burst
+    ``stopped_in``, its playback lost over burst ``dropped``."""
     program = build_summed_level_probe_program(_PROBE_GAINS, sweep_band_hz=(20.0, 20000.0), gap_s=0.5,
                                                downstream_gain_db=0.0)
     room = np.zeros(SR // 50)
-    room[[96, 96 + round(0.0086 * SR)]] = (1.0, 0.88)
+    room[[96, 96 + round(0.0086 * SR)]] = (1.0, arrival)
     offset = SR // 4
     capture = _synthesize(program, woofer_ir=room, tweeter_ir=np.zeros(1), global_offset=offset,
                           noise=10 ** (-70 / 20))
@@ -7639,16 +7640,18 @@ def _probe_verdict(program, capture, spl):
                                               pose_level=SEAT_LEVEL)
 
 
-def test_a_probe_heard_through_an_early_arrival_reads_each_burst_at_its_anchor():
-    """No burst stands a sharp correlation peak over the arrival behind it, yet the probe
-    reads each burst it heard where its staircase puts it, at the level it played, and
-    solves its take from it (ADR-0442)."""
-    program, capture, offset = _echoey_probe(stopped_in=5)
+@pytest.mark.parametrize("arrival, floor", [(0.88, SWEEP_LOCATE_CONFIDENCE_FLOOR),
+                                            (0.95, _capture_dispatch.LOCATE_MIN_CONFIDENCE)])
+def test_a_probe_heard_through_an_early_arrival_reads_each_burst_at_its_anchor(arrival, floor):
+    """No burst stands a sharp correlation peak over the arrival behind it, not even one
+    over the floor that judges a take heard, yet the probe reads each burst it heard
+    where its staircase puts it, at the level it played, and solves its take from it
+    (ADR-0442)."""
+    program, capture, offset = _echoey_probe(stopped_in=5, arrival=arrival)
 
     analysis, verdict = _probe_verdict(program, capture, _STOPPED)
 
-    assert max(loc.confidence for loc in analysis.locations if loc.kind == KIND_SUMMED_SWEEP) \
-        < SWEEP_LOCATE_CONFIDENCE_FLOOR
+    assert max(loc.confidence for loc in analysis.locations if loc.kind == KIND_SUMMED_SWEEP) < floor
     assert (verdict.fault, verdict.next) == (None, "retake_louder")
     top = program.segment("level_probe_4")
     played = stimulus_level([capture[offset + top.start_sample + 96:][:top.n_samples]], None,
@@ -7660,9 +7663,10 @@ def test_a_probe_heard_through_an_early_arrival_reads_each_burst_at_its_anchor()
         MicSensitivity(_PROBE_SPL["sens_factor_db"]).db_spl_from_dbfs(played.level_db), abs=0.5)
 
 
-def test_a_probe_whose_program_never_played_reads_nothing_where_the_room_knocked():
+def test_a_probe_whose_program_never_played_reads_nothing_where_the_room_knocked(monkeypatch):
     """A knock at each burst's start reads well over the room, but no burst played: the
-    probe reads no level and asks for the microphone again (ADR-0442)."""
+    probe reads no level and is judged a take the microphone did not hear (ADR-0442)."""
+    monkeypatch.setattr(_capture_dispatch, "read_output_volume", lambda: {})
     program, capture, offset = _echoey_probe(stopped_in=5)
     rng = np.random.default_rng(1)
     room = rng.normal(0.0, 10 ** (-70 / 20), capture.size)
@@ -7674,7 +7678,7 @@ def test_a_probe_whose_program_never_played_reads_nothing_where_the_room_knocked
     analysis, verdict = _probe_verdict(program, room, _STOPPED)
 
     assert analysis.stimulus_levels == ()
-    assert (verdict.fault, verdict.next, verdict.next_gain_db) == (REASON_SNR_FLOOR, "fix_and_retake", None)
+    assert (verdict.fault, verdict.next, verdict.next_gain_db) == (REASON_LOCATE_FAILED, "fix_and_retake", None)
 
 
 def test_a_probe_solves_from_the_highest_burst_it_heard_past_a_dropout():

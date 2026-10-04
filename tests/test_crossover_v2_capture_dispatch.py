@@ -644,20 +644,20 @@ def test_a_driver_poses_probe_solves_the_gain_its_take_plays_at(gains, heard, fl
     (None, (58.0, 64.0, 70.0), "level_unreachable", "stop", "none"),
     (None, None, "level_unreachable", "stop", "none"),
     # The watch stopped it, so the room was loud: it asks for the microphone again.
-    (76.0, (), "snr_floor", "fix_and_retake", "operator"),
+    (76.0, (58.0, 64.0, 70.0), "snr_floor", "fix_and_retake", "operator"),
     (76.0, None, "locate_failed", "fix_and_retake", "operator"),
 ])
 def test_a_probe_with_no_reading_it_trusts_stops_the_run_only_at_its_ceiling(stopped_at, heard, fault, next_,
                                                                               charge):
-    """A probe that reads nothing it trusts over a 65 dB room, or locates no burst
-    (``heard`` is None), stops the run once it played every burst up to its take's
-    ceiling (ADR-0365, ADR-0422)."""
+    """A probe that reads nothing it trusts over a 65 dB room, or hears no burst
+    (``heard`` is None) however sharply its bursts locate, stops the run once it
+    played every burst up to its take's ceiling (ADR-0365, ADR-0422, ADR-0442)."""
     gains = (-52.0, -46.0, -40.0)
     program = build_level_probe_program(RoleBand("woofer", 0, FrequencyBand(20, 2000)), gains,
                                         sweep_band_hz=(20.0, 2000.0), gap_s=0.5, downstream_gain_db=0.0, channels=1)
     analysis = ProgramAnalysis(
         phase="measure", stimulus_id="probe",
-        locations=tuple(_loc(f"level_probe_{index}", confidence=0.05 if heard is None else 0.9) for index in range(3)),
+        locations=tuple(_loc(f"level_probe_{index}") for index in range(3)),
         stimulus_levels=tuple(LevelReading(g, spl - 106.0, 65.0 - 106.0) for g, spl in zip(gains, heard or ())))
     spl = {"sens_factor_db": -12.0, "ceiling_db_spl": 85.0, **({"stopped_at_db_spl": stopped_at} if stopped_at else {})}
     verdict = cd.assess(analysis, phase="measure", program=program, spl=spl, pose_level=SPOT_LEVEL)

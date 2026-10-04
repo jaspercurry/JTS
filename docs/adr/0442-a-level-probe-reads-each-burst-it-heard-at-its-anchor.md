@@ -2,9 +2,9 @@
 
 - **Date:** 2026-10-03
 - **Status:** Accepted. Amends [ADR-0365](0365-a-drivers-pose-finds-its-level-with-a-probe.md) §3
-  (which bursts a probe reads, and where) and, for probes only,
-  [ADR-0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) §1 ("each located
-  sweep").
+  (which bursts a probe reads, and where, and what a probe that read none names) and, for probes
+  only, [ADR-0364](0364-a-takes-level-is-read-from-its-located-sweeps-in-their-band.md) §1 ("each
+  located sweep").
 - **Context:** From 18:54Z on 10-03, every jts3 seat probe stopped at `snr_floor`: rounds
   5afc4a589575 and 5396c351def1, three takes each, on the graph and program of round 4c4d6b9a2185,
   which passed. The room noise and the burst levels were the same to about 1 dB. The room's
@@ -24,7 +24,13 @@
      burst that the capture does not hold whole is not heard.
   2. **Read.** Each heard burst is read at its anchor, as ADR-0364 reads a sweep. Other programs
      keep the locate-confidence gate and the located start.
-  3. **Log.** Each probe analysis logs `event=program_analysis.level_probe_presence` with the
+  3. **Judged heard.** A probe is a take the microphone heard when it read a burst, since it reads
+     exactly the bursts heard at their anchors (`capture_dispatch._stimulus_locate_ok`). One that
+     read none is judged as any take not heard, never levelled: a frame fault retakes it the same,
+     and otherwise it names `locate_failed` (`level_unreachable` when its SPL watch did not stop it,
+     ADR-0422; `measurement_output_muted` when the output is muted). Other programs keep the locate
+     floor (`LOCATE_MIN_CONFIDENCE`, 0.1).
+  4. **Log.** Each probe analysis logs `event=program_analysis.level_probe_presence` with the
      figure of each burst in schedule order.
 - **Consequences:**
   - On the 7 jts3 takes, the heard bursts at −48 dBFS and up read 4.84 to 13.71 times (the −42 and
@@ -43,13 +49,18 @@
     windows. The located read had the same jitter.
   - A room sound no longer stands in for a burst. In 70 cases built from the 7 takes (silence, room
     only, room with a thump at each burst, a dropout over the top burst with a thump and a knock,
-    200 ms of frames lost or inserted, a capture 40 ms late), the probe refuses with no reading, or
-    solves from the highest burst it heard, at most 1.37 dB from the take's own solve (ADR-0411's
-    step spread).
-  - **What stays:** `assess` still levels a probe only when one burst's locate confidence is 0.1
-    or more (`LOCATE_MIN_CONFIDENCE`); the 6 stopped takes clear it at 0.13 to 0.44. VERIFY's sweep
-    locate and its `summed_sweep_heard` check stay. The probe envelope, ADR-0411's rule and bound,
-    the 15 dB raise limit and the 85 dB stop stay.
+    200 ms of frames lost or inserted, a capture 40 ms late), the probe refuses with no reading
+    (`locate_failed`), or solves from the highest burst it heard, at most 1.37 dB from the take's
+    own solve (ADR-0411's step spread).
+  - A probe heard only through arrivals that leave each burst a locate confidence under 0.1 is now
+    levelled. Before, it stopped at `locate_failed`, or it stopped the run as `level_unreachable`
+    when no stop ended its play.
+  - A probe that read no burst now names `locate_failed` ("couldn't hear the speaker"), and the
+    output mute guard reads first. Before, it named `snr_floor` when one burst located at 0.1 or
+    more. Both ask the operator to try again, with no gain.
+  - **What stays:** VERIFY's sweep locate and its `summed_sweep_heard` check, and every other
+    take's locate floor. The probe envelope, ADR-0411's rule and bound, the 15 dB raise limit and
+    the 85 dB stop stay.
   - Rejected:
     - Reading every held burst at its anchor with no check. A knock in the window of a dropped top
       burst then reads trusted and low, and the solve rises one step (6 dB).

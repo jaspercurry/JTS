@@ -181,7 +181,7 @@ def assess(
     # to its take's ceiling, so no more level is available and the run stops (ADR-0422).
     capped = (level is not None and level.gap_db > 0 and level_asked_dbfs is not None
               and level.peak_dbfs < level_asked_dbfs)
-    if prior_verdict is None and _stimulus_locate_ok(analysis):
+    if prior_verdict is None and _stimulus_locate_ok(analysis, program):
         if probe and (level is None or not level.reading.trusted):
             prior_verdict = TakeVerdict(False, fault=reasons.REASON_SNR_FLOOR, next="fix_and_retake", charge="operator")
         elif level is not None and (probe or (abs(level.gap_db) > level.rule.tolerance_db and not capped)):
@@ -340,7 +340,7 @@ def _assess_recording(
     over_ambient = analysis.sweep_over_ambient_db
     if _pilots_heard(analysis) is True and over_ambient is not None and over_ambient < SWEEP_OVER_AMBIENT_MIN_DB:
         return refuse(reasons.REASON_SWEEP_MISSING, next="retake_same", charge="speaker")
-    if not _stimulus_locate_ok(analysis):
+    if not _stimulus_locate_ok(analysis, program):
         return quiet(reasons.REASON_LOCATE_FAILED)
     if evidence["anchor_ambiguous"]:
         return refuse(reasons.REASON_ANCHOR_AMBIGUOUS)
@@ -480,7 +480,7 @@ def _sweep_schedule_diag_fields(
 LOCATE_MIN_CONFIDENCE = 0.1
 
 
-def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
+def _stimulus_locate_ok(analysis: ProgramAnalysis, program: ExcitationProgram | None = None) -> bool:
     """False when any ROLE's stimuli all failed the locate-confidence floor.
 
     Per ROLE, not per SEGMENT, and not a max() over the whole capture (D8,
@@ -491,7 +491,12 @@ def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
     10 dB under its loud side and locates more coarsely. One confidently-located
     stimulus says "this driver was heard"; zero does not. Role-less stimuli (a
     summed sweep) group together under the same rule.
+
+    A level probe reads exactly the bursts it heard at their anchors, so it was
+    heard when it read one (ADR-0442).
     """
+    if program is not None and is_level_probe(program):
+        return bool(analysis.stimulus_levels)
     by_role: dict[str | None, float] = {}
     for loc in analysis.locations:
         if loc.kind not in STIMULUS_KINDS:
