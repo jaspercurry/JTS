@@ -29,6 +29,7 @@ from .dac import (
     DacProfile,
     all_profiles,
     by_id,
+    family_profiles,
     is_boot_managed_i2s_profile,
     profile_for_hat,
 )
@@ -253,6 +254,29 @@ def _without_managed_i2s_hat(content: str) -> tuple[str, str | None]:
     return collapse_empty_all_sections("".join(output)), block_overlay
 
 
+def hand_written_family_member(content: str, profile_id: str) -> DacProfile | None:
+    """The row whose hand-written overlay already runs ``profile_id``'s board.
+
+    One silicon on two driver stacks runs from either overlay (ADR-0448), so a
+    single hand-written overlay of the family, with no JTS block, is the board
+    already enabled: nothing to write and nothing colliding. A row with no
+    family keeps the plain collision rule.
+    """
+
+    family = {
+        profile.dtoverlay.lower(): profile
+        for profile in family_profiles(profile_id)
+        if profile.dtoverlay
+    }
+    if len(family) < 2:
+        return None
+    cleaned, block_overlay = _without_managed_i2s_hat(content)
+    configured = configured_i2s_overlays(cleaned)
+    if block_overlay is not None or len(configured) != 1:
+        return None
+    return family.get(configured[0])
+
+
 def render_i2s_hat_boot_config(
     content: str, profile_id: str | None
 ) -> tuple[str, bool, I2sHatCollision | None]:
@@ -265,8 +289,11 @@ def render_i2s_hat_boot_config(
     than writes: ``rendered_content`` comes back byte-identical to
     ``content``, ``changed`` is ``False``, and ``collision`` names what
     collided, for the caller to disclose without silently compounding a
-    hand-written line with a managed one. Clearing (``profile_id=None``)
-    never refuses -- removing JTS's own block cannot create a collision.
+    hand-written line with a managed one. The one exception is
+    :func:`hand_written_family_member`: that line already enables the board,
+    so the content comes back unchanged with no collision. Clearing
+    (``profile_id=None``) never refuses -- removing JTS's own block cannot
+    create a collision.
     """
     profile: DacProfile | None = None
     if profile_id is not None:
@@ -279,6 +306,8 @@ def render_i2s_hat_boot_config(
         assert profile.dtoverlay is not None
         colliding = configured_i2s_overlays(cleaned)
         if colliding:
+            if hand_written_family_member(content, profile.id) is not None:
+                return content, False, None
             return (
                 content,
                 False,

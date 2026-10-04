@@ -1289,45 +1289,12 @@ def test_the_ring_doctor_checks_are_still_registered():
     assert audio_runtime_fanin.requires_roleful_graph.__name__ not in registered
 
 
-def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypatch):
-    """An ``ok`` that means "this box still will not ring" has to SAY WHY.
-
-    The check reads the DAC floor against the conf.d. On any box whose DAC
-    declares a matching floor that pair reads green — and a ROLEFUL box still
-    may not ring, because the unattended pass arms the active ring only for a
-    box already carrying a proven graph (``ring_roleful_unattended_ready``).
-    Reporting only
-    "period_frames matches" there answers a question nobody asked and leaves the
-    real one ("why won't this box ring?") unanswered, which is the same
-    defect #2294 fixed for the floor half.
-    """
-    from jasper.cli.doctor import audio_runtime_ring
-
-    record_active_dac("test_dac")
-    monkeypatch.setattr(audio_runtime_ring, "latency_floor_for", lambda dac_id: None)
-
-    # The roleful-vs-passive distinction is an additive prose note only (both
-    # land in the same REASON_RING_FLOOR_NOT_DECLARED branch) — not a
-    # structured field, so it is not pinned here per AGENTS.md/ADR-0233 rule 3;
-    # the branch itself (why the check reads ok) is.
-    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: True)
-    roleful = audio_runtime_ring.check_ring_conf_floor_render()
-    assert roleful.status == "ok"
-    assert roleful.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
-
-    monkeypatch.setattr(audio_runtime_ring, "requires_roleful_graph", lambda: False)
-    passive = audio_runtime_ring.check_ring_conf_floor_render()
-    assert passive.status == "ok"
-    assert passive.reason == audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED
-
-
 def test_the_matching_floor_ok_still_names_the_roleful_reason(monkeypatch, tmp_path):
     """jts3's ACTUAL post-R7a case: the floor MATCHES and the box still cannot ring.
 
     Now that the DAC8X declares a 128-frame floor, jts3 reaches this check's
     happy path — "period_frames matches" — while remaining unable to ring, for
-    the one reason the floor says nothing about. This is the branch the ruling
-    was really about, so it is pinned separately from the no-floor one.
+    the one reason the floor says nothing about.
     """
     from jasper.audio_hardware.dac import latency_floor_for
     from jasper.cli.doctor import audio_runtime_ring

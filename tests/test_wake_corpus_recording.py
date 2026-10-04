@@ -578,7 +578,7 @@ def test_audio_context_snapshot_uses_chip_aec_dac_gate(
             "JASPER_XVF_GEOMETRY=square\n"
             "JASPER_XVF_CHIP_BEAM_PLAN=xvf_square_fixed_150_210\n"
             "JASPER_XVF_CHIP_AEC_SUPPORTED=1\n"
-            "JASPER_AUDIO_DAC_ID=hifiberry_dac8x_studio\n"
+            "JASPER_AUDIO_DAC_ID=innomaker_hifi_amp_pro\n"
         ),
     )
     aec_mode_path = tmp_path / "aec_mode.env"

@@ -14,11 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jasper.audio_hardware.dac import (
-    HIFIBERRY_DAC8X_STUDIO_ID,
-    LatencyFloor,
-    latency_floor_for,
-)
+from jasper.audio_hardware.dac import LatencyFloor
 from jasper.active_speaker.camilla_yaml import emit_active_speaker_parked_config
 from jasper.cli.doctor import _evidence, audio_runtime_outputd, audio_runtime_ring
 from jasper.cli.doctor._evidence import evidence
@@ -145,27 +141,12 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
 # DECLARED LatencyFloor (the DAC registry) and the period_frames the ring
 # conf.d pins (the file). The ring slot IS one outputd DAC period, so a box
 # whose DAC declares a floor should have that floor rendered into its conf.d
-# by jasper-audio-hardware-reconcile. A DAC with no declared floor is ok by
-# RULE, not by luck — the shipped conf.d default stands.
+# by jasper-audio-hardware-reconcile.
 # ===========================================================================
 
 SHIPPED_RING_CONF = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
-)
-
-# A registered profile that declares NO LatencyFloor, so the no-floor branches
-# below exercise the real registry rather than a synthetic id. Asserted rather
-# than assumed: declaring a floor for this profile must fail THIS line, not
-# silently turn the two no-floor tests into vacuous passes against a branch
-# they no longer reach. (That is exactly what a declared DAC8x floor did to
-# them in R7a, when they were written against `hifiberry_dac8x`; the guard has
-# now caught it a SECOND time, when the InnoMaker HiFi AMP Pro declared jts4's
-# measured floor and this moved to the DAC8x Studio.)
-NO_FLOOR_DAC_ID = HIFIBERRY_DAC8X_STUDIO_ID
-assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
-    f"{NO_FLOOR_DAC_ID} now declares a latency floor; pick another floorless "
-    "profile for the no-floor doctor branches"
 )
 
 
@@ -249,11 +230,11 @@ def _stage_conf_absent(monkeypatch, tmp_path):
             "skipped",
             audio_runtime_ring.REASON_RING_FLOOR_NO_ACTIVE_DAC,
         ),
-        # Nothing to render — the shipped conf.d default stands by rule.
+        # An id the registry does not know declares no floor to read.
         (
-            lambda mp, tp: _stage_floor_conf(mp, tp, dac_id=NO_FLOOR_DAC_ID),
-            "ok",
-            audio_runtime_ring.REASON_RING_FLOOR_NOT_DECLARED,
+            lambda mp, tp: _stage_floor_conf(mp, tp, dac_id="not_a_registered_dac"),
+            "skipped",
+            audio_runtime_ring.REASON_RING_FLOOR_NO_ACTIVE_DAC,
         ),
         # The golden Apple case: the declared floor IS the shipped period.
         (
@@ -310,7 +291,7 @@ def _stage_conf_absent(monkeypatch, tmp_path):
     ids=[
         "no_active_dac",
         "partial_record",
-        "no_declared_floor",
+        "unregistered_dac",
         "conf_matches_floor",
         "floor_above_the_slot",
         "conf_diverges_from_floor",

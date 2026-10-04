@@ -617,7 +617,7 @@ class _ProductionDetectIO(_FakeIO):
     "dac_id, qualification",
     [
         ("apple_usb_c_dongle", "approved"),
-        ("hifiberry_dac8x_studio", "needs_calibration"),
+        ("innomaker_hifi_amp_pro", "needs_calibration"),
     ],
 )
 def test_a_registered_dac_commissions_and_the_record_carries_its_qualification(

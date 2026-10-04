@@ -13,7 +13,7 @@ system config, or restart services. Runtime ownership stays with
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from .hat_eeprom import HatEeprom
@@ -209,6 +209,10 @@ class DacProfile:
     # wizard-owned env, so a fresh box reproduces the tuned floor with no
     # per-user config (#27).
     latency_floor: LatencyFloor | None = None
+    # The row this one is the same silicon as, on another driver stack. State
+    # stored against the DAC names that row (output_identity_id), so a switch
+    # between the two overlays keeps it valid (ADR-0448).
+    family_id: str = ""
 
     def __post_init__(self) -> None:
         if not _ID_RE.match(self.id):
@@ -407,11 +411,10 @@ HIFIBERRY_DAC8X = DacProfile(
     # labels no driver emits while swallowing every real Studio label: a
     # trailing `(?!.*studio)` only excludes "studio" AFTER the match, and the
     # kernel puts "Studio" BEFORE "DAC8x" ("HiFiBerry Studio DAC8x"). That
-    # ordering mismatch is what routed real Studio silicon into this profile
-    # and silently handed it this row's `chip_aec_qualification="approved"`
-    # and `final_edge_format="S32_LE"` (#2250). Narrowing to the emitted
-    # literal removes the whole fuzzy-family class rather than adding a
-    # second lookahead to it.
+    # ordering mismatch is what routed real Studio silicon into this profile,
+    # which pins none of the Studio driver's gain stages (#2250). Narrowing to
+    # the emitted literal removes the whole fuzzy-family class rather than
+    # adding a second lookahead to it.
     supported_card_matches=(r"\bsnd_rpi_hifiberry_dac8x\b",),
     supports_active_outputd_lane=True,
     active_outputd_lane_channels=8,
@@ -421,10 +424,10 @@ HIFIBERRY_DAC8X = DacProfile(
         "silicon under the base overlay/driver, per HiFiBerry's datasheet"
     ),
     dtoverlay="hifiberry-dac8x",
-    # This row keys on driver stack (overlay -> driver -> card label), not on
-    # silicon identity: HiFiBerry's own datasheet prescribes this overlay for
-    # DAC8x Studio boards too, so the evidence below is Studio silicon running
-    # the base driver, per that datasheet — see ADR-0232.
+    # HiFiBerry's own datasheet prescribes this overlay for DAC8x Studio boards
+    # too, so the evidence below is Studio silicon running the base driver. It
+    # is also the Studio row's evidence: one silicon, one set of values
+    # (ADR-0448).
     #
     # Hardware evidence: the same four values the Apple dongle declares, here
     # measured on I2S silicon rather than transferred. A three-window jts3 soak
@@ -454,7 +457,7 @@ HIFIBERRY_DAC8X = DacProfile(
         outputd_dac_buffer_frames=256,
     ),
     # Hardware evidence: `aplay --dump-hw-params` on jts3 — Studio silicon
-    # under this base overlay/driver, see ADR-0232 — reports FORMAT
+    # under this base overlay/driver — reports FORMAT
     # S16_LE/S24_LE/S32_LE at rates up to 192 kHz, and a raw `hw:` S32_LE
     # 2ch open succeeded with a clean recovery. The DAC8x uses four
     # 192kHz/24-bit Burr-Brown DAC chips (HiFiBerry's published
@@ -484,16 +487,18 @@ HIFIBERRY_DAC8X = DacProfile(
     final_edge_format="S32_LE",
 )
 
-HIFIBERRY_DAC8X_STUDIO = DacProfile(
+# The same silicon as HIFIBERRY_DAC8X on HiFiBerry's own Studio driver stack,
+# so it takes that row's measured values and output identity (ADR-0448). Its
+# own are how the board is recognized, its overlay, and its mixer pins. One
+# unknown: the S32_LE probe ran under the base driver only, and the Studio
+# driver lets the board's MCU report the formats. If it refuses S32_LE,
+# outputd parks at exit 78 rather than converting, and the base overlay
+# brings back the measured stack.
+HIFIBERRY_DAC8X_STUDIO = replace(
+    HIFIBERRY_DAC8X,
     id=HIFIBERRY_DAC8X_STUDIO_ID,
     label="HiFiBerry DAC8x Studio",
-    kind="single",
-    physical_output_count=8,
-    coherent_clock_domain=True,
-    clock_domain_label="Single HiFiBerry DAC8x Studio device clock",
-    clock_domain_contract="single_device",
-    outputd_sink="single_alsa",
-    connection="i2s",
+    family_id=HIFIBERRY_DAC8X_ID,
     # Both token orders, because the kernel and HiFiBerry disagree on it: the
     # driver emits "HiFiBerry Studio DAC8x" (studio first) while HiFiBerry's
     # own product naming is "DAC8x Studio". Deliberately NOT `\b`-bounded
@@ -531,72 +536,16 @@ HIFIBERRY_DAC8X_STUDIO = DacProfile(
     # EEPROM it stays unroutable and the speaker parks (#2258).
     eeprom_gated_card_matches=(r"^(?!.*pro).*hifiberry.*studio.*soundcard",),
     hat_products=("StudioDAC8x",),
-    supports_active_outputd_lane=True,
-    active_outputd_lane_channels=8,
-    chip_aec_detail=(
-        "HiFiBerry DAC8x Studio needs per-profile chip-AEC timing "
-        "calibration before arming production chip AEC"
-    ),
-    # The Studio has its OWN overlay — it does not share the base DAC8x's.
-    # `hifiberry-studio-dac8x-overlay.dts` binds compatible
+    # Its own overlay: `hifiberry-studio-dac8x-overlay.dts` binds compatible
     # `hifiberry,hifiberry-studio-dac8x` to a dedicated machine driver
-    # (`sound/soc/bcm/hifiberry_studio_dac8x.c`), both added to
-    # raspberrypi/linux on 2026-01-15. HiFiBerry's own StudioDAC8x datasheet
-    # still prints `dtoverlay=hifiberry-dac8x`; it predates that support, and
-    # the kernel is the authority for what a board actually presents.
-    #
-    # `render_i2s_hat_boot_config` manages this overlay: `hat_products` below
-    # makes this row the one a fitted Studio DAC8x resolves to, and the
-    # reconciler writes the line without an operator step (ADR-0234). It also
-    # feeds `configured_i2s_overlays()`, the registered-overlay set USB port-role
-    # resolution intersects config.txt against — so with the wrong value a
-    # correctly-configured Studio box read as "no I2S HAT present".
+    # (`sound/soc/bcm/hifiberry_studio_dac8x.c`). HiFiBerry's StudioDAC8x
+    # datasheet still prints the base row's `dtoverlay=hifiberry-dac8x`, and
+    # either overlay runs this board. The reconciler writes this one only
+    # when no DAC8x overlay is configured yet (ADR-0234). It is also in
+    # `configured_i2s_overlays()`, the registered set USB port-role
+    # resolution reads.
     dtoverlay="hifiberry-studio-dac8x",
     mixer_controls=HIFIBERRY_STUDIO_MIXER_CONTROLS,
-    # NOT flipped to S32_LE alongside the base DAC8x above, deliberately: the
-    # base DAC8x's S32 capability was confirmed by an `aplay --dump-hw-params`
-    # open test on real jts3 hardware, and this program's own norm is a
-    # hardware gate before a format declaration. The Studio driver stack has
-    # never been loaded on a fleet box, so that probe has not run against it —
-    # jts3 migrates to this driver stack in Phase 1 (owner present; see
-    # ADR-0232), and the probe runs then. The two boards share a DAC-chip
-    # family (HiFiBerry's datasheets describe both as four 192kHz/24-bit
-    # Burr-Brown DACs, differing only in the analog output stage and an added
-    # hardware volume-control chip, neither of which touches the digital I2S
-    # format this field declares) but do NOT share a driver, so that shared
-    # family is a plausible expectation, not proof.
-    #
-    # On Trixie's rpi-6.12.y kernel, `supported_card_matches` above claims
-    # this profile directly: the driver names the card "HiFiBerry Studio
-    # DAC8x". On rpi-6.18.y and later, the renamed `hifiberry_studio.c`
-    # driver presents every board in the Studio family — the 8-channel
-    # Studio DAC8x and the 2-channel Studio Digi/AES alike — under the
-    # single shared card name "Hifiberry Studio Soundcard", carrying no
-    # DAC8x token and no width, so the label alone cannot tell them apart.
-    # `eeprom_gated_card_matches` claims that shared label for this profile
-    # ONLY when the HAT EEPROM product string is in `hat_products` (see
-    # ADR-0232) — a 2-channel Digi's different EEPROM product never matches,
-    # so it cannot be classified as this 8-channel profile. Without a
-    # readable EEPROM match, a 6.18.y Studio DAC8x resolves to "unknown" and
-    # parks rather than being guessed from the shared label.
-    #
-    # One case is irreducible by label matching: a Studio board configured
-    # with `dtoverlay=hifiberry-dac8x` (what HiFiBerry's own datasheet
-    # prescribes) loads the base driver and presents the base card name, so it
-    # classifies as `hifiberry_dac8x` and inherits that row's S32_LE and
-    # approved chip-AEC. That is not a misroute: the box genuinely IS running
-    # the base driver, on the vendor-documented config — see the base row's
-    # own evidence.
-    #
-    # NO latency_floor is declared, so this profile ships the conservative
-    # global CamillaDSP/outputd default rather than a measured one. It is the
-    # standing floorless case the no-floor doctor branch and the floorless-DAC
-    # contract tests are written against, and the conf.d ring period is
-    # reachable here only through the operator env seam
-    # (`JASPER_OUTPUTD_PERIOD_FRAMES` in `/etc/jasper/jasper.env`).
-    #
-    # Removal condition (ADR-0232): flip floors/format/commissioning/chip-AEC
-    # on this row once the jts3 Studio soak (Phase 1) completes.
 )
 
 INNOMAKER_HIFI_AMP_PRO = DacProfile(
@@ -781,6 +730,11 @@ def _build_index(profiles: tuple[DacProfile, ...]) -> dict[str, DacProfile]:
                 raise ValueError(
                     f"{profile.id}: unknown child DAC profile id {child_id!r}"
                 )
+        family = out.get(profile.family_id) if profile.family_id else profile
+        if family is None or family.family_id:
+            raise ValueError(
+                f"{profile.id}: family_id must name a row with no family_id"
+            )
     return out
 
 
@@ -814,6 +768,28 @@ def is_known_profile_id(profile_id: str) -> bool:
     """Return True when ``profile_id`` is a registered DAC profile."""
 
     return profile_id in _BY_ID
+
+
+def output_identity_id(profile_id: str) -> str:
+    """The id state stored against this DAC names: its family row's, else its own.
+
+    The saved topology's device match and the chip-AEC output identity compare
+    through this, so moving a board between two driver stacks of one silicon
+    keeps both valid (ADR-0448). The classified row stays the raw id: it picks
+    the mixer pins and the boot overlay.
+    """
+
+    profile = by_id(profile_id)
+    return profile.family_id if profile is not None and profile.family_id else profile_id
+
+
+def family_profiles(profile_id: str) -> tuple[DacProfile, ...]:
+    """Every registered row sharing ``profile_id``'s output identity."""
+
+    identity = output_identity_id(profile_id)
+    return tuple(
+        profile for profile in REGISTRY if output_identity_id(profile.id) == identity
+    )
 
 
 def physical_output_count_for(profile_id: str) -> int | None:

@@ -535,6 +535,46 @@ def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
     assert identity.output_format == "S32_LE"
 
 
+def test_the_chip_aec_class_identity_is_one_across_the_dac8x_overlays() -> None:
+    """A proof banked on either DAC8x driver stack holds on the other
+    (ADR-0448): the class identity K is measured against, and a shipped row
+    matches, is the same; only a per-unit field may move."""
+
+    def identity(dac_id: str, card_id: str) -> AlignmentIdentity:
+        dev = _FakeXvfDevice()
+        dev.values["BLD_REPO_HASH"] = (ord("f"), ord("w"), 0)
+        return aec_init.build_identity(
+            dev,
+            xvf3800.SQUARE_FIXED_150_210_PLAN,
+            {
+                "sink_mode": "single_alsa",
+                "dac": {
+                    "pcm": "outputd_dac",
+                    "format": "S32_LE",
+                    "sample_rate": 48_000,
+                    "period_frames": 128,
+                    "buffer_frames": 256,
+                },
+            },
+            env={
+                "JASPER_XVF_VARIANT": "xvf3800_legacy_square_6ch",
+                "JASPER_AUDIO_DAC_ID": dac_id,
+                "JASPER_OUTPUTD_ACTIVE_CHANNELS": "2",
+            },
+            output_state=_output_state(profile_id=dac_id, card_id=card_id, serial=None),
+        )
+
+    base = identity("hifiberry_dac8x", "sndrpihifiberry")
+    studio = identity("hifiberry_dac8x_studio", "HiFiBerryStudio")
+
+    assert base.output_id == studio.output_id == "hifiberry_dac8x"
+    assert alignment.hardware_class_key(base) == alignment.hardware_class_key(studio)
+    assert (
+        set(alignment.identity_divergence(base, studio))
+        <= chip_aec_health.PER_UNIT_IDENTITY_FIELDS
+    )
+
+
 def test_build_identity_refuses_status_without_a_final_edge_format() -> None:
     # An outputd too old to report dac.format must block, not be guessed
     # around: a default would certify an artifact against an unverified edge.

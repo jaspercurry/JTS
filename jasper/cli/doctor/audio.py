@@ -12,6 +12,7 @@ import socket
 from ...audio_hardware.dac import (
     MixerControl,
     by_id as _dac_profile_for,
+    output_identity_id,
 )
 from ...config import Config
 from ...mics import xvf3800
@@ -550,7 +551,8 @@ def check_active_speaker_output_hardware_match() -> CheckResult:
         f"outputs={observed_count}"
     )
     hardware_matches = (
-        saved.device_id == observed.profile_id and saved_count == observed_count
+        output_identity_id(saved.device_id) == output_identity_id(observed.profile_id)
+        and saved_count == observed_count
     )
     clock_blockers: list[dict[str, object]] = []
     if hardware_matches:

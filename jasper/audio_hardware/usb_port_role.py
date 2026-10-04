@@ -35,6 +35,7 @@ from .i2s_hat import (
     I2sHatCollision,
     configured_i2s_overlays,
     detected_i2s_hat_profile,
+    hand_written_family_member,
     hat_managed,
     read_i2s_hat_intent,
     render_i2s_hat_boot_config,
@@ -360,6 +361,14 @@ def reconcile_boot_config(
     hat_collision: I2sHatCollision | None = None
     with_hat = original
     if manage_hat:
+        enabled = (
+            hand_written_family_member(original, desired_profile)
+            if desired_profile is not None
+            else None
+        )
+        if enabled is not None:
+            # The kernel boots that row, so the reboot marker compares it.
+            desired_profile = enabled.id
         with_hat, hat_changed, hat_collision = render_i2s_hat_boot_config(
             original, desired_profile
         )

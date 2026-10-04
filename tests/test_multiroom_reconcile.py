@@ -3128,8 +3128,7 @@ def test_every_dac_profile_arms_the_return_ring_exactly_when_its_period_fits(
     env/DacProfile floor resolution the audio-hardware reconciler writes into
     `outputd.env` — so this matrix pins the real answer per profile rather than
     a restated table: every profile with a declared latency floor runs 128 and
-    arms; the floorless HiFiBerry DAC8x Studio runs outputd's packaged 1024 and
-    does not.
+    arms.
     """
 
     from jasper.multiroom.grouping_env import outputd_grouping_env
@@ -3227,7 +3226,7 @@ def test_a_period_that_cannot_carry_the_return_ring_stays_solo(
     One slot of the dac-content return ring is one outputd period, and outputd
     bails EX_CONFIG on the mismatched pair under `RestartPreventExitStatus=78` —
     a parked daemon and a silent speaker. So a DUMB member whose box runs any
-    other period (the floorless DAC8x Studio's packaged 1024) or whose period
+    other period (outputd's packaged 1024, with no recognized DAC) or whose period
     cannot be resolved at all does not arm: it falls back to solo, keeps playing
     its own content, and exits non-zero so the oneshot shows failed."""
     import json

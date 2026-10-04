@@ -258,17 +258,21 @@ def test_unsupported_board_never_mutates_hat_boot_setting(tmp_path: Path) -> Non
             "hifiberry-studio-dac8x",
             None,
         ),
-        # Detection never compounds a hand-written line (the jts3 config):
-        # it refuses and reports, leaving the file's own overlay standing.
+        # The jts3 config: a hand-written DAC8x overlay already runs this
+        # Studio board (ADR-0448). Nothing is written, nothing collides, and
+        # the desired row is the one that overlay boots, so no reboot is owed.
+        ("StudioDAC8x", None, HAND_WRITTEN_BASE, "hifiberry_dac8x", None, None),
+        # Detection never compounds a hand-written line of other hardware: it
+        # refuses and reports, leaving the file's own overlay standing.
         (
             "StudioDAC8x",
             None,
-            HAND_WRITTEN_BASE,
+            "[all]\ndtoverlay=merus-amp\n",
             "hifiberry_dac8x_studio",
             None,
             I2sHatCollision(
                 managed_overlay="hifiberry-studio-dac8x",
-                colliding_overlays=("hifiberry-dac8x",),
+                colliding_overlays=("merus-amp",),
             ),
         ),
         # No EEPROM to read: the saved intent is the only answer left.

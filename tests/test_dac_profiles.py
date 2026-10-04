@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -82,7 +83,7 @@ def test_apple_usb_c_dongle_profile_captures_current_mixer_policy() -> None:
     assert APPLE_USB_C_DONGLE.mixer_controls[0].unmute is True
 
 
-def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
+def test_hifiberry_dac8x_base_and_studio_share_one_set_of_values() -> None:
     assert HIFIBERRY_DAC8X.id == "hifiberry_dac8x"
     assert HIFIBERRY_DAC8X.label == "HiFiBerry DAC8x"
     assert HIFIBERRY_DAC8X.kind == "single"
@@ -106,20 +107,23 @@ def test_hifiberry_dac8x_profiles_cover_base_and_studio_runtime_ids() -> None:
         r"\bsnd_rpi_hifiberry_dac8x\b",
     )
     assert HIFIBERRY_DAC8X.dtoverlay == "hifiberry-dac8x"
-    assert HIFIBERRY_DAC8X_STUDIO.id == "hifiberry_dac8x_studio"
-    assert HIFIBERRY_DAC8X_STUDIO.label == "HiFiBerry DAC8x Studio"
-    assert HIFIBERRY_DAC8X_STUDIO.physical_output_count == 8
-    assert HIFIBERRY_DAC8X_STUDIO.clock_domain_contract == "single_device"
-    assert HIFIBERRY_DAC8X_STUDIO.outputd_sink == "single_alsa"
-    assert HIFIBERRY_DAC8X_STUDIO.connection == "i2s"
-    assert HIFIBERRY_DAC8X_STUDIO.supports_active_outputd_lane is True
-    assert HIFIBERRY_DAC8X_STUDIO.active_outputd_lane_channels == 8
+    # One silicon on two driver stacks: the Studio row takes every measured
+    # value from the base row (ADR-0448) and owns only how it is recognized,
+    # its overlay, its mixer pins and its family pointer.
+    own = {
+        "id", "label", "supported_card_matches", "eeprom_gated_card_matches",
+        "hat_products", "dtoverlay", "mixer_controls", "family_id",
+    }
+    for field in fields(DacProfile):
+        if field.name not in own:
+            assert getattr(HIFIBERRY_DAC8X_STUDIO, field.name) == getattr(
+                HIFIBERRY_DAC8X, field.name
+            ), field.name
     # The Studio's own overlay, not the base board's. `configured_i2s_overlays()`
     # intersects config.txt against these declarations, so the previous
     # `hifiberry-dac8x` here made a correctly-configured Studio box read as
     # having no I2S HAT at all.
     assert HIFIBERRY_DAC8X_STUDIO.dtoverlay == "hifiberry-studio-dac8x"
-    assert HIFIBERRY_DAC8X.dtoverlay != HIFIBERRY_DAC8X_STUDIO.dtoverlay
 
 
 def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
@@ -132,8 +136,7 @@ def test_hifiberry_studio_match_hints_do_not_overlap_base_dac8x() -> None:
     Studio DAC8x" / "... Pro". Both put "Studio" BEFORE "DAC8x", which is
     exactly the ordering the old trailing `(?!.*studio)` lookaheads failed to
     exclude — every one of these Studio labels used to resolve to the base
-    profile and inherit its `chip_aec_qualification="approved"` and S32_LE
-    edge.
+    profile, which pins none of the Studio driver's gain stages.
 
     `label` is `product or proc_description or card_id`
     (`audio_hardware.output_probe.probe_system_cards`); an I2S HAT has no USB `product`,
@@ -355,8 +358,7 @@ def test_every_single_profile_label_matches_exactly_one_profile() -> None:
     invisible at runtime — the losing profile just silently never applies, and
     its hardware inherits the winner's whole declaration set. That is #2250
     exactly: the base DAC8x's family regexes claimed every Studio label, so the
-    Studio row's `chip_aec_qualification="needs_calibration"` never reached the
-    board it describes.
+    Studio row's declarations never reached the board it describes.
 
     This walks the registry rather than pinning the one pair that broke, so the
     next profile added with an over-broad pattern fails here instead of shipping
@@ -600,10 +602,8 @@ def test_floor_accessors_round_trip_by_profile_id() -> None:
     assert (floor.outputd_period_frames, floor.outputd_dac_buffer_frames) == (128, 256)
 
 
-def test_floor_accessors_are_none_for_undeclared_and_unknown() -> None:
-    # A DAC that declares no floor keeps the shipped default — None is the
-    # non-breaking signal the reconciler and the emitters read as "use default".
-    assert dac.latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
+def test_floor_accessor_is_none_for_an_unknown_dac() -> None:
+    # None is the signal the reconciler and the emitters read as "use default".
     assert dac.latency_floor_for("no_such_dac") is None
 
 
@@ -814,13 +814,6 @@ def test_final_edge_format_matches_known_hardware() -> None:
     # `aplay --dump-hw-params` open test, 2026-08-07) — declaring it moves
     # outputd's i32 program spine straight through with zero narrowing.
     assert HIFIBERRY_DAC8X.final_edge_format == "S32_LE"
-    # DAC8x Studio stays at the safe default: same DAC-chip family as the base
-    # DAC8x above, but a DIFFERENT overlay and driver (#2250 —
-    # `hifiberry-studio-dac8x`, `hifiberry_studio_dac8x.c`), and no lab unit
-    # exists to run the same hardware open-test, so this program does not flip
-    # it on inference alone. See the profile's own comment in
-    # jasper/audio_hardware/dac.py for exactly what evidence would flip it.
-    assert HIFIBERRY_DAC8X_STUDIO.final_edge_format == "S16_LE"
     assert INNOMAKER_HIFI_AMP_PRO.final_edge_format == "S32_LE"
     # The composite's declaration became load-bearing when outputd started
     # requesting it on BOTH children (wide-output-path PR-5): every live

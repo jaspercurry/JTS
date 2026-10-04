@@ -839,7 +839,9 @@ def build_identity(
             xvf_firmware=_chip_text(dev, "BLD_REPO_HASH"),
             beam_plan=plan.plan_id,
             fixed_profile=xvf3800.chip_aec_fixed_profile_fingerprint(plan),
-            output_id=source.get("JASPER_AUDIO_DAC_ID", ""),
+            output_id=dac_registry.output_identity_id(
+                source.get("JASPER_AUDIO_DAC_ID", "")
+            ),
             output_hardware_key=output_hardware_key(source, output_state),
             output_pcm=f"{sink}:{pcm}",
             output_format=output_format,

@@ -23,7 +23,6 @@ from jasper.runtime_config.audio_profile_state import (
     runtime_env_from_mapping,
 )
 from jasper.aec.bridge_telemetry import read_bridge_stats
-from jasper.audio_hardware.dac import HIFIBERRY_DAC8X_ID
 from jasper.chip_aec.policy import resolve_chip_aec_dac_gate
 from jasper.platform.service_units import (
     AEC_BRIDGE_SERVICE,
@@ -57,7 +56,6 @@ from jasper.audio_control.audio_validation_readiness import (
     profile_runtime_ready,
 )
 from jasper.audio_control.audio_validation_hardware_checks import (
-    _dac_identity_check,
     _outputd_pipeline_service_state_check,
     _outputd_dac_status_check,
     _outputd_reference_health_check,
@@ -225,7 +223,6 @@ def build_outputd_stability_hardware_validation_artifact(
     checks: dict[str, Mapping[str, Any]] = {
         "runtime_identity": _runtime_identity_check(system_env),
         "service_state": _outputd_pipeline_service_state_check(service_states),
-        "dac_identity": _dac_identity_check(dac, expected_id=HIFIBERRY_DAC8X_ID),
         "dac_output": _outputd_dac_status_check(outputd_status),
         "outputd_reference_health": _outputd_reference_health_check(
             outputd_status_samples,

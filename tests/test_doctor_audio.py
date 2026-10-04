@@ -32,7 +32,9 @@ from jasper.audio_routes.output_hardware import (
 
 
 from ._sounddevice_stub import stub_sounddevice
+from .active_speaker_fixtures import mono_output_topology
 from .doctor_test_support import _fresh_cfg, record_active_dac
+from jasper.dsp_control.output_topology_observation import declared_hardware_mismatch
 from jasper.audio_routes.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.audio_routes.output_topology_store import save_output_topology
 
@@ -336,6 +338,33 @@ def test_active_speaker_hardware_match_checks_dual_apple_child_serials(
     assert output.status == "ok"
     assert active.status == "fail"
     assert active.reason == audio.REASON_OUTPUT_HARDWARE_CLOCK_BLOCKED
+
+
+@pytest.mark.parametrize(
+    ("saved_id", "observed_id"),
+    [
+        ("hifiberry_dac8x", "hifiberry_dac8x_studio"),
+        ("hifiberry_dac8x_studio", "hifiberry_dac8x"),
+    ],
+)
+def test_a_dac8x_overlay_switch_keeps_the_saved_topology(
+    monkeypatch, tmp_path, saved_id, observed_id
+):
+    """Base and Studio are one silicon on two driver stacks (ADR-0448): moving
+    the board between the overlays blocks no active-speaker action, so the
+    saved topology and its fingerprint stand with no re-save."""
+
+    topology = mono_output_topology(device_id=saved_id)
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(topology, path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    observed = classify_output_cards(
+        [OutputCardFact(card_id="card", device_id=observed_id, has_playback=True)]
+    )
+    evidence.seed("output_hardware_state", observed)
+
+    assert audio.check_active_speaker_output_hardware_match().status == "ok"
+    assert declared_hardware_mismatch(topology, observed) is None
 
 
 def test_output_hardware_state_warns_without_a_record():

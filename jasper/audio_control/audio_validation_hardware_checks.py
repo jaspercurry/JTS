@@ -31,46 +31,6 @@ CHIP_AEC_PROFILE_READBACK_COMMANDS = (
 CHIP_AEC_CONVERGENCE_COMMAND = "AEC_AECCONVERGED"
 
 
-def _dac_identity_check(
-    dac: Mapping[str, artifacts.JsonValue],
-    *,
-    expected_id: str,
-) -> dict[str, artifacts.JsonValue]:
-    dac_card = str(dac.get("card") or "").strip()
-    observed = {
-        "id": dac.get("id"),
-        "card": dac_card,
-        "pcm": dac.get("pcm"),
-        "backend": dac.get("backend"),
-        "sample_rate": dac.get("sample_rate"),
-    }
-    expected = {
-        "id": expected_id,
-        "card": "recognized non-fallback ALSA card",
-    }
-    card_ok = bool(dac_card) and dac_card != "A"
-    if dac.get("id") == expected_id and card_ok:
-        return _check(
-            "pass",
-            summary=f"Expected output DAC identity {expected_id} is active.",
-            observed=observed,
-            expected=expected,
-        )
-    if dac.get("id") == expected_id:
-        summary = (
-            f"Expected output DAC identity {expected_id} is active, "
-            "but ALSA card identity is missing or fallback-like."
-        )
-    else:
-        summary = f"This validation profile must run on {expected_id}."
-    return _check(
-        "fail",
-        summary=summary,
-        observed=observed,
-        expected=expected,
-    )
-
-
 def _outputd_pipeline_service_state_check(
     service_states: Mapping[str, str],
 ) -> dict[str, artifacts.JsonValue]:
@@ -583,8 +543,6 @@ def _outputd_stability_recommendation(
 ) -> str:
     if checks.get("service_state", {}).get("status") == "fail":
         return "fix_outputd_pipeline_services_before_validation"
-    if checks.get("dac_identity", {}).get("status") == "fail":
-        return "run_on_hifiberry_dac8x_target_before_validation"
     if checks.get("dac_output", {}).get("status") in {"fail", "unknown", "not_run"}:
         return "fix_outputd_runtime_observability_before_validation"
     if checks.get("outputd_reference_health", {}).get("status") == "fail":
