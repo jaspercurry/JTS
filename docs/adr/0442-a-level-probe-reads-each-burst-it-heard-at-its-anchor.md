@@ -47,11 +47,17 @@
     lags (0.9 times at most; 0.3 for the −42 and −36 dBFS bursts), so nothing is read. Where an
     anchor off by less still passes, the −42 and −36 dBFS readings stay within 1.5 dB of their true
     windows. The located read had the same jitter.
-  - A room sound no longer stands in for a burst. In 70 cases built from the 7 takes (silence, room
-    only, room with a thump at each burst, a dropout over the top burst with a thump and a knock,
-    200 ms of frames lost or inserted, a capture 40 ms late), the probe refuses with no reading
-    (`locate_failed`), or solves from the highest burst it heard, at most 1.37 dB from the take's
-    own solve (ADR-0411's step spread).
+  - A knock, thump, click or step no longer stands in for a burst. In 70 cases built from the 7
+    takes (silence, room only, room with a thump at each burst, a dropout over the top burst with a
+    thump and a knock, 200 ms of frames lost or inserted, a capture 40 ms late), the probe refuses
+    with no reading (`locate_failed`), or solves from the highest burst it heard, at most 1.37 dB
+    from the take's own solve (ADR-0411's step spread). A sweep-shaped room sound whose log rate is
+    near a burst's still reads as that burst, as before.
+  - A burst that is heard but at a wrong level still moves the solve as before: one low step by up
+    to about 6.7 dB (ADR-0411's bound), two low steps or a frame loss inside the top burst by more,
+    up to the 15 dB raise limit, the take's ceiling and the 85 dB stop. This is ADR-0412's accepted
+    envelope and main's behaviour in a room where the probe was read; it is now reachable in rooms
+    where every probe used to refuse.
   - A probe heard only through arrivals that leave each burst a locate confidence under 0.1 is now
     levelled. Before, it stopped at `locate_failed`, or it stopped the run as `level_unreachable`
     when no stop ended its play.
