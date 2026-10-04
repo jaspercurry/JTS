@@ -49,7 +49,7 @@ Use `sudo /opt/jasper/.venv/bin/jasper-round reset` to reset everything, includi
 
 ## Speaker
 
-`speaker/mark` takes two measurements at the design mark; full-speaker sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; measure the composed full graph before apply. A speaker document's trial plays each candidate summed at the mark and banks `speaker/mark`.
+`speaker/mark` takes two measurements at the design mark; full-speaker sweeps cover 20 Hz–20 kHz from the resolved driver bands (ADR-0328). Driver caps still bind the fader. Use `speaker-fit`, `repeat`, and `sweep`; preview the composed full graph, then apply: a speaker trial is optional ([ADR-0444](adr/0444-a-speaker-trial-is-optional-and-plays-its-whole-candidate.md)). When asked for, a speaker document's trial plays each candidate whole and summed at the mark, with the applied rear, bass and room layers on, and banks `speaker/mark`.
 
 All measurement programs refuse before sound with `walk_layout_unsupported_for_per_driver_programs` when the layout declares three driver roles (woofer, mid and tweeter); these programs are not built for that layout yet.
 

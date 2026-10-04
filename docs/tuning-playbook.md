@@ -150,11 +150,12 @@ Write one document with every section the evidence supports.
 each section's schema. Normally omit `alignment`: saved timing carries forward. See Timing
 below for when to include it. A refusal names the crossed bound; correct that field.
 
-Trial the whole document against base: `sudo /opt/jasper/.venv/bin/jasper-round trial <FP>`.
-Add a variant only when its answer could change your choice:
-`--candidates base,<FP>,<variant-FP>`. A document that states only speaker sections trials at
-the mark (`speaker/mark`); with a room, bass or rear section it trials that
-program instead ([runbook](tuning-operator-runbook.md#the-loop), step 1).
+A document that states only speaker sections is applied after its preview, with no trial
+by default; trial it (`sudo /opt/jasper/.venv/bin/jasper-round trial <FP>`, each candidate whole
+at the mark, `speaker/mark`) only when a measured comparison could change your choice
+([ADR-0444](adr/0444-a-speaker-trial-is-optional-and-plays-its-whole-candidate.md)). A document with a room, bass or rear section trials that program against base
+([runbook](tuning-operator-runbook.md#the-loop), step 1). Add a variant only when its answer could
+change your choice: `--candidates base,<FP>,<variant-FP>`.
 Read `sudo /opt/jasper/.venv/bin/jasper-round-views candidates <round-dir>` and
 its `candidates.json`: each pose, keyed as the rear views key it, has pairwise
 deltas per role. `window` is present only when reading the frequency view. A
@@ -517,7 +518,7 @@ This is the default loop for a cardioid box; change its spots, takes or trials w
 Keep the cabinet at its wall.
 
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
-   Fit, trial and apply the speaker there, then take the pair model, one `rear/pair` take at the mark:
+   Fit and apply the speaker there (no trial by default), then take the pair model, one `rear/pair` take at the mark:
    `sudo /opt/jasper/.venv/bin/jasper-round run --program rear --wait`.
 2. Read the seed: `contract --round <pair-round> --section rear` carries it as `seed`, or a gap that names why there is none and is not a document to copy. Preview it, with no sound:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round>`.
