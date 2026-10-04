@@ -41,10 +41,13 @@ def next_program_action(
 
     # Decision d18 / ADR-0301: the trial verifies an apply; a new baseline round is not required.
     layers = applied_layers(profile)
-    # A layer under the in-room program changed since the stack room's round was banked on; bass is an option
-    # inside it (ADR-0420, ADR-0429, ADR-0437).
-    upstream_changed = layers[PURPOSE_ROOM] and any(name not in (PURPOSE_ROOM, *IN_ROOM_OPTIONS)
-                                                    for name in (recent_rounds.get(PURPOSE_ROOM) or {}).get("base_stale_by") or ())
+    # A layer under the in-room program changed since the stack room's round was banked on, and room was not
+    # applied again since on a set of that round that is still current; bass is an option inside it (ADR-0420,
+    # ADR-0429, ADR-0437, ADR-0445).
+    room = recent_rounds.get(PURPOSE_ROOM) or {}
+    changed = room.get("base_stale_by") or ()
+    upstream_changed = layers[PURPOSE_ROOM] and any(name not in (PURPOSE_ROOM, *IN_ROOM_OPTIONS) for name in changed) \
+        and not (PURPOSE_ROOM in changed and room.get("set_id"))
     program = next((name for name in programs if name not in IN_ROOM_OPTIONS and not layers[name]
                     or name == PURPOSE_ROOM and upstream_changed), None)
     if program is None:
