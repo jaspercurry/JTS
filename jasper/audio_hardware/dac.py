@@ -541,7 +541,7 @@ HIFIBERRY_DAC8X_STUDIO = replace(
     # (`sound/soc/bcm/hifiberry_studio_dac8x.c`). HiFiBerry's StudioDAC8x
     # datasheet still prints the base row's `dtoverlay=hifiberry-dac8x`, and
     # either overlay runs this board. The reconciler writes this one only
-    # when no DAC8x overlay is configured yet (ADR-0234). It is also in
+    # when no hand-written DAC8x overlay is configured (ADR-0234). It is also in
     # `configured_i2s_overlays()`, the registered set USB port-role
     # resolution reads.
     dtoverlay="hifiberry-studio-dac8x",
@@ -730,11 +730,6 @@ def _build_index(profiles: tuple[DacProfile, ...]) -> dict[str, DacProfile]:
                 raise ValueError(
                     f"{profile.id}: unknown child DAC profile id {child_id!r}"
                 )
-        family = out.get(profile.family_id) if profile.family_id else profile
-        if family is None or family.family_id:
-            raise ValueError(
-                f"{profile.id}: family_id must name a row with no family_id"
-            )
     return out
 
 

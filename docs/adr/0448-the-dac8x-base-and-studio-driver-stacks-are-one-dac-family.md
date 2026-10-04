@@ -7,7 +7,7 @@
   (partial): [ADR-0106](0106-a-verification-artifact-is-never-migrated-in-place.md)'s
   "an identity is never migrated in place", for this one same-silicon pair;
   and [ADR-0234](0234-detected-hardware-is-used-automatically.md)'s collision
-  refusal, for a hand-written overlay of the detected HAT's own family.
+  refusal, for a hand-written overlay of the desired profile's own family.
 
 ## Context
 
@@ -39,10 +39,12 @@ redo the proofs when almost nothing changes.
    `declared_hardware_mismatch`, the doctor's boot-overlay check, and the
    chip-AEC alignment identity's `output_id`. The classifier still picks the
    Studio row on the Studio driver: that row picks the pins and the overlay.
-3. **Both overlays are supported.** One hand-written overlay of the detected
-   HAT's family, with no JTS block, already runs the board: the reconciler
-   writes nothing, reports no conflict, and takes that overlay's row as the
-   desired profile, so no reboot is owed. Two I2S drivers are still refused. A
+3. **Both overlays are supported.** One hand-written overlay of the desired
+   profile's family (from the detected HAT or the intent file), with no JTS
+   block, already runs the board: the reconciler writes nothing, reports no
+   conflict, and takes that overlay's row as the desired profile, so no reboot
+   is owed. Two I2S drivers on global or `[all]` lines are still refused (the
+   reconciler reads no model sections, as before). A
    fresh Studio board with no DAC8x overlay still gets the Studio overlay
    (ADR-0234), because that is the least code.
 4. **A move between the overlays is one boot line and a reboot.** No topology
@@ -58,10 +60,18 @@ redo the proofs when almost nothing changes.
 - The one unknown: the S32_LE probe ran under the base driver only. If the
   Studio board's MCU does not offer S32_LE, outputd parks at exit 78 (it never
   converts silently), and the box goes back to the base overlay.
-- One residual: the chip-AEC per-unit key `output_hardware_key` holds the ALSA
-  card id, which the two drivers spell differently. A per-unit artifact banked
+- One residual: the chip-AEC per-unit key `output_hardware_key` is
+  `i2s:<classified row id>:<ALSA card id>`, and both parts differ between the
+  two drivers (`i2s:hifiberry_dac8x:sndrpihifiberry` and
+  `i2s:hifiberry_dac8x_studio:HiFiBerryStudio`). A per-unit artifact banked
   on one stack is applied on the other with a "measured on a different unit"
   disclosure (ADR-0101), not a park. A shipped class row matches on both stacks.
+- Audio validation artifacts stay keyed on the classified row id. After a
+  switch, the earlier ones read as missing in the doctor's advisory "Audio
+  validation" summary; no gate reads it.
+- On a board whose intent names the base row (a non-Studio DAC8x), a
+  hand-written Studio line by mistake now gets no warning either. No box has
+  one.
 - Deleted as dead: the soak tool's DAC-identity gate, and the doctor's
   floorless-DAC branch (no registered row is floorless now).
 - Every other DAC row is its own one-row family, so its values, detection,
