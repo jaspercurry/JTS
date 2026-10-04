@@ -1904,6 +1904,7 @@ def _seed_alternative_apply(
 def test_alternative_apply_loads_exact_candidate_then_records_sound(
     monkeypatch, tmp_path,
 ):
+    from jasper.active_speaker.commissioning_coordinator import load_commissioning_view
     from jasper.active_speaker.design_draft import load_design_draft
 
     candidate = _seed_alternative_apply(monkeypatch, tmp_path)
@@ -1936,6 +1937,8 @@ def test_alternative_apply_loads_exact_candidate_then_records_sound(
     }
     assert load_design_draft()["revision"] == 2
     assert v2state.load_v2_state()["candidate"]["fingerprint"] == candidate.fingerprint
+    # The rewritten declaration is not a stale record (ADR-0447).
+    assert load_commissioning_view()["applied_profile"]["disclosures"] == []
 
 
 def test_a_below_floor_apply_is_refused_before_sound_is_written(

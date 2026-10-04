@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import hashlib
-from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -27,9 +26,6 @@ from jasper.active_speaker.applied_tune import (
     rear_calibration_issues,
 )
 from jasper.active_speaker.graph_evidence import active_layer_a_fingerprint
-from jasper.active_speaker.crossover_preview import (
-    build_crossover_preview,
-)
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, design_draft_view, save_design_draft
 from jasper.active_speaker.crossover_contract import crossover_snapshot_state
 from jasper.active_speaker.measured_crossover_candidate import (
@@ -137,36 +133,16 @@ def _draft(topology: OutputTopology, *, tweeter_gain_db: float = -18.5) -> dict:
     ))
 
 
-def test_baseline_source_binds_exact_normalized_preview_candidate() -> None:
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft)
-    changed_preview = deepcopy(preview)
-    changed_preview["groups"][0]["crossovers"][0]["candidate"][
-        "confidence"
-    ] = "high"
-
-    first = baseline_record._source_payload(topology, draft, preview)
-    changed = baseline_record._source_payload(topology, draft, changed_preview)
-
-    assert (
-        first["crossover_preview_fingerprint"]
-        != changed["crossover_preview_fingerprint"]
-    )
-    assert first["fingerprint"] != changed["fingerprint"]
-
-
-
 @pytest.mark.parametrize("changed", [False, True])
-def test_noop_draft_save_preserves_applied_identity(tmp_path, changed):
+def test_a_draft_save_moves_the_applied_identity_only_for_a_graph_input(tmp_path, changed):
     topology = _dual_apple_topology()
     path = tmp_path / "draft.json"
     drafts, identities = [], []
-    research, inputs = current_research(topology, _research())
     for index in range(2):
+        research, inputs = current_research(topology, _research(tweeter_gain_db=-17.0 if changed and index else -18.5))
         draft = save_design_draft(
             topology, path=path, driver_research=research,
-            operator_inputs={**inputs, "notes": "edited" if changed and index else "same"},
+            operator_inputs={**inputs, "notes": f"note {index}"},
             created_at=f"2026-06-14T12:0{index}:00Z",
         )
         drafts.append(draft)

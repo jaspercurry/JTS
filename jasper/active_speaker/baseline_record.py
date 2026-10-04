@@ -23,50 +23,14 @@ from .baseline_profile import (
     BASELINE_PROFILE_KIND, PROVENANCE_AUTHORED_BY_MODEL, PROVENANCE_MANUAL, PROVENANCE_MEASURED, SCHEMA_VERSION,
 )
 from .candidate_bank import BankedCandidate
-from .crossover_preview import build_crossover_preview, crossover_preview_fingerprint
 from .measured_crossover_candidate import (
     MeasuredCrossoverAlignment,
     MeasuredCrossoverCandidate,
     candidate_on_declaration, driver_corrections, effective_preset,
 )
-from .measurement import empty_driver_check_summary
 from .measurement_emit import MeasurementGraphProfile
 from .measurement_programs import PROGRAM_DOCUMENT_ORDER
 from .profile import ActiveSpeakerPreset, required_driver_roles
-
-
-def _source_payload(
-    topology: OutputTopology,
-    design_draft: Mapping[str, Any],
-    crossover_preview: Mapping[str, Any],
-    *,
-    measured_candidate_fingerprint: str | None = None,
-    driver_protection: Mapping[str, Any] | None = None,
-    candidate_graph_context: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Fingerprint declaration and evidence inputs, not emitted bytes."""
-    source = {
-        "topology_id": topology.topology_id,
-        "topology_fingerprint": topology_config_fingerprint(topology),
-        "crossover_preview_fingerprint": crossover_preview_fingerprint(
-            crossover_preview, design_draft
-        ),
-        # Frozen at the retired driver-check record's no-record answer; see
-        # empty_driver_check_summary.
-        "measurements_updated_at": None,
-        "measurement_summary_fingerprint": _fingerprint(empty_driver_check_summary(topology)),
-    }
-    if measured_candidate_fingerprint is not None:
-        source["measured_candidate_fingerprint"] = measured_candidate_fingerprint
-    if driver_protection is not None:
-        source["driver_protection_fingerprint"] = _fingerprint(driver_protection)
-    if candidate_graph_context is not None:
-        device_context = {
-            key: value for key, value in candidate_graph_context.items()
-            if key != "measured_candidate_fingerprint"
-        }
-        source["candidate_graph_context_fingerprint"] = _fingerprint(device_context)
-    return {**source, "fingerprint": _fingerprint(source)}
 
 
 def _measured_candidate_metadata(
@@ -182,7 +146,6 @@ def prepare_applied_baseline_profile(
     declaration: MeasurementGraphProfile,
     design_draft: Mapping[str, Any],
     config_path: str | Path | None = None,
-    crossover_preview: Mapping[str, Any] | None = None,
     config_sha256: str | None = None,
     applied_at: str | None = None,
     provenance: Mapping[str, Any] | None = None,
@@ -191,13 +154,9 @@ def prepare_applied_baseline_profile(
     """Build an apply record from resolved inputs without reading or writing the bank."""
     candidate = banked.candidate
     protection = protection_projection(design_draft.get("driver_safety_profile"))
-    if crossover_preview is None:
-        crossover_preview = build_crossover_preview(design_draft)
-    source = _source_payload(
-        declaration.topology, design_draft, crossover_preview,
-        measured_candidate_fingerprint=candidate.fingerprint, driver_protection=protection,
-    )
-    source = {**source, **((provenance or {}).get("source") or {}),
+    topology = declaration.topology
+    source = {"topology_id": topology.topology_id, "topology_fingerprint": topology_config_fingerprint(topology),
+              **((provenance or {}).get("source") or {}),
               **({"driver_protection_fingerprint": _fingerprint(protection)} if protection is not None else {}),
               "measured_candidate_fingerprint": candidate.fingerprint}
     source["fingerprint"] = _fingerprint({key: value for key, value in source.items() if key != "fingerprint"})
