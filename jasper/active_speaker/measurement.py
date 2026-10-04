@@ -158,30 +158,3 @@ def active_summed_targets(topology: OutputTopology) -> list[dict[str, Any]]:
         }
         for group in crossover_groups
     ]
-
-
-def empty_driver_check_summary(topology: OutputTopology) -> dict[str, Any]:
-    """What the retired driver-check record summarised for ``topology`` with no records.
-
-    Applied profiles hash it into ``source.measurement_summary_fingerprint``, so
-    it is rebuilt key for key: any other value re-fingerprints every applied
-    profile. REMOVAL CONDITION: drop it, with the source's
-    ``measurements_updated_at`` and ``measurement_summary_fingerprint`` keys, in
-    the next change that re-fingerprints the profile source anyway.
-    """
-    targets = active_driver_targets(topology)
-    return {
-        "required_driver_count": len(targets),
-        "captured_driver_count": 0,
-        "missing_driver_targets": targets,
-        "driver_measurements_complete": False,
-        "required_driver_check_count": len(targets),
-        "captured_driver_check_count": 0,
-        "missing_driver_check_targets": targets,
-        "driver_checks_complete": False,
-        "latest_driver_measurements": {},
-        "latest_driver_checks": {},
-        "latest_reference_axis_driver_measurements": {},
-        "latest_driver_confirmations": {},
-        "stale_driver_record_count": 0,
-    }
