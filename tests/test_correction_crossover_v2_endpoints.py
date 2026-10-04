@@ -1937,7 +1937,7 @@ def test_alternative_apply_loads_exact_candidate_then_records_sound(
     }
     assert load_design_draft()["revision"] == 2
     assert v2state.load_v2_state()["candidate"]["fingerprint"] == candidate.fingerprint
-    # The rewritten declaration compiles the same graph, so the record is not stale.
+    # The rewritten declaration is not a stale record (ADR-0447).
     assert load_commissioning_view()["applied_profile"]["disclosures"] == []
 
 
