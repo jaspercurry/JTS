@@ -16,8 +16,6 @@ from jasper.audio_control import transport_coherence
 from jasper.audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID,
     HIFIBERRY_DAC8X_ID,
-    HIFIBERRY_DAC8X_STUDIO_ID,
-    latency_floor_for,
 )
 from jasper.service_state.audio_runtime_settings import (
     AUDIO_ROUTE_PROFILE_KEY,
@@ -223,16 +221,11 @@ def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():
     assert by_key[OUTPUTD_DAC_BUFFER_KEY].action == "set"
 
 
-def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
-    # A floorless profile drops every generated floor key so the packaged
-    # defaults apply. Asserted, not assumed, that this profile is floorless —
-    # a later floor declaration must fail here rather than quietly making the
-    # {"unset"} expectation unreachable (what an R7a DAC8x floor did when this
-    # test named `hifiberry_dac8x`, and what jts4's measured floor then did
-    # when it named `innomaker_hifi_amp_pro`).
-    assert latency_floor_for(HIFIBERRY_DAC8X_STUDIO_ID) is None
+def test_outputd_latency_floor_actions_unset_for_an_unrecognized_dac():
+    # No recognized profile drops every generated floor key so the packaged
+    # defaults apply.
     actions = outputd_latency_floor_actions(
-        profile_id=HIFIBERRY_DAC8X_STUDIO_ID,
+        profile_id="unknown",
         base_env={},
         outputd_env={
             "JASPER_CAMILLA_CHUNKSIZE": "256",

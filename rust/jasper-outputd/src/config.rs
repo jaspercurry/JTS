@@ -87,8 +87,8 @@ pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
 /// `jasper.dsp_control.fanin_coupling.RING_SLOT_FRAMES` (#3656). The slot IS the reader's
 /// period, which is what lets outputd consume a whole DAC period per DAC period
 /// and never hold a partial slot; every DAC profile declaring a latency floor
-/// runs outputd here. A box whose `period_frames` is not this value — the
-/// floorless profile, left at `DEFAULT_PERIOD_FRAMES` — cannot serve any ring,
+/// runs outputd here. A box whose `period_frames` is not this value — no
+/// recognized DAC, or an operator override — cannot serve any ring,
 /// and `Config::from_env` refuses to arm it rather than creating a ring the
 /// writer's ioplug can never open. Read from `jasper_ring`, which owns the ring
 /// geometry, rather than spelled again here.

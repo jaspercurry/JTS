@@ -18,7 +18,7 @@ HAT block staying in config.txt after the HAT it was written for is gone
 from __future__ import annotations
 
 from ...audio_hardware.config_txt import boot_config_path, overlay_declared_anywhere
-from ...audio_hardware.dac import by_id
+from ...audio_hardware.dac import by_id, family_profiles
 from ...audio_hardware.i2s_hat import (
     configured_i2s_overlays,
     i2s_hat_managed,
@@ -76,21 +76,26 @@ def check_i2s_dac_overlay_persists() -> CheckResult:
             reason=REASON_BOOT_CONFIG_UNREADABLE,
         )
 
-    if profile.dtoverlay.lower() in configured_i2s_overlays(content):
-        return CheckResult(
-            label,
-            "ok",
-            f"dtoverlay={profile.dtoverlay} present in {config_path}",
-            reason=REASON_OVERLAY_PRESENT,
-        )
-    if overlay_declared_anywhere(content, profile.dtoverlay):
-        return CheckResult(
-            label,
-            "ok",
-            f"dtoverlay={profile.dtoverlay} present in {config_path} "
-            "under a model-scoped section",
-            reason=REASON_OVERLAY_PRESENT_SCOPED,
-        )
+    # Any overlay of the DAC's family runs it (ADR-0448).
+    overlays = [p.dtoverlay for p in family_profiles(device_id) if p.dtoverlay]
+    configured = configured_i2s_overlays(content)
+    for overlay in overlays:
+        if overlay.lower() in configured:
+            return CheckResult(
+                label,
+                "ok",
+                f"dtoverlay={overlay} present in {config_path}",
+                reason=REASON_OVERLAY_PRESENT,
+            )
+    for overlay in overlays:
+        if overlay_declared_anywhere(content, overlay):
+            return CheckResult(
+                label,
+                "ok",
+                f"dtoverlay={overlay} present in {config_path} "
+                "under a model-scoped section",
+                reason=REASON_OVERLAY_PRESENT_SCOPED,
+            )
     return CheckResult(
         label,
         "fail",

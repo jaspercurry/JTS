@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from jasper.audio_hardware.dac import all_profiles
+from jasper.audio_hardware.dac import all_profiles, family_profiles
 from jasper.audio_hardware.i2s_hat import (
     I2S_HAT_BLOCK_BEGIN,
     I2sHatCollision,
+    hand_written_family_member,
     i2s_hat_managed,
     read_i2s_hat_intent,
     render_i2s_hat_boot_config,
@@ -21,6 +22,13 @@ from jasper.audio_hardware.i2s_hat import (
 
 I2S_PROFILES = tuple(p for p in all_profiles() if p.connection == "i2s")
 I2S_PROFILE_IDS = tuple(p.id for p in I2S_PROFILES)
+LONE_I2S_PROFILES = tuple(p for p in I2S_PROFILES if len(family_profiles(p.id)) == 1)
+FAMILY_PAIRS = tuple(
+    (enabled, hand_written)
+    for enabled in I2S_PROFILES
+    for hand_written in family_profiles(enabled.id)
+    if len(family_profiles(enabled.id)) > 1
+)
 SELECTABLE_PROFILES = selectable_i2s_hat_profiles()
 
 
@@ -108,7 +116,9 @@ def test_i2s_hat_renderer_manages_only_global_overlay(profile) -> None:
     assert disabled_collision is None
 
 
-@pytest.mark.parametrize("profile", I2S_PROFILES, ids=I2S_PROFILE_IDS)
+@pytest.mark.parametrize(
+    "profile", LONE_I2S_PROFILES, ids=[p.id for p in LONE_I2S_PROFILES]
+)
 def test_i2s_hat_renderer_refuses_a_same_overlay_collision(profile) -> None:
     original = f"[all]\ndtoverlay={profile.dtoverlay}\ndtparam=audio=on\n"
 
@@ -135,8 +145,40 @@ def test_i2s_hat_renderer_refuses_a_same_overlay_collision(profile) -> None:
     assert cleared_collision is None
 
 
+@pytest.mark.parametrize(
+    ("enabled", "hand_written"),
+    FAMILY_PAIRS,
+    ids=[f"{a.id}-by-{b.id}" for a, b in FAMILY_PAIRS],
+)
+def test_a_hand_written_overlay_of_the_family_already_enables_the_board(
+    enabled, hand_written
+) -> None:
+    """Either overlay runs one silicon (ADR-0448): nothing to write, no collision."""
+
+    original = f"[all]\ndtoverlay={hand_written.dtoverlay}\ndtparam=audio=on\n"
+
+    assert render_i2s_hat_boot_config(original, enabled.id) == (original, False, None)
+    assert hand_written_family_member(original, enabled.id) == hand_written
+
+    # Two I2S drivers are still refused: a JTS block beside the hand-written
+    # line, or a second hand-written overlay.
+    block, _, _ = render_i2s_hat_boot_config("[all]\n", enabled.id)
+    for two_drivers in (
+        f"{block}dtoverlay={hand_written.dtoverlay}\n",
+        "".join(f"dtoverlay={p.dtoverlay}\n" for p in family_profiles(enabled.id)),
+    ):
+        rendered, changed, collision = render_i2s_hat_boot_config(
+            two_drivers, enabled.id
+        )
+        assert (rendered, changed) == (two_drivers, False)
+        assert collision is not None
+
+
 def test_i2s_hat_renderer_refuses_a_different_overlay_collision() -> None:
-    mismatched, matching = I2S_PROFILES[0], I2S_PROFILES[1]
+    mismatched = I2S_PROFILES[0]
+    matching = next(
+        p for p in I2S_PROFILES if p not in family_profiles(mismatched.id)
+    )
     original = f"[all]\ndtoverlay={mismatched.dtoverlay}\n"
 
     rendered, changed, collision = render_i2s_hat_boot_config(original, matching.id)

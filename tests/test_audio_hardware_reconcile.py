@@ -1343,10 +1343,11 @@ def test_print_env_pins_the_install_contract(
         ),
         # The Studio driver writes no mixer defaults of its own, so its profile
         # declares pins — and the boot pin is enabled for it — while the
-        # Apple-only drift monitor stays off.
+        # Apple-only drift monitor stays off. Its edge is the base DAC8x's
+        # measured S32_LE: one silicon (ADR-0448).
         pytest.param(
             DAC8X_STUDIO_LISTING, "hifiberry_dac8x_studio", "DAC8XStudio",
-            "S16_LE", False, id="dac8x-studio",
+            "S32_LE", False, id="dac8x-studio",
         ),
     ],
 )
@@ -2990,6 +2991,7 @@ _FLOOR_PLAN_PROBE_FAILS = {
     [
         pytest.param(APPLE_LISTING, "apple_usb_c_dongle", id="apple"),
         pytest.param(DAC8X_AND_APPLE_LISTING, "hifiberry_dac8x", id="dac8x"),
+        pytest.param(DAC8X_STUDIO_LISTING, "hifiberry_dac8x_studio", id="dac8x-studio"),
     ],
 )
 def test_reconcile_emits_the_declared_latency_floor(
@@ -3017,15 +3019,13 @@ def test_reconcile_emits_the_declared_latency_floor(
     }.items() <= floor.items()
 
 
-def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
-    """A DAC with no declared floor DROPS a stale floor a prior DAC wrote —
+def test_reconcile_parked_box_drops_stale_floor_keys(tmp_path: Path):
+    """A box with no recognized DAC DROPS a stale floor a prior DAC wrote —
     not left as `=''` (which would clobber an operator value) and not left at
-    the stale numbers. DAC8x STUDIO is the floorless case; pointing this at a
-    profile that later declares a floor would make the loop below unreachable
-    rather than failing."""
+    the stale numbers (#27)."""
     result = _run_reconcile(
         tmp_path,
-        DAC8X_STUDIO_LISTING,
+        "",
         "--reason",
         "test",
         initial_outputd_env=(
@@ -3348,7 +3348,7 @@ def declare_slot_floor(monkeypatch):
     "listing,dac_id,result_code,reason",
     [
         pytest.param(APPLE_LISTING, "apple_usb_c_dongle", "unchanged", "none", id="apple-floor-matches"),
-        pytest.param(DAC8X_STUDIO_LISTING, "hifiberry_dac8x_studio", "skipped", "no_declared_floor", id="no-floor"),
+        pytest.param(DAC8X_STUDIO_LISTING, "hifiberry_dac8x_studio", "unchanged", "none", id="dac8x-studio-floor-matches"),
         pytest.param(DAC8X_AND_APPLE_LISTING, "hifiberry_dac8x", "unchanged", "none", id="dac8x-floor-matches"),
         pytest.param("", None, "skipped", "dac_unrecognized", id="unrecognized"),
     ],

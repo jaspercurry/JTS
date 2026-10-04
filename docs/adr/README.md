@@ -35,8 +35,8 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0172](0172-full-a-b-install-generations-stay-deferred.md) | Full A-B install generations stay deferred | accepted |
 | [0173](0173-post-deploy-health-is-surfaced-never-gating.md) | Post-deploy health is surfaced, never gating | accepted |
 | [0174](0174-install-window-oom-kills-are-surfaced-not-gated.md) | Install-window OOM kills are surfaced, not gated | accepted |
-| [0232](0232-studio-driver-stack-is-canonical-for-hifiberry-studio-silicon.md) | Studio driver stack is canonical for HiFiBerry Studio silicon | accepted |
-| [0234](0234-detected-hardware-is-used-automatically.md) | Detected hardware is used automatically; only undetectable hardware gets a toggle | accepted |
+| [0232](0232-studio-driver-stack-is-canonical-for-hifiberry-studio-silicon.md) | Studio driver stack is canonical for HiFiBerry Studio silicon | superseded by 0448 |
+| [0234](0234-detected-hardware-is-used-automatically.md) | Detected hardware is used automatically; only undetectable hardware gets a toggle | amended by 0448 |
 | [0235](0235-attached-hardware-one-owner-per-fact-and-no-facts-in-shell.md) | Attached hardware has one owner per fact, and the shell holds no hardware facts | accepted |
 | [0241](0241-the-install-runs-as-a-transient-unit-and-the-deploy-exits-on-its-status.md) | The install runs as a transient unit and the deploy exits on its status | accepted |
 | [0242](0242-post-deploy-health-is-the-core-doctor-run-in-a-transient-unit.md) | Post-deploy health is the core doctor, run in a transient unit | accepted |
@@ -45,6 +45,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | [0315](0315-hardware-tier-and-direct-updates.md) | Hardware tier and direct updates | accepted |
 | [0348](0348-the-installer-builds-from-source-on-stock-pi-os.md) | The installer builds from source on stock Pi OS; no prebuilt image or runtime bundle | accepted |
 | [0363](0363-the-assistant-is-on-every-tier-and-wake-detection-is-the-only-tier-capability.md) | The assistant is on every tier; wake detection is the only tier capability | accepted |
+| [0448](0448-the-dac8x-base-and-studio-driver-stacks-are-one-dac-family.md) | The DAC8x base and Studio driver stacks are one DAC family: the Studio row takes the base row's measured values and output identity (`family_id`, `output_identity_id`) and keeps its own recognition, overlay and 0 dB mixer pins; one hand-written overlay of the family runs the board with no conflict; a move between the overlays needs no re-proof | accepted |
 
 ## Audio path & output (ring/fanin/outputd/DAC)
 
@@ -160,7 +161,7 @@ Status line says so), or `amended by NNNN` (a later ADR narrows one clause and s
 | ADR | Decision | Status |
 |---|---|---|
 | [0102](0102-mic-transport-is-udp-localhost.md) | The bridge→voice microphone transport is UDP localhost, not a second snd-aloop card | accepted |
-| [0106](0106-a-verification-artifact-is-never-migrated-in-place.md) | A verification artifact's identity is never migrated in place — a changed edge re-measures | amended by 0190 |
+| [0106](0106-a-verification-artifact-is-never-migrated-in-place.md) | A verification artifact's identity is never migrated in place — a changed edge re-measures | amended by 0190, 0448 |
 | [0127](0127-wake-arbitration-is-hubless-and-costs-a-solo-speaker-nothing.md) | Wake arbitration is hubless, and costs a solo speaker nothing | accepted |
 | [0128](0128-peering-fails-open-so-arbitration-can-never-silence-a-speaker.md) | Peering fails open, so arbitration can never silence a speaker | accepted |
 | [0129](0129-wake-models-are-trained-per-leg-against-the-chain-they-run-on.md) | Wake models are trained per leg, against the chain that leg runs on | accepted |

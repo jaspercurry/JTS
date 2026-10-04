@@ -1,7 +1,8 @@
 # ADR-0232: Studio driver stack is canonical for HiFiBerry Studio silicon
 
 - **Date:** 2026-09-04
-- **Status:** Accepted
+- **Status:** Superseded by
+  [ADR-0448](0448-the-dac8x-base-and-studio-driver-stacks-are-one-dac-family.md)
 - **Context:** jts3 (lab Pi 5) carries a HiFiBerry DAC8x Studio (HAT EEPROM
   vendor=HiFiBerry, product=StudioDAC8x) but has always run the BASE overlay
   `hifiberry-dac8x` — the config HiFiBerry's own datasheet prescribes — so it

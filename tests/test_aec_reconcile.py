@@ -2145,13 +2145,13 @@ def test_a_status_only_record_still_carries(
 @pytest.mark.parametrize(
     ("profile", "dac_id", "stderr_phrase"),
     [
-        (None, "hifiberry_dac8x_studio", "HiFiBerry DAC8x Studio needs per-profile"),
+        (None, "innomaker_hifi_amp_pro", "InnoMaker HiFi AMP Pro needs per-profile"),
         (None, "mystery_usb_audio", "has no codified chip-AEC calibration"),
         ("xvf_chip_aec", "dual_apple_usb_c_dac_4ch", "measured-sync contract"),
         # The managed UI testing alias is not the low-level custom escape hatch.
         ("xvf_chip_aec_testing", "mystery_usb_audio", ""),
     ],
-    ids=("auto-studio", "auto-uncodified", "explicit-chip", "testing-alias"),
+    ids=("auto-registered", "auto-uncodified", "explicit-chip", "testing-alias"),
 )
 def test_an_uncodified_output_dac_discloses_and_runs_software_aec3(
     tmp_path: Path,

@@ -18,7 +18,9 @@ from jasper.audio_hardware.dac import (
     HIFIBERRY_DAC8X_STUDIO_ID,
     HIFIBERRY_STUDIO_MIXER_CONTROLS,
     MixerControl,
+    profile_for_card_label,
 )
+from jasper.audio_hardware.hat_eeprom import HatEeprom
 from jasper.cli.doctor import audio
 from jasper.audio_routes import output_hardware
 from jasper.audio_routes.output_hardware import (
@@ -163,6 +165,42 @@ def test_studio_profile_declares_a_pin_for_every_hardware_gain_stage() -> None:
         control.target_db == 0.0 for control in HIFIBERRY_STUDIO_MIXER_CONTROLS[:-1]
     )
     assert HIFIBERRY_STUDIO_MIXER_CONTROLS[-1].target_enum == "unmuted"
+
+
+@pytest.mark.parametrize(
+    ("label", "hat_product", "pins"),
+    [
+        # The base driver on Studio silicon (jts3) exposes no Studio controls.
+        ("snd_rpi_hifiberry_dac8x", "StudioDAC8x", ()),
+        # The Studio driver's rpi-6.12.y name, and its shared rpi-6.18.y name.
+        ("HiFiBerry Studio DAC8x", None, HIFIBERRY_STUDIO_MIXER_CONTROLS),
+        ("Hifiberry Studio Soundcard", "StudioDAC8x", HIFIBERRY_STUDIO_MIXER_CONTROLS),
+    ],
+)
+def test_the_studio_driver_always_gets_its_gain_stages_pinned(
+    label, hat_product, pins
+) -> None:
+    """Whichever overlay a DAC8x Studio boots (ADR-0448), the Studio driver's
+    gain stages, up to +24 dB, are pinned at unity whenever that driver runs."""
+
+    hat = (
+        None
+        if hat_product is None
+        else HatEeprom(vendor="HiFiBerry", product=hat_product, uuid="uuid")
+    )
+    profile = profile_for_card_label(label, hat=hat)
+    assert profile is not None
+    state = OutputHardwareState(
+        profile_id=profile.id,
+        profile_label=profile.label,
+        status="ready",
+        physical_output_count=profile.physical_output_count,
+        selected_card_id="card",
+    )
+
+    pinned = output_hardware.mixer_pins_for_state(state)
+
+    assert tuple(control for _card, control in pinned) == pins
 
 
 @pytest.mark.parametrize(

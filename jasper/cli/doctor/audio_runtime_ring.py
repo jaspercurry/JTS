@@ -84,7 +84,6 @@ REASON_RING_HEADER_ABSENT = "ring_header_absent"
 REASON_RING_HEADER_CONF_MISMATCH = "ring_header_conf_mismatch"
 
 REASON_RING_FLOOR_NO_ACTIVE_DAC = "ring_floor_no_active_dac"
-REASON_RING_FLOOR_NOT_DECLARED = "ring_floor_not_declared"
 REASON_RING_FLOOR_NOT_RENDERABLE = "ring_floor_not_renderable"
 REASON_RING_FLOOR_CONF_PERIOD_INDETERMINATE = "ring_floor_conf_period_indeterminate"
 REASON_RING_FLOOR_UNRENDERED = "ring_floor_unrendered"
@@ -997,10 +996,9 @@ def check_ring_conf_floor_render() -> CheckResult:
     (``latency_floor_for``), the period from the conf.d file itself.
 
     Statuses:
-      skipped — no active DAC in the reconciler's record, so there is no
-              declared floor to read.
-      ok    — no declared floor (the shipped default stands, by rule); a
-              declared floor that is not ``RING_SLOT_FRAMES`` (a product
+      skipped — no registered DAC active in the reconciler's record, so
+              there is no declared floor to read.
+      ok    — a declared floor that is not ``RING_SLOT_FRAMES`` (a product
               boundary, not drift — see below); or the conf.d already
               declares the floor's period.
       warn  — a renderable floor the conf.d has NOT been rendered to, or an
@@ -1013,7 +1011,7 @@ def check_ring_conf_floor_render() -> CheckResult:
     WHAT THOSE BRANCHES MAY AND MAY NOT CLAIM. They read the DECLARED floor,
     which is not outputd's RESOLVED period: the two diverge through
     ``JASPER_OUTPUTD_PERIOD_FRAMES`` in ``/etc/jasper/jasper.env``, which
-    outranks the reconciler's floor-derived value, so a floorless box CAN ring.
+    outranks the reconciler's floor-derived value, so an unrendered box CAN ring.
     They may therefore say what is not RENDERED and name both routes to a ring;
     they must not say the ring is unavailable. Nothing preflights the
     conf.d/resolved-period divergence — it surfaces as outputd's hard ioplug
@@ -1033,17 +1031,15 @@ def check_ring_conf_floor_render() -> CheckResult:
     applies through ``outputd.env``. Known limit, issue #2147, so ok not warn.
     """
     label = "ring conf floor"
-    from jasper.service_state.audio_runtime_settings import DEFAULT_OUTPUTD_PERIOD_FRAMES
-
     dac_id = active_dac_profile_id()
-    if dac_id is None:
+    floor = latency_floor_for(dac_id) if dac_id is not None else None
+    if floor is None:
         return CheckResult(
             label, "skipped",
             "the output-hardware record names no active DAC, so there "
             "is no declared floor to render",
             reason=REASON_RING_FLOOR_NO_ACTIVE_DAC,
         )
-    floor = latency_floor_for(dac_id)
     # Says "roleful box", NOT "commissioned box": step 1 accepts either roleful
     # boot graph — an applied baseline or the all-muted startup anchor a
     # mid-commission box boots from.
@@ -1064,24 +1060,6 @@ def check_ring_conf_floor_render() -> CheckResult:
         if requires_roleful_graph()
         else ""
     )
-    if floor is None:
-        return CheckResult(
-            label,
-            "ok",
-            f"{dac_id} declares no latency floor — {_JTS_RING_CONF_D} keeps its "
-            "shipped default (no declared floor, nothing to render). Absent a "
-            f"floor outputd resolves its packaged default period "
-            f"{DEFAULT_OUTPUTD_PERIOD_FRAMES}, which is not the fixed ring slot "
-            f"{RING_SLOT_FRAMES}, so shm_ring needs one of two things here: "
-            f"JASPER_OUTPUTD_PERIOD_FRAMES={RING_SLOT_FRAMES} (plus a matching "
-            "JASPER_OUTPUTD_DAC_BUFFER_FRAMES) in /etc/jasper/jasper.env, which "
-            f"outranks this default; or a declared {RING_SLOT_FRAMES}-frame "
-            "floor on this DAC, which is the codified form of the same values. "
-            "Until either, this DAC's outputd period stays off the ring slot. "
-            "(Issue #2147 would make the ring slot floor-derived and retire "
-            "the question.)" + roleful_note,
-            reason=REASON_RING_FLOOR_NOT_DECLARED,
-        )
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return CheckResult(
             label,

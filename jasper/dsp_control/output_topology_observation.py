@@ -15,6 +15,7 @@ from jasper.audio_hardware.dac import (
     by_id as _dac_profile_by_id,
     clock_domain_contract_for as _dac_clock_domain_contract_for,
     kind_for,
+    output_identity_id,
     percent_pinned_control_for,
 )
 from jasper.platform.json_fields import issue as _issue
@@ -412,7 +413,11 @@ def declared_hardware_mismatch(
     current_id = observed.profile_id if observed is not None else ""
     saved_count = saved.physical_output_count
     current_count = observed.physical_output_count if observed is not None else 0
-    id_mismatch = bool(saved_id and current_id and saved_id != current_id)
+    id_mismatch = bool(
+        saved_id
+        and current_id
+        and output_identity_id(saved_id) != output_identity_id(current_id)
+    )
     count_mismatch = saved_count != current_count
     if not id_mismatch and not count_mismatch and not clock_blockers:
         return None
