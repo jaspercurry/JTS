@@ -17,12 +17,16 @@ stayed next until a room trial banked a round on the stack that plays now.
 ## Decision
 
 Room is done when it is applied, trial or not. Room is flagged with `upstream_changed` only when a layer
-under room changed since room's latest round was banked **and** room was not applied again since on a
-set of that round that is still current (`commissioning_coordinator.next_program_action`: the room layer
-is not among the round's `base_stale_by`, or the round names no current set to design on).
+under room changed since room's latest round was banked, unless the room layer changed since that bank
+too **and** the round still names a current set to design on
+(`commissioning_coordinator.next_program_action`).
 
 ### What this supersedes
 
+- ADR-0437 §4, lines 54–56: "`upstream_changed` reads it" (`base_stale_by`). It now also reads whether
+  the room layer itself changed since the bank and whether the round names a current set.
+- ADR-0437, lines 89–92: "A round that is current only through a candidate's set, applied after the bank,
+  leaves room next with `upstream_changed`." Not when the room layer was applied after that bank too.
 - ADR-0437, Consequences, lines 106–108: "A room layer designed on that set and applied with no trial
   leaves room next with `upstream_changed`. The latest room round is still the cardioid trial, which was
   banked on the old rear. The room trial banks a round on the stack that plays now, and then tuning is
@@ -30,8 +34,12 @@ is not among the round's `base_stale_by`, or the round names no current set to d
 
 ## Consequences
 
-- A rear or speaker change made after the room apply still flags room (ADR-0420 l.44): then the room
-  layer is not among the round's changed layers, or no set of the round is current.
-- A room applied after the change, from an older round's set, also counts as done: the pointer reads
-  layer fingerprints and order through the round, not which set a document was designed on. The owner
-  chose fewer checks here.
+- The rule reads two facts about room's latest round: the room layer changed since its bank, and the
+  round still names a current set. It reads no order, and it links the room layer to no set. A speaker
+  change after the room apply still flags room (no set of the round stays current), and so does a rear
+  change while room was not applied again since that round (ADR-0420 l.44).
+- **Stated limit:** a rear change made after the room apply that lands on another current set of a round
+  banked before the room apply reads as done — for example a trial's muted copy, or a second trial's
+  seed re-composed on `saved`, applied after a room designed on the first seed. A room applied from an
+  older round's set also reads as done. The owner chose fewer checks. If it bites, compare the room
+  layer's stored `basis` (`round_id`, `room_median_sha256`) with the round and set the pointer picks.

@@ -22,11 +22,11 @@ bass, a set with bass and room off); pass it as `--set`. A speaker round names n
 [ADR-0437](adr/0437-a-rounds-staleness-is-judged-per-set.md)). A preference EQ save stales nothing.
 Bass is an option inside the in-room program, so `next` never asks for it. With every other applicable
 layer applied, `next` is `{"program": null, "reason_code": "complete"}`, unless the speaker or rear layer
-changed since room's latest round was banked and room was not applied again since on a current set of that
-round: then `next` is room with `upstream_changed`
+changed since room's latest round was banked, and the room layer did not also change since while that round
+still names a current set: then `next` is room with `upstream_changed`
 ([ADR-0429](adr/0429-one-in-room-program-the-room-round-plays-with-bass-and-room-off.md),
-[ADR-0445](adr/0445-room-is-done-when-it-is-applied-trial-or-not.md)). Room applied with or without its
-trial is done. When room is next
+[ADR-0445](adr/0445-room-is-done-when-it-is-applied-trial-or-not.md)). So a room applied after a cardioid
+seed, with or without its trial, is done. When room is next
 and its round names a set, design on that set and trial the candidate; the copied room prompt says so, so
 after a cardioid seed's apply no in-room round is measured. Another program's round is offered to copy only
 while it is current.
