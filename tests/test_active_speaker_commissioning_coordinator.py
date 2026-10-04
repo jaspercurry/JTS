@@ -193,22 +193,25 @@ def test_next_program_follows_applied_layers_and_rounds(rear, layers, rounds, ex
     assert action["enabled"] is (expected is not None)
 
 
-@pytest.mark.parametrize("stale_by,room_applied,expected", [
-    (["speaker"], True, ("run_program", "room", "upstream_changed")),
-    (["rear"], True, ("run_program", "room", "upstream_changed")),
-    (["bass", "room"], True, (None, None, "complete")),
-    (["room"], True, (None, None, "complete")),
-    ([], True, (None, None, "complete")),
-    (["bass"], False, ("run_program", "room", "layer_not_applied")),
-    ([], False, ("copy_prompt", "room", "round_available")),
+@pytest.mark.parametrize("stale_by,named,room_applied,expected", [
+    (["speaker"], False, True, ("run_program", "room", "upstream_changed")),
+    (["rear"], False, True, ("run_program", "room", "upstream_changed")),
+    (["speaker", "room"], False, True, ("run_program", "room", "upstream_changed")),
+    (["rear", "room"], True, True, (None, None, "complete")),
+    (["bass", "room"], False, True, (None, None, "complete")),
+    (["room"], False, True, (None, None, "complete")),
+    ([], True, True, (None, None, "complete")),
+    (["bass"], False, False, ("run_program", "room", "layer_not_applied")),
+    ([], True, False, ("copy_prompt", "room", "round_available")),
 ])
-def test_room_repeats_after_a_layer_under_it_changes(stale_by, room_applied, expected):
+def test_room_repeats_after_a_layer_under_it_changes(stale_by, named, room_applied, expected):
     """The applied room was fitted through the speaker and rear layers under the in-room program, so a
-    change to one of them since the stack room's latest round was banked on points at room again; a change
-    to the room or the bass layer does not, since bass is an option inside that program (ADR-0420, ADR-0429,
+    change to one of them since the stack room's latest round was banked on points at room again, unless
+    the room layer changed since too and the round still names a current set (ADR-0445); a change to the
+    room or the bass layer alone does not, since bass is an option inside that program (ADR-0420, ADR-0429,
     ADR-0437)."""
     layers = RUNNABLE_PROGRAMS if room_applied else RUNNABLE_PROGRAMS[:-1]
-    rounds = {"room": {"round_dir": "/bank/room", "base_stale_by": stale_by, **({} if stale_by else {"set_id": "seat"})}}
+    rounds = {"room": {"round_dir": "/bank/room", "base_stale_by": stale_by, **({"set_id": "seat"} if named else {})}}
     action = next_program_action(_applied_anchor(layers=layers), rounds, programs=RUNNABLE_PROGRAMS)
     assert (action["id"], action["program"], action["reason_code"]) == expected
 

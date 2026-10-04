@@ -142,8 +142,11 @@ def _trial(name, base, candidate, *, preset="rear/seat", kind="seat"):
     ([_trial("seats", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat"),
       _trial("arm-smoke", _tune("speaker", "rear"), _tune(*RUNNABLE_PROGRAMS), preset="room/seat", kind="bearing")],
      _tune("speaker", "rear"), ("seats", "base"), ("copy_prompt", "room", "seats", "base", "round_available")),
+    ([_trial("trial", _tune("speaker"), _tune("speaker", "rear"))], _tune("speaker", "rear", "room"),
+     ("trial", "candidate"), (None, None, "trial", "candidate", "complete")),
 ], ids=["cardioid-nothing-applied-since", "cardioid-seed-applied", "cardioid-seed-applied-over-a-room-layer",
-        "room-candidate-applied", "an-older-current-trial", "a-newer-round-off-the-seats"])
+        "room-candidate-applied", "an-older-current-trial", "a-newer-round-off-the-seats",
+        "cardioid-seed-then-room-applied-without-a-trial"])
 def test_a_trial_round_names_the_set_its_program_can_design_on(tmp_path, monkeypatch, trials, applied, named, action):
     """A seat trial plays the applied tune and a candidate. Until an apply its base set is current; once the
     candidate is applied, its set is current too, and a current round comes before a newer stale one. The
