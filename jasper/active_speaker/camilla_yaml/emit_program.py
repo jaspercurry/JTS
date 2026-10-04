@@ -22,6 +22,7 @@ from jasper.dsp_control.fanin_coupling import DEFAULT_PLAYBACK_FORMAT
 from jasper.platform.log_event import log_event
 
 from ..camilla_names import output_commission_mute_name, program_protection_name
+from ..driver_protection import PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE
 from ..graph_safety import TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ
 from ..profile import ActiveSpeakerConfigError, ActiveSpeakerPreset, required_driver_roles
 
@@ -42,7 +43,6 @@ from .filters import (
     _emit_commissioning_filter_definitions,
 )
 from .gates import (
-    PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE,
     _assert_program_graph_proven,
     _assert_tweeter_outputs_protected,
     _validate_program_role_channels,
@@ -141,9 +141,6 @@ def emit_active_speaker_program_config(
     playback_device: str,
     protection_sections_by_role: Mapping[str, Sequence[CrossoverSection]],
     protective_hp_min_corner_hz: float = TWEETER_PROTECTIVE_HP_MIN_CORNER_HZ,
-    protective_hp_min_slope_db_per_octave: float = (
-        PROGRAM_PROTECTIVE_HP_MIN_SLOPE_DB_PER_OCTAVE
-    ),
     capture_device: str = DEFAULT_CAPTURE_DEVICE,
     capture_format: str = DEFAULT_CAPTURE_FORMAT,
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
@@ -166,8 +163,9 @@ def emit_active_speaker_program_config(
     linearization, bass, Room and preference filters.
 
     Two fail-closed gates run before the graph can leave: a build-time proof
-    that the tweeter protection high-pass satisfies the program floor, and
-    :func:`_assert_program_graph_proven` over the emitted text.
+    that the tweeter protection high-pass corner clears the program floor (its
+    slope only discloses, ADR-0446), and :func:`_assert_program_graph_proven`
+    over the emitted text.
     """
 
     preset.validate()
@@ -198,10 +196,6 @@ def emit_active_speaker_program_config(
     protective_hp_min_corner_hz = _finite_float(
         protective_hp_min_corner_hz, "protective_hp_min_corner_hz"
     )
-    protective_hp_min_slope_db_per_octave = _finite_float(
-        protective_hp_min_slope_db_per_octave,
-        "protective_hp_min_slope_db_per_octave",
-    )
 
     tweeter_hp_name = None
     required_roles = set(required_driver_roles(preset.way_count))
@@ -219,16 +213,21 @@ def emit_active_speaker_program_config(
         if len(tweeter_hps) != 1:
             raise ActiveSpeakerConfigError("program graph requires one tweeter protection high-pass")
         hp_index, hp_section = tweeter_hps[0]
-        if hp_section.fc_hz < protective_hp_min_corner_hz or (
-            hp_section.order * 6.0 < protective_hp_min_slope_db_per_octave
-        ):
-            # The program graph's sole slope-floor enforcement.
+        if hp_section.fc_hz < protective_hp_min_corner_hz:
             log_event(
                 logger, "active_speaker.program_emit_gate", level=logging.ERROR,
                 result="blocked_tweeter_protection_below_floor",
                 preset_id=preset.preset_id, fc_hz=f"{hp_section.fc_hz:g}",
                 order=hp_section.order)
             raise ActiveSpeakerConfigError("tweeter protection does not satisfy the program floor")
+        if hp_section.order * 6.0 < PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE:
+            # A code figure no datasheet contains: it discloses, never refuses (ADR-0446).
+            log_event(
+                logger, "active_speaker.program_emit_gate", level=logging.WARNING,
+                result="tweeter_hp_slope_below_commissioning_floor",
+                preset_id=preset.preset_id, order=hp_section.order,
+                slope_db_per_octave=f"{hp_section.order * 6.0:g}",
+                commissioning_floor_db_per_octave=f"{PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE:g}")
         tweeter_hp_name = program_protection_name("tweeter", hp_index)
 
     output_count = _output_count(preset)

@@ -50,7 +50,7 @@ def _preset(layout: str = "mono") -> ActiveSpeakerPreset:
     return ActiveSpeakerPreset.from_mapping(_two_way_preset(layout))
 
 
-def _confirmed_protection():
+def _confirmed_protection(tweeter_slope_db_per_octave: float = 24.0):
     profile = {"targets": [
         {
             "role": "woofer", "target_fingerprint": "w",
@@ -63,7 +63,7 @@ def _confirmed_protection():
             "role": "tweeter", "target_fingerprint": "t",
             "required_protection_filters": [{
                 "kind": "highpass", "cutoff_hz": 1800.0,
-                "minimum_slope_db_per_octave": 24.0,
+                "minimum_slope_db_per_octave": tweeter_slope_db_per_octave,
             }],
         },
     ]}
@@ -173,42 +173,65 @@ def test_program_config_stereo_routes_both_woofers_and_both_tweeters():
 
 
 @pytest.mark.parametrize(
-    ("sections", "match"),
+    ("sections", "corner_refusal"),
     [
-        # 399 Hz: corner below the 400 Hz floor.
+        # 399 Hz: a corner below the 400 Hz floor refuses at any slope.
         ({"woofer": (CrossoverSection(3000.0, 4, False),),
-          "tweeter": (CrossoverSection(399.0, 4, True),)}, "program floor"),
-        # Slope below the 24 dB/oct floor at a LEGAL corner — the motivating
-        # case: order 2 is the downstream hole (output_highpass_protected only
-        # checks freq >= 400, tweeter_guard_present accepts order >= 2).
+          "tweeter": (CrossoverSection(399.0, 4, True),)}, True),
         ({"woofer": (CrossoverSection(3000.0, 4, False),),
-          "tweeter": (CrossoverSection(1800.0, 2, True),)}, "program floor"),
+          "tweeter": (CrossoverSection(399.0, 2, True),)}, True),
         # No tweeter high-pass at all; then a role missing entirely.
         ({"woofer": (CrossoverSection(3000.0, 4, False),),
-          "tweeter": ()}, "one tweeter protection high-pass"),
-        ({"tweeter": (CrossoverSection(1800.0, 4, True),)},
-         "cover every driver role"),
+          "tweeter": ()}, False),
+        ({"tweeter": (CrossoverSection(1800.0, 4, True),)}, False),
     ],
 )
 def test_protected_neutral_emit_refuses_unsafe_tweeter_protection(
-    sections, match, caplog,
+    sections, corner_refusal, caplog,
 ):
-    """The program graph's tweeter floor gate — its SOLE slope-floor rail, the
-    proof between a confirmed-profile value and a compression driver."""
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(ActiveSpeakerConfigError, match=match):
+        with pytest.raises(ActiveSpeakerConfigError):
             emit_active_speaker_program_config(
                 _preset("mono"), role_channels=ROLE_CHANNELS,
                 playback_device=ACTIVE_PCM, protection_sections_by_role=sections,
             )
-    # …and the floor refusal reaches the journal.
     blocked = event_field_maps(
         caplog, "active_speaker.program_emit_gate",
         result="blocked_tweeter_protection_below_floor",
     )
-    assert bool(blocked) is (match == "program floor"), [
-        r.getMessage() for r in caplog.records
+    assert bool(blocked) is corner_refusal, [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.parametrize(("slope", "order", "disclosed"), [(12.0, 2, True), (24.0, 4, False)])
+def test_declared_tweeter_protection_plays_as_declared_and_a_shallow_slope_discloses(
+    slope, order, disclosed, caplog,
+):
+    """ADR-0446: a slope under the code's 24 dB/oct figure discloses, never refuses."""
+    with caplog.at_level(logging.WARNING):
+        out = emit_active_speaker_program_config(
+            _preset("mono"), role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM,
+            protection_sections_by_role=_confirmed_protection(slope),
+        )
+    parsed = yaml_lib.safe_load(out)
+    assert parsed["filters"]["as_tweeter_program_protection_0"]["parameters"] == {
+        "type": "LinkwitzRileyHighpass", "freq": 1800.0, "order": order,
+    }
+    assert parsed["pipeline"][3]["names"] == [
+        "as_tweeter_program_protection_0", "as_tweeter_startup_limiter",
     ]
+    assert parsed["filters"]["as_tweeter_startup_limiter"] == {
+        "type": "Limiter", "parameters": {"soft_clip": True, "clip_limit": -12.0},
+    }
+    assert parsed["devices"]["volume_limit"] == 0.0
+    notes = event_field_maps(
+        caplog, "active_speaker.program_emit_gate",
+        result="tweeter_hp_slope_below_commissioning_floor",
+    )
+    assert notes == ([{
+        "result": "tweeter_hp_slope_below_commissioning_floor",
+        "preset_id": _preset("mono").preset_id, "order": "2", "slope_db_per_octave": "12",
+        "commissioning_floor_db_per_octave": "24",
+    }] if disclosed else [])
 
 
 def test_program_config_refuses_local_subwoofer_preset():
