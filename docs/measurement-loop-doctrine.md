@@ -27,7 +27,9 @@ summed, cloud, on-axis, and off-axis.
 - **Speaker linearization:** the initial baseline contains only the base.
   Previous linearization, blend, room correction, and preference EQ are absent.
   A candidate adds only the corrective filters, trims, and alignment changes
-  being tested.
+  being tested. A speaker trial is the one exception: when asked for, it plays
+  each candidate whole, with the applied rear, bass and room layers on; the
+  default setup applies the speaker with no trial ([ADR-0444](adr/0444-a-speaker-trial-is-optional-and-plays-its-whole-candidate.md)).
 - **In-room (room correction and bass extension):** the base plays through the
   applied speaker and rear layers with bass and room off; a candidate adds its
   composed bass and room. The room fit and the bass boost are designed together

@@ -13,7 +13,8 @@ from jasper.active_speaker.commissioning_coordinator import VIEW_STATUS_NOT_REQU
 from jasper.active_speaker.design_inputs import declared_by_target
 from jasper.active_speaker.excitation_safety_plan import role_sensitivities
 from jasper.active_speaker.measurement_programs import (
-    IN_ROOM_OPTIONS, PROGRAM_ENTRIES, PURPOSE_BASS, PURPOSE_REAR, PURPOSE_REFERENCE, PURPOSE_ROOM, RUNNABLE_PROGRAMS, available_presets,
+    IN_ROOM_OPTIONS, PROGRAM_ENTRIES, PURPOSE_BASS, PURPOSE_REAR, PURPOSE_REFERENCE, PURPOSE_ROOM, PURPOSE_SPEAKER,
+    RUNNABLE_PROGRAMS, available_presets,
     first_plan, offered_here, preset,
 )
 from jasper.active_speaker.tuning_docs import reading_order
@@ -38,7 +39,8 @@ _PRESCRIBER = f"sudo {_BIN}/jasper-crossover-prescriber"
 _CABINET_MODEL_NOTE = ("If this machine has the CAD repo with a solved Boundary Lab case for this cabinet, "
                        "scripts/cabinet-model can seed this program; see the runbook's Cabinet model section.")
 #: The line only these programs' prompts carry, after their row's words.
-PROGRAM_NOTES = dict.fromkeys((PURPOSE_REAR, PURPOSE_ROOM), _CABINET_MODEL_NOTE)
+PROGRAM_NOTES = {**dict.fromkeys((PURPOSE_REAR, PURPOSE_ROOM), _CABINET_MODEL_NOTE),
+                 PURPOSE_SPEAKER: "Apply a speaker change after its preview; trial it only if I ask (ADR-0444)."}
 
 
 def catalog_command(program: str) -> str:
@@ -190,7 +192,7 @@ def build_tuning_handoff_prompt(binding: Mapping[str, Any], program_id: str) -> 
         f"Where tuning stands: {status}",
         f"What you can ask: {catalog}",
         f"What a document may write: {contract}",
-        "Create the measurement session, then give me its returned link. Explain the next step briefly; I place the microphone and start each batch. Measure the change, show its limits, and get my choice before saving.",
+        "Create the measurement session, then give me its returned link. Explain the next step briefly; I place the microphone and start each batch. Show the change and its limits, and get my choice before saving.",
     ))
 
 
