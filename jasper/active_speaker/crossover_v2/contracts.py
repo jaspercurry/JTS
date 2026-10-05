@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+from jasper.audio_measurement.design_axis import DESIGN_AXIS_DEG, on_design_axis  # re-exported: the kernel owns the mark test
 from jasper.audio_measurement.evidence_identity import (
     FingerprintedRecord,
     json_fingerprint,
@@ -349,13 +350,3 @@ POSITION_AXIS_VERTICAL = "vertical"
 
 #: Every axis a pose can be stated on, so a reader can CHECK the value.
 POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
-
-#: The design axis, in `PositionGeometry`'s own spelling: a capture with no
-#: prompted move of its own is a design-axis capture at `0`. `None` is a
-#: different fact — "no side was declared" — never a synonym for this.
-DESIGN_AXIS_DEG = 0
-
-
-def on_design_axis(azimuth_deg: float | None, elevation_deg: float | None) -> bool:
-    """Whether a pose is the mark, the one pose whose timing a decision reads (ADR-0345, ADR-0433)."""
-    return azimuth_deg == DESIGN_AXIS_DEG and elevation_deg == DESIGN_AXIS_DEG

@@ -15,6 +15,7 @@ import numpy as np
 
 from jasper.audio_measurement.mic_meter import classify_mic_meter
 from jasper.audio_measurement.branch_program import is_branch_program
+from jasper.audio_measurement.design_axis import on_design_axis
 from jasper.audio_measurement.seat_figures import impulse_late_energy
 from jasper.audio_measurement.timing_verification import timing_verification
 from .branches import analyze_branches
@@ -612,9 +613,9 @@ def _build_candidate(
     if applied_alignment is not None:
         delay_us, polarity_sign = applied_alignment.delay_us, polarity_sign_of(applied_alignment.polarity)
         alignment_objective = ALIGNMENT_SAVED_TIMING
-    design_axis = (geometry is not None and (geometry.position_deg, geometry.vertical_deg) == (0, 0))
+    design_axis = geometry is not None and on_design_axis(geometry.position_deg, geometry.vertical_deg)
     if (summed_alignment is not None and design_axis and anchor_delay_us is not None
-            and (summed_alignment.position_deg, summed_alignment.vertical_deg) == (0, 0)):
+            and on_design_axis(summed_alignment.position_deg, summed_alignment.vertical_deg)):
         by_role = {response.role: response for response in repeat_responses}
         repeats = tuple(zip(by_role[woofer_role].repeat_responses, by_role[tweeter_role].repeat_responses)) if by_role else ()
         selection = _select_summed_alignment_pair(

@@ -7493,10 +7493,14 @@ def test_timing_confidence_uses_the_reads_repeats(phase_noise, verdict, summed_n
         assert selection.polarity_sign == -1
 
 
-@pytest.mark.parametrize("saved,pose", [(True, (0, 0)), (True, (20, 0)), (False, (0, 0))])
+@pytest.mark.parametrize("saved,pose,reference_pose", [
+    (True, (0, 0), (0, 0)), (True, (20, 0), (0, 0)), (True, (0, 20), (0, 0)), (True, (0, 0), (0, 20)),
+    (False, (0, 0), (0, 0)),
+])
 @pytest.mark.parametrize("repeat_counts", [(1, 1), (1, 2), (2, 1)])
 @pytest.mark.parametrize("summed_repeats", [1, 2])
-def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, pose, repeat_counts, summed_repeats):
+def test_saved_timing_is_held_until_the_record_is_removed(
+        monkeypatch, saved, pose, reference_pose, repeat_counts, summed_repeats):
     freqs = np.linspace(0, SR / 2, 1025)
     W = np.ones(freqs.size, dtype=complex)
     T = .45 * np.exp(.2j * (freqs / FC_HZ) ** 2)
@@ -7504,7 +7508,8 @@ def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, po
     monkeypatch.setattr(dispatch, "_aligned_branch_tf", lambda *a, **k: (freqs, next(branches), {}))
     measured = predicted_branch_sum(W, T, 0, 0, -1, freqs_hz=freqs, residual_delay_us=40)
     reference = SummedAlignmentReference(freqs, 20 * np.log10(abs(measured)),
-        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000), graph_fingerprint="timing-graph")
+        {role: np.ones_like for role in ("woofer", "tweeter")}, (1200, 5000), graph_fingerprint="timing-graph",
+        position_deg=reference_pose[0], vertical_deg=reference_pose[1])
     reference = dataclasses.replace(reference, repeat_responses=(dataclasses.replace(reference,
         magnitude_db=reference.magnitude_db + .002 * np.sin(freqs / 400)),) * (summed_repeats - 1))
     responses = tuple(DriverResponse(role, freqs, np.zeros(freqs.size), tf, {}, None, None,
@@ -7522,9 +7527,10 @@ def test_saved_timing_is_held_until_the_record_is_removed(monkeypatch, saved, po
     assert candidate.delay_us == (22 if saved else pytest.approx(40, abs=1))
     assert candidate.polarity == ("normal" if saved else "inverted")
     assert candidate.timing_saved == timing
-    assert candidate.timing_graph_fingerprint == ("timing-graph" if pose == (0, 0) else None)
-    assert candidate.repeat_count == ((1 + min(repeat_counts)) * summed_repeats if pose == (0, 0) else None)
-    if saved and pose == (0, 0):
+    at_mark = pose == reference_pose == (0, 0)
+    assert candidate.timing_graph_fingerprint == ("timing-graph" if at_mark else None)
+    assert candidate.repeat_count == ((1 + min(repeat_counts)) * summed_repeats if at_mark else None)
+    if saved and at_mark:
         assert candidate.timing_verification["residual_rms_db"] > 0
         assert (candidate.timing_verification["repeat_noise_db"] > 0) == (summed_repeats > 1)
         assert candidate.timing_verification["residual_floor_db"] == .5
