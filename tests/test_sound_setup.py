@@ -5516,6 +5516,20 @@ def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypat
     assert (v2state.load_v2_state() is None) is (path == '/setup/reset')
 
 
+def test_a_refused_reset_keeps_the_stored_run(tmp_path, monkeypatch):
+    """A reset that fails before it clears anything (audio could not stop) keeps the run."""
+    from jasper.web import correction_crossover_v2_state as v2state, sound_speaker_setup as setup
+
+    def refuse(raw):
+        raise RuntimeError("audio stop failed")
+    monkeypatch.setattr(sound_active_speaker, '_reset_output_topology_payload', refuse)
+    monkeypatch.setattr(v2state, '_state_path_override', tmp_path / 'v2_state.json')
+    v2state.save_v2_state({'session_id': 'old-speaker', 'failure': {'code': 'capture_timeout'}})
+    with pytest.raises(RuntimeError):
+        setup.update_setup('/setup/reset', {}, camilla_factory=lambda: None)
+    assert v2state.load_v2_state() is not None
+
+
 def test_setup_placement_declares_the_rig_through_its_one_writer(tmp_path, monkeypatch):
     path = tmp_path / 'measurement_geometry.json'
     path.write_text(json.dumps({'speaker_height_m': 0.95, 'mic_height_m': 1.2, 'distance_m': 1.0, 'front_wall_m': 0.5}))
