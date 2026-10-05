@@ -114,7 +114,6 @@ class SlotAttempts:
 
     def to_payload(self) -> dict[str, Any]:
         return {
-            "allowed": MAX_EXTRA_ATTEMPTS_PER_POSITION,
             "left": self.left(),
             "by_speaker": self.by_speaker,
             "by_household": self.by_household,

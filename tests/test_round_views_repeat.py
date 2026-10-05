@@ -40,7 +40,7 @@ def _mark_take(take_id: str, level_db: float, role: str = "woofer") -> dict:
 @pytest.fixture
 def repeated_round(tmp_path):
     root = bank_measure_round(tmp_path)
-    takes = [{**_mark_take(f"take-{i}", 0.5 * i), "repeat": i + 1,
+    takes = [{**_mark_take(f"take-{i}", 0.5 * i),
               "analysis": {"delay_us": 100.0 + i, "polarity": "normal",
                            "trim_db": {"woofer": 0.0, "tweeter": -3.0 + i * 0.1},
                            "predicted_ripple_db": 1.0 + i * 0.05}} for i in range(2)]

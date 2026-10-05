@@ -106,7 +106,6 @@ class ScheduledCapture:
     index: int
     pose: tuple[Any, ...]
     candidate_id: str
-    repeat: int
     graph_scope: str | None
     regime: str
 
@@ -244,7 +243,7 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
 
     schedule = tuple(
         ScheduledCapture(index, stop.pose.place,
-                         candidate_identity(stop.candidate_id), 1,
+                         candidate_identity(stop.candidate_id),
                          ("candidate_branches" if stop.regime == REGIME_BRANCHES and not stop.pose.driver else
                           scopes.get(stop.candidate_id) if stop.candidate_id else
                           "candidate" if stop.plays_summed else "drivers"), stop.regime)

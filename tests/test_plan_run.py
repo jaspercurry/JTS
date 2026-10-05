@@ -654,7 +654,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
               "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
-            manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
+            manifest.begin({"index": index, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
             await manifest.append({**record, "take_id": manifest.allocate_take_id(), **(changed if index == 2 else {})}, f"record-{index}",
                                   TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
@@ -687,7 +687,7 @@ def test_a_set_holds_one_stimulus_shape_and_each_row_its_own_level(first, sets, 
     roles = [RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))]
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
-            manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
+            manifest.begin({"index": index, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
             program = build_measure_program(**{"gain_plan": {"woofer": -18.0, "tweeter": -24.0}, "roles_bands": roles,
                                                **(first if index == 1 else {})})
             await manifest.append({"take_id": manifest.allocate_take_id(), "level_db": -20.0, "stimulus_dbfs": -12.0,
@@ -1803,7 +1803,7 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
     assert [index for index, _ in gate.grants] == [1] * 2
     assert selected == [False] * (len(selected) - repeats) + [True] * repeats
     final = gate.progress[-1]
-    assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (2, 2, 0)
+    assert (final["budget"]["left"], final["retakes"]) == (2, 0)
 
 
 @pytest.mark.parametrize(("readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
@@ -1966,7 +1966,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     assert screens[0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
 
     manifest = RunManifest("pilot", _Store(FakeSeams().records), preset=purpose)
-    manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
     await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
                           complete=True, level_observation={})
     root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")

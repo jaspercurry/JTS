@@ -298,7 +298,7 @@ class RunManifest:
             "measurement_purpose": self._context["purpose"], "purposes": list(self._context["purposes"]),
         }
         context: dict[str, Any] = {key: self._context[key] for key in (
-            "index", "attempt", "repeat", "capture_index", "pose_index") if key in self._context}
+            "index", "attempt", "capture_index", "pose_index") if key in self._context}
         return {**planned, **record, **context, "stimulus_ordinal": len(self.pending_records)}
 
     async def bank(self, record: Mapping[str, Any]) -> str:
