@@ -597,7 +597,7 @@ async def _run(
             progress = {**schedule, **notices, "pose": item.pose_index + 1,
                         "level": manifest.level, "config": item.config, "configs": item.size, "attempt": attempt,
                         "fault": retry.fault if retry else None, "next_action": retry.next if retry else None,
-                        "budget": ledger.to_payload(), "sweep": before + 1, "measurement": offset + 1,
+                        "sweep": before + 1, "measurement": offset + 1,
                         "level_mismatches": driver_level_mismatches(manifest.joined())}
             placed = probe_start if offset == probe_at and probe_start is not None else offset
             entry = work[placed].entry
@@ -629,9 +629,6 @@ async def _run(
                     await window.enter_async_context(session)
                 assert session is not None
                 take_started = clock()
-                progress["budget"] = ledger.to_payload()
-                if gate:
-                    gate.publish(progress)
                 attempts[offset] = attempt
                 manifest.begin(item.stop, attempt=attempt, pose_index=item.pose_index,
                                replay=_is_replay(attempt, ledger, spent))

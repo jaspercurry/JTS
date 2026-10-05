@@ -13,7 +13,6 @@ reason code and :mod:`.refusal_copy` renders the sentence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from jasper.platform.json_fields import finite_float
 
@@ -111,13 +110,6 @@ class SlotAttempts:
             else None)
         if last and self.refusal and last[0] == self.refusal[0] and abs(last[1] - self.refusal[1]) <= SAME_POSE_DRIFT_DB:
             self.repeated = True
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "left": self.left(),
-            "by_speaker": self.by_speaker,
-            "by_household": self.by_household,
-        }
 
 
 @dataclass(frozen=True)

@@ -1055,7 +1055,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     assert manifest.status == "complete"
     assert manifest.takes_measured == 3
     assert [call[0] for call in gate.grants] == [1, 1, 2]
-    assert max(progress["budget"]["by_household"] for progress in gate.progress) == 1
+    assert manifest.to_dict()["honoured"]["retakes"] == 1
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
 

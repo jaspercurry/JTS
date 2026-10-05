@@ -149,19 +149,17 @@ def test_the_declared_kinds_are_the_ones_assess_begin_can_return():
 def test_one_ledger_bounds_charges_and_reports_the_same_remaining_work(charges):
     """A placement's takes after its first stop at two, of any charge (ADR-0422)."""
     ledger = admission.SlotAttempts(admitted=100)
-    assert ledger.to_payload()["left"] == 2
+    assert ledger.left() == 2
     for charge in charges:
         assert ledger.can_retry(charge)
         ledger.spend(charge)
-    payload = ledger.to_payload()
-    assert payload["left"] == 0
-    assert payload["by_household"] == charges.count("operator")
-    assert payload["by_speaker"] == charges.count("speaker")
+    spent = (ledger.left(), ledger.by_household, ledger.by_speaker)
+    assert spent == (0, charges.count("operator"), charges.count("speaker"))
     for charge in ("operator", "speaker"):
         assert not ledger.can_retry(charge)
         with pytest.raises(admission.AttemptOverspendError):
             ledger.spend(charge)
-    assert ledger.to_payload() == payload
+    assert (ledger.left(), ledger.by_household, ledger.by_speaker) == spent
 
 
 def test_a_zero_attempt_ledger_gets_a_free_first_attempt():
