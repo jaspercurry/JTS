@@ -134,7 +134,8 @@ Read `gate_window_ms`, `validity_floor_hz`, `trusted_floor_hz` and `floor_source
 per role. Nothing below the trusted floor, 2.5 divided by gate length in
 seconds, supports a speaker claim
 (`docs/research/2026-08-31-tuning-methodology-deep-research/03-gating-windowing-and-low-frequency-truth.md`).
-Declare the placement on the speaker page first: the gate then ends at the
+Declare the placement on the speaker page first, every field
+([runbook](tuning-operator-runbook.md#new-speaker)): the gate then ends at the
 earliest declared bounce, the wall behind the speaker included
 ([ADR-0427](adr/0427-the-derived-gate-floor-counts-the-declared-wall-behind-the-speaker.md)).
 
@@ -150,8 +151,13 @@ Write one document with every section the evidence supports.
 each section's schema. Normally omit `alignment`: saved timing carries forward. See Timing
 below for when to include it. A refusal names the crossed bound; correct that field.
 
-A document that states only speaker sections is applied after its preview, with no trial
-by default; trial it (`sudo /opt/jasper/.venv/bin/jasper-round trial <FP>`, each candidate whole
+A document that states only speaker sections is applied with no preview and no trial by default
+([ADR-0449](adr/0449-a-speaker-change-applies-without-a-preview-by-default.md)). Preview it only when
+a forecast could change your choice: `judge --preview` reads woofer, tweeter and sum from one take, so
+it needs a `branches/express` take of the document's base
+(`sudo /opt/jasper/.venv/bin/jasper-round run --program branches/express --candidates <base-FP> --wait`),
+and a `speaker/mark` round refuses it as `round_role_not_recorded`. Trial it
+(`sudo /opt/jasper/.venv/bin/jasper-round trial <FP>`, each candidate whole
 at the mark, `speaker/mark`) only when a measured comparison could change your choice
 ([ADR-0444](adr/0444-a-speaker-trial-is-optional-and-plays-its-whole-candidate.md)). A document with a room, bass or rear section trials that program against base
 ([runbook](tuning-operator-runbook.md#the-loop), step 1). Add a variant only when its answer could
@@ -275,10 +281,14 @@ as played, the room included. The in-box alignment comes from the near-field
 fit. A seat take carries the room's modes, and a peak pulls the fit. The
 fit reads only bins over the 20 dB SNR floor
 (`0419-the-bass-alignment-fit-reads-only-trusted-bins.md`), yet one seat spot on
-jts3 fitted 96 Hz at Q 1.03 in one run, 102 Hz at Q 1.88 in another and no
-corner in a third, where the woofer's near-field fit was 84–86 Hz at Q about 1.0. Read each
+the old jts3 cabinet fitted 96 Hz at Q 1.03 in one run, 102 Hz at Q 1.88 in another and no
+corner in a third, where that woofer's near-field fit was 84–86 Hz at Q about 1.0. Read each
 fit's `band_hz` (the band it read) and `residual_db` (its rms miss against the
-sealed box) before you state `source_hz` and `source_q`.
+sealed box) before you state `source_hz` and `source_q`. After a new cabinet, take the
+alignment from the new box: `bass-alignment --take` on the new in-room base, or on a new
+`nearfield/each` round. A near-field round never goes stale
+([ADR-0420](adr/0420-a-round-goes-stale-only-when-a-layer-under-it-changes.md)), so the old
+cabinet's still reads as current.
 
 **Cabinet model.** If this machine has the CAD repo with a solved Boundary Lab
 case for this cabinet, `scripts/cabinet-model` can seed this program. It gives
@@ -295,7 +305,7 @@ extension for less drive below 20 Hz.
 Set `detector_lowpass_hz` at the top of the band where the boosted lane
 (static chain times boost) runs hot, at most 200 Hz: boosted content above the
 corner reaches the owner limiter without making the boost give way. Go lower
-only where the chain already cuts above it (tune B's 114 Hz cut lets it keep
+only where the chain already cuts above it (a 114 Hz cut lets it keep
 100 Hz).
 Unqualified boosted bands are disclosed on the document, and the room
 layer, fitted through bass, absorbs the residual tail. A bass section written
@@ -315,7 +325,7 @@ at the front woofer output. Set it from the amp, not by ear. Start from the
 lower of the owner limiter (−1 dBFS) and the amp's clip point, then subtract
 the rear lane's excess over the front in the deep bass (the detector reads
 the front, ADR-0335) and the envelope and 10:1 slope margin; a time-domain run
-of the block is the honest check. On jts3 at 36 V, start at about −15 dBFS for
+of the block is the honest check. On the old jts3 cabinet (tune B) at 36 V, start at about −15 dBFS for
 a bridged board (two TPA3255 chips): only near-full-scale 25–30 Hz content at
 100% then reaches the limiter on B's rear lane, and at 78% a loud 30 Hz note
 keeps about 14 dB of its 19.5 dB boost. For a single-ended board (one chip,
@@ -324,7 +334,7 @@ them apart, switch the power off and measure between the "−" terminals of two
 channels: open means bridged, 0 Ω means single-ended. A new amp or supply
 changes only this number
 ([`docs/examples/bass_prescription_example.json`](examples/bass_prescription_example.json)
-is jts3's tune B, bridged). Then trial the document on the in-room round.
+is the old jts3 cabinet's tune B, bridged). Then trial the document on the in-room round.
 
 The bass boost spends no program headroom; it reserves its own lift
 (`contract.bass.shared_headroom`;
@@ -518,7 +528,7 @@ This is the default loop for a cardioid box; change its spots, takes or trials w
 Keep the cabinet at its wall.
 
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
-   Fit and apply the speaker there (no trial by default), then take the pair model, one `rear/pair` take at the mark:
+   Fit and apply the speaker there (no preview and no trial by default). Declare the rear seed's inputs: "Front-to-rear woofer spacing (mm)" under Driver details, and "Cabinet back to wall (m)", "Cabinet depth (m)" and "Toe-in (degrees)" in the placement form; a missing one leaves the seed the gap `rear_seed_geometry_undeclared`. Then take the pair model, one `rear/pair` take at the mark:
    `sudo /opt/jasper/.venv/bin/jasper-round run --program rear --wait`.
 2. Read the seed: `contract --round <pair-round> --section rear` carries it as `seed`, or a gap that names why there is none and is not a document to copy. Preview it, with no sound:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round>`.
