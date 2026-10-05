@@ -186,7 +186,6 @@ def publish_authored_candidate(candidate: Any, *, root: Path | None = None) -> B
         "started_at": time.time(),
         "measurement_status": "unmeasured",
         "purpose": "candidate_composition",
-        "captures": [],
         "summed_captures": [],
         "verification": None,
     }

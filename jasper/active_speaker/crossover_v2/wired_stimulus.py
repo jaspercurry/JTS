@@ -61,7 +61,7 @@ def place_wired_answer(
     """Place and register raw bytes once; later analysis uses this exact path."""
     if answer.wav_path:
         return answer
-    relative = capture_artifact_relpath("summed", group, None)
+    relative = capture_artifact_relpath("summed", group)
     path = bundle_dir / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(answer.wav)

@@ -80,7 +80,7 @@ def _register(
 ) -> dict | None:
     """Write a WAV into the bundle, as a wired take does, then register it."""
 
-    relative = relative_path or bundles.capture_artifact_relpath(kind, "mono", None)
+    relative = relative_path or bundles.capture_artifact_relpath(kind, "mono")
     wav = bundle_dir / relative
     wav.parent.mkdir(parents=True, exist_ok=True)
     wav.write_bytes(b"\x00" * wav_bytes)
@@ -627,13 +627,12 @@ def test_env_int_falls_back_on_invalid_or_non_positive(monkeypatch) -> None:
 
 
 def test_capture_artifact_relpath_shape() -> None:
-    path = bundles.capture_artifact_relpath("summed", "mono", None)
+    path = bundles.capture_artifact_relpath("summed", "mono")
     assert path.startswith("summed/summed_mono_")
     assert path.endswith(".wav")
-    assert "_none_" not in path
 
 
 def test_capture_artifact_relpath_is_unique_per_call() -> None:
-    a = bundles.capture_artifact_relpath("summed", "mono", None)
-    b = bundles.capture_artifact_relpath("summed", "mono", None)
+    a = bundles.capture_artifact_relpath("summed", "mono")
+    b = bundles.capture_artifact_relpath("summed", "mono")
     assert a != b

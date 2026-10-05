@@ -178,7 +178,7 @@ def _safe_slug(value: Any, *, fallback: str) -> str:
     return out[:64] or fallback
 
 
-def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
+def capture_artifact_relpath(kind: str, group: Any) -> str:
     """Deterministic bundle-relative WAV path for one capture.
 
     Minted BEFORE the measurement write so the same relative path can be
@@ -187,11 +187,8 @@ def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
     durable measurement record names.
     """
 
-    parts = [kind, _safe_slug(group, fallback="group")]
-    if role:
-        parts.append(_safe_slug(role, fallback="role"))
-    parts.append(uuid.uuid4().hex)
-    return f"summed/{'_'.join(parts)}.wav"
+    slug = _safe_slug(group, fallback="group")
+    return f"summed/{kind}_{slug}_{uuid.uuid4().hex}.wav"
 
 
 def _detect_build_sha() -> str | None:
