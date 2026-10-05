@@ -75,6 +75,7 @@ from jasper.audio_measurement.seat_figures import (
 from jasper.audio_measurement.series_stats import band_change_db
 from jasper.platform.json_fields import finite_float
 
+from .contracts import on_design_axis
 from .evidence_packet.incumbent import applied_profile_source
 from .measure_spec import branch_target_ids_for
 from .measurement_context import capture_basis, compare_capture_basis, shaped_capture_basis
@@ -443,7 +444,7 @@ def rear_document(
         # An on-axis reference must be a bearing pose: a non-bearing pose at
         # azimuth 0 (e.g. behind the cabinet) is never the front curve the
         # measured-dip search assumes.
-        if row.position_deg == 0 and row.vertical_deg == 0 and row.pose_kind == POSE_KIND_BEARING:
+        if on_design_axis(row.position_deg, row.vertical_deg) and row.pose_kind == POSE_KIND_BEARING:
             on_axis.add(take.pose_key)
     if not batch:
         raise EvidenceUnavailable(REFUSE_NO_REAR_TAKES, {"purpose": PURPOSE_REAR})

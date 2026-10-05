@@ -25,7 +25,7 @@ from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 from jasper.platform.log_event import log_event
 from jasper.platform.speaker_layout import measurement_target_id
 
-from .contracts import REFERENCE_MARK_DESIGN_AXIS
+from .contracts import REFERENCE_MARK_DESIGN_AXIS, on_design_axis
 from .measurement_context import capture_basis
 from .priors import configured_crossover_transfers
 from .record_index import Measurement, measurement_documents, played_graph_fingerprint, record_path, reopen_measurement_capture
@@ -40,7 +40,7 @@ def timing_prior(record: Mapping[str, Any], analysis: Any) -> str | None:
     if record.get("graph_scope") != "timing":
         _unreadable("timing_take_scope")
         return None
-    if (record.get("position_deg") != 0 or record.get("vertical_deg") != 0 or not played_graph_fingerprint(record)
+    if (not on_design_axis(record.get("position_deg"), record.get("vertical_deg")) or not played_graph_fingerprint(record)
             or measured_response_from_analysis(analysis, reference_mark=REFERENCE_MARK_DESIGN_AXIS) is None):
         return None
     return str(record["take_id"])
@@ -94,12 +94,13 @@ def _unreadable(reason: str) -> SummedAlignmentReference | None:
 def session_reference(bundle_dir: Path, take_id: str, preset: Any) -> SummedAlignmentReference | None:
     documents = list(measurement_documents(bundle_dir))
     anchor = next(((row, doc) for row, doc in documents if doc.get("take_id") == take_id), None)
-    if anchor is None or (anchor[0].position_deg, anchor[0].vertical_deg, anchor[0].graph_scope) != (0, 0, "timing"):
+    if (anchor is None or not on_design_axis(anchor[0].position_deg, anchor[0].vertical_deg)
+            or anchor[0].graph_scope != "timing"):
         return None
     anchor_row, anchor_doc = anchor
     selected: dict[str, Measurement] = {}
     for row, doc in documents:
-        if (row.position_deg != 0 or row.vertical_deg != 0 or row.graph_scope != "timing"
+        if (not on_design_axis(row.position_deg, row.vertical_deg) or row.graph_scope != "timing"
                 or (row.run_id, row.phase) != (anchor_row.run_id, anchor_row.phase)
                 or capture_basis(doc) != capture_basis(anchor_doc)):
             continue
