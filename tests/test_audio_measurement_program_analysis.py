@@ -7495,7 +7495,7 @@ def test_timing_confidence_uses_the_reads_repeats(phase_noise, verdict, summed_n
 
 @pytest.mark.parametrize("saved,pose,reference_pose", [
     (True, (0, 0), (0, 0)), (True, (20, 0), (0, 0)), (True, (0, 20), (0, 0)), (True, (0, 0), (0, 20)),
-    (False, (0, 0), (0, 0)),
+    (True, (0, 0), (20, 0)), (False, (0, 0), (0, 0)),
 ])
 @pytest.mark.parametrize("repeat_counts", [(1, 1), (1, 2), (2, 1)])
 @pytest.mark.parametrize("summed_repeats", [1, 2])
