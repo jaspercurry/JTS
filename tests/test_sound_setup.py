@@ -5523,7 +5523,8 @@ def test_speaker_setup_browser_contract():
 @pytest.mark.parametrize('path,writer', [('/setup/save-layout', '_save_output_topology_payload'),
                                       ('/setup/reset', '_reset_output_topology_payload')])
 def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypatch, path, writer):
-    from jasper.web import sound_speaker_setup as setup
+    """Only the reset forgets the stored run, whose failure the measure page shows."""
+    from jasper.web import correction_crossover_v2_state as v2state, sound_speaker_setup as setup
 
     async def audio_operation():
         return {'status': 'saved'}
@@ -5531,10 +5532,13 @@ def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypat
         return asyncio.run(audio_operation())
     monkeypatch.setattr(sound_active_speaker, writer, save)
     monkeypatch.setattr(setup, 'load_setup_view', lambda: {'stage': 'details'})
+    monkeypatch.setattr(v2state, '_state_path_override', tmp_path / 'v2_state.json')
+    v2state.save_v2_state({'session_id': 'old-speaker', 'failure': {'code': 'capture_timeout'}})
     with sound_server(tmp_path) as base:
         response = json.loads(json_post_with_csrf(base, path, {}).read())
     assert response['result']['status'] == 'saved'
     assert response['setup']['stage'] == 'details'
+    assert (v2state.load_v2_state() is None) is (path == '/setup/reset')
 
 
 def test_setup_placement_declares_the_rig_through_its_one_writer(tmp_path, monkeypatch):

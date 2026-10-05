@@ -248,7 +248,11 @@ def update_setup(path: str, raw: Mapping[str, Any], *, camilla_factory) -> dict[
         candidate = candidate_from_design_draft(topology, design_draft.load_design_draft(topology=topology))
         result = asyncio.run(_active_speaker_finish_commissioning_payload(candidate=candidate, camilla_factory=camilla_factory))
     elif path == "/setup/reset":
+        from .correction_crossover_v2_state import reset_v2_journey_state  # lazy: import cost on the socket-activated sound host's start
+
         result = _reset_output_topology_payload(raw)
+        # Else the measure page shows the old run's failure until a new run is staged.
+        reset_v2_journey_state()
     else:
         raise ValueError("Unknown setup operation")
     return {"result": result, "setup": load_setup_view()}
