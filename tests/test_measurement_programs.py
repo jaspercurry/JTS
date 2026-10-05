@@ -204,15 +204,13 @@ def test_a_layout_passed_as_poses_refuses_by_name():
 _ROUND_DIR = "/var/lib/jasper/active_speaker/campaigns/round-7"
 
 
-def test_every_programs_prompt_is_one_template_that_lists_the_declared_components(monkeypatch):
+def test_every_programs_prompt_is_one_template_that_lists_the_declared_components():
     """The copied prompt comes from the rows (#5737 P11). It lists each declared output as its
     owners resolve it: the rear woofer declares no size or sensitivity, so it takes the front's
     size (ADR-0384) and its role's sensitivity (ADR-0382 §3); the tweeter's is after its pad. It
     lists the one-driver presets this speaker runs and the catalog that reads their rounds.
     Blanking the program row's own fields leaves one text for every program, and a 2-way
     cardioid's prompt, with an applied tune and a round, stays under 300 words."""
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
-                        lambda **_kwargs: [Path(_ROUND_DIR)])
     topology = mono_output_topology(card_id=None)
     group, = topology.speaker_groups
     rear = replace(group.channels[0], output_variant="rear", physical_output_index=2)
@@ -229,7 +227,8 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
                               topology=topology)
     view = cc.build_commissioning_view(topology, design_draft=draft, applied_profile={
         "source": {"measured_candidate_fingerprint": "a" * 64}, "config": {"sha256": "b" * 64},
-        "applied_at": "2026-09-13T12:00:00Z"})
+        "applied_at": "2026-09-13T12:00:00Z"}, recent_rounds={mp.PURPOSE_SPEAKER: {"round_dir": _ROUND_DIR}})
+    assert view["next_action"]["round_dir"] == _ROUND_DIR
     woofer_facts = {"role": "woofer", "role_passband_hz": [40.0, 3000.0], "radiating_diameter_mm": 115,
                     "effective_sensitivity_db_2v83_1m": 86.0}
     components = [
@@ -260,10 +259,9 @@ def test_every_programs_prompt_is_one_template_that_lists_the_declared_component
     assert len(templates) == 1
 
 
-def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_preset(monkeypatch):
+def test_a_stereo_pairs_outputs_are_named_apart_and_it_offers_no_one_driver_preset():
     """A component is named by its speaker group too, so a pair's two drivers of one role are two
     components; a pair plays no driver alone (ADR-0360), so no one-driver preset is listed."""
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [])
     topology = passive_stereo_output_topology()
     draft = design_draft_view({"revision": 1, "topology": topology.to_dict(), "manual_settings": None},
                               topology=topology)
@@ -309,10 +307,9 @@ def test_the_prompt_points_at_status_the_catalog_and_the_contract(program, round
     ({"program": None}, False, False),
     ({"program": mp.PURPOSE_REAR, "round_dir": _ROUND_DIR}, False, False),
 ], ids=["room-next", "complete-with-a-set", "complete", "rear-next"])
-def test_the_binding_names_the_in_room_set_room_and_bass_design_on(monkeypatch, next_action, room, bass):
+def test_the_binding_names_the_in_room_set_room_and_bass_design_on(next_action, room, bass):
     """Room designs on the pointer's in-room set when room is next; bass whenever the pointer names one, so a
     complete tune adds bass with a design and a trial (ADR-0441)."""
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [])
     topology = passive_stereo_output_topology()
     draft = design_draft_view({"revision": 1, "topology": topology.to_dict(), "manual_settings": None},
                               topology=topology)

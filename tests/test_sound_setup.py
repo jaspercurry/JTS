@@ -4801,10 +4801,6 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
-        lambda **_kwargs: [],
-    )
     payload = tuning_handoff.build_tuning_handoff(
         commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
@@ -4837,8 +4833,6 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     from jasper.identity.reader import DEFAULT_HOSTNAME
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
-        Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     applied = {
         "exists": has_applied, "stands": has_applied,
         "candidate_fingerprint": "applied-fp" if has_applied else None,
@@ -4846,7 +4840,8 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         "applied_at": "2026-09-13T12:00:00Z" if has_applied else None,
     }
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": applied},
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": applied,
+                            "next_action": {"round_dir": "/var/lib/jasper/active_speaker/campaigns/round-7"}},
         design_draft={"revision": 5},
         program_id=program_id,
     )
@@ -4881,30 +4876,10 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     assert str(payload["binding"]["design_draft_revision"]) in prompt
 
 
-@pytest.mark.parametrize("banked", [True, False])
-def test_tuning_handoff_names_the_round_directory_not_its_bundle(tmp_path, monkeypatch, banked):
-    """A banked round is named by its own directory, the one every view and ``status`` take (#5632 F11)."""
-    from jasper.active_speaker import tuning_handoff
-
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    round_dir = tmp_path / "campaigns" / "round-7"
-    bundle = round_dir / "bundle" / "session-7" if banked else tmp_path / "sessions" / "session-7"
-    bundle.mkdir(parents=True)
-    (bundle / "info.json").write_text("{}")
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
-                        lambda **_kwargs: [bundle])
-
-    binding = tuning_handoff.build_tuning_handoff_binding({}, {})
-
-    assert binding["latest_round_dir"] == str(round_dir if banked else bundle)
-
-
 def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
-        Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
         lambda *a, **k: {"programs": ("speaker", "bass", "room"), "applied_profile": {
