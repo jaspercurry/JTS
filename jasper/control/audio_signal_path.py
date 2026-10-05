@@ -569,9 +569,8 @@ def undeclared_hardware_signal(
     before the sampler's first read) — the bare topology is not enough, see
     below.
 
-    Two conjuncts, mirroring the wizard's own "Use detected hardware"
-    affordance (#2812 B1); neither is re-derived here, both call the owners
-    the browser's mismatch card and adoption button read.
+    Two conjuncts (#2812 B1); neither is re-derived here, each calls its
+    owner.
     :func:`~jasper.audio_routes.output_hardware.detected_hardware_adoption_precondition`
     (INNER) says the detected hardware is usable at all — known profile, no
     blocking issue, at least one output — and says nothing about whether the

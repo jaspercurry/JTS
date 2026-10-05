@@ -43,50 +43,6 @@ def _open(tmp_path: Path, **kwargs):
     )
 
 
-def _driver_payload(
-    *,
-    group: str = "mono",
-    role: str = "woofer",
-    recorded: bool = True,
-    measurement_id: str = "meas-1",
-) -> dict:
-    measurement = None
-    if recorded:
-        measurement = {
-            "measurement_id": measurement_id,
-            "speaker_group_id": group,
-            "role": role,
-            "captured": True,
-            "outcome": "heard_correct_driver",
-        }
-    payload = {
-        "verdict": "present" if recorded else "silent",
-        "outcome": "heard_correct_driver" if recorded else None,
-        "recorded": recorded,
-        "skipped_reason": None if recorded else "silent",
-        "passband_hz": [40.0, 400.0],
-        "acoustic": {
-            "kind": "jts_active_speaker_driver_acoustics",
-            "verdict": "present" if recorded else "silent",
-        },
-        "excitation": {
-            "schema_version": 1,
-            "scope": "sweep_plus_role_varying_commission_gain",
-        },
-        "placement_proof": {
-            "schema_version": 1,
-            "policy_id": "driver_same_distance_v1",
-        },
-        "measurement": measurement,
-    }
-    if not recorded:
-        # A skipped capture has no nested measurement record, so the caller
-        # supplies the top-level identity register_capture files it under.
-        payload["speaker_group_id"] = group
-        payload["role"] = role
-    return payload
-
-
 def _summed_payload(*, group: str = "mono", fc_hz: float = 2500.0) -> dict:
     return {
         "verdict": "blend_ok",
@@ -124,7 +80,7 @@ def _register(
 ) -> dict | None:
     """Write a WAV into the bundle, as a wired take does, then register it."""
 
-    relative = relative_path or bundles.capture_artifact_relpath(kind, "mono", None)
+    relative = relative_path or bundles.capture_artifact_relpath(kind, "mono")
     wav = bundle_dir / relative
     wav.parent.mkdir(parents=True, exist_ok=True)
     wav.write_bytes(b"\x00" * wav_bytes)
@@ -167,7 +123,6 @@ def test_open_bundle_writes_every_required_info_field(tmp_path: Path) -> None:
         "policy_id": "driver_same_distance_v1",
         "acknowledged": False,
     }
-    assert info["captures"] == []
     assert info["summed_captures"] == []
     assert info["verification"] is None
 
@@ -358,10 +313,10 @@ def test_register_capture_records_wav_and_json_with_dependencies(
 ) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    relative = "captures/pre_minted_name.wav"
+    relative = "summed/pre_minted_name.wav"
 
     entry = _register(
-        bundle_dir, kind="driver", payload=_driver_payload(), relative_path=relative
+        bundle_dir, kind="summed", payload=_summed_payload(), relative_path=relative
     )
 
     assert entry is not None
@@ -386,27 +341,30 @@ def test_register_capture_records_wav_and_json_with_dependencies(
     assert json_entry["dependencies"] == [entry["artifact_path"]]
 
 
-def test_register_capture_appends_compact_entry_with_driver_role(
+def test_register_capture_appends_compact_entry_to_summed_captures(
     tmp_path: Path,
 ) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
-    payload = _driver_payload(group="mono", role="woofer")
-    payload["placement_proof"]["accepted"] = True
+    payload = _summed_payload(fc_hz=2500.0)
+    payload["placement_proof"].update(
+        {"accepted": True, "policy_id": info["placement"]["policy_id"]}
+    )
 
-    entry = _register(bundle_dir, kind="driver", payload=payload)
+    entry = _register(bundle_dir, kind="summed", payload=payload)
 
     reloaded = bundles._read_info(bundle_dir)
-    assert reloaded["captures"] == [entry]
-    assert reloaded["summed_captures"] == []
+    assert reloaded["summed_captures"] == [entry]
+    assert entry["kind"] == "summed"
     assert entry["group"] == "mono"
-    assert entry["role"] == "woofer"
-    assert entry["verdict"] == "present"
-    assert entry["outcome"] == "heard_correct_driver"
+    assert entry["verdict"] == "blend_ok"
+    assert entry["outcome"] == "blend_ok"
     assert entry["quality"] == payload["acoustic"]
     assert entry["excitation"] == payload["excitation"]
     assert entry["placement_ack"] == payload["placement_proof"]
-    assert entry["measurement_id"] == "meas-1"
+    assert entry["measurement_id"] == "val-1"
+    assert entry["crossover_fc_hz"] == 2500.0
+    assert entry["artifact_path"].startswith("summed/")
     assert reloaded["placement"]["acknowledged"] is True
 
 
@@ -419,53 +377,39 @@ def test_register_capture_does_not_acknowledge_unaccepted_or_wrong_policy_proof(
     ):
         info = _open(tmp_path / suffix)
         bundle_dir = Path(info["bundle_dir"])
-        payload = _driver_payload(group="mono", role="woofer")
+        payload = _summed_payload()
         payload["placement_proof"].update(
             {
                 "accepted": accepted,
                 "policy_id": policy,
             }
         )
-        _register(bundle_dir, kind="driver", payload=payload)
+        _register(bundle_dir, kind="summed", payload=payload)
 
         assert bundles._read_info(bundle_dir)["placement"]["acknowledged"] is False
 
 
-def test_register_capture_summed_kind_omits_role_and_carries_fc(
+def test_register_capture_resolves_group_from_top_level_without_a_nested_measurement(
     tmp_path: Path,
 ) -> None:
+    """A wired take registers its group at the top level with no nested
+    measurement record; register_capture must still file it under that group."""
+
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
+    payload = {
+        "speaker_group_id": "mono",
+        "phase": "measure",
+        "measurement_status": "captured",
+    }
 
     entry = _register(
-        bundle_dir, kind="summed", payload=_summed_payload(fc_hz=2500.0)
+        bundle_dir, kind=bundles.CAPTURE_KIND_SEQUENTIAL, payload=payload
     )
 
-    reloaded = bundles._read_info(bundle_dir)
-    assert reloaded["summed_captures"] == [entry]
-    assert reloaded["captures"] == []
-    assert "role" not in entry
-    assert entry["crossover_fc_hz"] == 2500.0
-    assert entry["measurement_id"] == "val-1"
-    assert entry["artifact_path"].startswith("summed/")
-
-
-def test_register_capture_resolves_group_role_from_top_level_when_unrecorded(
-    tmp_path: Path,
-) -> None:
-    """A skipped (recorded=False) capture has no nested measurement record;
-    register_capture must still file it under the caller-supplied identity."""
-
-    info = _open(tmp_path)
-    bundle_dir = Path(info["bundle_dir"])
-    payload = _driver_payload(group="mono", role="tweeter", recorded=False)
-    assert payload["measurement"] is None
-
-    entry = _register(bundle_dir, kind="driver", payload=payload)
-
     assert entry is not None
+    assert entry["kind"] == bundles.CAPTURE_KIND_SEQUENTIAL
     assert entry["group"] == "mono"
-    assert entry["role"] == "tweeter"
     assert entry["outcome"] is None
     assert entry["measurement_id"] is None
 
@@ -474,7 +418,7 @@ def test_register_capture_rejects_unsupported_kind(tmp_path: Path) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
 
-    result = _register(bundle_dir, kind="bogus", payload=_driver_payload())
+    result = _register(bundle_dir, kind="bogus", payload=_summed_payload())
     assert result is None
 
 
@@ -491,7 +435,7 @@ def test_register_capture_is_fail_soft_when_info_json_is_missing(
     bundle_dir.mkdir()
 
     with caplog.at_level(logging.WARNING):
-        result = _register(bundle_dir, kind="driver", payload=_driver_payload())
+        result = _register(bundle_dir, kind="summed", payload=_summed_payload())
 
     assert result is None
     fields = event_fields(caplog, "active_speaker.bundle_write_failed")
@@ -551,13 +495,12 @@ def test_summarize_bundle_reports_counts_and_size(tmp_path: Path) -> None:
     info = _open(tmp_path)
     bundle_dir = Path(info["bundle_dir"])
     _register(
-        bundle_dir, kind="driver", payload=_driver_payload(), wav_bytes=256 * 1024
+        bundle_dir, kind="summed", payload=_summed_payload(), wav_bytes=256 * 1024
     )
 
     summary = bundles.summarize_bundle(bundle_dir)
 
-    assert summary["capture_count"] == 1
-    assert summary["summed_capture_count"] == 0
+    assert summary["summed_capture_count"] == 1
     assert summary["bundle_size_bytes"] >= 256 * 1024
     assert summary["has_artifact_manifest"] is True
     assert summary["artifact_count"] >= 2  # info.json + the WAV (+ its JSON)
@@ -683,17 +626,13 @@ def test_env_int_falls_back_on_invalid_or_non_positive(monkeypatch) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_capture_artifact_relpath_shape_for_driver_and_summed() -> None:
-    driver_path = bundles.capture_artifact_relpath("driver", "mono", "woofer")
-    assert driver_path.startswith("captures/driver_mono_woofer_")
-    assert driver_path.endswith(".wav")
-
-    summed_path = bundles.capture_artifact_relpath("summed", "mono", None)
-    assert summed_path.startswith("summed/summed_mono_")
-    assert "_none_" not in summed_path
+def test_capture_artifact_relpath_shape() -> None:
+    path = bundles.capture_artifact_relpath("summed", "mono")
+    assert path.startswith("summed/summed_mono_")
+    assert path.endswith(".wav")
 
 
 def test_capture_artifact_relpath_is_unique_per_call() -> None:
-    a = bundles.capture_artifact_relpath("driver", "mono", "woofer")
-    b = bundles.capture_artifact_relpath("driver", "mono", "woofer")
+    a = bundles.capture_artifact_relpath("summed", "mono")
+    b = bundles.capture_artifact_relpath("summed", "mono")
     assert a != b

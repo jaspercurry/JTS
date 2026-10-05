@@ -54,8 +54,8 @@ MAX_EVIDENCE_ARTIFACT_BYTES = 5 * 1024 * 1024
 # and ``summed/*.wav`` capture bytes.
 MAX_NON_ARTIFACT_READ_BYTES = 32 * 1024 * 1024
 # Hard ceiling on every byte `_authoritative_total` walks: `evidence/v1`,
-# `stimuli` and `admission`. v2 capture WAVs under `summed/`/`captures/`
-# live outside those subtrees and are not counted here. Fixed disk budget
+# `stimuli` and `admission`. v2 capture WAVs under `summed/` live outside
+# those subtrees and are not counted here. Fixed disk budget
 # (≈3.8 GiB) carried over from the deleted v1 commissioning lane's
 # proven-maximum capture matrix (582 artifacts × 5 MiB + 1 GiB); v2 writes
 # only KB-scale JSON under this subtree, so the ceiling does not bind today.

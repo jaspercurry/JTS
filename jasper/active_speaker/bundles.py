@@ -87,16 +87,16 @@ SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"
 
 BUNDLE_FILE_MODE = 0o640
 
-#: One capture entry's kind: ``driver`` is one driver alone, ``summed`` every
-#: driver at once, ``sequential`` every driver in turn inside ONE recording (the
-#: CHECK and MEASURE programs). Records banked before ``sequential`` existed
-#: read as ``summed``, disambiguated by their ``phase``.
+#: One capture entry's kind: ``summed`` is every driver at once, ``sequential``
+#: every driver in turn inside ONE recording (the CHECK and MEASURE programs).
+#: Records banked before ``sequential`` existed read as ``summed``,
+#: disambiguated by their ``phase``.
 #:
-#: A ``sequential`` capture keeps ``summed``'s ``summed/`` subdirectory and
-#: ``summed_captures`` list: the kind names what was PLAYED, not where the bytes
-#: land, and an opened bundle's layout is write-once.
+#: Both kinds land in the ``summed/`` subdirectory and the ``summed_captures``
+#: list: the kind names what was PLAYED, not where the bytes land, and an opened
+#: bundle's layout is write-once.
 CAPTURE_KIND_SEQUENTIAL = "sequential"
-_CAPTURE_KINDS = frozenset({"driver", "summed", CAPTURE_KIND_SEQUENTIAL})
+_CAPTURE_KINDS = frozenset({"summed", CAPTURE_KIND_SEQUENTIAL})
 
 # ``closed`` ends a measurement session without claiming success or adoption.
 _VALID_STATES = frozenset({"open", "closed", "proposal_ready", "applied", "failed", "abandoned"})
@@ -178,8 +178,8 @@ def _safe_slug(value: Any, *, fallback: str) -> str:
     return out[:64] or fallback
 
 
-def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
-    """Deterministic bundle-relative WAV path for one driver/summed capture.
+def capture_artifact_relpath(kind: str, group: Any) -> str:
+    """Deterministic bundle-relative WAV path for one capture.
 
     Minted BEFORE the measurement write so the same relative path can be
     embedded as the record's ``bundle_ref.artifact_path`` and later handed to
@@ -187,12 +187,8 @@ def capture_artifact_relpath(kind: str, group: Any, role: Any) -> str:
     durable measurement record names.
     """
 
-    subdir = "captures" if kind == "driver" else "summed"
-    parts = [kind, _safe_slug(group, fallback="group")]
-    if role:
-        parts.append(_safe_slug(role, fallback="role"))
-    parts.append(uuid.uuid4().hex)
-    return f"{subdir}/{'_'.join(parts)}.wav"
+    slug = _safe_slug(group, fallback="group")
+    return f"summed/{kind}_{slug}_{uuid.uuid4().hex}.wav"
 
 
 def _detect_build_sha() -> str | None:
@@ -434,7 +430,6 @@ def open_bundle(
             "policy_id": DRIVER_PLACEMENT_POLICY_ID,
             "acknowledged": False,
         },
-        "captures": [],
         "summed_captures": [],
         "verification": None,
     }
@@ -513,23 +508,6 @@ def mark_state(bundle_dir: Path, state: str) -> dict[str, Any] | None:
     )
 
 
-def _capture_group_role(payload: Mapping[str, Any]) -> tuple[Any, Any]:
-    """Resolve ``(group, role)`` for a capture entry.
-
-    Prefers top-level ``speaker_group_id``/``role`` keys on ``payload``, falling
-    back to the nested ``measurement`` record, which carries them only for a
-    RECORDED driver capture: a summed record's nested ``measurement`` has no
-    ``role`` (group-level), and a skipped capture has no nested record at all.
-    """
-
-    measurement_block = payload.get("measurement")
-    if not isinstance(measurement_block, Mapping):
-        measurement_block = {}
-    group = payload.get("speaker_group_id") or measurement_block.get("speaker_group_id")
-    role = payload.get("role") or measurement_block.get("role")
-    return group, role
-
-
 def _record_capture_wav(bundle_dir: Path, rel_path: str) -> None:
     """Enter one in-bundle capture WAV in the artifact manifest."""
 
@@ -556,7 +534,6 @@ def _append_capture_entry(
     Raises on failure; the caller is ``_fail_soft``.
     """
 
-    group, role = _capture_group_role(payload)
     json_rel = str(Path(rel_path).with_suffix(".json"))
     write_json_artifact(
         bundle_dir,
@@ -579,7 +556,10 @@ def _append_capture_entry(
         # longer answers it: ``summed`` and ``sequential`` share
         # ``summed_captures``. Absent on entries banked before this field.
         "kind": kind,
-        "group": group,
+        "group": (
+            payload.get("speaker_group_id")
+            or measurement_block.get("speaker_group_id")
+        ),
         "artifact_path": rel_path,
         "capture_json_path": json_rel,
         "recorded_at": time.time(),
@@ -592,14 +572,10 @@ def _append_capture_entry(
             measurement_block.get("measurement_id")
             or measurement_block.get("validation_id")
         ),
+        "crossover_fc_hz": payload.get("crossover_fc_hz"),
     }
-    if kind == "driver":
-        entry["role"] = role
-    else:
-        entry["crossover_fc_hz"] = payload.get("crossover_fc_hz")
 
     info = _read_info(bundle_dir)
-    list_key = "captures" if kind == "driver" else "summed_captures"
     placement = dict(info.get("placement") or {})
     placement_proof = payload.get("placement_proof")
     if (
@@ -616,7 +592,7 @@ def _append_capture_entry(
         {
             **info,
             "placement": placement,
-            list_key: [*(info.get(list_key) or []), entry],
+            "summed_captures": [*(info.get("summed_captures") or []), entry],
             "updated_at": time.time(),
         },
     )
@@ -658,7 +634,6 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     info = dict(_read_info(bundle_dir))
     info["bundle_dir"] = str(bundle_dir)
     info["bundle_size_bytes"] = _bundle_byte_size(bundle_dir)
-    info["capture_count"] = len(info.get("captures") or [])
     info["summed_capture_count"] = len(info.get("summed_captures") or [])
     manifest_path = bundle_dir / "artifact_manifest.json"
     info["has_artifact_manifest"] = manifest_path.exists()
