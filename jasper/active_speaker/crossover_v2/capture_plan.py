@@ -52,17 +52,17 @@ def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
 
 
 def build_inline_session_spec(
-    captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
+    captures: Sequence[tuple[CloudPositionPrompt, str]], *,
     acknowledgement_binding: str, **spec_kwargs: Any,
 ) -> Any:
-    prompts = [prompt for _, prompt, _ in captures]
+    prompts = [prompt for prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
-                                 [candidate_id for _, _, candidate_id in captures])
+                                 [candidate_id for _, candidate_id in captures])
     entries = tuple(
-        CapturePlanEntry(index=index - 1, kind_label=spec.program_phase,
+        CapturePlanEntry(index=index - 1,
                          screen={"title": prompt.headline, "body": prompt.detail,
                                  **position_screen_keys(prompt), **batches.get(index, {})})
-        for index, (spec, prompt, _) in enumerate(captures, 1))
+        for index, prompt in enumerate(prompts, 1))
     placements = sum(1 for _ in groupby(prompt.pose.place for prompt in prompts))
     attempts = len(entries) + placements * MAX_EXTRA_ATTEMPTS_PER_POSITION
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:

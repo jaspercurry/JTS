@@ -62,16 +62,15 @@ def _walk(conductor, *, through: int = LAST_LATERAL_INDEX) -> list[dict]:
     return out
 
 
-def test_an_inline_summed_lateral_entry_states_its_phase_and_bearing():
+def test_an_inline_summed_lateral_entry_states_its_bearing():
     request = ac.AngleCaptureRequest((
         ac.AngleStop(Pose(22, 0), ac.REGIME_SUMMED, candidate_id="trial", purpose="speaker"),
     ), candidates=("trial",))
     captures = prepare_plan_captures(request, roles_bands=_roles())
     (entry,) = capture_plan.build_inline_session_spec(
-        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        [(c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         acknowledgement_binding="b" * 24,
     ).capture_plan.entries
-    assert entry.kind_label == PHASE_LATERAL
     assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
 
 

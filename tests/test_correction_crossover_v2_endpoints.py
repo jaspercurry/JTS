@@ -55,7 +55,6 @@ from tests.active_speaker_fixtures import empty_protection, mono_output_topology
 from jasper.audio_measurement.calibration import CalibrationCurve
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.active_speaker.crossover_v2.conductor_context import V2ConductorContext
-from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
@@ -1200,8 +1199,7 @@ def test_inline_and_verify_specs_carry_the_default_calibration_hint(
     assert hint is not None
     kwargs = {"default_setup_calibration": hint} if with_calibration else {}
     spec = build_inline_session_spec(
-        [(MeasureSpec(kind="candidate", program_phase=PHASE_CHECK),
-          CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0)), "base")],
+        [(CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0)), "base")],
         acknowledgement_binding=_BINDING, **kwargs,
     )
     wire = spec.to_dict()

@@ -217,7 +217,7 @@ def prepare_v2_session(
     capture_session_id = "wired-" + secrets.token_hex(8)
     schedule = preview_schedule(request, captures, context)
     spec = build_inline_session_spec(
-        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
+        [(c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
         acknowledgement_binding=acknowledgement_binding,
         default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
     )

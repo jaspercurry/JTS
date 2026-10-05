@@ -36,7 +36,6 @@ from jasper.playback_state.capture_protocol import (
     CapturePlanEntry,
     CaptureSpecError,
 )
-from jasper.active_speaker.driver_acoustics import DEFAULT_DURATION_S
 
 # --- Contract constants -------------------------------------------------------
 
@@ -208,9 +207,6 @@ class CaptureSpec:
     """A kind-agnostic capture spec, built by a per-kind builder."""
 
     kind: str
-    duration_ms: int
-    pre_roll_ms: int
-    post_roll_ms: int
     constraints: CaptureConstraints = field(default_factory=CaptureConstraints)
     stimulus: CaptureStimulus | None = None
     validity: CaptureValidity = field(default_factory=CaptureValidity)
@@ -235,9 +231,6 @@ class CaptureSpec:
             "kind": self.kind,
             "sample_rate_hz": self.sample_rate_hz,
             "channels": self.channels,
-            "duration_ms": self.duration_ms,
-            "pre_roll_ms": self.pre_roll_ms,
-            "post_roll_ms": self.post_roll_ms,
             "constraints": self.constraints.to_dict(),
             "stimulus": self.stimulus.to_dict() if self.stimulus else None,
             "validity": self.validity.to_dict(),
@@ -283,22 +276,6 @@ class CaptureSpec:
         if self.channels != REQUIRED_CHANNELS:
             raise CaptureSpecError(
                 f"channels must be {REQUIRED_CHANNELS} (mono), got {self.channels}"
-            )
-        for name, value in (
-            ("duration_ms", self.duration_ms),
-            ("pre_roll_ms", self.pre_roll_ms),
-            ("post_roll_ms", self.post_roll_ms),
-        ):
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise CaptureSpecError(f"{name} must be an integer")
-        if self.duration_ms <= 0:
-            raise CaptureSpecError("duration_ms must be positive")
-        if self.pre_roll_ms < 0 or self.post_roll_ms < 0:
-            raise CaptureSpecError("pre_roll_ms / post_roll_ms must be >= 0")
-        if self.duration_ms < self.pre_roll_ms + self.post_roll_ms:
-            raise CaptureSpecError(
-                "duration_ms must be >= pre_roll_ms + post_roll_ms so the "
-                "stimulus window fits inside the recording"
             )
         if self.output_format not in OUTPUT_FORMATS:
             raise CaptureSpecError(
@@ -433,13 +410,6 @@ def _validate_capture_plan_entries(capture_plan: CapturePlan) -> None:
                 f"duplicate capture_plan.entries index: {entry.index}"
             )
         seen_indexes.add(entry.index)
-        if not isinstance(entry.kind_label, str) or not re.fullmatch(
-            r"[a-z][a-z0-9_]{0,31}", entry.kind_label
-        ):
-            raise CaptureSpecError(
-                f"capture_plan.entries[{position}].kind_label must be a short "
-                "lowercase slug"
-            )
         _validate_capture_plan_entry_screen(entry.screen, position)
     if seen_indexes != set(range(capture_plan.capture_target)):
         raise CaptureSpecError(
@@ -480,18 +450,14 @@ def build_crossover_sweep_spec(
     driver_role: str = "driver",
     driver_capture_geometry: str = "near_field",
     acknowledgement_binding: str = "",
-    pre_roll_ms: int = 800,
-    post_roll_ms: int = 700,
-    hard_timeout_ms: int = 30000,
-    ambient_duration_ms: int = 0,
     capture_plan: CapturePlan | None = None,
     default_setup_calibration: DefaultSetupCalibration | None = None,
 ) -> CaptureSpec:
     """`kind="crossover_sweep"` — per-driver frequency response for active
     crossover work: a clean log sweep, magnitude FR, drift-insensitive.
 
-    ``duration_ms`` sizes nothing: the wired recorder sizes each take's window
-    from the program it plays (``WiredStimulusCapture.around``).
+    The spec states no recording window: the wired recorder sizes each take's
+    window from the program it plays (``WiredStimulusCapture.around``).
 
     ``capture_plan`` opts the spec into a session-spanning walk. It requires an
     ``acknowledgement_binding``, because placement gates run per capture.
@@ -502,12 +468,6 @@ def build_crossover_sweep_spec(
     ``crossover_v2_uncalibrated_capture`` even with a resolvable stored mic. It
     is applied silently when nothing has already been chosen for the session.
     """
-    if ambient_duration_ms < 0:
-        raise CaptureSpecError("ambient_duration_ms must be >= 0")
-    duration_ms = max(
-        pre_roll_ms + ambient_duration_ms + int(round(DEFAULT_DURATION_S * 1000)) + post_roll_ms,
-        int(hard_timeout_ms),
-    )
     is_driver = str(driver_role or "").strip().lower() not in {"", "summed"}
     geometry = str(driver_capture_geometry or "").strip().lower()
     if is_driver and geometry not in DRIVER_CAPTURE_GEOMETRIES:
@@ -543,9 +503,6 @@ def build_crossover_sweep_spec(
         )
     return CaptureSpec(
         kind="crossover_sweep",
-        duration_ms=duration_ms,
-        pre_roll_ms=pre_roll_ms,
-        post_roll_ms=post_roll_ms,
         constraints=CaptureConstraints(),
         stimulus=CaptureStimulus(
             played_by="pi", label=f"log sweep — {driver_label}"

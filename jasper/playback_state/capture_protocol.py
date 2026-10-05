@@ -50,9 +50,6 @@ class CapturePlanEntry:
     ``index`` is 0-based (``0..capture_target-1``) — deliberately distinct
     from the wire protocol's 1-based ``begin_capture.index`` (SPEC W2.3).
 
-    - ``kind_label`` — a short slug naming what this capture measures (e.g.
-      ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
-      like ``CaptureStimulus.label`` — never trusted for logic.
     - ``screen`` — optional phone-side prompt copy for this capture (a
       string-to-string mapping such as ``{"title": ..., "body": ...}``).
       Opaque: the schema bounds size and value types, never the keys — the
@@ -60,11 +57,10 @@ class CapturePlanEntry:
     """
 
     index: int
-    kind_label: str
     screen: Mapping[str, str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"index": self.index, "kind_label": self.kind_label}
+        data: dict[str, Any] = {"index": self.index}
         if self.screen is not None:
             data["screen"] = dict(self.screen)
         return data
