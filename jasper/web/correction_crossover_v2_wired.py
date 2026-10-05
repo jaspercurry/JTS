@@ -68,8 +68,7 @@ class WiredCaptureSession:
     Carries exactly what the shared hosting reads off a
     ``PiCaptureSession``: the provider-minted ``session_id`` (the seam's
     identity rule) and the validated ``spec`` whose ``capture_plan`` the walk
-    follows and whose ``sample_rate_hz`` (pinned to 48 kHz by
-    ``CaptureSpec.validate``) the recorder captures at.
+    follows.
     """
 
     session_id: str
@@ -87,7 +86,6 @@ class WiredOpened:
 def open_wired_capture(spec: Any, *, device: WiredMicDevice) -> WiredOpened:
     """Mint the wired session: validate the spec, mint the identity.
 
-    ``spec.validate()`` is what pins the 48 kHz rate for the capture path.
     The session exists the moment this returns.
     """
     validated = spec.validate()

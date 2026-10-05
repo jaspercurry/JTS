@@ -29,8 +29,8 @@ from jasper.audio_measurement.ramp import MAX_STEP_DB
 from jasper.audio_measurement.wired_capture import WIRED_POST_ROLL_S
 from jasper.active_speaker.capture_provenance import stimulus_peak_dbfs
 from jasper.active_speaker.profile import spl_raise_bound_db_spl
+from jasper.platform.biquad import RESPONSE_SAMPLE_RATE_HZ as REQUIRED_SAMPLE_RATE_HZ
 from jasper.platform.control_client import read_output_volume
-from .sweep_spec import REQUIRED_SAMPLE_RATE_HZ
 from jasper.platform.json_fields import finite_float
 from jasper.platform.log_event import log_event
 

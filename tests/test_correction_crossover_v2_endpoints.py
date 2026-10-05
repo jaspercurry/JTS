@@ -66,12 +66,9 @@ from jasper.active_speaker.crossover_v2.capture_plan import (
     POSITION_BATCH_SIZE_KEY,
     POSITION_BATCH_START_KEY,
     V2_FIRST_BEGIN_TIMEOUT_S,
-    CloudPositionPrompt,
-    build_inline_session_spec,
     v2_first_begin_timeout_s,
 )
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2Session, V2FlowSeams, V2RecordPublishers
-from jasper.active_speaker.measurement_programs import Pose
 from jasper.active_speaker.run_request import RunRequest, resolve_plan
 from jasper.active_speaker import crossover_envelope_v2 as v2projection, plan_run
 from jasper.active_speaker import baseline_profile
@@ -96,8 +93,6 @@ from tests.crossover_v2_fixtures import (
     _roles,
 )
 from jasper.audio_routes.output_topology_store import save_output_topology, load_output_topology
-
-_BINDING = "placement_abcdefghijklmnopqrstuv"
 
 
 @pytest.fixture(autouse=True)
@@ -1188,26 +1183,6 @@ def test_default_setup_calibration_for_v2_reuses_the_household_mic_hint(
     assert hint.mode == "serial"
     assert hint.calibration_id == record.calibration_id
     assert hint.resolvable is True
-
-
-@pytest.mark.parametrize("with_calibration", [False, True])
-def test_inline_and_verify_specs_carry_the_default_calibration_hint(
-    tmp_path, monkeypatch, with_calibration,
-):
-    record = _seed_household_mic(tmp_path, monkeypatch)
-    hint = v2evidence.default_setup_calibration_for_v2()
-    assert hint is not None
-    kwargs = {"default_setup_calibration": hint} if with_calibration else {}
-    spec = build_inline_session_spec(
-        [(CloudPositionPrompt("Stay on the mark.", pose=Pose(0, 0)), "base")],
-        acknowledgement_binding=_BINDING, **kwargs,
-    )
-    wire = spec.to_dict()
-    if with_calibration:
-        assert wire["default_setup"]["calibration"]["calibration_id"] == record.calibration_id
-        assert wire["default_setup"]["calibration"]["mode"] == "serial"
-    else:
-        assert "default_setup" not in wire
 
 
 def test_plan_flow_stored_calibration_lands_in_the_analyze_call_and_evidence(

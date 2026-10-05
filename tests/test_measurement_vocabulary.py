@@ -97,10 +97,8 @@ SWEPT_SURFACES: tuple[str, ...] = (
     "deploy/assets/correction/js/crossover/main.js",
     "deploy/assets/sync/js/main.js",
     "deploy/assets/rooms/js/main.js",
-    # Cluster 4 — the capture spec, and capture_geometry, which composes the
-    # acknowledgement sentences the spec carries (#1978).
+    # Cluster 4 — the capture spec.
     "jasper/active_speaker/crossover_v2/sweep_spec.py",
-    "jasper/active_speaker/capture_geometry.py",
 )
 
 

@@ -466,12 +466,12 @@ def _crossover_blocking_phase() -> str | None:
 
 
 def _default_setup_calibration_for_spec() -> Any | None:
-    """Build the capture spec's OPTIONAL ``default_setup.calibration`` hint
+    """Build the OPTIONAL household-mic hint (a ``DefaultSetupCalibration``)
     from the household's remembered mic.
 
     Never binding. The measurement source reads the hint and mints the
-    capture's own ``setup.calibration`` reference from it when it is marked
-    ``resolvable: true``. Any resolution miss yields no hint
+    capture's own ``setup.calibration`` reference from it when it is
+    ``resolvable``. Any resolution miss yields no hint
     rather than blocking the capture.
 
     ``resolvable`` is a SECOND, freshly-taken resolver call — not inferred
@@ -479,8 +479,7 @@ def _default_setup_calibration_for_spec() -> Any | None:
     just-checked fact rather than "resolved a moment ago, presumed still
     good." `resolve_household_mic_calibration` is itself documented
     fail-soft (returns `None`, never raises), so this stays a plain call: a
-    miss here simply leaves `resolvable` at its `False` default, which
-    `DefaultSetupCalibration.to_dict()` omits from the wire payload.
+    miss here simply leaves `resolvable` at its `False` default.
     """
     from jasper.active_speaker.crossover_v2.sweep_spec import (
         DefaultSetupCalibration,

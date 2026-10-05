@@ -17,7 +17,6 @@ from jasper.audio_measurement.excitation import (
 
 
 def test_automatic_measurement_source_peak_is_one_shared_default():
-    from jasper.active_speaker import driver_acoustics
     from jasper.audio_measurement.sweep import synchronized_swept_sine
 
     sweep_default = inspect.signature(synchronized_swept_sine).parameters[
@@ -25,7 +24,6 @@ def test_automatic_measurement_source_peak_is_one_shared_default():
     ].default
     assert AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS == -12.0
     assert sweep_default == AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS
-    assert driver_acoustics.DEFAULT_AMPLITUDE_DBFS == sweep_default
 
 
 def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):

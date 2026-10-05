@@ -69,7 +69,6 @@ def test_an_inline_summed_lateral_entry_states_its_bearing():
     captures = prepare_plan_captures(request, roles_bands=_roles())
     (entry,) = capture_plan.build_inline_session_spec(
         [(c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        acknowledgement_binding="b" * 24,
     ).capture_plan.entries
     assert entry.screen[capture_plan.POSITION_DEG_KEY] == "22"
 

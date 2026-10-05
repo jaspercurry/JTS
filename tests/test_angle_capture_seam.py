@@ -573,7 +573,6 @@ def _candidate_batch_plan(request):
     return capture_plan.build_inline_session_spec(
         [(c.resolved(request).prompt, c.stop.candidate_id)
          for c in captures if c.spec.program_phase == PHASE_LATERAL],
-        acknowledgement_binding="candidate-batch-test",
     ).capture_plan
 
 
