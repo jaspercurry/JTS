@@ -40,7 +40,8 @@ _CABINET_MODEL_NOTE = ("If this machine has the CAD repo with a solved Boundary 
                        "scripts/cabinet-model can seed this program; see the runbook's Cabinet model section.")
 #: The line only these programs' prompts carry, after their row's words.
 PROGRAM_NOTES = {**dict.fromkeys((PURPOSE_REAR, PURPOSE_ROOM), _CABINET_MODEL_NOTE),
-                 PURPOSE_SPEAKER: "Apply a speaker change after its preview; trial it only if I ask (ADR-0444)."}
+                 PURPOSE_SPEAKER: ("Apply the fitted speaker change without a preview (a preview needs a branches/express"
+                                   " take); trial it only if I ask (ADR-0444).")}
 
 
 def catalog_command(program: str) -> str:
