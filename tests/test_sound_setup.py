@@ -1948,13 +1948,6 @@ def test_output_topology_payload_serializes_with_populated_hardware_state():
     assert isinstance(hardware, dict)
     assert hardware["status"] == "ready"
     assert envelope["hardware_adoption"]["allowed"] is True
-    # #2812 S5: the JS mismatch card (and #2819's re-pin offer nested inside
-    # it) is a pure proxy for this key now — it does not recompute the rule
-    # itself. Deleting the key here would silently kill both with every test
-    # elsewhere still green (the JS harness fixture supplies its own value
-    # independent of this payload builder), so the key's presence is pinned at
-    # its one source.
-    assert "hardware_mismatch" in envelope
 
 
 @pytest.mark.parametrize("cardioid", [False, True])

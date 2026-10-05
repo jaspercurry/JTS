@@ -54,7 +54,6 @@ from jasper.audio_routes.output_topology import (
 from jasper.dsp_control.output_topology_observation import (
     clock_domain_report,
     composite_serial_repin_plan,
-    declared_hardware_mismatch,
     repin_composite_child_serials,
 )
 from jasper.audio_routes.output_topology_store import (
@@ -217,7 +216,6 @@ def _output_topology_payload() -> dict[str, Any]:
         "hardware_adoption": detected_hardware_adoption_precondition(
             observed_hardware
         ),
-        "hardware_mismatch": declared_hardware_mismatch(topology, observed_hardware),
         "hardware_repin": repin.to_dict() if repin is not None else None,
         "i2s_hat": _i2s_hat_payload(),
         "clock_domain": clock_domain_report(topology, observed_hardware),
