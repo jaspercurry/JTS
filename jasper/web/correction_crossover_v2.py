@@ -211,16 +211,11 @@ def prepare_v2_session(
         for capture in captures if capture.spec.program_phase == PHASE_LATERAL)
     evidence_store, _bundle_id = v2evidence.open_v2_evidence_store(context.topology)
 
-    acknowledgement_binding = secrets.token_urlsafe(24)
     signals = RunSignals()
     position_gate = PositionGate(mover=request.mover)
     capture_session_id = "wired-" + secrets.token_hex(8)
     schedule = preview_schedule(request, captures, context)
-    spec = build_inline_session_spec(
-        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        acknowledgement_binding=acknowledgement_binding,
-        default_setup_calibration=v2evidence.default_setup_calibration_for_v2(),
-    )
+    spec = build_inline_session_spec([(c.resolved(request).prompt, c.stop.candidate_id) for c in captures])
     evidence_store.publish_json_artifact(f"crossover_v2/{capture_session_id}/plan.json", request.to_dict())
     if position_gate:
         position_gate.publish(schedule)

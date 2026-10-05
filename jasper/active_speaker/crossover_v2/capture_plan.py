@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from itertools import groupby
-from typing import Any, Sequence
+from typing import Sequence
 
 from jasper.audio_measurement.measurement_geometry import METERS_PER_INCH
 from jasper.playback_state.capture_protocol import CapturePlan, CapturePlanEntry, MAX_CAPTURE_PLAN_ATTEMPTS
@@ -41,7 +41,7 @@ from .spatial import (
     POSITION_ROLE_ONAX,
     PositionGeometry,
 )
-from .sweep_spec import build_crossover_sweep_spec
+from .sweep_spec import CaptureSpec
 from .refusal_copy import CrossoverV2Refused
 
 
@@ -51,27 +51,21 @@ def announce_run(specs: Sequence[MeasureSpec]) -> tuple[MeasureSpec, ...]:
     return tuple(replace(spec, courtesy_prelude=index == 0) for index, spec in enumerate(specs))
 
 
-def build_inline_session_spec(
-    captures: Sequence[tuple[MeasureSpec, CloudPositionPrompt, str]], *,
-    acknowledgement_binding: str, **spec_kwargs: Any,
-) -> Any:
-    prompts = [prompt for _, prompt, _ in captures]
+def build_inline_session_spec(captures: Sequence[tuple[CloudPositionPrompt, str]]) -> CaptureSpec:
+    prompts = [prompt for prompt, _ in captures]
     batches = pose_batch_screens(list(range(1, len(captures) + 1)), prompts,
-                                 [candidate_id for _, _, candidate_id in captures])
+                                 [candidate_id for _, candidate_id in captures])
     entries = tuple(
-        CapturePlanEntry(index=index - 1, kind_label=spec.program_phase,
+        CapturePlanEntry(index=index - 1,
                          screen={"title": prompt.headline, "body": prompt.detail,
                                  **position_screen_keys(prompt), **batches.get(index, {})})
-        for index, (spec, prompt, _) in enumerate(captures, 1))
+        for index, prompt in enumerate(prompts, 1))
     placements = sum(1 for _ in groupby(prompt.pose.place for prompt in prompts))
     attempts = len(entries) + placements * MAX_EXTRA_ATTEMPTS_PER_POSITION
     if attempts > MAX_CAPTURE_PLAN_ATTEMPTS:
         raise CrossoverV2Refused("The prepared plan exceeds capture capacity", code="walk_over_capture_capacity")
     plan = CapturePlan(capture_target=len(entries), max_attempts=attempts, schema_version=2, entries=entries)
-    return build_crossover_sweep_spec(
-        driver_label="crossover", driver_role="summed", acknowledgement_binding=acknowledgement_binding,
-        capture_plan=plan, **spec_kwargs,
-    )
+    return CaptureSpec(capture_plan=plan).validate()
 
 
 CAPTURE_PLAN_TARGET = 3

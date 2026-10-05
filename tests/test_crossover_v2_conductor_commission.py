@@ -2,17 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conductor W5a: the play transaction and the inline spec."""
+"""Conductor W5a: the play transaction."""
 
 from __future__ import annotations
 
 import asyncio
 import pytest
 import yaml
-from jasper.active_speaker.capture_geometry import SUMMED_PLACEMENT_POLICY_ID
 from tests.crossover_v2_fixtures import (
     SESSION_VOLUME_DB,
-    _inline_spec,
     _dummy_program,
 )
 
@@ -129,13 +127,3 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
     # from a mismatch, so hardware triage can tell the two apart.
     with pytest.raises(ProgramPlaybackError, match="normalization failed"):
         asyncio.run(composition.confirm_graph_is_live(cam, "!!not-yaml\n"))
-
-
-def test_inline_session_spec_is_a_valid_protocol_3_crossover_spec():
-    spec = _inline_spec()
-    assert spec.kind == "crossover_sweep"
-    assert spec.capture_protocol_version == 3
-    assert spec.capture_plan is not None
-    assert spec.acknowledgement.id == SUMMED_PLACEMENT_POLICY_ID
-
-

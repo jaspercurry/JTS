@@ -20,15 +20,15 @@ raw serial's last 4 characters, purely for the UI. The full serial is never
 persisted here (or anywhere else in the calibration registry — see
 ``jasper/audio_measurement/calibration.py``).
 
-The record reaches a measurement two ways, and both start here:
+The record reaches a measurement in two steps, and both start here:
 
-* the capture spec's OPTIONAL ``default_setup`` prefill hint
+* an OPTIONAL ``DefaultSetupCalibration`` hint
   (``jasper/active_speaker/crossover_v2/sweep_spec.py``, built by
   ``correction_capture._default_setup_calibration_for_spec``), whose
-  ``resolvable`` flag is minted fresh at spec-build time — a second,
+  ``resolvable`` flag is minted fresh at hint-build time — a second,
   independent :func:`resolve_household_mic_calibration` call rather than an
   inference from the hint existing — so a record whose calibration has gone
-  missing from disk still ships the other hint fields without the marker;
+  missing from disk still yields the other hint fields without the marker;
 * the capture's own ``setup.calibration`` REFERENCE, which the measurement
   source mints from that hint
   (``audio_measurement.wired_capture.setup_from_hint``) and

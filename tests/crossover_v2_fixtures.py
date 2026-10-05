@@ -1048,7 +1048,4 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
 def _inline_spec():
     request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),))
     captures = prepare_plan_captures(request, roles_bands=_roles())
-    return build_inline_session_spec(
-        [(c.spec, c.resolved(request).prompt, c.stop.candidate_id) for c in captures],
-        acknowledgement_binding="b" * 24,
-    )
+    return build_inline_session_spec([(c.resolved(request).prompt, c.stop.candidate_id) for c in captures])

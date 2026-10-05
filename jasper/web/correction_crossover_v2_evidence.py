@@ -83,11 +83,9 @@ def default_setup_calibration_for_v2() -> Any | None:
     solve gain), so nothing carried the household's remembered mic into it.
 
     Reuses ``correction_capture._default_setup_calibration_for_spec`` — the ONE
-    household-mic-hint resolver. Session specs forward it to
-    ``build_crossover_sweep_spec`` through ``**spec_kwargs``, and
-    the measurement source mints the capture's own reference from it
-    through ``wired_capture.setup_from_hint``. Fail-soft: any
-    resolution miss yields no hint, never blocks session open.
+    household-mic-hint resolver. The measurement source mints the capture's
+    own reference from it through ``wired_capture.setup_from_hint``.
+    Fail-soft: any resolution miss yields no hint, never blocks session open.
     """
     from .correction_capture import _default_setup_calibration_for_spec
 

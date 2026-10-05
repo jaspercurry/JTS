@@ -13,15 +13,14 @@ rather than inside either.
 Stdlib-only on purpose: the socket-activated wizard builds specs on a light
 process, and both sides import this unconditionally.
 
-The rest of the wire contract — ``CaptureSpec`` itself and its validation —
-lives in ``jasper.active_speaker.crossover_v2.sweep_spec``, which imports these
-names back so there is one definition of each.
+``CaptureSpec`` itself and its validation live in
+``jasper.active_speaker.crossover_v2.sweep_spec``, which imports these names
+back so there is one definition of each.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 
 # Metadata/index budget; WAVs are stored per take. Supports 11 poses × 3 candidates × 3 levels.
 MAX_CAPTURE_PLAN_ATTEMPTS = 128
@@ -50,9 +49,6 @@ class CapturePlanEntry:
     ``index`` is 0-based (``0..capture_target-1``) — deliberately distinct
     from the wire protocol's 1-based ``begin_capture.index`` (SPEC W2.3).
 
-    - ``kind_label`` — a short slug naming what this capture measures (e.g.
-      ``"check"`` / ``"measure"`` / ``"verify"``). Display/telemetry only,
-      like ``CaptureStimulus.label`` — never trusted for logic.
     - ``screen`` — optional phone-side prompt copy for this capture (a
       string-to-string mapping such as ``{"title": ..., "body": ...}``).
       Opaque: the schema bounds size and value types, never the keys — the
@@ -60,14 +56,7 @@ class CapturePlanEntry:
     """
 
     index: int
-    kind_label: str
     screen: Mapping[str, str] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {"index": self.index, "kind_label": self.kind_label}
-        if self.screen is not None:
-            data["screen"] = dict(self.screen)
-        return data
 
 
 @dataclass(frozen=True)
@@ -98,13 +87,3 @@ class CapturePlan:
     max_attempts: int
     schema_version: int = 1
     entries: tuple[CapturePlanEntry, ...] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "schema_version": self.schema_version,
-            "capture_target": self.capture_target,
-            "max_attempts": self.max_attempts,
-        }
-        if self.entries is not None:
-            data["entries"] = [entry.to_dict() for entry in self.entries]
-        return data

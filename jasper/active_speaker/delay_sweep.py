@@ -24,10 +24,7 @@ from jasper.audio_measurement.null_walk import (
 
 # Both bars are docs/tuning-methodology.md's, and both are depths in dB re the
 # Fc/2 and 2*Fc shoulder mean — the one canonical null-depth definition. They
-# answer a different question
-# from `driver_acoustics.DEFAULT_NULL_THRESHOLD_DB` (6.0), which asks whether a
-# null formed AT ALL for the polarity call; these ask whether the null that
-# formed is deep enough to trust the DELAY it implies.
+# ask whether the null that formed is deep enough to trust the DELAY it implies.
 ROBUST_NULL_DEPTH_DB = 20.0
 # When NO coordinate the sweep measured reaches this, the residual at Fc is not
 # a timing residual at all — it is axis or lobing. Disclosed as a verdict,

@@ -283,10 +283,6 @@ def test_consumed_module_level_aliases_match_profiles():
     """Aliases still consumed across package boundaries stay profile-backed."""
     assert quality.DBFS_FLOOR == ROOM.dbfs_floor
 
-    from jasper.active_speaker import driver_acoustics
-
-    assert driver_acoustics.DEFAULT_NULL_THRESHOLD_DB == DRIVER.null_threshold_db
-
 
 def test_default_quality_model_is_room():
     """assess_capture defaults to ROOM, so pre-extraction call sites (which

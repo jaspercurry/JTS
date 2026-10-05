@@ -121,12 +121,9 @@ def test_the_registered_mic_is_resolved_when_one_is_present(tmp_path):
     assert device.model_key == "minidsp_umik2"
 
 
-def test_open_wired_capture_mints_identity_and_validates_the_spec():
+def test_open_wired_capture_mints_identity():
     opened = v2wired.open_wired_capture(_inline_spec(), device=_device())
     assert opened.pi_session.session_id.startswith("wired-")
-    # The 48 kHz pin reaches the wired path through the same validate the
-    # capture registration runs.
-    assert opened.pi_session.spec.sample_rate_hz == RATE
     assert opened.pi_session.device.card_id == "UMIK2"
 
 
@@ -135,7 +132,8 @@ def test_open_wired_capture_refuses_an_invalid_spec():
 
     from jasper.playback_state.capture_protocol import CaptureSpecError
 
-    bad = dataclasses.replace(_inline_spec(), sample_rate_hz=44_100)
+    spec = _inline_spec()
+    bad = dataclasses.replace(spec, capture_plan=dataclasses.replace(spec.capture_plan, max_attempts=0))
     with pytest.raises(CaptureSpecError):
         v2wired.open_wired_capture(bad, device=_device())
 
