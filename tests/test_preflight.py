@@ -17,20 +17,27 @@ from jasper.active_speaker.angle_capture import (
 from jasper.active_speaker.capture_schedule import prepare_plan_captures, run_probe_index
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_PROGRAM_NOT_OFFERED, REASON_REGISTRY, REASON_WALK_BRANCH_PAIR_UNDECLARED,
-    REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP,
+    REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS, TEMPLATE_HARD_STOP, CrossoverV2Refused,
+    rear_seed_undeclared_message,
 )
 from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.measurement_programs import REGIME_BRANCHES, Pose, available_presets, preset, run_preset
 from jasper.active_speaker.preflight import PreflightFacts, PreflightIssue, preflight
 from jasper.active_speaker.profile import DRIVER_ROLES_BY_WAY
+from jasper.active_speaker.rear_seed import REAR_SEED_GEOMETRY_UNDECLARED
+from jasper.active_speaker.run_request import RunRequest
 from jasper.active_speaker import arm_walk, preflight_live
 from jasper.audio_measurement import measurement_geometry
 from jasper.audio_measurement.calibration import MicSensitivity
 from jasper.audio_measurement.measurement_geometry import DECLARED_GEOMETRY_UNREADABLE
 from jasper.audio_measurement.program import FrequencyBand, RoleBand
+from jasper.cli import _run_request
 from jasper.platform.speaker_layout import measurement_target_id
 from jasper.platform import control_client
-from tests.active_speaker_fixtures import mono_output_topology
+from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_evidence as v2evidence
+from jasper.web import correction_crossover_v2_volume as v2volume
+from tests.active_speaker_fixtures import REAR_SEED_DRAFT, REAR_SEED_GEOMETRY, mono_output_topology
 from tests._log_events import event_field_maps
 from tests.test_rear_output_foundation import _rear_document, _rear_pair
 from tests.test_active_speaker_program_admission import _profile_and_targets
@@ -48,11 +55,33 @@ def _boost(boost_db, **changes):
             **changes}
 
 
+_MIC = MicSensitivity(-12.0, 18.0, "1234")
+
+
 def ready_facts(plan, **changes):
     return replace(PreflightFacts(
-        candidates={}, mic_present=True, mic_identified=True, mic_sensitivity=MicSensitivity(-12.0, 18.0, "1234"),
+        candidates={}, mic_present=True, mic_identified=True, mic_sensitivity=_MIC,
         commissioning_stop_db_spl=85.0, mover=plan.mover,
     ), **changes)
+
+
+def _live_context(monkeypatch, topology, *, draft=REAR_SEED_DRAFT):
+    """The context the door resolves for ``topology``, and the live readers its facts read: a ready
+    microphone, the declared room, and ``draft``'s declarations."""
+    targets = active_driver_targets(topology)
+    context = SimpleNamespace(
+        topology=topology, safety_profile={}, preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)),
+        role_targets={measurement_target_id(t["role"], t.get("output_variant", "primary")): t["target_fingerprint"]
+                      for t in targets},
+        roles_bands=tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
+                          if t.get("output_variant", "primary") == "primary"))
+    for name, value in (("conductor_status", dict), ("resolve_conductor_context", lambda _status: context),
+                        ("require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2")),
+                        ("resolved_household_sensitivity", lambda _device: _MIC), ("read_output_volume", dict),
+                        ("load_design_draft", lambda **_kwargs: draft)):
+        monkeypatch.setattr(preflight_live, name, value)
+    monkeypatch.setattr(measurement_geometry, "load_declared_geometry", lambda *_args: REAR_SEED_GEOMETRY)
+    return context
 
 
 @pytest.mark.parametrize("muted", [True, False, None])
@@ -131,22 +160,12 @@ def test_the_dry_run_publishes_each_drivers_cap_and_its_source(monkeypatch):
     ("speaker", "speaker/mark", "speaker_mark"), ("room", "room/seat", "room_quick"))])
 def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile, layout, name, preset, poses):
     topology = _rear_pair("mono")[1] if layout == "cardioid" else mono_output_topology(mode=layout)
-    targets = active_driver_targets(topology)
-    role_targets = {measurement_target_id(t["role"], t.get("output_variant", "primary")): t["target_fingerprint"]
-                    for t in targets}
-    roles = tuple(RoleBand(t["role"], index, FrequencyBand(20, 20000)) for index, t in enumerate(targets)
-                  if t.get("output_variant", "primary") == "primary")
+    context = _live_context(monkeypatch, topology)
+    role_targets, roles = context.role_targets, context.roles_bands
     candidate = _room_candidate(tuning_profile)
     selected = run_preset(preset, poses)
     plan = request_for_preset(selected, mover=selected.mover or "human",
                                candidates=(candidate.fingerprint,) if name in {"rear", "front_rear", "branches"} else ())
-    ready = ready_facts(plan)
-    context = SimpleNamespace(topology=topology, roles_bands=roles, safety_profile={}, role_targets=role_targets,
-        preset=SimpleNamespace(safety=SimpleNamespace(max_commissioning_level_db_spl=85)))
-    monkeypatch.setattr(preflight_live, "conductor_status", lambda: {})
-    monkeypatch.setattr(preflight_live, "resolve_conductor_context", lambda _: context)
-    monkeypatch.setattr(preflight_live, "require_wired_mic", lambda: SimpleNamespace(model_key="minidsp_umik2"))
-    monkeypatch.setattr(preflight_live, "resolved_household_sensitivity", lambda _: ready.mic_sensitivity)
     monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
     facts = preflight_live.read_preflight_facts(plan, mover_available=True)
     assert facts.declared_target_ids == tuple(role_targets)
@@ -165,6 +184,41 @@ def test_preflight_requires_declared_capture_targets(monkeypatch, tuning_profile
         assert REASON_REGISTRY[issue.code].retry_budget == 0
     else:
         assert report.issues == ()
+
+
+@pytest.mark.parametrize("door,program,refused", [
+    ("session", "rear/pair", True), ("dry_run", "rear/pair", True), ("dry_run", "rear/express", False),
+    ("dry_run", "rear/seat", False), ("dry_run", "front_rear/express", False),
+])
+def test_a_pair_take_refuses_before_it_composes_while_a_rear_seed_input_is_undeclared(
+        monkeypatch, tuning_profile, door, program, refused):
+    """A pair round computes its rear seed from the spacing and placement it banks (ADR-0425), so the
+    session door and the dry run refuse a pair take while one is undeclared, naming the field, before any
+    program is composed or played. A summed rear take and a speaker take read no seed."""
+    topology = _rear_pair("mono")[1]
+    context = _live_context(monkeypatch, topology, draft={"manual_settings": {}})
+    candidate = _room_candidate(tuning_profile)
+    monkeypatch.setattr(preflight_live.candidate_bank, "find_banked_candidate", lambda _: SimpleNamespace(candidate=candidate))
+    asked = {"program": program, **({"candidates": [candidate.fingerprint]} if program == "front_rear/express" else {})}
+    priced = []
+    monkeypatch.setattr("jasper.active_speaker.preflight.preview_schedule",
+                        lambda *args: priced.append(args) or {"estimated_seconds": 0.0})
+    if door == "session":
+        monkeypatch.setattr(v2host, "resolve_conductor_context", lambda _status: context)
+        monkeypatch.setattr(v2volume, "session_volume_plan", lambda: SimpleNamespace(needs_recovery=False))
+        monkeypatch.setattr(v2evidence, "open_v2_evidence_store", lambda _topology: pytest.fail("a session opened"))
+        with pytest.raises(CrossoverV2Refused) as refusal:
+            v2host.prepare_v2_session({"request": asked}, status={}, run_async=None, camilla_factory=None)
+        answered = [(refusal.value.code, str(refusal.value), refusal.value.next_action)]
+    else:
+        monkeypatch.setattr(_run_request, "load_output_topology", lambda: topology)
+        report = _run_request.preflight_run(RunRequest.from_mapping(asked))
+        answered = [(issue.code, issue.detail, issue.next_action)
+                    for issue in report.issues if issue.code == REAR_SEED_GEOMETRY_UNDECLARED]
+    code = REAR_SEED_GEOMETRY_UNDECLARED
+    assert answered == ([(code, rear_seed_undeclared_message(["rear_woofer_spacing_mm"]),
+                          REASON_REGISTRY[code].next_action)] if refused else [])
+    assert bool(priced) is not refused
 
 
 @pytest.mark.parametrize("offered,unoffered", [(("tweeter", "woofer"), ("woofer:rear",)),

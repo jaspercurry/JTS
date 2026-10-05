@@ -231,6 +231,27 @@ def driver_sensitivity_undeclared_message(undeclared: Sequence[str], disagreeing
                               "declared driver sensitivities."])
 
 
+#: Each rear seed input, by the part of the speaker page that declares it (ADR-0425).
+_REAR_SEED_INPUTS = {
+    "Driver details": {"rear_woofer_spacing_mm": "front-to-rear woofer spacing"},
+    "Speaker and microphone placement": {"cabinet_back_wall_m": "cabinet back to wall",
+                                         "cabinet_depth_m": "cabinet depth", "toe_in_degrees": "toe-in"},
+}
+
+
+def rear_seed_undeclared_message(missing: Iterable[str]) -> str:
+    """``rear_seed_geometry_undeclared``'s sentence naming each speaker-page field a woofer pair take needs."""
+    missing = set(missing)
+
+    def listed(names: Sequence[str]) -> str:
+        return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+
+    places = [f"the {listed(names)} under {part}" for part, inputs in _REAR_SEED_INPUTS.items()
+              if (names := [name for key, name in inputs.items() if key in missing])]
+    return (f"Declare {' and '.join(places)} on the speaker page, then measure the woofer pair: "
+            "its round computes the rear seed from the declarations it was measured with.")
+
+
 @dataclass(frozen=True)
 class RetryableReasonCopy:
     """One retryable reason's copy: what was observed, then the action that may clear it.
