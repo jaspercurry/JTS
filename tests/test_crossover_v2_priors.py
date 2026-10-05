@@ -381,6 +381,8 @@ def test_session_summed_alignment_uses_raw_capture_and_played_chain(
     documents += [(replace(row, graph_scope="candidate"), {**documents[0][1], "take_id": "room"}),
                   (replace(row, run_id="other"), {**documents[0][1], "take_id": "other"}),
                   (replace(row, phase="lateral"), {**documents[0][1], "take_id": "later"}),
+                  (replace(row, position_deg=20), {**documents[0][1], "take_id": "side"}),
+                  (replace(row, vertical_deg=20), {**documents[0][1], "take_id": "raised"}),
                   (row, {**documents[0][1], "take_id": "louder", "level_db": -15}),
                   (row, {**documents[0][1], "take_id": "graph", "provenance": {"graph": {"fingerprint": "other"}}})]
     monkeypatch.setattr(summed_alignment, "measurement_documents", lambda _: documents)
