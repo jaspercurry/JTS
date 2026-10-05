@@ -23,7 +23,7 @@ from .crossover_v2.measure_spec import branch_target_ids_for
 from .crossover_v2.refusal_copy import (
     REASON_REGISTRY, REASON_MEASUREMENT_OUTPUT_MUTED, REASON_MEASUREMENT_PROGRAM_NOT_OFFERED,
     REASON_WALK_BRANCH_PAIR_UNDECLARED, REASON_WALK_LAYOUT_UNSUPPORTED_FOR_PER_DRIVER_PROGRAMS,
-    REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED,
+    REASON_WALK_MOVER_UNAVAILABLE, REASON_WALK_RIG_CLEAR_NOT_ATTESTED, rear_seed_undeclared_message,
 )
 from .measured_crossover_candidate import (
     MeasuredCrossoverCandidate, candidate_room_peqs, compile_candidate_config, prove_candidate_config,
@@ -35,6 +35,7 @@ from .measurement_programs import (
 )
 from .plan_run import preview_schedule
 from .profile import DRIVER_ROLES_BY_WAY
+from .rear_seed import REAR_SEED_GEOMETRY_UNDECLARED
 
 if TYPE_CHECKING:
     from jasper.audio_measurement.calibration import MicSensitivity
@@ -90,6 +91,8 @@ class PreflightFacts:
     issues: tuple[PreflightIssue, ...] = ()
     #: The declared room's unreadable field, ``None`` when it reads (ADR-0388).
     geometry_unreadable: str | None = None
+    #: The rear seed inputs a pair take in this plan would bank undeclared (ADR-0425).
+    rear_seed_undeclared: tuple[str, ...] = ()
     declared_target_ids: tuple[str, ...] | None = None
     #: The drivers this plan's poses may play alone here; read only for a plan naming one.
     near_field_drivers: tuple[str, ...] | None = None
@@ -202,6 +205,12 @@ def preflight(plan: AngleCaptureRequest, facts: PreflightFacts) -> PreflightRepo
         code = REASON_MEASUREMENT_PROGRAM_NOT_OFFERED
         issues.append(replace(PreflightIssue.from_code(code, REASON_REGISTRY[code].message), evidence={
             "unoffered_drivers": unoffered, "near_field_drivers": facts.near_field_drivers}))
+        return PreflightReport(plan, tuple(issues), (), facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
+
+    # A pair round computes its rear seed from the declarations it banks (ADR-0425).
+    if valid_shape and facts.rear_seed_undeclared:
+        issues.append(PreflightIssue.from_code(
+            REAR_SEED_GEOMETRY_UNDECLARED, rear_seed_undeclared_message(facts.rear_seed_undeclared)))
         return PreflightReport(plan, tuple(issues), (), facts.commissioning_stop_db_spl, driver_caps=facts.driver_caps)
 
     scopes: dict[str, str] = {}

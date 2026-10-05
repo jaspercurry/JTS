@@ -18,6 +18,7 @@ from jasper.active_speaker.excitation_safety_plan import (
     ExcitationSafetyPlanError,
     ExcitationSafetyPlanRefusal,
     driver_cap_dbfs,
+    require_driver_measurement_inputs,
 )
 
 from .refusal_copy import (
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "V2ConductorContext",
+    "declaration_refusals",
     "ensure_crossover_preview_ready",
     "measurement_role_channels",
     "published_driver_caps",
@@ -148,19 +150,39 @@ def _cap_refused(target_id: str, exc: ValueError) -> CrossoverV2Refused:
     return CrossoverV2Refused(f"the {target_id}'s safe excitation limits could not be resolved", code=_BOX_NOT_READY)
 
 
+def _driver_cap(safety_profile: Mapping[str, Any], target_id: str,
+                fingerprint: str) -> tuple[float, str] | CrossoverV2Refused:
+    """One driver's program-path cap and its ``cap_source``, or the door's refusal of it (ADR-0382)."""
+    try:
+        return driver_cap_dbfs(safety_profile, fingerprint, program_admission=True)
+    except (ExcitationSafetyPlanError, ValueError) as exc:
+        return _cap_refused(target_id, exc)
+
+
 def published_driver_caps(
     safety_profile: Mapping[str, Any], target_fingerprints: Mapping[str, str],
 ) -> dict[str, dict[str, Any]]:
     """Each driver's program-path ``cap_dbfs`` and ``cap_source``, or the registry code refusing it."""
     caps: dict[str, dict[str, Any]] = {}
     for target_id, fingerprint in target_fingerprints.items():
-        try:
-            cap, source = driver_cap_dbfs(safety_profile, fingerprint, program_admission=True)
-        except (ExcitationSafetyPlanError, ValueError) as exc:
-            caps[target_id] = {"cap_dbfs": None, "cap_source": None, "reason": _cap_refused(target_id, exc).code}
-        else:
-            caps[target_id] = {"cap_dbfs": cap, "cap_source": source}
+        cap = _driver_cap(safety_profile, target_id, fingerprint)
+        caps[target_id] = ({"cap_dbfs": None, "cap_source": None, "reason": cap.code}
+                           if isinstance(cap, CrossoverV2Refused) else {"cap_dbfs": cap[0], "cap_source": cap[1]})
     return caps
+
+
+def declaration_refusals(safety_profile: Mapping[str, Any]) -> list[CrossoverV2Refused]:
+    """The door's refusals of this declaration, each once: its measurement inputs with the driver
+    issues they list (ADR-0323 §2), else each driver's cap (ADR-0382)."""
+    try:
+        require_driver_measurement_inputs(safety_profile)
+    except ExcitationSafetyPlanError:
+        code = REASON_PROGRAM_MEASUREMENT_INPUTS_INVALID
+        return [CrossoverV2Refused(REASON_REGISTRY[code].message, code=code, issues=[
+            issue for issue in safety_profile.get("issues", ()) if issue["severity"] == "blocker"])]
+    caps = [_driver_cap(safety_profile, target["target_id"], target["target_fingerprint"])
+            for target in safety_profile["targets"]]
+    return list({str(cap): cap for cap in caps if isinstance(cap, CrossoverV2Refused)}.values())
 
 
 def resolve_conductor_context(status: Mapping[str, Any], *, topology: Any = None) -> V2ConductorContext:
@@ -168,7 +190,6 @@ def resolve_conductor_context(status: Mapping[str, Any], *, topology: Any = None
     from jasper.active_speaker.commission_wiring import resolve_capture_preset, resolve_commission_preset  # lazy: test_correction_crossover_v2_conductor_context patches commission_wiring
     from jasper.active_speaker.design_draft import load_design_draft  # lazy: reader boundary is patched by conductor tests
     from jasper.active_speaker.excitation_safety_plan import (  # lazy: test_correction_crossover_v2_conductor_context patches excitation_safety_plan
-        require_driver_measurement_inputs,
         effective_sweep_duration_limit_s,
         resolve_driver_excitation_ceilings,
         resolve_driver_measurement_band_hz,

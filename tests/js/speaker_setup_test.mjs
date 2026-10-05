@@ -121,15 +121,18 @@ test('a cardioid speaker saves its woofer spacing with the details and its place
   assert.deepEqual(ui.requests[1].body, {speaker_height_m: 1, cabinet_back_wall_m: 0.2});
 });
 
-test('a refused draft shows its refusal once, in the open driver details card', async () => {
-  const initial = state('details');
-  initial.issues = [{severity: 'blocker', code: 'manual_target_unknown', message: 'Enter this driver in its card.'}];
+for (const [stage, issue] of [
+  ['details', {severity: 'blocker', code: 'manual_target_unknown', message: 'Enter this driver in its card.'}],
+  ['tune', {severity: 'blocker', code: 'driver_sensitivity_undeclared', message: 'Declare the sensitivity of the tweeter.'}],
+]) test(`the ${stage} stage shows its issue once, in the open driver details card`, async () => {
+  const initial = state(stage);
+  initial.issues = [issue];
   const ui = setup(initial);
   await flush();
   const card = nodes(ui.root).find(n => n.id === 'driver-safety-issues');
   assert.equal(card.open, true);
-  assert.match(visible(card), /Enter this driver in its card\./);
-  assert.equal(nodes(ui.root).filter(n => n.tag === 'p' && text(n) === initial.issues[0].message).length, 1);
+  assert.ok(visible(card).includes(issue.message));
+  assert.equal(nodes(ui.root).filter(n => n.tag === 'p' && text(n) === issue.message).length, 1);
 });
 
 for (const [stage, programs, offered] of [

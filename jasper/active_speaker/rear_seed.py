@@ -42,6 +42,13 @@ ASSUMPTIONS = (
 )
 
 
+def rear_seed_undeclared(draft: Mapping[str, Any], geometry: DeclaredGeometry | None) -> list[str]:
+    """Each declaration the seed is computed from that ``draft`` and ``geometry`` lack."""
+    declared = {"rear_woofer_spacing_mm": declared_driver_spacing_m(draft, "rear_woofer_spacing_mm"),
+                **{name: getattr(geometry, name, None) for name in PLACEMENT_FIELDS}}
+    return [name for name, value in declared.items() if value is None]
+
+
 def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredGeometry | None,
               views: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """The rear stage's starting document, or the gap that says why there is none:
@@ -51,8 +58,7 @@ def rear_seed(sample_rate: int, *, draft: Mapping[str, Any], geometry: DeclaredG
     ``views`` are the round's rear views; a pair view's reading at the mark levels the rear woofer to the front.
     """
     spacing_m = declared_driver_spacing_m(draft, "rear_woofer_spacing_mm")
-    declared = {"rear_woofer_spacing_mm": spacing_m, **{name: getattr(geometry, name, None) for name in PLACEMENT_FIELDS}}
-    missing = [name for name, value in declared.items() if value is None]
+    missing = rear_seed_undeclared(draft, geometry)
     if spacing_m is None or geometry is None or missing:
         return unavailable(REAR_SEED_GEOMETRY_UNDECLARED, {"missing": missing})
     speed = DEFAULT_SOUND_SPEED_M_S

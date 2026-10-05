@@ -27,12 +27,16 @@ from dataclasses import fields as dataclass_fields, replace
 from pathlib import Path
 from unittest.mock import Mock, call
 from tests.test_rear_preview import compare_evidence as compare_evidence
+from tests.test_active_speaker_program_admission import _profile_and_targets
 
 import numpy as np
 import pytest
 
 from jasper.active_speaker.measurement_programs import RUNNABLE_PROGRAMS, programs_for_topology
 from jasper.active_speaker import playback_route
+from jasper.active_speaker.crossover_v2 import conductor_context
+from jasper.active_speaker.crossover_v2.refusal_copy import CrossoverV2Refused
+from jasper.active_speaker.measurement import active_driver_targets
 from jasper.active_speaker.calibration_level import (
     load_calibration_level_state,
     update_calibration_level_state,
@@ -5461,6 +5465,34 @@ def test_setup_partial_details_return_research_action_without_measurement_errors
     assert view['issues'] == []
     assert view == setup.load_setup_view()
     assert [p['id'] for p in view['programs']] == ['speaker', 'bass', 'room']
+
+
+@pytest.mark.parametrize('shape,rear_woofer_db', [
+    (dict(tweeter_peak=None, sensitivities={'woofer': 84.0}), None),
+    (dict(tweeter_peak=None, sensitivities={'woofer': 84.0, 'tweeter': 100.0}), 85.0),
+    (dict(max_sweep_duration_s=None), None),
+], ids=['tweeter_sensitivity_undeclared', 'woofer_outputs_disagree', 'sweep_duration_missing'])
+def test_a_speaker_in_use_lists_what_the_run_door_refuses(monkeypatch, shape, rear_woofer_db):
+    """The setup page lists the run door's own refusals of the declaration, each before the driver
+    issues it lists, so they are fixed before a run opens (ADR-0323 §2, ADR-0382)."""
+    topology, profile, _targets = _profile_and_targets(rear=True, **shape)
+    if rear_woofer_db is not None:
+        next(t for t in profile['targets'] if t['target_id'].endswith(':rear'))['effective_sensitivity_db_2v83_1m'] = rear_woofer_db
+    monkeypatch.setattr('jasper.active_speaker.design_draft.load_design_draft',
+                        lambda path=None, *, topology=None, computed=True: {'driver_safety_profile': profile} if computed else {})
+    monkeypatch.setattr(conductor_context, 'ensure_crossover_preview_ready', lambda draft: None)
+    with pytest.raises(CrossoverV2Refused) as refused:
+        conductor_context.resolve_conductor_context(
+            {'active': True, 'targets': {'drivers': active_driver_targets(topology)}}, topology=topology)
+    monkeypatch.setattr(sound_speaker_setup, 'load_output_topology', lambda: topology)
+    monkeypatch.setattr('jasper.active_speaker.baseline_profile.load_applied_baseline_profile_state', lambda: None)
+    monkeypatch.setattr(sound_speaker_setup.commissioning_coordinator, 'load_commissioning_view', lambda topology: {
+        'programs': programs_for_topology(topology), 'applied_profile': {'stands': True},
+        'driver_values': {'complete': True}, 'review': {'issues': []}})
+    view = sound_speaker_setup.load_setup_view()
+    listed = [issue for issue in profile['issues'] if issue['severity'] == 'blocker']
+    assert (view['stage'], view['issues']) == (
+        'tune', [{'severity': 'blocker', 'code': refused.value.code, 'message': str(refused.value)}, *listed])
 
 
 def test_setup_apply_uses_declared_base_instead_of_the_incumbent(tmp_path, monkeypatch):

@@ -104,6 +104,15 @@ def _geometry_view() -> dict[str, Any]:
     return {"fields": GEOMETRY_FIELDS, "values": declared.to_dict() if declared else {}}
 
 
+def _run_refusals(topology) -> list[dict[str, Any]]:
+    """What the run door refuses in this declaration, each refusal before the driver issues it lists."""
+    from jasper.active_speaker.crossover_v2.conductor_context import declaration_refusals  # lazy: refusal copy imports NumPy; sound_setup imports numpy-free
+
+    profile = design_draft.load_design_draft(topology=topology).get("driver_safety_profile") or {}
+    return [entry for refusal in declaration_refusals(profile)
+            for entry in (issue("blocker", refusal.code, str(refusal)), *refusal.issues)]
+
+
 def load_setup_view() -> SpeakerSetupView:
     from jasper.active_speaker.baseline_profile import applied_layers, load_applied_baseline_profile_state  # lazy: graph domain
     from jasper.active_speaker.crossover_preview import build_crossover_preview  # lazy: graph domain
@@ -173,7 +182,8 @@ def load_setup_view() -> SpeakerSetupView:
         "applied": {**applied, "layers": layers}, "next_action": {"id": action[0], "label": action[1]},
         "programs": [{**entry, "applied": layers[entry["id"]]} for entry in program_entries(topology)],
         "geometry": _geometry_view(),
-        "issues": refused or (list(coordinator["review"]["issues"]) if stage == "apply" else []),
+        "issues": refused or [*(coordinator["review"]["issues"] if stage == "apply" else ()),
+                              *(_run_refusals(topology) if stage in ("apply", "tune") else ())],
     }
 
 

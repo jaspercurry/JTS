@@ -163,10 +163,12 @@ function driverCard(target) {
 }
 
 const issueLines = () => view.issues.map(issue => h('p.form-hint', {}, issue.message));
+// In use, the issues are what a measurement run refuses; its refusal links to this card.
+const detailsIssues = () => ['details', 'tune'].includes(view.stage);
 
 function detailsCard() {
-  const card = section('2. Driver details', view.stage === 'details',
-    view.stage === 'details' && issueLines(),
+  const card = section('2. Driver details', view.stage === 'details' || (detailsIssues() && view.issues.length > 0),
+    detailsIssues() && issueLines(),
     view.draft.targets.map(driverCard),
     view.layout.choices.cardioid && field('Front-to-rear woofer spacing (mm)', manual.rear_woofer_spacing_mm,
       value => edit(manual, 'rear_woofer_spacing_mm', value), { type: 'number' }),
@@ -233,7 +235,7 @@ function startingCard() {
     !view.draft.prompt ? h('p', {}, 'Save the driver model names to prepare the research prompt.') :
       view.stage === 'research' ? researchForm() : h('details', {}, h('summary', {}, 'Research driver values'), researchForm()),
     ['apply', 'tune'].includes(view.stage) && baseSummary(),
-    view.stage !== 'details' && issueLines(),
+    !detailsIssues() && issueLines(),
     advancedSettings(),
     ['apply', 'tune'].includes(view.stage) && button('Save to speaker', async () => {
       // setup/apply rebuilds the declared base without its measured layers (#5925).
