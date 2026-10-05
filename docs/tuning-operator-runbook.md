@@ -74,7 +74,7 @@ All measurement programs refuse before sound with `walk_layout_unsupported_for_p
 ## Rear
 
 `sudo /opt/jasper/.venv/bin/jasper-round run --program rear` takes the pair model: one `rear/pair` take
-at the mark (`--dry-run` shows the plan without sound). The rear seed reads "Front-to-rear woofer spacing (mm)" (Driver details) and the placement's "Cabinet back to wall (m)", "Cabinet depth (m)" and "Toe-in (degrees)". Declare all four before the pair take; a missing one leaves the seed the gap `rear_seed_geometry_undeclared` ([ADR-0425](adr/0425-the-rear-seed-is-computed-from-the-declared-geometry.md)). A rear document's `trial <fp>` banks `rear/seat`:
+at the mark (`--dry-run` shows the plan without sound). The rear seed reads "Front-to-rear woofer spacing (mm)" (Driver details) and the placement's "Cabinet back to wall (m)", "Cabinet depth (m)" and "Toe-in (degrees)". Declare all four before the pair take: while one is missing, a `rear/pair` run refuses `rear_seed_geometry_undeclared` when it opens, before any sound ([ADR-0425](adr/0425-the-rear-seed-is-computed-from-the-declared-geometry.md)). A rear document's `trial <fp>` banks `rear/seat`:
 the base and the document at three seats, with bass and room off, and a room and a bass view per set;
 the arm uses `rear/express` at `rear_express`. On a first build the base plays no rear stage, so it is
 the rear-off reference. The [Rear section](tuning-playbook.md#rear) explains the model and its figures.

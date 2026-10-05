@@ -528,7 +528,7 @@ This is the default loop for a cardioid box; change its spots, takes or trials w
 Keep the cabinet at its wall.
 
 1. At the mark, run `sudo /opt/jasper/.venv/bin/jasper-round run --program speaker --wait`.
-   Fit and apply the speaker there (no preview and no trial by default). Declare the rear seed's inputs: "Front-to-rear woofer spacing (mm)" under Driver details, and "Cabinet back to wall (m)", "Cabinet depth (m)" and "Toe-in (degrees)" in the placement form; a missing one leaves the seed the gap `rear_seed_geometry_undeclared`. Then take the pair model, one `rear/pair` take at the mark:
+   Fit and apply the speaker there (no preview and no trial by default). Declare the rear seed's inputs: "Front-to-rear woofer spacing (mm)" under Driver details, and "Cabinet back to wall (m)", "Cabinet depth (m)" and "Toe-in (degrees)" in the placement form; while one is missing, a `rear/pair` run refuses `rear_seed_geometry_undeclared` when it opens, before any sound. Then take the pair model, one `rear/pair` take at the mark:
    `sudo /opt/jasper/.venv/bin/jasper-round run --program rear --wait`.
 2. Read the seed: `contract --round <pair-round> --section rear` carries it as `seed`, or a gap that names why there is none and is not a document to copy. Preview it, with no sound:
    `sudo /opt/jasper/.venv/bin/jasper-crossover-prescriber judge --preview <seed-doc> --round <pair-round>`.
