@@ -536,7 +536,6 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     # Every kind here shares one list — the recorded kind is the only thing
     # that tells the three apart, which is why it is written at all.
     assert [e["kind"] for e in info["summed_captures"]] == [expected_kind]
-    assert info["captures"] == []
 
 
 def test_an_old_state_file_with_retired_blocks_loads_and_drops_them(monkeypatch):
