@@ -273,15 +273,15 @@ def boundary_prior(
     }
 
 
-def load_declared_geometry(path: str | Path = DEFAULT_PATH) -> DeclaredGeometry | None:
-    """The declared rig, or ``None`` when the operator has declared none.
+def load_declared_geometry(path: str | Path | None = None) -> DeclaredGeometry | None:
+    """The declared rig at ``path`` or :data:`DEFAULT_PATH`, or ``None`` when the operator has declared none.
 
     Nothing declared is the ORDINARY state; a file that EXISTS and does not
     parse raises instead. Wizard-owned and rewritten from a separate process,
     so a long-lived daemon must never cache what it returns.
     """
     try:
-        return DeclaredGeometry.load(path)
+        return DeclaredGeometry.load(DEFAULT_PATH if path is None else path)
     except FileNotFoundError:
         return None
 

@@ -16,6 +16,7 @@ from jasper.active_speaker.reset import (
     clear_active_speaker_measurement_journey,
     clear_active_speaker_setup_state,
 )
+from jasper.audio_measurement import measurement_geometry
 
 # The GRAPH half of the staged startup-anchor pair. Reset never deletes it, but
 # it is what the pair's lock is KEYED on (`staged_anchor_lock_path` derives the
@@ -28,6 +29,13 @@ _STAGED_CONFIG_ENV = "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH"
 def _staged_graph_half(monkeypatch, tmp_path: Path) -> Path:
     path = tmp_path / "staged.yml"
     monkeypatch.setenv(_STAGED_CONFIG_ENV, str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _declared_rig(monkeypatch, tmp_path: Path) -> Path:
+    path = tmp_path / "geometry.json"
+    monkeypatch.setattr(measurement_geometry, "DEFAULT_PATH", str(path))
     return path
 
 
@@ -65,14 +73,19 @@ def _seed_state_paths(monkeypatch, tmp_path: Path) -> list[Path]:
         path.write_text('{"stale": true}\n', encoding="utf-8")
         monkeypatch.setenv(env_name, str(path))
         paths.append(path)
-    return paths
+    rig = measurement_geometry.DeclaredGeometry(speaker_height_m=1.0, mic_height_m=1.2, distance_m=1.0)
+    rig.save(measurement_geometry.DEFAULT_PATH)
+    return [*paths, Path(measurement_geometry.DEFAULT_PATH)]
 
 
 def test_clear_active_speaker_setup_state_removes_reset_owned_artifacts(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    """A new speaker is placed again: no take after the reset is gated by the
+    old placement, which every take reads (#3665 item 10)."""
     paths = _seed_state_paths(monkeypatch, tmp_path)
+    assert measurement_geometry.load_declared_geometry() is not None
 
     payload = clear_active_speaker_setup_state()
 
@@ -81,6 +94,7 @@ def test_clear_active_speaker_setup_state_removes_reset_owned_artifacts(
     assert len(payload["cleared"]) == len(paths)
     assert payload["errors"] == []
     assert all(not path.exists() for path in paths)
+    assert measurement_geometry.load_declared_geometry() is None
 
     second = clear_active_speaker_setup_state()
 
@@ -93,14 +107,15 @@ def test_clear_active_speaker_setup_state_removes_reset_owned_artifacts(
 def test_clear_active_speaker_measurement_journey_clears_only_journey_subset(
     monkeypatch,
     tmp_path: Path,
+    _declared_rig: Path,
 ) -> None:
     """A scoped "start over" clears the measurement journey and nothing else.
 
     Preserves design_draft (driver research + manual settings + topology
     intent), baseline_profile (the applied Layer-A anchor other subsystems
-    read as SSOT), and startup_load (the currently-loaded candidate's
+    read as SSOT), startup_load (the currently-loaded candidate's
     rollback pointer — see reset.py's module docstring for the JTS3
-    hardware evidence this exclusion is based on).
+    hardware evidence this exclusion is based on), and the declared placement.
     """
 
     journey_paths: list[Path] = []
@@ -110,7 +125,8 @@ def test_clear_active_speaker_measurement_journey_clears_only_journey_subset(
         monkeypatch.setenv(env_name, str(path))
         journey_paths.append(path)
 
-    kept_paths: list[Path] = []
+    _declared_rig.write_text('{"keep": true}\n', encoding="utf-8")
+    kept_paths: list[Path] = [_declared_rig]
     for env_name, filename in _MEASUREMENT_JOURNEY_KEPT_ENVS.items():
         path = tmp_path / filename
         path.write_text('{"keep": true}\n', encoding="utf-8")
@@ -215,7 +231,7 @@ def test_reset_refuses_the_staged_anchor_while_a_stage_holds_the_pair_lock(
     paths = _seed_state_paths(monkeypatch, tmp_path)
     metadata = tmp_path / _STATE_ENVS["JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH"]
     others = [path for path in paths if path != metadata]
-    assert len(others) == len(_STATE_ENVS) - 1
+    assert len(others) == len(paths) - 1
     # Bounded wait, so the refusal is the test's outcome rather than its runtime.
     monkeypatch.setattr(staging_mod, "STAGED_ANCHOR_LOCK_TIMEOUT_SEC", 0.2)
 
@@ -246,6 +262,7 @@ def test_reset_refuses_the_staged_anchor_while_a_stage_holds_the_pair_lock(
         "commission_load",
         "commission_ramp",
         "baseline_profile",
+        "measurement_geometry",
     }
     assert all(not path.exists() for path in others)
 

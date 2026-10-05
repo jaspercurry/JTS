@@ -2547,7 +2547,7 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
     assert payload["output_topology"]["speaker_groups"] == []
 
 
-#: The seven artifacts ``clear_active_speaker_setup_state`` unlinks, by env var.
+#: The artifacts ``clear_active_speaker_setup_state`` unlinks that an env var redirects.
 _RESET_UNLINKED_STATE_ENVS = (
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
@@ -2571,7 +2571,9 @@ def _stale_setup_state(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
         *_RESET_UNLINKED_STATE_ENVS,
     )
-    written = [paths[name] for name in _RESET_UNLINKED_STATE_ENVS]
+    rig = tmp_path / "measurement_geometry.json"
+    monkeypatch.setattr(measurement_geometry, "DEFAULT_PATH", str(rig))
+    written = [*(paths[name] for name in _RESET_UNLINKED_STATE_ENVS), rig]
     for path in written:
         path.write_text('{"stale": true}\n', encoding="utf-8")
 
