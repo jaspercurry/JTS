@@ -250,7 +250,7 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
             take_id = f"{candidate}-{degrees}-{repeat}"
             offset = retake[candidate] if repeat > repeats else 0.0
             analysed = curves[candidate] is not None and degrees not in failed.get(candidate, ())
-            records.append({**base, "take_id": take_id, "position_id": take_id, "repeat": repeat,
+            records.append({**base, "take_id": take_id, "position_id": take_id,
                             "pose_kind": on_axis_kind if degrees == 0 else "bearing",
                             "position_deg": degrees, "vertical_deg": 0,
                             "mark_distance_m": 1.0, "measurement_purpose": "rear",
@@ -270,7 +270,7 @@ def rear_round(tmp_path: Path, *, candidates=(BASE_CANDIDATE, _MUTED, _VARIANT),
         if candidate in behind:
             curve_db, arrivals = behind[candidate]
             take_id = f"{candidate}-behind-1"
-            records.append({**base, "take_id": take_id, "position_id": take_id, "repeat": 1,
+            records.append({**base, "take_id": take_id, "position_id": take_id,
                             "pose_kind": POSE_KIND_BEHIND, "position_deg": 0, "vertical_deg": 0,
                             "mark_distance_m": 0.5, "measurement_purpose": "rear",
                             "gating_applied": False, "graph_scope": "candidate",
@@ -395,7 +395,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
         take_id = f"{_PARENT}-{degrees}-{repeat}"
         curves = source["curves"] if degrees in missing else _pair_curves(swept_hz, noise_below_hz=noise_below_hz)
         gap_ms = off_axis_gap_ms if degrees != 0 and off_axis_gap_ms is not None else _PAIR_GAP_MS
-        records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": repeat,
+        records.append({**source, "take_id": take_id, "position_id": take_id,
                         "pose_kind": "bearing", "position_deg": degrees, "vertical_deg": 0,
                         "mark_distance_m": 1.0, "measurement_purpose": "rear",
                         "gating_applied": False, "graph_scope": "candidate_branches",
@@ -407,7 +407,7 @@ def pair_round(tmp_path: Path, *, repeats: int = 2, missing: Sequence[int] = (),
                         **snr, "curves": curves})
     if behind_gap_ms is not None:
         take_id = f"{_PARENT}-behind-1"
-        records.append({**source, "take_id": take_id, "position_id": take_id, "repeat": 1,
+        records.append({**source, "take_id": take_id, "position_id": take_id,
                         "pose_kind": POSE_KIND_BEHIND, "position_deg": 0, "vertical_deg": 0,
                         "mark_distance_m": 0.1, "measurement_purpose": "rear",
                         "gating_applied": False, "graph_scope": "candidate_branches",
@@ -1193,7 +1193,7 @@ def test_a_near_field_round_moves_no_tuning_reader(tmp_path):
     near = bank_seat_round(pair.parent, name="nearfield")
     source, store = _round_source(near)
     layout = [(driver, mm) for driver in ("woofer", "woofer:rear") for mm in (15, 30, 15)]
-    records = [{**source, "take_id": f"nearfield-{index}", "position_id": f"nearfield-{index}", "repeat": 1,
+    records = [{**source, "take_id": f"nearfield-{index}", "position_id": f"nearfield-{index}",
                 "pose_kind": "close", "position_deg": 0, "vertical_deg": 0, "mark_distance_m": mm / 1000,
                 "pose_driver": driver, "measurement_purpose": "reference", "gating_applied": False,
                 "graph_scope": "drivers", "regime": "near_field"}

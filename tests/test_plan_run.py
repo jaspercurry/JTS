@@ -200,8 +200,7 @@ def test_a_walk_groups_configs_and_repeats_under_one_pose_grant(angles, candidat
         assert [(t["pose"]["azimuth_deg"], t["selected"]) for t in group["takes"]] == [
             (angle, True) for angle in angles for _ in range(repeats)]
     assert len({t["take_id"] for t in _takes(doc)}) == len(captures)
-    assert (doc["not_measured"], doc["honoured"]["takes_refused"]) == ([], 0)
-    assert all(row["budget"]["by_household"] == row["budget"]["by_speaker"] == 0 for row in gate.progress)
+    assert (doc["not_measured"], doc["honoured"]["takes_refused"], doc["honoured"]["retakes"]) == ([], 0, 0)
 
 
 @pytest.mark.parametrize("read", [
@@ -276,8 +275,6 @@ def test_pose_budget_counts_retries_and_bounds_automatic_work(monkeypatch, charg
     result, fakes = asyncio.run(_run_gated(_walk([0]), gate=gate))
     assert result.status == "partial"
     assert len(fakes.banked) == 3
-    assert gate.progress[-1]["budget"]["by_household"] == (0 if charge == "speaker" else 2)
-    assert gate.progress[-1]["budget"]["left"] == 0
     assert result.reason == ""
     assert result.not_measured[0]["reason"] == REASON_DRIFT_BASELINES_DISAGREE
 
@@ -654,7 +651,7 @@ def test_manifest_set_identity_tracks_capture_basis_and_spans_poses(changed):
               "side": "left", "role": "summed"}
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
-            manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
+            manifest.begin({"index": index, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
             await manifest.append({**record, "take_id": manifest.allocate_take_id(), **(changed if index == 2 else {})}, f"record-{index}",
                                   TakeVerdict(True), complete=True, level_observation={})
     asyncio.run(append())
@@ -687,7 +684,7 @@ def test_a_set_holds_one_stimulus_shape_and_each_row_its_own_level(first, sets, 
     roles = [RoleBand("woofer", 0, FrequencyBand(20, 2000)), RoleBand("tweeter", 1, FrequencyBand(1500, 20000))]
     async def append():
         for index, degrees in enumerate([0, 10, 20], 1):
-            manifest.begin({"index": index, "repeat": 1, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
+            manifest.begin({"index": index, "pose": {"azimuth_deg": degrees}}, attempt=1, pose_index=index - 1)
             program = build_measure_program(**{"gain_plan": {"woofer": -18.0, "tweeter": -24.0}, "roles_bands": roles,
                                                **(first if index == 1 else {})})
             await manifest.append({"take_id": manifest.allocate_take_id(), "level_db": -20.0, "stimulus_dbfs": -12.0,
@@ -1058,7 +1055,6 @@ def test_a_planned_probe_is_not_a_retake_and_a_missed_level_is(readings, asked, 
     assert [p["level_step"] for p in played.values()] == ["probe"] + ["levelled"] * (len(asked) - 1)
     assert [p.get("retake_reason") for p in played.values()] == notices
     assert result.to_dict()["honoured"]["retakes"] == gate.progress[-1]["retakes"] == retakes
-    assert gate.progress[-1]["budget"]["by_speaker"] == retakes
 
 
 @pytest.mark.parametrize("readings, stop_at, retakes", [
@@ -1802,20 +1798,19 @@ def test_a_redo_spends_no_retry_on_the_takes_it_plays_again(monkeypatch, repeats
     assert (result.status, result.reason) == ("complete", "")
     assert [index for index, _ in gate.grants] == [1] * 2
     assert selected == [False] * (len(selected) - repeats) + [True] * repeats
-    final = gate.progress[-1]
-    assert (final["budget"]["allowed"], final["budget"]["left"], final["retakes"]) == (2, 2, 0)
+    assert gate.progress[-1]["retakes"] == 0
 
 
-@pytest.mark.parametrize(("readings", "redo_at", "drifted", "kept", "unmeasured", "left"), [
-    ((70.0, 70.0, 70.0, 73.0, 70.0, 70.0), (), {3}, {0, 1, 2, 4, 5}, [], 1),
-    ((70.0,) * 4 + (73.0,) * 2, (), {4, 5}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 1),
-    ((70.0,) * 13 + (73.0, 70.0), (5, 10), {13}, {10, 11, 12, 14}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN], 0),
-    ((70.0, 70.0, 70.0, 73.0) + (75.0,) * 5, (4,), {3}, {4, 5, 6, 7, 8}, [], 1),
-    ((70.0,) * 15, (5, 10, 15), set(), set(), [REASON_RETRIES_SPENT] * 5, 0),
+@pytest.mark.parametrize(("readings", "redo_at", "drifted", "kept", "unmeasured"), [
+    ((70.0, 70.0, 70.0, 73.0, 70.0, 70.0), (), {3}, {0, 1, 2, 4, 5}, []),
+    ((70.0,) * 4 + (73.0,) * 2, (), {4, 5}, {0, 1, 2, 3}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN]),
+    ((70.0,) * 13 + (73.0, 70.0), (5, 10), {13}, {10, 11, 12, 14}, [REASON_LEVEL_DRIFT_AT_SESSION_GAIN]),
+    ((70.0, 70.0, 70.0, 73.0) + (75.0,) * 5, (4,), {3}, {4, 5, 6, 7, 8}, []),
+    ((70.0,) * 15, (5, 10, 15), set(), set(), [REASON_RETRIES_SPENT] * 5),
 ], ids=["a MEASURE repeat drifts once", "a MEASURE repeat drifts twice to one reading", "no retry left",
         "a redo of a drifted take", "a redo its placement cannot pay for"])
 def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap(
-        readings, redo_at, drifted, kept, unmeasured, left):
+        readings, redo_at, drifted, kept, unmeasured):
     """A take at its run's fader never levels itself: a repeat more than SAME_POSE_DRIFT_DB
     off its placement's kept takes is retaken at that level, each retake one of the
     placement's two extra takes (ADR-0422), and banks the verdict and level it was judged
@@ -1825,7 +1820,7 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
     request = ac.AngleCaptureRequest((ac.AngleStop(Pose(0, 0), ac.REGIME_PER_DRIVER, purpose="speaker"),) * 3,
                                      program="speaker/mark")
 
-    result, fakes, selected, gate = _run_levelled(request, readings, redo_at=redo_at)
+    result, fakes, selected, _ = _run_levelled(request, readings, redo_at=redo_at)
 
     rows, records = sorted(result.takes, key=lambda row: row["take_id"]), {r["take_id"]: r for r in fakes.banked}
     assert [row["reason"] for row in result.not_measured] == unmeasured
@@ -1837,7 +1832,6 @@ def test_a_take_at_its_runs_fader_is_retaken_for_drift_within_its_placements_cap
         record = records[row["take_id"]]
         assert record["level"] == {**row["level"], "alignment": row["alignment"]}
         assert (record["verdict"]["fault"], record["verdict"]["next"]) == (row.get("fault"), row.get("next", "accept"))
-    assert gate.progress[-1]["budget"]["left"] == left
 
 
 @pytest.mark.parametrize("purpose,layout,entry,poses", [
@@ -1966,7 +1960,7 @@ async def test_pilot_floor_keeps_take_and_packet_evidence(tmp_path, purpose):
     assert screens[0]["evidence"]["pilots"][0]["level_hi_dbfs"] == -65
 
     manifest = RunManifest("pilot", _Store(FakeSeams().records), preset=purpose)
-    manifest.begin({"index": 1, "repeat": 1, "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
+    manifest.begin({"index": 1, "pose": {"kind": "bearing", "azimuth_deg": 0}}, attempt=1, pose_index=0)
     await manifest.append({"take_id": "pilot", "program": program.to_dict()}, "record", verdict,
                           complete=True, level_observation={})
     root = await asyncio.to_thread(bank_seat_round, tmp_path / "round")

@@ -1055,7 +1055,7 @@ async def test_host_retake_uses_the_run_ledger_once_and_returns_to_the_gate(monk
     assert manifest.status == "complete"
     assert manifest.takes_measured == 3
     assert [call[0] for call in gate.grants] == [1, 1, 2]
-    assert max(progress["budget"]["by_household"] for progress in gate.progress) == 1
+    assert manifest.to_dict()["honoured"]["retakes"] == 1
     assert fakes.graph.restores == 1
     assert box.volume_db == HOUSEHOLD_DB
 
@@ -1430,7 +1430,7 @@ _TAKE_RECORD_KEYS = frozenset({
     "incident", "index", "kind", "layout", "level", "level_db",
     "mark_distance_m", "measure_kind", "measurement_purpose", "measurement_status", "phase", "playback",
     "pose", "pose_driver", "pose_index", "pose_kind", "position_axis", "position_deg", "preset", "program",
-    "prompt", "provenance", "purposes", "repeat", "run_id", "schema_version", "seat_offset_m", "side",
+    "prompt", "provenance", "purposes", "run_id", "schema_version", "seat_offset_m", "side",
     "stimulus_dbfs", "stimulus_id", "stimulus_ordinal", "stimulus_wav_sha256", "take_id", "targets", "verdict",
     "vertical_deg", "wav_bytes", "wav_path", "wav_sha256",
 })

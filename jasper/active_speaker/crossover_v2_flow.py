@@ -373,7 +373,6 @@ class CrossoverV2Session:
             attempt=attempt,
             charge=ledger.charge,
             extra_used=ledger.extras_used,
-            extra_allowed=_admission.MAX_EXTRA_ATTEMPTS_PER_POSITION,
             extra_by_speaker=ledger.by_speaker,
         )
 
