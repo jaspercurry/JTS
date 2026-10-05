@@ -2540,7 +2540,7 @@ def test_reset_http_reports_ambiguous_failure_with_current_topology(
     assert payload["output_topology"]["speaker_groups"] == []
 
 
-#: The seven artifacts ``clear_active_speaker_setup_state`` unlinks, by env var.
+#: The artifacts ``clear_active_speaker_setup_state`` unlinks that an env var redirects.
 _RESET_UNLINKED_STATE_ENVS = (
     "JASPER_ACTIVE_SPEAKER_DESIGN_DRAFT_STATE",
     "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
@@ -2564,7 +2564,9 @@ def _stale_setup_state(
         "JASPER_ACTIVE_SPEAKER_STAGED_CONFIG_PATH",
         *_RESET_UNLINKED_STATE_ENVS,
     )
-    written = [paths[name] for name in _RESET_UNLINKED_STATE_ENVS]
+    rig = tmp_path / "measurement_geometry.json"
+    monkeypatch.setattr(measurement_geometry, "DEFAULT_PATH", str(rig))
+    written = [*(paths[name] for name in _RESET_UNLINKED_STATE_ENVS), rig]
     for path in written:
         path.write_text('{"stale": true}\n', encoding="utf-8")
 
@@ -4792,10 +4794,6 @@ def test_tuning_handoff_follows_the_pages_applied_record(monkeypatch, review_rea
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr(
-        "jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
-        lambda **_kwargs: [],
-    )
     payload = tuning_handoff.build_tuning_handoff(
         commissioning_view={"programs": RUNNABLE_PROGRAMS, "review": {"ready": review_ready}, "applied_profile": {
             "exists": exists, "stands": stands, "candidate_fingerprint": "applied-fp",
@@ -4828,8 +4826,6 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     from jasper.identity.reader import DEFAULT_HOSTNAME
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
-        Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     applied = {
         "exists": has_applied, "stands": has_applied,
         "candidate_fingerprint": "applied-fp" if has_applied else None,
@@ -4837,7 +4833,8 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
         "applied_at": "2026-09-13T12:00:00Z" if has_applied else None,
     }
     payload = tuning_handoff.build_tuning_handoff(
-        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": applied},
+        commissioning_view={"programs": RUNNABLE_PROGRAMS, "applied_profile": applied,
+                            "next_action": {"round_dir": "/var/lib/jasper/active_speaker/campaigns/round-7"}},
         design_draft={"revision": 5},
         program_id=program_id,
     )
@@ -4872,30 +4869,10 @@ def test_tuning_handoff_prompt_binds_this_speaker_and_carries_no_credential(
     assert str(payload["binding"]["design_draft_revision"]) in prompt
 
 
-@pytest.mark.parametrize("banked", [True, False])
-def test_tuning_handoff_names_the_round_directory_not_its_bundle(tmp_path, monkeypatch, banked):
-    """A banked round is named by its own directory, the one every view and ``status`` take (#5632 F11)."""
-    from jasper.active_speaker import tuning_handoff
-
-    monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    round_dir = tmp_path / "campaigns" / "round-7"
-    bundle = round_dir / "bundle" / "session-7" if banked else tmp_path / "sessions" / "session-7"
-    bundle.mkdir(parents=True)
-    (bundle / "info.json").write_text("{}")
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions",
-                        lambda **_kwargs: [bundle])
-
-    binding = tuning_handoff.build_tuning_handoff_binding({}, {})
-
-    assert binding["latest_round_dir"] == str(round_dir if banked else bundle)
-
-
 def test_tuning_handoff_route_serves_the_minted_payload(tmp_path, monkeypatch):
     from jasper.active_speaker import tuning_handoff
 
     monkeypatch.setenv("JASPER_HOSTNAME", "jts7.local")
-    monkeypatch.setattr("jasper.active_speaker.crossover_v2.round_inputs.recent_round_sessions", lambda **_kwargs: [
-        Path("/var/lib/jasper/active_speaker/campaigns/round-7")])
     monkeypatch.setattr(
         "jasper.active_speaker.commissioning_coordinator.load_commissioning_view",
         lambda *a, **k: {"programs": ("speaker", "bass", "room"), "applied_profile": {
@@ -5514,7 +5491,8 @@ def test_speaker_setup_browser_contract():
 @pytest.mark.parametrize('path,writer', [('/setup/save-layout', '_save_output_topology_payload'),
                                       ('/setup/reset', '_reset_output_topology_payload')])
 def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypatch, path, writer):
-    from jasper.web import sound_speaker_setup as setup
+    """Only the reset forgets the stored run, whose failure the measure page shows."""
+    from jasper.web import correction_crossover_v2_state as v2state, sound_speaker_setup as setup
 
     async def audio_operation():
         return {'status': 'saved'}
@@ -5522,10 +5500,27 @@ def test_setup_routes_call_the_existing_sync_topology_writer(tmp_path, monkeypat
         return asyncio.run(audio_operation())
     monkeypatch.setattr(sound_active_speaker, writer, save)
     monkeypatch.setattr(setup, 'load_setup_view', lambda: {'stage': 'details'})
+    monkeypatch.setattr(v2state, '_state_path_override', tmp_path / 'v2_state.json')
+    v2state.save_v2_state({'session_id': 'old-speaker', 'failure': {'code': 'capture_timeout'}})
     with sound_server(tmp_path) as base:
         response = json.loads(json_post_with_csrf(base, path, {}).read())
     assert response['result']['status'] == 'saved'
     assert response['setup']['stage'] == 'details'
+    assert (v2state.load_v2_state() is None) is (path == '/setup/reset')
+
+
+def test_a_refused_reset_keeps_the_stored_run(tmp_path, monkeypatch):
+    """A reset that fails before it clears anything (audio could not stop) keeps the run."""
+    from jasper.web import correction_crossover_v2_state as v2state, sound_speaker_setup as setup
+
+    def refuse(raw):
+        raise RuntimeError("audio stop failed")
+    monkeypatch.setattr(sound_active_speaker, '_reset_output_topology_payload', refuse)
+    monkeypatch.setattr(v2state, '_state_path_override', tmp_path / 'v2_state.json')
+    v2state.save_v2_state({'session_id': 'old-speaker', 'failure': {'code': 'capture_timeout'}})
+    with pytest.raises(RuntimeError):
+        setup.update_setup('/setup/reset', {}, camilla_factory=lambda: None)
+    assert v2state.load_v2_state() is not None
 
 
 def test_setup_placement_declares_the_rig_through_its_one_writer(tmp_path, monkeypatch):

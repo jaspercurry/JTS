@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from jasper.active_speaker import bundles
+from jasper.active_speaker import bundles, tuning_handoff
 from jasper.active_speaker.applied_identity import BASE_LAYER, applied_identity, layer_fingerprints
 from jasper.active_speaker.candidate_bank import BankedCandidate
 from jasper.active_speaker.commissioning_coordinator import next_program_action
@@ -111,6 +111,26 @@ def test_a_round_goes_stale_only_when_a_layer_under_it_changes(tmp_path, monkeyp
     found = latest_banked_rounds(applied_identity(after), programs=(program,), include_stale=True)[program]
 
     assert (found["stale"], found["stale_by"]) == (bool(stale_by), stale_by)
+
+
+@pytest.mark.parametrize("current", [True, False], ids=["played-the-applied-tune", "the-old-speakers-round"])
+def test_a_copied_prompt_names_a_round_only_while_it_is_current(tmp_path, monkeypatch, current):
+    """After a setup reset, the new speaker's tune stales the old speaker's round, so no copied prompt
+    names it; a current round is named by its own directory (ADR-0420 §5, #5632 F11)."""
+    monkeypatch.setattr(bundles, "sessions_dir", lambda: tmp_path / "sessions")
+    tune = _applied_anchor(layers=())
+    tune["recomposition_snapshot"]["corrections"] = {"woofer": {"gain_db": 0.0}}
+    old = json.loads(json.dumps(tune))
+    old["recomposition_snapshot"]["corrections"] = {"woofer": {"gain_db": -3.0}}
+    round_dir = tmp_path / "campaigns" / "round-7"
+    _bank_packet(round_dir, applied_identity(tune if current else old), "speaker/mark")
+    (round_dir / "bundle" / round_dir.name / "info.json").write_text("{}")
+    action = next_program_action(tune, latest_banked_rounds(applied_identity(tune), include_stale=True),
+                                 programs=RUNNABLE_PROGRAMS)
+
+    binding = tuning_handoff.build_tuning_handoff_binding({}, {"next_action": action})
+
+    assert binding["latest_round_dir"] == (str(round_dir) if current else None)
 
 
 def _tune(*layers, rear="S1"):

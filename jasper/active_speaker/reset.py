@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from jasper.audio_measurement import measurement_geometry
 from jasper.platform.log_event import log_event
 
 from .commission_ramp import ramp_state_path
@@ -62,6 +63,7 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
         "commission_load": commission_load_state_path(),
         "commission_ramp": ramp_state_path(),
         "baseline_profile": baseline_profile_state_path(),
+        "measurement_geometry": Path(measurement_geometry.DEFAULT_PATH),
     }
 
 
@@ -71,6 +73,8 @@ def active_speaker_setup_state_paths() -> dict[str, Path]:
 #
 # * ``design_draft`` — the driver research and topology intent; losing it forces
 #   re-researching drivers, not just re-measuring them.
+# * ``measurement_geometry`` — the declared placement; a restart measures the
+#   same speaker where it stands.
 # * ``baseline_profile`` — the SOLO applied Layer-A anchor and the sole durable
 #   record of the corrections the speaker is playing, read as the applied SSOT
 #   by ``jasper.sound.graph_carrier`` and ``jasper-doctor``.

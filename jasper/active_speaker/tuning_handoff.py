@@ -40,7 +40,8 @@ _CABINET_MODEL_NOTE = ("If this machine has the CAD repo with a solved Boundary 
                        "scripts/cabinet-model can seed this program; see the runbook's Cabinet model section.")
 #: The line only these programs' prompts carry, after their row's words.
 PROGRAM_NOTES = {**dict.fromkeys((PURPOSE_REAR, PURPOSE_ROOM), _CABINET_MODEL_NOTE),
-                 PURPOSE_SPEAKER: "Apply a speaker change after its preview; trial it only if I ask (ADR-0444)."}
+                 PURPOSE_SPEAKER: ("Apply the fitted speaker change without a preview (a preview needs a branches/express"
+                                   " take); trial it only if I ask (ADR-0444).")}
 
 
 def catalog_command(program: str) -> str:
@@ -104,14 +105,11 @@ def build_tuning_handoff_binding(
     **No credential of any kind belongs here** — not the control token, not a
     PSK, not the peer id. Anything here is disclosed to a third-party chat.
     """
-    from jasper.active_speaker.crossover_v2.round_inputs import banked_round_of, recent_round_sessions  # lazy: keeps jasper.web numpy-free (tests/test_correction_substream_ssot.py)
-
     identity = read_identity()
     revision = design_draft.get("revision")
     applied = commissioning_view.get("applied_profile")
     applied = applied if isinstance(applied, Mapping) else {}
     has_applied = applied.get("exists") is True
-    rounds = recent_round_sessions(limit=1)
     action = commissioning_view.get("next_action") or {}
     in_room = ({key: action[key] for key in ("round_dir", "set_id")}
                if action.get("program") in (PURPOSE_ROOM, None) and action.get("set_id") else None)
@@ -127,7 +125,8 @@ def build_tuning_handoff_binding(
         "applied_candidate_fingerprint": applied.get("candidate_fingerprint") if has_applied else None,
         "applied_record": applied.get("record") if has_applied else None,
         "applied_at": applied.get("applied_at") if has_applied else None,
-        "latest_round_dir": str(banked_round_of(rounds[0]) or rounds[0]) if rounds else None,
+        # The round the next-program pointer names, which it offers only while the round is current (ADR-0420 §5).
+        "latest_round_dir": action.get("round_dir"),
         # The in-room round and set the pointer names: room designs on it when room is next, bass whenever it is
         # named (ADR-0437, ADR-0441).
         "room_round": in_room if action.get("program") == PURPOSE_ROOM else None,

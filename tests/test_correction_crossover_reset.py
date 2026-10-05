@@ -53,6 +53,7 @@ def test_reset_measurement_journey_clears_journey_keeps_driver_and_applied_state
     assert sorted(result["kept_ids"]) == [
         "baseline_profile",
         "design_draft",
+        "measurement_geometry",
         "startup_load",
     ]
     for filename in _JOURNEY_ENVS.values():
