@@ -118,7 +118,7 @@ dev = [
     "import-linter>=2.15,<2.16",
     # The day-one baseline is checker-version-sensitive. Bump this
     # deliberately when tightening or regenerating the baseline.
-    "mypy>=2.3.0,<2.4",
+    "mypy>=2.3.0,<2.5",
 ]
 fast-landing = [
     # tests/test_sound_plumbing.py imports sound_setup in a clean child
