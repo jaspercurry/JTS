@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from collections.abc import Mapping
@@ -35,19 +37,59 @@ def card_id(spec: str) -> str:
     return match.group(1) if match else spec
 
 
+# snd-usb-audio publishes a card's ``stream0`` a moment after its ``controlC*``
+# device, and that control device is what udev reconciles on. A pass that reads
+# the gap sees a registering mic as an absent one, parks voice and is never
+# retried (2026-11-23: a hot replug left jasper-voice dead). Wait out the gap.
+CARD_SETTLE_BUDGET_SEC = 3.0
+CARD_SETTLE_POLL_SEC = 0.1
+
+
+def _settle_budget() -> float:
+    """Seconds to wait; ``JASPER_AEC_CARD_SETTLE_SEC`` is a test seam."""
+    try:
+        return max(0.0, float(os.environ["JASPER_AEC_CARD_SETTLE_SEC"]))
+    except (KeyError, ValueError):
+        return CARD_SETTLE_BUDGET_SEC
+
+
+def await_card_registration(cards: tuple[str, ...], asound_root: Path, log) -> None:
+    """Block while a named card holds a directory but no readable stream0."""
+    def registering() -> list[str]:
+        return [
+            card for card in dict.fromkeys(cards)
+            if card and (asound_root / card).is_dir()
+            and not (asound_root / card / "stream0").is_file()
+        ]
+
+    pending = registering()
+    if not pending:
+        return
+    started = time.monotonic()
+    deadline = started + _settle_budget()
+    while pending and time.monotonic() < deadline:
+        time.sleep(CARD_SETTLE_POLL_SEC)
+        pending = registering()
+    log(
+        f"event=aec_reconcile.mic_card_registering cards={','.join(pending) or '-'} "
+        f"state={'timeout' if pending else 'settled'} "
+        f"waited_ms={int((time.monotonic() - started) * 1000)}"
+    )
+
+
 def observe(values: Mapping[str, str], asound_root: Path, outputd_socket: str, log) -> Observation:
+    named = (
+        *xvf3800.ALSA_CARD_NAMES,
+        *(card_id(value) for value in values.get("JASPER_MIC_DEVICE_CANDIDATES", "").replace(",", " ").split()),
+        card_id(values.get("JASPER_AEC_MIC_DEVICE", "")),
+    )
+    await_card_registration(named, asound_root, log)
     mic = None
     try:
         mic = xvf3800.detect_runtime_profile(asound_root=asound_root)
     except (OSError, ValueError) as exc:
         log(f"event=aec_reconcile.mic_profile status=failed error={exc}")
-    candidates = values.get("JASPER_MIC_DEVICE_CANDIDATES", "")
-    cards = dict.fromkeys((
-        *xvf3800.ALSA_CARD_NAMES,
-        *(card_id(value) for value in candidates.replace(",", " ").split()),
-        card_id(values.get("JASPER_AEC_MIC_DEVICE", "")),
-        mic.alsa_card_name if mic else "",
-    ))
+    cards = dict.fromkeys((*named, mic.alsa_card_name if mic else ""))
     channels = {}
     measurement = set()
     registered = None
