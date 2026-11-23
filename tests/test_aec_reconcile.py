@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -4029,3 +4030,53 @@ def test_measurement_exclusion_skips_the_registry_without_a_usb_card(
 
     assert result.returncode == 0, result.stderr
     assert "measurement registry was read" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("lands_after_sec", "budget_sec", "state", "no_candidate_passes"),
+    [(0.5, "20", "settled", 0), (None, "0.3", "timeout", 1)],
+    ids=("stream0-lands-mid-pass", "stream0-never-lands"),
+)
+def test_a_card_still_registering_is_not_read_as_an_absent_mic(
+    tmp_path: Path,
+    lands_after_sec: float | None,
+    budget_sec: str,
+    state: str,
+    no_candidate_passes: int,
+) -> None:
+    """udev reconciles on a card's controlC* device, which snd-usb-audio
+    publishes before the card's stream0. A pass that read that gap called a
+    replugged mic absent and parked voice with nothing to retry it
+    (2026-11-23). A card directory without a stream0 is mid-registration, so
+    the pass waits for it; only a card that never registers is absent."""
+    _stage(tmp_path, "Array", mode="auto", channels=6)
+    stream = tmp_path / "asound" / "Array" / "stream0"
+    body = stream.read_text()
+    stream.unlink()
+    timer = (
+        threading.Timer(lands_after_sec, lambda: stream.write_text(body))
+        if lands_after_sec is not None
+        else None
+    )
+    if timer:
+        timer.start()
+    try:
+        result = _run_reconcile(
+            tmp_path,
+            "--reason",
+            "test",
+            extra_env={"JASPER_AEC_CARD_SETTLE_SEC": budget_sec},
+        )
+    finally:
+        if timer:
+            timer.cancel()
+
+    assert result.returncode == 0, result.stderr
+    assert [
+        d["state"]
+        for d in stderr_events(result.stderr, "aec_reconcile.mic_card_registering")
+    ] == [state]
+    assert (
+        len(stderr_events(result.stderr, "aec_reconcile.no_candidate_mic"))
+        == no_candidate_passes
+    )
